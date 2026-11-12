@@ -1430,20 +1430,27 @@ def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Enc
 
 def fuente_de_impedimento(clase: str) -> str:
     # La entrega tiene su propia fuente: una máquina sin llave o sin gh puede
-    # producir el producto; solo no puede publicarlo.
+    # producir el producto; solo no puede publicarlo. El despliegue también:
+    # frenó una fase concreta y condena a sus dependientes (bloqueo_fase +
+    # dependencia_bloqueada); no impide producir las fases independientes.
     if clase.startswith("entrega:"):
         return "entrega"
+    if clase.startswith("despliegue:"):
+        return "despliegue"
     return "entorno" if clase == "entorno" else "instrumento"
 
 
 def impedimento_bloquea_trabajo(e: Encargo) -> bool:
-    """Solo una causa que impide producir frena el turno. La de entrega deja
-    trabajar: se atiende al publicar o al entregar con pendientes, aunque el
-    aviso siga visible en el registro."""
+    """Solo una causa que impide producir frena el turno. Las de entrega y de
+    despliegue dejan trabajar: se atienden al publicar o en su propia fase y
+    sus dependientes, aunque el aviso siga visible en el registro."""
     if not e.impedimentos:
-        return bool(e.impedimento) and not str(e.impedimento).startswith("entrega:")
+        return bool(e.impedimento) and not str(e.impedimento).startswith(
+            ("entrega:", "despliegue:")
+        )
     return any(
-        fuente_de_impedimento(i.clase) != "entrega" for i in e.impedimentos
+        fuente_de_impedimento(i.clase) in ("instrumento", "entorno")
+        for i in e.impedimentos
     )
 
 
@@ -2215,6 +2222,16 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             return e
         e = _con_impedimentos(e, restantes, hora)
         hecho = "impedimento resuelto: " + evidencia
+        if clase.startswith("despliegue:") and e.pendientes_entrega:
+            # El pendiente es el aviso de la causa de despliegue: resuelta la
+            # causa, el aviso se va con ella y los demás quedan.
+            e = replace(
+                e,
+                pendientes_entrega=tuple(
+                    p for p in e.pendientes_entrega
+                    if not p.startswith("despliegue:")
+                ),
+            )
         if impedimento_bloquea_trabajo(e):
             return replace(
                 e,
@@ -2452,6 +2469,8 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         )
     if kind == "bloqueo_fase":
         return _bloqueo_fase(e, d, hora)
+    if kind == "fase_reactivada":
+        return _fase_reactivada(e, d, hora)
     if kind == "arbol":
         return _arbol(e, d, hora)
     if kind == "comprobacion":
@@ -3743,6 +3762,36 @@ def _arbol(e: Encargo, d: dict, hora: str) -> Encargo:
         ultimo_hecho="el árbol de procesos quedó ausente",
         siguiente="ninguna" if estado == "cancelado" else "detenido hasta continuar",
         motivo="" if estado == "detenido" else "cancelado",
+    )
+
+
+def _fase_reactivada(e: Encargo, d: dict, hora: str) -> Encargo:
+    """Continuar reabre la fase bloqueada cuyo despliegue quedó pendiente.
+
+    La orden autoriza una corrida nueva de la receta del mismo SHA: la fase
+    vuelve al trabajo con sus datos y el barrido la vuelve a intentar; si el
+    despliegue vuelve a fallar, la causa se vuelve a anotar sin frenar a las
+    fases independientes."""
+    pedida = str(d.get("fase") or "")
+    fase = next((f for f in e.fases if f.id == pedida), None)
+    if fase is None or fase.estado != "bloqueada":
+        raise TransicionIlegal(f"la fase {pedida or '?'} no está bloqueada")
+    if e.estado in _CERRADOS:
+        raise TransicionIlegal("el encargo ya cerró")
+    return sesiones_de_fase_nueva(
+        replace(
+            con_fase(e, replace(fase, estado="trabajo", pendientes=())),
+            fase_activa=fase.id,
+            estado="recibido",
+            rol="responsable",
+            estrategia="investigar",
+            motivo="",
+            siguiente=f"reintentar el despliegue pendiente de la fase {fase.id}",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            devuelto_con=(),
+            hora=hora or e.hora,
+        )
     )
 
 

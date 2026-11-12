@@ -1855,7 +1855,10 @@ def _barrer_encargos(
             and enc.estado in ("recibido", "ejecutando")
         ):
             # La entrega con pendientes va delante de cualquier paso que pueda
-            # volver a fallar: es el camino que corta la espera y el ciclo.
+            # volver a fallar: es el camino que corta la espera y el ciclo. El
+            # aviso del despliegue conduce aquí la entrega parcial de SU fase:
+            # bloquea la fase con la causa y el encargo avanza a las fases
+            # independientes.
             enc = _entregar_con_pendientes(registro, enc, gh, hora)
             informes.append(vista(enc))
             continue
@@ -2006,6 +2009,17 @@ def _barrer_encargos(
                 f"intento-cerrado:{encargo_id}:{enc.proc.pid}:{enc.proc.inicio}",
             )
             enc = registro.fold(encargo_id) or enc
+        # Una orden de continuar sin consumir reabre la fase bloqueada cuyo
+        # despliegue quedó pendiente, antes de trabajar o lanzar otra cosa.
+        if (
+            enc is not None
+            and not parada
+            and enc.via != "directa"
+            and enc.estado in ("recibido", "ejecutando")
+            and enc.proc is None
+            and not enc.reserva
+        ):
+            enc = _reintentar_despliegue_pendiente(registro, enc, hora)
         resultado_paso: Resultado = NecesitaAgente(
             str(getattr(enc, "rol", "") or "responsable")
         )
@@ -2750,6 +2764,8 @@ def _es_verificable(clase: str) -> bool:
 
 
 def _evidencia_de(clase: str) -> str:
+    if clase.startswith("despliegue:"):
+        return "un despliegue aplicado ya contiene el código de la fase pendiente"
     if clase.startswith("inspeccion:"):
         return "hay un juicio corregido o una inspección distinta sin consumir"
     if clase.startswith("juicio:"):
@@ -2885,6 +2901,93 @@ def _juicio_reparado(
     return True
 
 
+def _cubre(espacio: Path, antiguo: str, nuevo: str) -> bool:
+    """El SHA integrado `antiguo` ya está contenido en el SHA desplegado `nuevo`."""
+    if not (re.fullmatch(r"[0-9a-f]{40,64}", antiguo or "")
+            and re.fullmatch(r"[0-9a-f]{40,64}", nuevo or "")):
+        return False
+    corrido = subprocess.run(
+        ["git", "-C", str(espacio), "merge-base", "--is-ancestor", antiguo, nuevo],
+        stdin=subprocess.DEVNULL, capture_output=True, timeout=120,
+    )
+    return corrido.returncode == 0
+
+
+def _fase_de_la_causa(enc: Encargo, clase: str):
+    """La fase cuya causa de bloqueo es la del impedimento de despliegue.
+
+    La dueña se reconoce por la huella del bloqueo normalizado, por igualdad
+    con la causa del impedimento, por la forma del pendiente ("despliegue: "
+    más la causa recortada) o por el prefijo recortado de la causa. Una causa
+    que esté CONTENIDA dentro de un bloqueo más largo no atribuye dueño: el
+    bloqueo de una fase ya desplegada no cierra la causa de otra (F9). Sin
+    dueña única, la verificación conserva el criterio conservador de exigir
+    todo el frente cubierto."""
+    if not clase.startswith("despliegue:"):
+        return None
+    huella = clase.removeprefix("despliegue:")
+    causa = " ".join(
+        next((i.causa for i in enc.impedimentos if i.clase == clase), "").split()
+    )
+    candidatas = []
+    for f in enc.fases:
+        if not f.bloqueo_causa:
+            continue
+        bloqueo = " ".join(f.bloqueo_causa.split())
+        desp = bloqueo.removeprefix("despliegue:").strip()
+        if (
+            hashlib.sha256(bloqueo.encode()).hexdigest()[:12] == huella
+            or (causa and (bloqueo == causa or desp == causa
+                           or causa.startswith(desp)))
+        ):
+            candidatas.append(f)
+    # La atribución exige un único candidato: una causa compartida por varias
+    # fases no acredita dueño.
+    return candidatas[0] if len(candidatas) == 1 else None
+def _despliegue_cubierto(enc: Encargo, espacio: Path, clase: str = "") -> bool | None:
+    """La causa de despliegue deja de sostenerse cuando producción ya contiene
+    el código de su fase: un despliegue posterior cuyo SHA lo incluye, o el
+    reintento que la desplegó. La prueba es el recibo aplicado y la relación de
+    commits, no una promesa. Sin fase dueña para la causa, se exige cubierto
+    todo el frente pendiente (criterio conservador)."""
+    from . import despliegue
+
+    if not enc.fases:
+        return None
+    duena = _fase_de_la_causa(enc, clase) if clase else None
+    if duena is not None:
+        pendientes = (
+            [duena.integrado_sha]
+            if duena.requiere_despliegue and duena.integrado_sha
+            and not duena.desplegado_recibo
+            else []
+        )
+    else:
+        pendientes = [
+            f.integrado_sha for f in enc.fases
+            if f.requiere_despliegue and f.integrado_sha and not f.desplegado_recibo
+        ]
+    if not pendientes:
+        return True
+    aplicados = []
+    for f in enc.fases:
+        if not f.desplegado_recibo or not f.integrado_sha:
+            continue
+        identidad = {
+            "encargo": enc.id, "fase": f.id, "repo": enc.entrega.repo,
+            "sha": f.integrado_sha,
+            "receta": {k: getattr(f, k) for k in ("desplegar", "checklist", "rollback")},
+        }
+        try:
+            datos = despliegue._leer(Path(f.desplegado_recibo), identidad)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+        if datos.get("estado") == "aplicado":
+            aplicados.append(str(datos.get("sha") or f.integrado_sha))
+    return all(
+        any(_cubre(espacio, antiguo, nuevo) for nuevo in aplicados)
+        for antiguo in pendientes
+    )
 def _verificar_impedimento(
     clase: str, enc: Encargo, espacio: Path, base: Path, registro=None
 ) -> bool | None:
@@ -2911,6 +3014,8 @@ def _verificar_impedimento(
         )
     if clase.startswith("juicio:"):
         return _juicio_reparado(clase, enc, registro, espacio)
+    if clase.startswith("despliegue:"):
+        return _despliegue_cubierto(enc, espacio, clase)
     interno = interno_de(espacio)
     try:
         if clase == "comprobaciones.json":
@@ -5087,6 +5192,14 @@ _AVISO_ENTREGA_DEVUELTA = (
 # `resumen._alerta_instrumento` recorta la causa a 140 caracteres. El corte
 # reserva ese espacio para el aviso y, si hace falta, recorta solo la causa.
 _TOPE_CAUSA_AVISO = 140
+
+# Un despliegue ocupado (salida 75 con reversa sin cambios) es transitorio: se
+# reintenta solo con espera creciente desde el último desenlace ocupado. La suma
+# (465 min) más el tope de 900 s de cada corrida cubre una ventana de ~8 h; la
+# ingesta diaria del destino tarda 30-50 min y queda cubierta de sobra. Al
+# sexto intento ocupado seguido se rinde con un impedimento en llano.
+ESPERAS_OCUPADO_S = (900, 1800, 3600, 7200, 14400)
+TOPE_OCUPADO = len(ESPERAS_OCUPADO_S) + 1
 
 
 def _causa_con_aviso(
@@ -8869,8 +8982,13 @@ def _entregar_con_pendientes(
         evidencia += f"; el PR #{numero} queda publicado con ellos"
     if causa:
         evidencia += f". No se pudo publicar el PR: {str(causa)[:400]}"
+    # La ronda de continuar va en la serie: la entrega parcial de una ronda
+    # nueva necesita su propio bloqueo, aunque fase, reaperturas, pendientes y
+    # SHA no cambien entre rondas.
+    from .despliegue import continuaciones
+
     _bloquear_fase(registro, enc, pendientes[0], evidencia, hora,
-                   f"{enc.reaperturas}:{len(pendientes)}:{sha}")
+                   f"{enc.reaperturas}:{len(pendientes)}:{sha}:{continuaciones(registro, enc.id)}")
     enc = registro.fold(enc.id) or enc
     _marcar_incorporado(registro, enc, hora)
     if enc.estado == "terminado":
@@ -9880,13 +9998,18 @@ def _preguntar_despliegue(registro: Registro, enc: Encargo, causa: str, hora: st
         registro, enc, "despliegue:" + huella, causa,
         "que el despliegue pueda completarse o se retire del pedido", hora,
     )
+    # La ronda de continuar va en la ukey: una orden nueva reanota el aviso
+    # aunque el texto sea idéntico al que la entrega parcial ya consumió.
+    from .despliegue import continuaciones
+
+    ronda = continuaciones(registro, enc.id)
     registro.anotar(
         enc.id,
         {
             "kind": "pendiente_entrega",
             "data": {"texto": "despliegue: " + causa[:400], "hora": hora},
         },
-        f"pendiente-despliegue:{enc.id}:{enc.fase_activa}:{huella}",
+        f"pendiente-despliegue:{enc.id}:{enc.fase_activa}:{huella}:{ronda}",
     )
 
 
@@ -9916,12 +10039,115 @@ def _espera_despliegue_sin_autoridad(
     )
 
 
+def _reintentar_despliegue_pendiente(registro, enc: Encargo, hora: str) -> Encargo:
+    """Una orden de continuar sin consumir reabre la fase bloqueada cuyo
+    despliegue quedó pendiente: la receta del mismo SHA vuelve a correr con la
+    corrida que la orden autoriza. Sin orden nueva, la fase sigue bloqueada."""
+    from . import despliegue
+
+    if enc.estado not in ("recibido", "ejecutando") or enc.proc is not None or enc.reserva:
+        return enc
+    ordenes = despliegue.continuaciones(registro, enc.id)
+    if ordenes <= 0:
+        return enc
+    for fase in enc.fases:
+        if (fase.estado != "bloqueada" or not fase.requiere_despliegue
+                or not fase.integrado_sha or fase.desplegado_recibo):
+            continue
+        recibo = despliegue.recibo_de(registro, enc, fase)
+        if recibo is None or recibo.get("estado") not in ("fallido", "ocupado"):
+            continue
+        if ordenes <= int(recibo.get("continuadas") or 0):
+            continue
+        try:
+            registro.anotar(
+                enc.id,
+                {"kind": "fase_reactivada", "data": {"fase": fase.id, "hora": hora}},
+                f"fase-reactivada:{enc.id}:{fase.id}:{ordenes}",
+            )
+        except TransicionIlegal:
+            continue
+        return registro.fold(enc.id) or enc
+    return enc
+
+
+def _despliegue_ocupado(
+    registro: Registro, enc: Encargo, despliegue, hora: str
+) -> dict | None:
+    """Gestiona un despliegue ocupado (salida 75 con reversa sin cambios).
+
+    Devuelve un resultado ya gestionado (espera anotada o impedimento en llano)
+    o None para que el paso siga y la receta se relance. El producto ya está
+    aprobado e integrado: entre reintentos no se relanza al responsable ni al
+    revisor, solo la receta del mismo SHA.
+    """
+    libro = despliegue.ocupado(registro, enc)
+    if not libro:
+        return None
+    # Si el recibo de la fase ya acredita el despliegue, la ventana ya no manda.
+    recibo = despliegue.recibo_de(registro, enc, enc.fase_actual)
+    if recibo is not None and recibo.get("estado") == "aplicado":
+        return None
+    intentos = int(libro.get("intentos") or 0)
+    proceso = str(libro.get("proceso") or "").strip()
+    if intentos >= TOPE_OCUPADO:
+        ordenes = despliegue.continuaciones(registro, enc.id)
+        if ordenes > int(libro.get("continuadas") or 0):
+            # La orden de continuar reabre la ventana una vez: la receta del
+            # mismo SHA vuelve a correr y la causa se resuelve si despliega.
+            despliegue.reabrir_ventana(registro, enc, ordenes)
+            if enc.estado == "esperando_reintento":
+                registro.anotar(
+                    enc.id,
+                    {"kind": "plazo", "data": {"hora": hora}},
+                    f"plazo:{enc.id}:{enc.reanuda_en}",
+                )
+            return None
+        texto = (
+            f"El despliegue estuvo ocupado {intentos} veces desde "
+            f"{libro.get('desde') or hora} (última vez {libro.get('ultimo') or hora}). "
+            f"El proceso que lo ocupaba, según la receta: {proceso or 'el que reporte la receta'}. "
+            "Producción no cambió: cada reversa terminó sin cambios. Cuando ese proceso "
+            "termine el despliegue puede reintentarse con el mismo SHA."
+        )
+        _preguntar_despliegue(registro, enc, texto, hora)
+        return {"estado": "impedido", "motivo": texto}
+    reanuda = _reanuda_desde(str(libro.get("ultimo") or hora), ESPERAS_OCUPADO_S[intentos - 1])
+    if _reanuda_desde(hora, 0) < reanuda:
+        maquina = ""
+        try:
+            from .maquina import de_base
+
+            maquina = str(de_base(registro.base).nombre or "").strip()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            maquina = ""
+        objetivo = f"un proceso de {maquina}" if maquina else "un proceso de la máquina destino"
+        texto = (
+            f"el despliegue está esperando a que termine {objetivo}"
+            + (f" ({proceso})" if proceso else "")
+            + f"; se reintenta solo a las {reanuda}"
+        )
+        marcar_espera(registro, enc.id, texto, reanuda, hora)
+        return {"estado": "ocupado", "motivo": texto}
+    if enc.estado == "esperando_reintento":
+        # La espera venció: reabre el encargo con el mismo evento plazo que usa
+        # el barrido (deduplicado por ukey) para que el recibo ocupado vuelva a
+        # ser reintentable en este mismo paso.
+        registro.anotar(
+            enc.id,
+            {"kind": "plazo", "data": {"hora": hora}},
+            f"plazo:{enc.id}:{enc.reanuda_en}",
+        )
+    return None
+
+
 def _paso_despliegue(
     registro: Registro, enc: Encargo, espacio: Path, hora: str
 ) -> Encargo:
     """El sello se obtiene de la receta ejecutada sobre el commit integrado."""
     from . import despliegue, politica_despliegue
 
+    enc = _reintentar_despliegue_pendiente(registro, enc, hora)
     if nivel_objetivo(enc) != "desplegado" or enc.nivel_alcanzado != "integrado":
         return enc
     enc = politica_despliegue.adoptar(registro, enc, espacio, hora)
@@ -9947,6 +10173,12 @@ def _paso_despliegue(
         resultado = {"estado": "esperando", "motivo":
                      "falta declarar si la fase despliega y su receta real"}
     else:
+        gestionado = _despliegue_ocupado(registro, enc, despliegue, hora)
+        if gestionado is not None:
+            return registro.fold(enc.id) or enc
+        # El guard pudo reabrir el encargo con el plazo: `iniciar` decide el
+        # relanzamiento con el estado fresco.
+        enc = registro.fold(enc.id) or enc
         resultado = despliegue.iniciar(registro, enc, espacio, politica, hora)
     fresco = registro.fold(enc.id) or enc
     if not fresco.escrituras or not fresco.intentos_nuevos:

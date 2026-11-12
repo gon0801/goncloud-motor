@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -178,20 +179,608 @@ class RecuperacionDespliegue(unittest.TestCase):
         self.assertEqual(efecto.read_text(encoding="utf-8"), "enviado\n")
         self.assertFalse((destino / "pasos").exists())
 
-    def test_despliegue_fallido_vuelve_a_bloquear_tras_continuar_sin_repetir_receta(self):
+    def test_continuar_reintenta_el_despliegue_pendiente(self):
         reg, ident, espacio, destino, integrar = self.despliegue
-        with (espacio / "d.sh").open("a", encoding="utf-8") as script:
-            script.write("exit 9\n")
+        corridas = destino / "corridas"
+        (espacio / "d.sh").write_text(
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"\n'
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0); '
+            f'n=$((n+1)); printf "%s" "$n" > "{corridas.as_posix()}"; '
+            f'if [ "$n" -ge 2 ]; then exit 0; fi; exit 1\n'
+        )
+        sha = integrar()
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            final = base.paso(self.despliegue)
+            self.assertNotEqual(final.estado, "necesita_usuario")
+            self.assertTrue(_bloqueo_visible(final))
+            recibo, = (reg.base / "despliegues").rglob("recibo.json")
+            self.assertEqual(json.loads(recibo.read_text(encoding="utf-8"))["estado"], "fallido")
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "1")
+            # Sin una orden de continuar el recibo fallido no se vuelve a correr.
+            base.paso(self.despliegue)
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "1")
+            ciclo.ordenar(reg, ident, "continuar", "reintentar-despliegue", base.HORA)
+            final = reg.fold(ident)
+            for _ in range(10):
+                final = base.paso(self.despliegue)
+                if final.nivel_alcanzado == "desplegado":
+                    break
+            else:
+                self.fail(f"el despliegue no llegó a desplegado: {final.motivo}")
+
+        self.assertEqual(final.nivel_alcanzado, "desplegado", final.motivo)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        self.assertEqual(
+            (destino / "pasos").read_text(encoding="utf-8").splitlines(),
+            [f"desplegar:{sha}", f"rollback:{sha}", f"desplegar:{sha}", f"checklist:{sha}"],
+        )
+
+    def test_una_orden_anterior_al_fallo_no_reintenta(self):  # no-roja-en-base: la base ya conserva el camino fallido sin reintento; la prueba fija que una orden anterior al fallo tampoco lo autoriza
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        (espacio / "d.sh").write_text(
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"\n'
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0); '
+            f'n=$((n+1)); printf "%s" "$n" > "{corridas.as_posix()}"; exit 1\n'
+        )
         integrar()
-        self.aprobar_para_supervisor()
-        final = base.paso(self.despliegue)
-        self.assertNotEqual(final.estado, "necesita_usuario")
-        self.assertTrue(_bloqueo_visible(final))
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            ciclo.ordenar(reg, ident, "continuar", "orden-temprana", base.HORA)
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, base.HORA)
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, "2026-11-05T12:00:30+00:00")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "1")
+        self.assertTrue(_bloqueo_visible(reg.fold(ident)))
         recibo, = (reg.base / "despliegues").rglob("recibo.json")
         self.assertEqual(json.loads(recibo.read_text(encoding="utf-8"))["estado"], "fallido")
-        pasos = (destino / "pasos").read_text(encoding="utf-8")
-        self.comprobar_bloqueo_tras_continuar()
-        self.assertEqual((destino / "pasos").read_text(encoding="utf-8"), pasos)
+
+    def test_continuar_reabre_la_ventana_ocupado_agotada(self):
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        (espacio / "d.sh").write_text(
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"\n'
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0); '
+            f'n=$((n+1)); printf "%s" "$n" > "{corridas.as_posix()}"; '
+            f'if [ "$n" -ge 7 ]; then exit 0; fi; '
+            f'printf "app.cli vivo (spapi-diario)\\n"; exit 75\n'
+        )
+        integrar()
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        horas = (
+            "2026-11-05T12:00:00+00:00", "2026-11-05T12:15:00+00:00",
+            "2026-11-05T12:45:00+00:00", "2026-11-05T13:45:00+00:00",
+            "2026-11-05T15:45:00+00:00", "2026-11-05T19:45:00+00:00",
+        )
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            for hora in horas:
+                ciclo._paso_despliegue(reg, reg.fold(ident), espacio, hora)
+                self.assertIsNotNone(
+                    next((reg.base / "despliegues").rglob("ocupado.json"), None), hora,
+                )
+            # La séptima pasada toca el tope de la ventana: impedimento en llano.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, "2026-11-05T19:50:00+00:00")
+            final = reg.fold(ident)
+            causa = final.impedimentos[-1].causa if final.impedimentos else ""
+            self.assertIn("ocupado 6 veces", causa)
+            # La ventana agotada pide intervención: continuar la reabre una vez.
+            ciclo.ordenar(reg, ident, "continuar", "otra-ventana", horas[-1])
+            final = ciclo._paso_despliegue(
+                reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
+            )
+            for _ in range(10):
+                final = ciclo._paso_despliegue(
+                    reg, reg.fold(ident), espacio, "2026-11-05T20:05:00+00:00"
+                )
+                if final.nivel_alcanzado == "desplegado":
+                    break
+            else:
+                self.fail(f"el despliegue no llegó a desplegado: {final.motivo}")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "7")
+
+    def test_el_libro_ocupado_se_reinicia_al_desplegar(self):
+        # F1: tras un éxito de la misma identidad la ventana arranca limpia;
+        # el tope no bloquea para siempre.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -ge 7 ]; then exit 0; fi',
+            'printf "app.cli vivo (spapi-diario)"',
+            "exit 75",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        integrar()
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        horas = (
+            "2026-11-05T12:00:00+00:00", "2026-11-05T12:15:00+00:00",
+            "2026-11-05T12:45:00+00:00", "2026-11-05T13:45:00+00:00",
+            "2026-11-05T15:45:00+00:00", "2026-11-05T19:45:00+00:00",
+        )
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            for hora in horas:
+                ciclo._paso_despliegue(reg, reg.fold(ident), espacio, hora)
+            # La séptima pasada toca el tope: impedimento; continuar reabre.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, "2026-11-05T19:46:00+00:00")
+            ciclo.ordenar(reg, ident, "continuar", "otra-ventana", "2026-11-05T19:46:00+00:00")
+            final = reg.fold(ident)
+            for _ in range(10):
+                final = ciclo._paso_despliegue(
+                    reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
+                )
+                if final.nivel_alcanzado == "desplegado":
+                    break
+            else:
+                self.fail(f"el despliegue no llegó a desplegado: {final.motivo}")
+        libros = list((reg.base / "despliegues").rglob("ocupado.json"))
+        self.assertEqual(libros, [], "el libro no se reinició al aplicar")
+        self.assertEqual(ejecutor.ocupado(reg, reg.fold(ident)), {})
+
+    def test_el_aviso_de_despliegue_bloquea_su_fase_y_avanza_a_la_independiente(self):
+        # h_fed313a0: el pendiente del despliegue conduce la entrega parcial de
+        # SU fase (bloqueo con la causa) y el encargo avanza a la fase
+        # independiente; sin bloqueo anotado a mano ni por la prueba.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -eq 1 ]; then exit 0; fi',
+            "exit 1",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        receta = {"desplegar": "d.sh", "checklist": "c.sh", "rollback": "r.sh"}
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+            {"id": "K", "resultado": "K lista", "requiere_despliegue": True, "despliegue": receta},
+            {"id": "N", "resultado": "N lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+            {"id": "O", "resultado": "O lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+        ]}}, "fases")
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            integrar()
+            base.paso(self.despliegue)
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de K",
+                "hora": base.HORA,
+            }}, "cierre-K")
+            self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
+            (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
+            integrar()
+            base.paso(self.despliegue)
+        enc = reg.fold(ident)
+        self.assertEqual(enc.fase_activa, "N", enc.motivo)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        self.assertEqual(len(enc.impedimentos), 1, enc.motivo)
+        self.assertTrue(
+            any(p.startswith("despliegue:") for p in enc.pendientes_entrega),
+            enc.pendientes_entrega,
+        )
+        self.assertFalse(
+            any(f.estado == "bloqueada" for f in enc.fases),
+            "el fallo real aún no bloquea ninguna fase",
+        )
+
+        observador = mock.Mock()
+        sonda = mock.Mock(return_value=types.SimpleNamespace(
+            ok=True, causa="", condicion="",
+        ))
+        with mock.patch.object(ciclo, "_lanzar_uno", observador), mock.patch.object(
+            ciclo, "_sonda_entorno", sonda,
+        ):
+            ciclo.barrer(reg, "2026-11-05T12:01:00+00:00", time.time(), mock.Mock())
+            ciclo.barrer(reg, "2026-11-05T12:02:00+00:00", time.time(), mock.Mock())
+            ciclo.barrer(reg, "2026-11-05T12:03:00+00:00", time.time(), mock.Mock())
+        enc = reg.fold(ident)
+        bloqueos = [ev for ev in reg.eventos(ident) if ev["kind"] == "bloqueo_fase"]
+        self.assertTrue(bloqueos, "la pasada no bloqueó la fase fallida")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        self.assertEqual(enc.fase_activa, "O", enc.motivo)
+        fases = {f.id: f for f in enc.fases}
+        self.assertEqual(fases["K"].estado, "preparada")
+        self.assertEqual(fases["N"].estado, "bloqueada")
+        self.assertEqual(fases["O"].estado, "pendiente")
+        # El ajuste exige el avance efectivo: la fase O se lanza sola.
+        self.assertTrue(
+            observador.called, "el barrido no lanz\u00f3 la fase independiente O"
+        )
+        lanzadas = [
+            llamada.args[1].fase_activa for llamada in observador.call_args_list
+        ]
+        self.assertIn("O", lanzadas, lanzadas)
+
+    def test_otra_causa_de_pendiente_si_entrega_con_pendientes(self):  # no-roja-en-base: la base ya desvía la pasada con cualquier pendiente; la prueba fija que la excepción es solo del despliegue
+        reg, ident, espacio, destino, integrar = self.despliegue
+        integrar()
+        entregas = mock.Mock(return_value=reg.fold(ident))
+        with mock.patch.object(ciclo, "_entregar_con_pendientes", entregas):
+            reg.anotar(ident, {"kind": "pendiente_entrega", "data": {
+                "texto": "el revisor no concluyó tras el tope",
+                "hora": base.HORA,
+            }}, "pendiente-otro")
+            ciclo.barrer(reg, base.HORA, time.time(), mock.Mock())
+        entregas.assert_called()
+
+    def test_el_segundo_bloqueo_tras_continuar_no_se_deduplica(self):
+        # h_e69c0e8a: la entrega parcial de una ronda nueva necesita su propio
+        # bloqueo: N se re-bloquea con la causa y O vuelve a solicitarse.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -eq 1 ]; then exit 0; fi',
+            "exit 1",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        receta = {"desplegar": "d.sh", "checklist": "c.sh", "rollback": "r.sh"}
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+            {"id": "K", "resultado": "K lista", "requiere_despliegue": True, "despliegue": receta},
+            {"id": "N", "resultado": "N lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+            {"id": "O", "resultado": "O lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+        ]}}, "fases")
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        lanzador = mock.Mock()
+        sonda = mock.Mock(return_value=types.SimpleNamespace(
+            ok=True, causa="", condicion="",
+        ))
+        esperas = mock.Mock(return_value="2026-11-05T12:00:00+00:00")
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            integrar()
+            base.paso(self.despliegue)
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de K",
+                "hora": base.HORA,
+            }}, "cierre-K")
+            self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
+            (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
+            integrar()
+            self.aprobar_para_supervisor()
+            base.paso(self.despliegue)
+        enc = reg.fold(ident)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        self.assertEqual(len(enc.impedimentos), 1)
+        self.assertEqual(
+            len([p for p in enc.pendientes_entrega if p.startswith("despliegue:")]), 1,
+        )
+        self.assertFalse(any(f.estado == "bloqueada" for f in enc.fases))
+
+        with mock.patch.object(ciclo, "_lanzar_uno", lanzador), mock.patch.object(
+            ciclo, "_sonda_entorno", sonda,
+        ):
+            ciclo.barrer(reg, "2026-11-05T12:01:00+00:00", time.time(), mock.Mock())
+            ciclo.barrer(reg, "2026-11-05T12:02:00+00:00", time.time(), mock.Mock())
+        enc = reg.fold(ident)
+        fases = {f.id: f for f in enc.fases}
+        bloqueos = [ev for ev in reg.eventos(ident) if ev["kind"] == "bloqueo_fase"]
+        self.assertEqual(len(bloqueos), 1)
+        self.assertEqual(fases["N"].estado, "bloqueada")
+        self.assertEqual(enc.fase_activa, "O", enc.motivo)
+        lanzadas = [llamada.args[1].fase_activa for llamada in lanzador.call_args_list]
+        self.assertIn("O", lanzadas, lanzadas)
+
+        # La ronda nueva (continuar) reabre N, la receta falla igual y la
+        # entrega parcial de la ronda necesita SU propio bloqueo: N se
+        # re-bloquea y O vuelve a solicitarse al lanzador.
+        esperas = mock.Mock(return_value="2026-11-05T12:00:00+00:00")
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso), mock.patch.object(
+            ciclo, "_lanzar_uno", lanzador,
+        ), mock.patch.object(ciclo, "_sonda_entorno", sonda), mock.patch.object(
+            ciclo, "_reanuda_en", esperas,
+        ):
+            ciclo.ordenar(reg, ident, "continuar", "ronda-nueva", base.HORA)
+            for hora in (
+                "2026-11-05T12:03:00+00:00", "2026-11-05T12:04:00+00:00",
+                "2026-11-05T12:05:00+00:00", "2026-11-05T12:06:00+00:00",
+            ):
+                ciclo.barrer(reg, hora, time.time(), mock.Mock())
+        enc = reg.fold(ident)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
+        fases = {f.id: f for f in enc.fases}
+        bloqueos = [ev for ev in reg.eventos(ident) if ev["kind"] == "bloqueo_fase"]
+        self.assertEqual(len(bloqueos), 2)
+        self.assertEqual(fases["N"].estado, "bloqueada")
+        self.assertEqual(enc.fase_activa, "O", enc.motivo)
+        self.assertTrue(
+            any(p.startswith("despliegue:") for p in enc.pendientes_entrega)
+            or any(p.startswith("despliegue:") for p in fases["N"].pendientes),
+        )
+        lanzadas = [llamada.args[1].fase_activa for llamada in lanzador.call_args_list]
+        self.assertIn("O", lanzadas, lanzadas)
+
+    def test_el_libro_de_otra_fase_no_aplica_a_la_fase_activa(self):
+        # F10: la ventana agotada de N no manda sobre el primer intento de O.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -eq 1 ]; then exit 0; fi',
+            'if [ "$n" -ge 9 ]; then exit 0; fi',
+            'printf "app.cli vivo (spapi-diario)"',
+            "exit 75",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        receta = {"desplegar": "d.sh", "checklist": "c.sh", "rollback": "r.sh"}
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+            {"id": "K", "resultado": "K lista", "requiere_despliegue": True, "despliegue": receta},
+            {"id": "N", "resultado": "N lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+            {"id": "O", "resultado": "O lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+        ]}}, "fases")
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        horas = (
+            "2026-11-05T12:00:00+00:00", "2026-11-05T12:15:00+00:00",
+            "2026-11-05T12:45:00+00:00", "2026-11-05T13:45:00+00:00",
+            "2026-11-05T15:45:00+00:00", "2026-11-05T19:45:00+00:00",
+        )
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            integrar()
+            base.paso(self.despliegue)
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de K",
+                "hora": base.HORA,
+            }}, "cierre-K")
+            self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
+            (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
+            integrar()
+            for hora in horas:
+                ciclo._paso_despliegue(reg, reg.fold(ident), espacio, hora)
+            # La séptima pasada toca el tope de la ventana de N.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, "2026-11-05T19:46:00+00:00")
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "7")
+            enc = reg.fold(ident)
+            causa = enc.impedimentos[-1].causa
+            reg.anotar(ident, {"kind": "bloqueo_fase", "data": {
+                "evidencia": "recibo fallido-ocupado de N", "causa": causa,
+            }}, "bloqueo-N")
+            self.assertEqual(reg.fold(ident).fase_activa, "O", reg.fold(ident).motivo)
+            (espacio / "cambio-o.txt").write_text("cambio de O", encoding="utf-8")
+            integrar()
+            # El primer intento real de O abre su propia ventana.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, base.HORA)
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "8")
+            fin = time.monotonic() + 30
+            while True:
+                recibos_o = [
+                    json.loads(ruta.read_text(encoding="utf-8"))
+                    for ruta in (reg.base / "despliegues").rglob("recibo.json")
+                    if json.loads(ruta.read_text(encoding="utf-8")).get("fase") == "O"
+                ]
+                if any(
+                    d.get("estado") in ("aplicado", "fallido", "incierto", "esperando", "ocupado")
+                    and all("codigo" in p for p in d.get("pasos", []))
+                    for d in recibos_o
+                ):
+                    datos = recibos_o[0]
+                    break
+                assert time.monotonic() < fin, "el recibo de O no llegó a su estado final"
+                time.sleep(0.05)
+            assert datos["estado"] == "ocupado", datos
+            # El libro de O es suyo: intentos 1, no los seis de N.
+            libros = [
+                json.loads(ruta.read_text(encoding="utf-8"))
+                for ruta in (reg.base / "despliegues").rglob("ocupado.json")
+            ]
+            self.assertEqual(
+                [libro["intentos"] for libro in libros if libro["intentos"] >= 2], [6],
+            )
+            propios = [libro for libro in libros if libro["intentos"] == 1]
+            self.assertEqual(len(propios), 1, libros)
+            # Vence la espera de O: su segundo intento despliega la fase.
+            propio = next(
+                ruta for ruta in (reg.base / "despliegues").rglob("ocupado.json")
+                if json.loads(ruta.read_text(encoding="utf-8"))["intentos"] == 1
+            )
+            contenido = json.loads(propio.read_text(encoding="utf-8"))
+            contenido["ultimo"] = "2026-11-04T11:00:00Z"
+            propio.write_text(json.dumps(contenido))
+            final = reg.fold(ident)
+            for _ in range(10):
+                final = ciclo._paso_despliegue(
+                    reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
+                )
+                if final.fase_activa == "O" and final.nivel_alcanzado == "desplegado":
+                    break
+            else:
+                self.fail(f"O no llegó a desplegado: {final.motivo}")
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "9")
+
+    def test_una_orden_anterior_no_reabre_la_ventana_ocupada(self):
+        # h_51c2637c (ronda 5): la orden previa al despliegue ya no consume
+        # la ventana; el libro arranca con la fotografía del recibo.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'printf "app.cli vivo (spapi-diario)"',
+            "exit 75",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        integrar()
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        horas = (
+            "2026-11-05T12:00:00+00:00", "2026-11-05T12:15:00+00:00",
+            "2026-11-05T12:45:00+00:00", "2026-11-05T13:45:00+00:00",
+            "2026-11-05T15:45:00+00:00", "2026-11-05T19:45:00+00:00",
+        )
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            ciclo.ordenar(reg, ident, "continuar", "orden-previa", base.HORA)
+            for hora in horas:
+                ciclo._paso_despliegue(reg, reg.fold(ident), espacio, hora)
+            # El tope se toca sin ninguna orden nueva.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, "2026-11-05T19:46:00+00:00")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "6")
+        final = reg.fold(ident)
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        self.assertIn("ocupado 6 veces", causa)
+
+    def test_continuar_alcanza_el_despliegue_de_n_desde_el_barrido(self):
+        # h_925eb491 (ronda 5): continuar llega a la fase bloqueada con
+        # despliegue pendiente aunque el barrido esté trabajando otra fase.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -eq 1 ]; then exit 0; fi',
+            'if [ "$n" -ge 3 ]; then exit 0; fi',
+            "exit 1",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        receta = {"desplegar": "d.sh", "checklist": "c.sh", "rollback": "r.sh"}
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+            {"id": "K", "resultado": "K lista", "requiere_despliegue": True, "despliegue": receta},
+            {"id": "N", "resultado": "N lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+            {"id": "O", "resultado": "O lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+        ]}}, "fases")
+        self.assertEqual(reg.fold(ident).fase_activa, "K")
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            integrar()
+            base.paso(self.despliegue)
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de K",
+                "hora": base.HORA,
+            }}, "cierre-K")
+            self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
+            (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
+            integrar()
+            base.paso(self.despliegue)
+            enc = reg.fold(ident)
+            causa = enc.impedimentos[-1].causa
+            reg.anotar(ident, {"kind": "bloqueo_fase", "data": {
+                "evidencia": "recibo fallido de N", "causa": causa,
+            }}, "bloqueo-N")
+            self.assertEqual(reg.fold(ident).fase_activa, "O", reg.fold(ident).motivo)
+            sonda = mock.Mock(return_value=types.SimpleNamespace(
+                ok=True, causa="", condicion="",
+            ))
+            with mock.patch.object(ciclo, "_sonda_entorno", sonda):
+                ciclo.ordenar(reg, ident, "continuar", "reabrir-N-barrido", base.HORA)
+                # Pasada 1: reactiva N y relanza su receta; pasada 2: concilia
+                # el recibo aplicado y sella desplegado; pasada 3: vence la
+                # espera de conciliación y avanza el nivel.
+                ciclo.barrer(reg, "2026-11-05T12:01:00+00:00", time.time(), mock.Mock())
+                ciclo.barrer(reg, "2026-11-05T12:02:00+00:00", time.time(), mock.Mock())
+                ciclo.barrer(reg, "2026-11-05T12:32:00+00:00", time.time(), mock.Mock())
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        reactivadas = [
+            ev for ev in reg.eventos(ident) if ev["kind"] == "fase_reactivada"
+        ]
+        self.assertTrue(reactivadas, "continuar no reabrió la fase bloqueada")
+        # La fase N deja de estar bloqueada y su receta corrió la segunda vez.
+        enc = reg.fold(ident)
+        fases = {f.id: f for f in enc.fases}
+        self.assertNotEqual(fases["N"].estado, "bloqueada")
+        self.assertEqual(fases["N"].ultimo_paso_entrega, "integrado")
+
+    def test_continuar_reintenta_el_despliegue_de_una_fase_bloqueada(self):
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        (espacio / "d.sh").write_text(
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"\n'
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0); '
+            f'n=$((n+1)); printf "%s" "$n" > "{corridas.as_posix()}"; '
+            f'if [ "$n" -eq 1 ]; then exit 0; fi; '
+            f'if [ "$n" -ge 3 ]; then exit 0; fi; exit 1\n'
+        )
+        receta = {"desplegar": "d.sh", "checklist": "c.sh", "rollback": "r.sh"}
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+            {"id": "K", "resultado": "K lista", "requiere_despliegue": True, "despliegue": receta},
+            {"id": "N", "resultado": "N lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+            {"id": "O", "resultado": "O lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+        ]}}, "fases")
+        self.assertEqual(reg.fold(ident).fase_activa, "K")
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            integrar()
+            base.paso(self.despliegue)
+            self.assertEqual(reg.fold(ident).fase_actual.id, "K")
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de K",
+                "hora": base.HORA,
+            }}, "cierre-K")
+            self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
+            (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
+            integrar()
+            base.paso(self.despliegue)
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+            enc = reg.fold(ident)
+            causa = enc.impedimentos[-1].causa
+            reg.anotar(ident, {"kind": "bloqueo_fase", "data": {
+                "evidencia": "recibo fallido de N", "causa": causa,
+            }}, "bloqueo-N")
+            self.assertEqual(reg.fold(ident).fase_activa, "O", reg.fold(ident).motivo)
+            # Continuar reabre la fase bloqueada con su despliegue pendiente.
+            ciclo.ordenar(reg, ident, "continuar", "reabrir-N", base.HORA)
+            final = reg.fold(ident)
+            for _ in range(12):
+                final = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, base.HORA)
+                if final.fase_activa != "N":
+                    break
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de N",
+                "hora": base.HORA,
+            }}, "cierre-N")
+            final = reg.fold(ident)
+        self.assertEqual(final.fase_activa, "O", final.motivo)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
+        fases = {f.id: f for f in final.fases}
+        self.assertEqual(fases["N"].estado, "preparada")
+        self.assertIsNotNone(fases["N"].desplegado_recibo)
 
     def test_recibo_de_ensayo_vuelve_a_bloquear_tras_continuar_sin_lanzar_agente(self):
         reg, ident, _, destino, integrar = self.despliegue

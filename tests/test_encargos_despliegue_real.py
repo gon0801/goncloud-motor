@@ -90,7 +90,8 @@ def recibo_final(reg, limite=30):
             datos = json.loads(recibos[0].read_text())
             pasos = datos.get("pasos", [])
             if (
-                datos.get("estado") in ("aplicado", "fallido", "incierto", "esperando")
+                datos.get("estado")
+                in ("aplicado", "fallido", "incierto", "esperando", "ocupado")
                 and all("codigo" in p for p in pasos)
             ):
                 return datos
@@ -168,11 +169,14 @@ class DespliegueReal(unittest.TestCase):
         assert len((destino / "pasos").read_text().splitlines()) == 2
         assert not (reg.base / "destino").exists()
 
-    def comprobar_falla(self, script, codigo):
+    def comprobar_falla(self, script, codigo, reversa=0):
         despliegue = self.despliegue
         reg, _, espacio, destino, integrar = despliegue
         with (espacio / script).open("a") as f:
             f.write(f"exit {codigo}\n")
+        if reversa:
+            with (espacio / "r.sh").open("a") as f:
+                f.write(f"exit {reversa}\n")
         sha = integrar()
         final = paso(despliegue)
         assert final.nivel_alcanzado == "integrado"
@@ -192,8 +196,239 @@ class DespliegueReal(unittest.TestCase):
     def test_falla_checklist_3_ejecuta_rollback_y_nunca_sella(self):
         self.comprobar_falla("c.sh", 3)
 
-    def test_falla_despliegue_75_ejecuta_rollback_y_nunca_sella(self):
-        self.comprobar_falla("d.sh", 75)
+    def test_75_con_reversa_que_falla_sigue_como_hoy(self):  # no-roja-en-base: caracteriza el camino que la fase conserva; la base ya deja fallido con impedimento
+        self.comprobar_falla("d.sh", 75, reversa=1)
+
+    def test_75_del_checklist_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido cualquier salida distinta de 0; la prueba fija el límite del camino ocupado nuevo
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        with (espacio / "c.sh").open("a") as f:
+            f.write('printf "app.cli vivo\\n"; exit 75\n')
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [0, 75, 0], datos["pasos"]
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_negacion_o_error_propio_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que una negación o un fallo declarado no es ocupado aunque la salida mencione la palabra
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "destino no ocupado; error de datos\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [75, 0], datos["pasos"]
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_negacion_del_proceso_vivo_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que negar el proceso vivo no acredita ocupación
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text('printf "app.cli no está vivo\\n"; exit 75\n')
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_un_fallo_propio_en_cualquier_linea_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que un fallo declarado en otra línea invalida la ocupación
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "app.cli vivo (spapi-diario)\\n"; '
+            'printf "error de datos\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_guardas_libres_con_error_no_son_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que guardas sin carga ni acredita el encabezado solo
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "alias|ciclos running|harvest en cola|harvest jobs|app.cli = true|0|0|0|0\\n"; '
+            'printf "error de datos\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_las_guardas_del_contrato_acreditan_ocupacion(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "alias|ciclos running|harvest en cola|harvest jobs|app.cli = true|0|0|0|1\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [75, 0]
+        libro = json.loads(
+            next((reg.base / "despliegues").rglob("ocupado.json")).read_text()
+        )
+        assert "app.cli" in libro["proceso"], libro
+        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        assert enc.estado == "esperando_reintento", (enc.estado, enc.motivo)
+        assert "app.cli" in enc.motivo, enc.motivo
+
+    def test_75_sin_diagnostico_de_ocupacion_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que el ocupado exige el diagnóstico que la receta declara
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text('printf "error de datos\\n"; exit 75\n')
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [75, 0], datos["pasos"]
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+        antes = (destino / "pasos").read_text()
+        paso(despliegue)
+        assert (destino / "pasos").read_text() == antes
+
+    def test_el_diagnostico_de_ocupacion_viene_de_la_salida_real(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "preparacion completa\\n"; '
+            'printf "app.cli vivo (spapi-diario)\\n" >&2; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
+        libro = next((reg.base / "despliegues").rglob("ocupado.json"))
+        contenido = json.loads(libro.read_text())
+        assert "app.cli vivo (spapi-diario)" in contenido["proceso"], contenido
+        # Ventana agotada: el impedimento cita el proceso que la receta
+        # reportó en su salida real, no la última línea de resumen. La
+        # primera corrida ya consumió el intento 1: quedan 5 de la ventana.
+        for _ in range(5):
+            contenido["ultimo"] = "2026-11-04T11:00:00Z"
+            libro.write_text(json.dumps(contenido))
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+            libro = next((reg.base / "despliegues").rglob("ocupado.json"))
+            contenido = json.loads(libro.read_text())
+        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        causa = enc.impedimentos[-1].causa if enc.impedimentos else ""
+        assert "ocupado 6 veces" in causa, causa
+        assert "app.cli vivo (spapi-diario)" in causa, causa
+        assert "preparacion completa" not in causa, causa
+
+    def test_el_diagnostico_no_lo_reemplaza_una_linea_de_resumen(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "app.cli vivo (spapi-diario)\\n'
+            'ESTADO=abortado_sin_cambios\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
+        libro = next((reg.base / "despliegues").rglob("ocupado.json"))
+        contenido = json.loads(libro.read_text())
+        assert contenido["proceso"] == "app.cli vivo (spapi-diario)", contenido
+
+    def test_75_con_reversa_limpia_espera_y_reintenta_solo(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        corridas = destino / "corridas"
+        (espacio / "d.sh").write_text(
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"\n'
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0); '
+            f'n=$((n+1)); printf "%s" "$n" > "{corridas.as_posix()}"; '
+            f'if [ "$n" -ge 2 ]; then exit 0; fi; '
+            f'printf "app.cli vivo\\n"; exit 75\n'
+        )
+        sha = integrar()
+        self._ejecucion_en_proceso()
+        ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [75, 0]
+        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        assert enc.estado == "esperando_reintento", (enc.estado, enc.motivo)
+        assert (
+            "se reintenta solo a las 2026-11-05T12:15:00Z" in enc.motivo
+        ), enc.motivo
+        assert "se trabó" not in enc.motivo
+        assert "app.cli vivo" in enc.motivo
+        assert not enc.impedimentos, enc.impedimentos
+        assert relevos_de(enc, "responsable") == 0
+        assert relevos_de(enc, "revisor") == 0
+        libro = next((reg.base / "despliegues").rglob("ocupado.json"))
+        datos = json.loads(libro.read_text())
+        assert datos["intentos"] == 1
+        # Vence la espera: el desenlace ocupado queda en el pasado y el mismo
+        # SHA se reintenta solo hasta llegar a desplegado.
+        datos["ultimo"] = "2026-11-05T11:00:00Z"
+        libro.write_text(json.dumps(datos))
+        final = enc
+        for _ in range(10):
+            final = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+            if final.nivel_alcanzado == "desplegado":
+                break
+        assert final.nivel_alcanzado == "desplegado", (
+            final.nivel_alcanzado,
+            final.motivo,
+        )
+        assert (destino / "pasos").read_text().splitlines() == [
+            f"desplegar:{sha}", f"rollback:{sha}", f"desplegar:{sha}", f"checklist:{sha}",
+        ]
+
+    def test_75_repetido_agota_la_ventana_y_deja_impedimento_en_llano(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text('printf "app.cli vivo (spapi-diario)\\n"; exit 75\n')
+        integrar()
+        self._ejecucion_en_proceso()
+        for _ in range(6):
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+            libro = next((reg.base / "despliegues").rglob("ocupado.json"), None)
+            if libro is not None:
+                datos = json.loads(libro.read_text())
+                # Un día entero en el pasado: vence hasta la espera más larga
+                # de la ventana creciente y deja que el siguiente reintento
+                # corra en el mismo minuto de la prueba.
+                datos["ultimo"] = "2026-11-04T11:00:00Z"
+                libro.write_text(json.dumps(datos))
+        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        assert enc.nivel_alcanzado == "integrado"
+        causa = enc.impedimentos[-1].causa if enc.impedimentos else ""
+        assert "ocupado 6 veces" in causa, causa
+        assert "app.cli vivo (spapi-diario)" in causa
+        assert "revisar el recibo" not in causa
+        assert relevos_de(enc, "responsable") == 0
+        assert relevos_de(enc, "revisor") == 0
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
 
     def test_sin_capacidad_espera_sin_consumir_revisor(self):  # no-roja-en-base: la base ya espera sin consumir revisor; la prueba migra del contador a relevos_de
         despliegue = self.despliegue

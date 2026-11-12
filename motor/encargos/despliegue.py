@@ -29,10 +29,47 @@ from motor.encargos.frontera import _atomico, _autorizado_ahora, autoridad_ausen
 from motor.encargos.registro import Registro
 
 TOPE_S = 900
+# El contrato de la receta (docs/encargos-despliegue.md): 75 significa que el
+# destino estaba ocupado (guardas, candados o un proceso vivo al recrear), no
+# que el código esté mal. Solo cuenta como ocupado con la reversa sin cambios.
+SALIDA_OCUPADO = 75
+# La salida real acredita la ocupación por el contrato de la receta: la línea
+# de guardas con algún valor de carga mayor que cero (todas menos alias), o la
+# línea llana que nombra el proceso vivo o la ocupación sin negarla. Un fallo
+# propio declarado en cualquier parte de la salida (desenlace completo) la
+# invalida: el 75 queda fallido.
+GUARDAS_RE = re.compile(
+    r"alias\|ciclos running\|harvest en cola\|harvest jobs\|app\.cli\s*[=:]\s*"
+    r"([^\s|]+(?:\|[^\s|]+)*)",
+    re.IGNORECASE,
+)
+OCUPACION = re.compile(
+    r"ocupad[oa]s?\b|\b\S+\s+(?:vivo|viva|live)\b", re.IGNORECASE,
+)
+NEGADA = re.compile(
+    r"\bno\s+(?:\S+\s+)?(?:ocupad|vivo|viva|live)|\bsin\s+ocupar", re.IGNORECASE,
+)
+FALLO_PROPIO = re.compile(
+    r"\b(?:error|fallo|fall[óo]|falla|fallida|fallido)\b", re.IGNORECASE,
+)
 # Con KILL_ON_JOB_CLOSE el Job de Windows tarda un instante en desaparecer; mientras
 # tanto OpenJobObject puede responder acceso denegado. Eso no es un grupo vivo: se
 # reintenta la observación hasta que el sistema termine de cerrarlo.
 ESPERA_GRUPO_S = 5.0
+
+
+def continuaciones(registro, encargo_id: str) -> int:
+    """Órdenes de continuar aplicadas al encargo: cada una autoriza una
+    corrida nueva del despliegue al que quedó vinculada."""
+    try:
+        eventos = registro.eventos(encargo_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+    return sum(
+        1 for ev in eventos
+        if isinstance(ev, dict) and ev.get("kind") == "orden"
+        and isinstance(ev.get("data"), dict) and ev["data"].get("accion") == "continuar"
+    )
 
 
 def _guardar(path: Path, datos: dict) -> None:
@@ -48,6 +85,136 @@ def _grupo_ausente(pid: int, inicio: str, job: str) -> bool:
         if time.monotonic() >= fin:
             return False
         time.sleep(0.05)
+
+
+def _guarda_ocupada(linea: str) -> bool:
+    """Una línea de guardas del contrato ocupa el destino cuando algún valor
+    de carga (todas menos alias) es mayor que cero."""
+    m = GUARDAS_RE.search(linea)
+    if not m:
+        return False
+    return any(
+        valor.strip().isdigit() and int(valor) > 0
+        for valor in m.group(1).split("|")[1:]
+    )
+
+
+def _reporte_de_receta(paso: dict) -> str:
+    """La línea con la que la receta declaró ocupado el destino.
+
+    Lee el desenlace completo de la salida, no palabras sueltas: un fallo
+    propio declarado en cualquier línea deja el 75 como fallido; un encabezado
+    de guardas con todos los valores en cero no acredita ocupación; una
+    negación ("no está vivo", "no ocupado") tampoco.
+    """
+    salida = str(paso.get("stdout", "")) + "\n" + str(paso.get("stderr", ""))
+    if FALLO_PROPIO.search(salida):
+        return ""
+    lineas = [linea.strip()[:200] for linea in salida.splitlines() if linea.strip()]
+    diagnosticos = [
+        linea for linea in lineas
+        if OCUPACION.search(linea) and not NEGADA.search(linea)
+    ]
+    if diagnosticos:
+        return diagnosticos[-1]
+    for linea in lineas:
+        if _guarda_ocupada(linea):
+            return linea
+    return ""
+
+
+def _registrar_ocupado(directorio: Path, hora: str, proceso: str) -> dict:
+    """El libro de intentos ocupados sobrevive al reseteo del recibo en cada reintento."""
+    try:
+        previo = leer_json(directorio / "ocupado.json")
+        desde = str(previo.get("desde") or hora)
+        intentos = int(previo.get("intentos", 0))
+        continuadas = int(previo.get("continuadas", 0))
+    except (OSError, ValueError, KeyError, TypeError):
+        desde, intentos = hora, 0
+        # El libro arranca con la fotografía del recibo: una orden anterior
+        # al despliegue ya no reabre la ventana al agotarse.
+        try:
+            continuadas = int(leer_json(directorio / "recibo.json").get("continuadas", 0))
+        except (OSError, ValueError, KeyError, TypeError):
+            continuadas = 0
+    libro = {
+        "intentos": intentos + 1,
+        "desde": desde,
+        "ultimo": hora,
+        "proceso": proceso,
+        "continuadas": continuadas,
+    }
+    _guardar(directorio / "ocupado.json", libro)
+    return libro
+
+
+def _directorio_de_fase(registro, enc, fase):
+    """El directorio del recibo de una fase por su identidad, sin puntero."""
+    if fase is None or not fase.integrado_sha:
+        return None
+    receta = {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")}
+    try:
+        _rutas(receta)
+        identidad = {
+            "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
+            "sha": fase.integrado_sha, "receta": receta,
+        }
+        clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
+        return registro.base / "despliegues" / clave
+    except ValueError:
+        return None
+
+
+def ocupado(registro, enc) -> dict:
+    """El libro de intentos ocupados del despliegue de la fase activa; vacío
+    si no hay. Es por identidad: el libro de otra fase del encargo no manda
+    aquí."""
+    directorio = _directorio_de_fase(registro, enc, enc.fase_actual)
+    if directorio is None:
+        return {}
+    try:
+        libro = leer_json(directorio / "ocupado.json")
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    if not isinstance(libro.get("intentos"), int) or libro["intentos"] < 1:
+        return {}
+    return libro
+
+
+def recibo_de(registro, enc, fase) -> dict | None:
+    """El recibo vigente de una fase, con su estado y su conteo de continuadas."""
+    if not fase.integrado_sha:
+        return None
+    receta = {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")}
+    try:
+        _rutas(receta)
+        identidad = {
+            "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
+            "sha": fase.integrado_sha, "receta": receta,
+        }
+        clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
+        return _leer(registro.base / "despliegues" / clave / "recibo.json", identidad)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def reabrir_ventana(registro, enc, continuadas: int) -> None:
+    """Una orden de continuar reabre la ventana del caso ocupado: el libro de
+    la fase activa anota la orden consumida para que la ventana no se reabra
+    sola."""
+    directorio = _directorio_de_fase(registro, enc, enc.fase_actual)
+    if directorio is None:
+        return
+    path = directorio / "ocupado.json"
+    try:
+        libro = leer_json(path)
+        if not isinstance(libro, dict) or not isinstance(libro.get("intentos"), int):
+            return
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    libro["continuadas"] = continuadas
+    _guardar(path, libro)
 
 
 def _correr(reg, encargo: str, paso: str, script: str, copia: Path, env: dict, bash: str):
@@ -219,7 +386,12 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
     directorio = registro.base / "despliegues" / clave
     recibo = directorio / "recibo.json"
     esperar_cierre = False
+    continuar_hasta = 0
     with turno(registro.base):
+        # Cada lanzamiento fotografia el conteo de órdenes de continuar: solo
+        # una orden aplicada después de ese momento autoriza una corrida nueva.
+        ordenes = continuaciones(registro, enc.id)
+        continuar_hasta = ordenes
         if recibo.exists():
             try:
                 datos = _leer(recibo, identidad)
@@ -237,14 +409,26 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
                     else:
                         return {**datos, "recibo": str(recibo)}
                 if not esperar_cierre:
+                    pasos = datos.get("pasos", [])
+                    consumidas = int(datos.get("continuadas") or 0)
+                    fallido_reintentable = (
+                        datos["estado"] == "fallido" and ordenes > consumidas
+                    )
                     reintentable = (
-                        datos["estado"] == "esperando"
+                        (datos["estado"] in ("esperando", "ocupado") or fallido_reintentable)
                         and enc.estado in ("recibido", "ejecutando")
-                        and all(p.get("enviado") is False for p in datos.get("pasos", []))
+                        and (
+                            all(p.get("enviado") is False for p in pasos)
+                            if datos["estado"] == "esperando"
+                            else all(p.get("enviado") for p in pasos)
+                        )
                         and observacion(registro, enc) == "ausente"
                     )
                     if not reintentable:
                         return {**datos, "recibo": str(recibo)}
+                    # La orden consumida queda fotografada en el recibo nuevo:
+                    # una espera o un fallo repetido no reensayan solos.
+                    continuar_hasta = ordenes
                     previo = directorio / ("preparacion-" + str(time.time_ns()) + ".json")
                     _guardar(previo, datos)
             except (OSError, ValueError, KeyError) as exc:
@@ -254,7 +438,8 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
                 return {"estado": "esperando", "motivo": "despliegue sin autorización vigente"}
             directorio.mkdir(parents=True, exist_ok=True)
             datos = {**identidad, "estado": "ejecutando", "hora": hora, "pasos": [],
-                     "motivo": "ejecutando receta de despliegue del SHA integrado"}
+                     "motivo": "ejecutando receta de despliegue del SHA integrado",
+                     "continuadas": continuar_hasta}
             _guardar(recibo, datos)
             _atomico(directorio.parent / (enc.id + ".actual"), clave)
             _guardar(directorio / "pedido.json", {
@@ -360,12 +545,37 @@ def ejecutar(pedido: Path) -> None:
                 codigo = correr("checklist")
             if codigo != 0 or not autorizado:
                 rollback = correr("rollback") if datos["pasos"][0]["enviado"] else "no requerido"
-                datos.update(estado="fallido" if datos["pasos"][0]["enviado"] else "esperando", motivo=(
-                    f"despliegue sin verificar (salida {codigo}); rollback salida {rollback}; "
-                    "revisar el recibo antes de un nuevo despliegue"
-                ))
+                desplegar = datos["pasos"][0]
+                diagnostico = _reporte_de_receta(desplegar)
+                if (desplegar.get("codigo") == SALIDA_OCUPADO and autorizado
+                        and rollback == 0 and diagnostico):
+                    # El paso desplegar declaró ocupado el destino en su propia
+                    # salida y la reversa no hizo cambios: producción quedó
+                    # intacta. Es transitorio; el ciclo reintenta el mismo SHA
+                    # más tarde con espera creciente. Un 75 del checklist, o un
+                    # 75 sin ese diagnóstico, no es ocupado: sigue fallido.
+                    libro = _registrar_ocupado(
+                        pedido.parent, str(datos.get("hora") or ""), diagnostico
+                    )
+                    datos.update(estado="ocupado", motivo=(
+                        f"despliegue ocupado (salida {desplegar.get('codigo')}, "
+                        f"intento {libro['intentos']}); "
+                        f"la receta reporta: {libro['proceso']}; "
+                        "rollback sin cambios (salida 0); se reintenta solo más tarde"
+                    ))
+                else:
+                    datos.update(estado="fallido" if datos["pasos"][0]["enviado"] else "esperando", motivo=(
+                        f"despliegue sin verificar (salida {codigo}); rollback salida {rollback}; "
+                        "revisar el recibo antes de un nuevo despliegue"
+                    ))
             else:
                 datos.update(estado="aplicado", motivo="despliegue y checklist terminaron con salida 0")
+                # El éxito de la identidad reinicia su ventana: el libro del
+                # tope no sobrevive a un despliegue aplicado.
+                try:
+                    (pedido.parent / "ocupado.json").unlink()
+                except OSError:
+                    pass
             _guardar(recibo, datos)
     except Exception as exc:
         datos.update(estado="incierto" if datos["pasos"] else "esperando",
