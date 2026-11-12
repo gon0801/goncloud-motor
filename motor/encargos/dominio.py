@@ -1380,11 +1380,11 @@ RELEVO_AGOTADO = "El relevo agotó los modelos autorizados"
 def relevo_agotado(e: Encargo) -> bool:
     """Un relevo que se agotó de verdad: el pendiente que deja
     `marcar_relevo_agotado` sigue vigente, en el encargo o en la fase que
-    bloqueó. Un escalón de relevo pendiente (una pausa de proveedor, un
-    reintento) no demuestra agotamiento y los avisos no lo deben afirmar."""
-    fase = e.fase_actual
+    bloqueó (aunque esa fase ya no sea la actual). Un escalón de relevo
+    pendiente (una pausa de proveedor, un reintento) no demuestra agotamiento
+    y los avisos no lo deben afirmar."""
     textos = tuple(e.pendientes_entrega) + tuple(
-        fase.pendientes if fase is not None else ()
+        p for fase in e.fases for p in fase.pendientes
     )
     return any(str(t).startswith(RELEVO_AGOTADO) for t in textos)
 

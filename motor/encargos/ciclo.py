@@ -3741,6 +3741,7 @@ def _cerrar_con_juicio(
                 f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{h.id}",
                 ancla=h.ancla,
                 region=_huella_region_del_hallazgo(espacio, enc.pr_sha, h),
+                region_ancla=_texto_region_del_hallazgo(espacio, enc.pr_sha, h),
             )
         enc = registro.fold(enc.id) or enc
     fuera_ds = [
@@ -5741,9 +5742,6 @@ def _agregar_nota_al_cierre(cierre: str, nota: str) -> str:
     return cierre.rstrip("\n") + f"\n\n{encabezado}\n- {nota}"
 
 
-_VENTANA_REGION = 2  # líneas a cada lado del ancla del hallazgo
-
-
 def _parte_ancla(ancla: str) -> tuple[str, str]:
     """(ruta, línea) de un ancla «ruta:línea»; sin línea, (ancla, "")."""
     texto = str(ancla or "").strip()
@@ -5754,13 +5752,15 @@ def _parte_ancla(ancla: str) -> tuple[str, str]:
 
 
 def _huella_region_del_hallazgo(espacio: Path, sha: str, hallazgo) -> str:
-    """Huella de la región que el hallazgo ancla en un SHA: su archivo y las
-    líneas alrededor del ancla (±2); sin línea, el archivo entero.
+    """Huella de la región que el hallazgo ancla en un SHA: su archivo y el
+    contenido de la línea que el ancla señala (sin línea, el archivo entero).
 
     La compara el motor entre el SHA del descarte y el SHA vigente para saber
-    si el código que el hallazgo señala sigue igual. "" si git no puede leer
-    el archivo en ese SHA: sin prueba de que la región siga igual, el descarte
-    no se sostiene y el hallazgo vuelve a contar.
+    si el código que el hallazgo señala sigue igual. El contenido, no la
+    posición: un commit que desplaza la línea no cambia el código señalado y
+    el descarte sigue valiendo. "" si git no puede leer el archivo en ese SHA
+    o la línea del ancla no existe: sin prueba de que la región siga igual,
+    el descarte no se sostiene y el hallazgo vuelve a contar.
     """
     ruta, linea = _parte_ancla(getattr(hallazgo, "ancla", "") or "")
     if not ruta or not str(sha or "").strip():
@@ -5771,26 +5771,57 @@ def _huella_region_del_hallazgo(espacio: Path, sha: str, hallazgo) -> str:
     lineas = lectura.stdout.splitlines()
     if linea:
         numero = int(linea)
-        desde = max(1, numero - _VENTANA_REGION)
-        hasta = min(len(lineas), numero + _VENTANA_REGION)
-        if desde > hasta:
+        if numero < 1 or numero > len(lineas):
             return ""
-        region = "\n".join(lineas[desde - 1 : hasta])
+        region = lineas[numero - 1]
     else:
         region = lectura.stdout
     return hashlib.sha256(f"{ruta}\0{region}".encode()).hexdigest()
 
 
+def _texto_region_del_hallazgo(espacio: Path, sha: str, hallazgo) -> str:
+    """El contenido de la línea que el ancla señala en ese SHA ("" si no se
+    puede leer o el ancla no trae línea). Es lo que la verificación busca
+    después en el archivo del SHA vigente, sin depender de la posición."""
+    ruta, linea = _parte_ancla(getattr(hallazgo, "ancla", "") or "")
+    if not ruta or not linea or not str(sha or "").strip():
+        return ""
+    lectura = _git(espacio, "show", f"{sha}:{ruta}")
+    if lectura.returncode != 0:
+        return ""
+    lineas = lectura.stdout.splitlines()
+    numero = int(linea)
+    if numero < 1 or numero > len(lineas):
+        return ""
+    return lineas[numero - 1]
+
+
+def _region_sigue_en_el_sha(espacio: Path, ruta: str, linea: str, texto: str, sha: str) -> bool:
+    """La región del descarte sigue en el SHA vigente: la línea anclada con
+    su contenido exacto sigue en el archivo (sin línea, el archivo entero es
+    idéntico). Determinista: presencia o ausencia, sin difusos."""
+    if not ruta or not texto or not str(sha or "").strip():
+        return False
+    lectura = _git(espacio, "show", f"{sha}:{ruta}")
+    if lectura.returncode != 0:
+        return False
+    if not linea:
+        return lectura.stdout == texto
+    return texto in lectura.stdout.splitlines()
+
+
 def _anotar_excepcion(
     registro: Registro, enc: Encargo, tipo: str, sha: str, hallazgo: str,
     motivo: str, hora: str, clave: str, ancla: str = "", region: str = "",
+    region_ancla: str = "",
 ) -> None:
     """La excepción del check de merge, estructurada y con su SHA.
 
     El check solo acepta esta fuente; el texto del PR no autoriza nada. El
-    ancla y la huella de región son opcionales: los descartes del revisor las
-    llevan para que el motor pueda comprobar en SHAs posteriores si la región
-    que el hallazgo ancla sigue igual.
+    ancla, la huella de región y el texto de la línea anclada son opcionales:
+    los descartes del revisor los llevan para que el motor pueda comprobar en
+    SHAs posteriores si el código que el hallazgo señala sigue en el archivo,
+    sin depender de la posición de la línea.
     """
     datos = {
         "tipo": tipo,
@@ -5803,6 +5834,8 @@ def _anotar_excepcion(
         datos["ancla"] = str(ancla)
     if region:
         datos["region"] = str(region)
+    if region_ancla:
+        datos["region_ancla"] = str(region_ancla)
     registro.anotar(
         enc.id,
         {"kind": "excepcion", "data": datos},
@@ -5826,32 +5859,43 @@ def _descarte_sigue_vigente(
     registro: Registro, enc: Encargo, espacio: Path, sha: str, h, hora: str
 ) -> str:
     """El motivo con que el descarte previo del hallazgo `h` cubre el SHA
-    `sha`: la región que el hallazgo ancla es idéntica entre el SHA del
-    descarte y el actual. Vacío si no lo cubre. Al confirmarlo re-ancla el
-    descarte al SHA vigente con su propio evento `excepcion`, única fuente del
-    marcador que lee el check."""
+    `sha`: la línea que el hallazgo ancla sigue en el archivo con el mismo
+    contenido que tenía en el SHA del descarte (el desplazamiento no caduca,
+    el cambio de contenido sí). Vacío si no lo cubre. Al confirmarlo re-ancla
+    el descarte al SHA vigente con su propio evento `excepcion`, única fuente
+    del marcador que lee el check."""
     previo = _descarte_previo_por_id(enc.excepciones, h.id, sha)
     if previo is None:
         return ""
     evento = registro.por_ukey(f"excepcion:{enc.id}:descarte:{previo}:{h.id}")
     region_previa = ""
+    texto_previo = ""
+    ancla_previa = h.ancla
     if evento is not None:
         datos = evento.get("data") or {}
         if isinstance(datos, dict):
             region_previa = str(datos.get("region") or "")
-    if not region_previa:
+            texto_previo = str(datos.get("region_ancla") or "")
+            ancla_previa = str(datos.get("ancla") or h.ancla)
+    ruta, linea = _parte_ancla(ancla_previa)
+    if not texto_previo:
+        # Un descarte anterior a la huella por contenido: el texto de la
+        # línea anclada se lee del SHA del descarte.
+        texto_previo = _texto_region_del_hallazgo(espacio, previo, h)
+    if not region_previa or not texto_previo:
         return ""
-    huella_actual = _huella_region_del_hallazgo(espacio, sha, h)
-    if not huella_actual or huella_actual != region_previa:
+    if not _region_sigue_en_el_sha(espacio, ruta, linea, texto_previo, sha):
         return ""
     motivo = (
         f"descarte del revisor independiente en {previo[:12]} sigue vigente: "
-        "la región anclada del hallazgo no cambió"
+        "la línea anclada del hallazgo sigue en el archivo sin cambiar"
     )
     _anotar_excepcion(
         registro, enc, "descarte", sha, h.id, motivo, hora,
         f"excepcion:{enc.id}:descarte:{sha}:{h.id}",
-        ancla=h.ancla, region=huella_actual,
+        ancla=h.ancla,
+        region=_huella_region_del_hallazgo(espacio, sha, h),
+        region_ancla=texto_previo,
     )
     return motivo
 
@@ -7506,8 +7550,10 @@ def _aviso_deepseek_en_llano(registro: Registro, enc: Encargo) -> str:
     En vez del "no puedo saber si es código o tubería", nombra los hallazgos
     Critical, High o Medium que DeepSeek mantiene abiertos (id y título) con
     la vigencia real de su descarte sobre el SHA vigente, y también los que
-    el revisor independiente ya descartó para este SHA. La fuente es el
-    registro del motor, no el texto del PR.
+    el revisor independiente ya descartó para este SHA. No promete una
+    devolución que puede no pasar (la fase puede quedar bloqueada) ni
+    recomienda integrar mientras quede un bloqueante sin cubrir. La fuente
+    es el registro del motor, no el texto del PR.
     """
     enc = registro.fold(enc.id) or enc
     sha = enc.pr_sha
@@ -7538,16 +7584,6 @@ def _aviso_deepseek_en_llano(registro: Registro, enc: Encargo) -> str:
             "DeepSeek mantiene estos hallazgos Critical, High o Medium "
             "abiertos: " + "; ".join(partes) + "."
         )
-        if vivos:
-            frases.append(
-                "El trabajo vuelve al responsable a corregirlos; no tienes "
-                "que hacer nada."
-            )
-        else:
-            frases.append(
-                "El descarte del revisor independiente los cubre; el sticky "
-                "del PR manda sobre el check."
-            )
     descartados = [hid for hid in sorted(vigentes) if hid not in {h.id for h in abiertos}]
     if descartados:
         fase = enc.fase_actual
@@ -7561,9 +7597,15 @@ def _aviso_deepseek_en_llano(registro: Registro, enc: Encargo) -> str:
             "DeepSeek los tenía abiertos y el revisor independiente los "
             "descartó: " + "; ".join(partes) + "."
         )
+    if vivos:
         frases.append(
-            "El sticky del PR manda sobre el check; recomiendo revisar el PR "
-            "antes de integrarlo."
+            "Mientras estos hallazgos sigan abiertos y sin descarte, el PR "
+            "no se integra; no tienes que hacer nada."
+        )
+    elif abiertos or descartados:
+        frases.append(
+            "El descarte del revisor independiente los cubre; el sticky del "
+            "PR manda sobre el check."
         )
     if not frases:
         return (
@@ -11123,6 +11165,9 @@ def _recibir_resultado_nuevo(
             f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{hid}",
             ancla=h.ancla,
             region=_huella_region_del_hallazgo(
+                _espacio(registro.base, enc.id), enc.pr_sha, h
+            ),
+            region_ancla=_texto_region_del_hallazgo(
                 _espacio(registro.base, enc.id), enc.pr_sha, h
             ),
         )
