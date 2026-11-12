@@ -560,6 +560,50 @@ class ConciliacionFallida(_Banco):
         self.assertEqual(a.nivel_alcanzado, "integrado")
 
 
+class ConciliacionOcupadaAlTope(_Banco):
+    def test_el_tope_ocupado_no_queda_en_silencio(self):
+        self.hacer_receta_ocupada()
+        reg, ident, gh, fusionado = self._preparar(dependiente=True)
+        with mock.patch.object(
+            ciclo, "ESPERAS_OCUPADO_S", (0, 0, 0, 0, 0)
+        ):
+            self._barrer(reg, gh, vueltas=8)
+        enc = reg.fold(ident)
+        self.assertEqual(
+            len([
+                imp for imp in enc.impedimentos
+                if imp.clase.startswith("despliegue:")
+            ]),
+            1,
+        )
+
+        reg.anotar(
+            ident,
+            {
+                "kind": "bloqueo_fase",
+                "data": {
+                    "fase": "B", "evidencia": "B entregada con pendientes",
+                    "causa": "relevo agotado", "hora": ciclo.ahora_iso(),
+                },
+            },
+            "review-bloqueo-B",
+        )
+        self._barrer(reg, gh, vueltas=4)
+
+        enc = reg.fold(ident)
+        self.assertEqual(enc.estado, "terminado")
+        self.assertEqual(
+            len([
+                imp for imp in enc.impedimentos
+                if imp.clase.startswith("despliegue:")
+            ]),
+            1,
+        )
+        a = self._fase(enc, "A")
+        self.assertEqual(a.estado, "bloqueada")
+        self.assertEqual(a.nivel_alcanzado, "integrado")
+
+
 class ConciliacionFetchTransitorio(_Banco):
     RECETA_EN_REPO = True
 

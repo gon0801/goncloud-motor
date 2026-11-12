@@ -9243,6 +9243,21 @@ def _anotar_conciliacion(
     return registro.fold(enc.id) or enc
 
 
+def _anotar_impedimento_de_fase(
+    registro: Registro, enc: Encargo, fase: Fase, causa: str, hora: str
+) -> Encargo:
+    """Un despliegue terminal deja la causa visible y la fase deja de retener
+    el cierre. No marca una espera global ni relanza roles."""
+    clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
+    _anotar_impedimento(
+        registro, enc, clase, causa,
+        "que el despliegue pueda completarse o se retire del pedido", hora,
+    )
+    return _anotar_conciliacion(
+        registro, enc, fase, "impedimento", hora, causa=causa, huella=clase
+    )
+
+
 def _paso_despliegue_fase(
     registro: Registro, enc: Encargo, fase: Fase, espacio: Path, hora: str
 ) -> Encargo:
@@ -9265,15 +9280,33 @@ def _paso_despliegue_fase(
         if not (recibo and recibo.get("estado") == "aplicado"):
             intentos = int(libro.get("intentos") or 0)
             if intentos >= TOPE_OCUPADO:
-                return enc
-            reanuda = _reanuda_desde(
-                str(libro.get("ultimo") or hora),
-                ESPERAS_OCUPADO_S[intentos - 1],
-            )
-            if _reanuda_desde(hora, 0) < reanuda:
-                # La espera es de esta fase: la fase activa conserva su turno y
-                # la receta ocupada no se relanza en cada pasada.
-                return enc
+                ordenes = despliegue.continuaciones(registro, enc.id)
+                if ordenes <= int(libro.get("continuadas") or 0):
+                    proceso = str(libro.get("proceso") or "").strip()
+                    causa = (
+                        f"fase {fase.id}: el despliegue estuvo ocupado "
+                        f"{intentos} veces desde {libro.get('desde') or hora} "
+                        f"(última vez {libro.get('ultimo') or hora}); "
+                        "la receta reporta: "
+                        f"{proceso or 'el proceso que ocupa el destino'}. "
+                        "Producción no cambió: cada reversa terminó sin cambios. "
+                        "Una orden de continuar puede reintentar el mismo SHA."
+                    )
+                    return _anotar_impedimento_de_fase(
+                        registro, enc, fase, causa, hora
+                    )
+                # Una orden nueva reabre la ventana una vez y la receta del
+                # mismo SHA vuelve a correr en esta pasada.
+                despliegue.reabrir_ventana(registro, enc, ordenes, fase)
+            else:
+                reanuda = _reanuda_desde(
+                    str(libro.get("ultimo") or hora),
+                    ESPERAS_OCUPADO_S[intentos - 1],
+                )
+                if _reanuda_desde(hora, 0) < reanuda:
+                    # La espera es de esta fase: la fase activa conserva su
+                    # turno y la receta ocupada no se relanza en cada pasada.
+                    return enc
     politica = politica_despliegue.resolver(espacio, enc, fase)
     if politica.requiere_despliegue is None:
         return enc
@@ -9300,16 +9333,7 @@ def _paso_despliegue_fase(
         if resultado.get("recibo"):
             causa += "; recibo: " + str(resultado["recibo"])
         causa = f"fase {fase.id}: {causa}"
-        clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
-        _anotar_impedimento(
-            registro, enc, clase, causa,
-            "que el despliegue pueda completarse o se retire del pedido",
-            hora,
-        )
-        return _anotar_conciliacion(
-            registro, enc, fase, "impedimento", hora,
-            causa=causa, huella=clase,
-        )
+        return _anotar_impedimento_de_fase(registro, enc, fase, causa, hora)
     if estado != "aplicado":
         # La receta sigue corriendo o quedó pendiente. No se marca una espera
         # del encargo: la fase activa conserva su turno y la próxima pasada

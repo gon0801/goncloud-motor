@@ -198,11 +198,10 @@ def recibo_de(registro, enc, fase) -> dict | None:
         return None
 
 
-def reabrir_ventana(registro, enc, continuadas: int) -> None:
+def reabrir_ventana(registro, enc, continuadas: int, fase=None) -> None:
     """Una orden de continuar reabre la ventana del caso ocupado: el libro de
-    la fase activa anota la orden consumida para que la ventana no se reabra
-    sola."""
-    directorio = _directorio_de_fase(registro, enc, enc.fase_actual)
+    la fase anota la orden consumida para que la ventana no se reabra sola."""
+    directorio = _directorio_de_fase(registro, enc, fase or enc.fase_actual)
     if directorio is None:
         return
     path = directorio / "ocupado.json"
