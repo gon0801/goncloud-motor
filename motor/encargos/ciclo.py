@@ -4250,28 +4250,7 @@ def _incorporar_responsable(
                 )
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
-        ident = digest(
-            {
-                "comprobaciones": esperadas,
-                "procedimiento": procedimiento,
-                "resultado": _huella_de_observacion(observacion),
-                "generacion": enc.generacion,
-            }
-        )[:16]
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "observacion_supervisor",
-                "data": {
-                    "version": version.firma,
-                    "comprobaciones": observacion.get("comprobaciones") or [],
-                    "procedimiento": observacion.get("procedimiento"),
-                    "ejecuciones": observacion.get("ejecuciones") or [],
-                    "hora": hora,
-                },
-            },
-            f"observacion:{enc.id}:{version.firma}:{ident}",
-        )
+        _registrar_observacion(registro, enc, version.firma, esperadas, observacion, hora)
         enc = registro.fold(enc.id)
     if commit_entregado and not _deepseek_por_releer(enc):
         abierto = _bloqueo_externo_abierto(enc)
@@ -8049,6 +8028,46 @@ def _huella_de_observacion(observacion: dict) -> str:
     )[:16]
 
 
+def _registrar_observacion(
+    registro: Registro,
+    enc: Encargo,
+    version: str,
+    esperadas: list[dict],
+    observacion: dict,
+    hora: str,
+) -> None:
+    """Guarda la observacion seleccionada como el evento vigente de la version.
+
+    La clave incluye la generacion y el resultado: registrar dos veces la misma
+    observacion no duplica, y un resultado nuevo deja su evento. La usan el
+    responsable al incorporar y la entrega al consumir el verde, para que el
+    verde que cierra un bloqueo no se pierda en los intentos siguientes.
+    """
+    procedimiento = observacion.get("procedimiento")
+    ident = digest(
+        {
+            "comprobaciones": esperadas,
+            "procedimiento": procedimiento,
+            "resultado": _huella_de_observacion(observacion),
+            "generacion": enc.generacion,
+        }
+    )[:16]
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "observacion_supervisor",
+            "data": {
+                "version": version,
+                "comprobaciones": observacion.get("comprobaciones") or [],
+                "procedimiento": procedimiento,
+                "ejecuciones": observacion.get("ejecuciones") or [],
+                "hora": hora,
+            },
+        },
+        f"observacion:{enc.id}:{version}:{ident}",
+    )
+
+
 def _huella_de_fallas(observacion: dict) -> str:
     """Identidad estable de las comprobaciones en rojo.
 
@@ -8327,6 +8346,9 @@ def _espera_por_observacion(
         )
         observado = registro.fold(enc.id) or enc
         return observado, Espera(observado.reanuda_en, observado.motivo)
+    if not observacion.get("error_instrumento"):
+        _registrar_observacion(registro, enc, version, esperadas, observacion, hora)
+        enc = registro.fold(enc.id) or enc
     fallas, instrumentos = _fallas_de_observacion(observacion)
     if instrumentos:
         causa = "la observacion del comprobador no se pudo usar: " + "; ".join(

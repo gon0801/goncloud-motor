@@ -271,11 +271,11 @@ def _huella_de_lo_interno(interno: Path, relativo: str) -> str:
     Un argv puede nombrar `..` o un enlace que sale de `.interno/`; ese
     contenido no es el procedimiento del espacio y no entra en la huella. Un
     archivo ilegible tampoco tumba la observacion: deja su marca, distinta de
-    un contenido y de una ausencia.
+    un contenido y de una ausencia. La ruta nombrada se pesa siempre, aunque su
+    nombre coincida con una exclusion del producto (`.runtime`): las
+    exclusiones de la firma no se trasladan al archivo que el argv ejecuta.
     """
     base = interno.resolve()
-    if any(p in _EXCLUIDAS for p in Path(relativo).parts):
-        return "excluido"
     path = (interno / relativo).resolve()
     try:
         path.relative_to(base)
@@ -306,8 +306,38 @@ def _huella_de_lo_interno(interno: Path, relativo: str) -> str:
     return "ausente"
 
 
-def huella_procedimiento(
+def _rutas_de_las_declaradas(declaradas: list[dict] | None) -> list[str]:
+    """Las rutas de `.interno/` nombradas por las comprobaciones declaradas."""
+    if not declaradas:
+        return []
+    vistos: set[str] = set()
+    salida: list[str] = []
+    for comprobacion in declaradas:
+        argv = comprobacion.get("argv") if isinstance(comprobacion, dict) else None
+        if not isinstance(argv, list):
+            continue
+        for ruta in _rutas_internas_del_argv([str(x) for x in argv]):
+            if ruta not in vistos:
+                vistos.add(ruta)
+                salida.append(ruta)
+    return salida
+
+
+def _huellas_antes_de_ejecutar(
     espacio: Path, declaradas: list[dict] | None
+) -> dict[str, str]:
+    """La huella de cada ruta antes de correr: el contenido que la comprobacion ejecuta."""
+    interno = interno_de(espacio)
+    return {
+        ruta: _huella_de_lo_interno(interno, ruta)
+        for ruta in _rutas_de_las_declaradas(declaradas)
+    }
+
+
+def huella_procedimiento(
+    espacio: Path,
+    declaradas: list[dict] | None,
+    antes: dict[str, str] | None = None,
 ) -> str | None:
     """Identidad de lo que ejecutan las comprobaciones declaradas.
 
@@ -316,6 +346,11 @@ def huella_procedimiento(
     archivos de `.interno/` que aparecen en el argv: lo unico interno que la
     comprobacion puede ejecutar. `None` si ninguna declarada nombra
     `.interno/`: entonces la version y el argv ya identifican la observacion.
+
+    Con `antes` (las huellas tomadas antes de correr), un archivo que cambio
+    durante la ejecucion conserva la huella de lo que realmente corrio; un
+    directorio usa la de despues, porque sus hijos generados son la salida de
+    la comprobacion y no el contenido que ejecuto.
     """
     if not declaradas:
         return None
@@ -328,12 +363,18 @@ def huella_procedimiento(
         rutas = _rutas_internas_del_argv([str(x) for x in argv])
         if not rutas:
             continue
-        partes.append(
-            {
-                "argv": [str(x) for x in argv],
-                "archivos": [[r, _huella_de_lo_interno(interno, r)] for r in rutas],
-            }
-        )
+        archivos = []
+        for ruta in rutas:
+            actual = _huella_de_lo_interno(interno, ruta)
+            previa = (antes or {}).get(ruta)
+            if (
+                previa is not None
+                and not previa.startswith("arbol:")
+                and not actual.startswith("arbol:")
+            ):
+                actual = previa
+            archivos.append([ruta, actual])
+        partes.append({"argv": [str(x) for x in argv], "archivos": archivos})
     if not partes:
         return None
     return digest({"procedimiento": partes})
@@ -479,6 +520,7 @@ def _ejecutar_declaradas(
     comandos: list[dict], espacio: Path, directorio: Path, contenedor: Path
 ) -> dict:
     procedimiento = {"comprobaciones": comandos}
+    antes = _huellas_antes_de_ejecutar(espacio, comandos)
     ejecuciones = []
     for i, c in enumerate(comandos):
         tope = _tope_de(c)
@@ -604,7 +646,9 @@ def _ejecutar_declaradas(
     firma = firma_producto(espacio)
     # Despues de ejecutar: la comprobacion puede crear caches o archivos bajo
     # `.interno/`, y la huella debe ser la que se recalcula al leer el intento.
-    huella = huella_procedimiento(espacio, comandos)
+    # Un archivo nombrado que cambio durante la ejecucion conserva su huella
+    # previa: ese resultado no acredita el contenido nuevo.
+    huella = huella_procedimiento(espacio, comandos, antes=antes)
     datos = {
         "comprobaciones": procedimiento["comprobaciones"],
         "procedimiento": huella,
