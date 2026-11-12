@@ -724,6 +724,64 @@ class ConciliacionFetchTransitorio(_Banco):
         self.assertEqual(a.nivel_alcanzado, "desplegado")
         self.assertTrue(a.desplegado_recibo)
 
+    def test_la_espera_reintentable_no_abandona_el_reintento(self):
+        reg, ident, gh, fusionado = self._preparar(
+            dependiente=True, receta_en_repo=True
+        )
+        real = ciclo._git
+        fallando = {"valor": True}
+
+        def git_con_fallo(espacio, *args):
+            if fallando["valor"] and args and args[0] == "fetch":
+                return subprocess.CompletedProcess(
+                    ["git", *args], 1, "", "red caída"
+                )
+            return real(espacio, *args)
+
+        inicio = datetime.now(timezone.utc)
+        with mock.patch.object(ciclo, "_git", side_effect=git_con_fallo):
+            self._barrer(reg, gh, vueltas=1, salto_s=10, inicio=inicio)
+
+        enc = reg.fold(ident)
+        a = self._fase(enc, "A")
+        self.assertEqual(a.integrado_sha, fusionado.merge_commit)
+        self.assertFalse((self.destino / "pasos").exists())
+        self.assertTrue(any(
+            "falta receta real" in imp.causa
+            for imp in enc.impedimentos
+            if imp.clase.startswith("despliegue:")
+        ))
+
+        reg.anotar(
+            ident,
+            {
+                "kind": "bloqueo_fase",
+                "data": {
+                    "fase": "B", "evidencia": "B entregada con pendientes",
+                    "causa": "relevo agotado", "hora": ciclo.ahora_iso(),
+                },
+            },
+            "review-bloqueo-B",
+        )
+        self.assertNotEqual(reg.fold(ident).estado, "terminado")
+
+        with mock.patch.object(ciclo, "_git", side_effect=git_con_fallo):
+            self._barrer(
+                reg, gh, vueltas=1, salto_s=10,
+                inicio=inicio + timedelta(seconds=10),
+            )
+        self.assertFalse((self.destino / "pasos").exists())
+
+        fallando["valor"] = False
+        self._barrer(
+            reg, gh, vueltas=2, salto_s=60,
+            inicio=inicio + timedelta(seconds=40),
+        )
+        enc = reg.fold(ident)
+        a = self._fase(enc, "A")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        self.assertEqual(enc.fase_activa, "C")
+
     def test_el_merge_commit_se_vuelve_a_buscar_al_desplegar(self):
         reg, ident, gh, fusionado = self._preparar(
             dependiente=True, receta_en_repo=True

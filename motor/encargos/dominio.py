@@ -3949,7 +3949,6 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
                 e,
                 replace(
                     fase,
-                    despliegue_impedido=causa[:500],
                     despliegue_espera_en=reanuda_en,
                 ),
             ),

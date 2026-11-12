@@ -9372,7 +9372,11 @@ def _paso_despliegue_fase(
         if resultado.get("recibo"):
             causa += "; recibo: " + str(resultado["recibo"])
         causa = f"fase {fase.id}: {causa}"
-        enc = _anotar_impedimento_de_fase(registro, enc, fase, causa, hora)
+        clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
+        _anotar_impedimento(
+            registro, enc, clase, causa,
+            "que el despliegue pueda completarse o se retire del pedido", hora,
+        )
         reanuda = _reanuda_desde(hora, 30)
         return _anotar_conciliacion(
             registro, enc, fase, "espera", hora,
