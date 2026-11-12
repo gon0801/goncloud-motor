@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 from motor.encargos.ciclo import _verificar_impedimento
+from motor.encargos.dominio import reducir
 from motor.encargos.dominio import (
     Encargo,
     EntregaAutorizada,
@@ -226,6 +227,57 @@ class ImpedimentoDespliegue(unittest.TestCase):
             _verificar_impedimento(imped_r.clase, enc, self.espacio,
                                    self.reg.base, self.reg),
             False,
+        )
+
+    def test_la_causa_reactivada_se_resuelve_con_su_propio_recibo(self):
+        # h_c3d8b5ae (ronda 5): tras fase_reactivada la causa de N sigue
+        # siendo de N y se resuelve con el recibo que contiene su SHA,
+        # aunque R conserve un despliegue pendiente.
+        sha_n = self.commit("fase N")
+        sha_r = self.commit("fase R, posterior al SHA de N")
+        causa_n = CAUSA + " (fase N)"
+        causa_r = CAUSA + " (fase R)"
+        fase_n = Fase(
+            id="N", resultado="N", estado="bloqueada",
+            requiere_despliegue=True, integrado_sha=sha_n, **RECETA,
+            bloqueo_causa=causa_n, evidencia="recibo fallido de N",
+        )
+        fase_r = Fase(
+            id="R", resultado="R", estado="bloqueada",
+            requiere_despliegue=True, integrado_sha=sha_r, **RECETA,
+            bloqueo_causa=causa_r, evidencia="recibo fallido de R",
+        )
+        imped_n = Impedimento(
+            clase="despliegue:" + hashlib.sha256(causa_n.encode()).hexdigest()[:12],
+            causa=causa_n, condicion=CONDICION,
+        )
+        imped_r = Impedimento(
+            clase="despliegue:" + hashlib.sha256(causa_r.encode()).hexdigest()[:12],
+            causa=causa_r, condicion=CONDICION,
+        )
+        enc = _encargo(fases=(fase_n, fase_r), fase_activa="N",
+                       impedimentos=(imped_n, imped_r))
+        enc = reducir(enc, {"kind": "fase_reactivada", "data": {
+            "fase": "N", "hora": HORA,
+        }})
+        self.assertEqual(enc.fase_activa, "N")
+        fase_n = next(f for f in enc.fases if f.id == "N")
+        self.assertEqual(fase_n.estado, "trabajo")
+        self.assertTrue(fase_n.bloqueo_causa, "la reactivación conserva la causa")
+        enc = replace(enc, fases=(fase_n, fase_r))
+        from motor.encargos.ciclo import _despliegue_cubierto, _fase_de_la_causa
+
+        recibo = _recibo_aplicado(self.reg.base, enc, fase_n)
+        fase_n = replace(fase_n, desplegado_recibo=str(recibo))
+        enc = replace(enc, fases=(fase_n, fase_r))
+        dueña = _fase_de_la_causa(enc, imped_n.clase)
+        self.assertIsNotNone(dueña)
+        self.assertEqual(dueña.id, "N")
+        self.assertIs(
+            _despliegue_cubierto(enc, self.espacio, imped_n.clase), True,
+        )
+        self.assertIs(
+            _despliegue_cubierto(enc, self.espacio, imped_r.clase), False,
         )
 
     def test_el_reintento_que_despliega_la_propia_fase_resuelve_el_impedimento(self):

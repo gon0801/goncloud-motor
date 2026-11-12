@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -288,6 +289,108 @@ class RecuperacionDespliegue(unittest.TestCase):
             else:
                 self.fail(f"el despliegue no llegó a desplegado: {final.motivo}")
         self.assertEqual(corridas.read_text(encoding="utf-8"), "7")
+
+    def test_una_orden_anterior_no_reabre_la_ventana_ocupada(self):
+        # h_51c2637c (ronda 5): la orden previa al despliegue ya no consume
+        # la ventana; el libro arranca con la fotografía del recibo.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'printf "app.cli vivo (spapi-diario)"',
+            "exit 75",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        integrar()
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        horas = (
+            "2026-11-05T12:00:00+00:00", "2026-11-05T12:15:00+00:00",
+            "2026-11-05T12:45:00+00:00", "2026-11-05T13:45:00+00:00",
+            "2026-11-05T15:45:00+00:00", "2026-11-05T19:45:00+00:00",
+        )
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            ciclo.ordenar(reg, ident, "continuar", "orden-previa", base.HORA)
+            for hora in horas:
+                ciclo._paso_despliegue(reg, reg.fold(ident), espacio, hora)
+            # El tope se toca sin ninguna orden nueva.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, "2026-11-05T19:46:00+00:00")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "6")
+        final = reg.fold(ident)
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        self.assertIn("ocupado 6 veces", causa)
+
+    def test_continuar_alcanza_el_despliegue_de_n_desde_el_barrido(self):
+        # h_925eb491 (ronda 5): continuar llega a la fase bloqueada con
+        # despliegue pendiente aunque el barrido esté trabajando otra fase.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -eq 1 ]; then exit 0; fi',
+            'if [ "$n" -ge 3 ]; then exit 0; fi',
+            "exit 1",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        receta = {"desplegar": "d.sh", "checklist": "c.sh", "rollback": "r.sh"}
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+            {"id": "K", "resultado": "K lista", "requiere_despliegue": True, "despliegue": receta},
+            {"id": "N", "resultado": "N lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+            {"id": "O", "resultado": "O lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+        ]}}, "fases")
+        self.assertEqual(reg.fold(ident).fase_activa, "K")
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            integrar()
+            base.paso(self.despliegue)
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de K",
+                "hora": base.HORA,
+            }}, "cierre-K")
+            self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
+            (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
+            integrar()
+            base.paso(self.despliegue)
+            enc = reg.fold(ident)
+            causa = enc.impedimentos[-1].causa
+            reg.anotar(ident, {"kind": "bloqueo_fase", "data": {
+                "evidencia": "recibo fallido de N", "causa": causa,
+            }}, "bloqueo-N")
+            self.assertEqual(reg.fold(ident).fase_activa, "O", reg.fold(ident).motivo)
+            sonda = mock.Mock(return_value=types.SimpleNamespace(
+                ok=True, causa="", condicion="",
+            ))
+            with mock.patch.object(ciclo, "_sonda_entorno", sonda):
+                ciclo.ordenar(reg, ident, "continuar", "reabrir-N-barrido", base.HORA)
+                # Pasada 1: reactiva N y relanza su receta; pasada 2: concilia
+                # el recibo aplicado y sella desplegado; pasada 3: vence la
+                # espera de conciliación y avanza el nivel.
+                ciclo.barrer(reg, "2026-11-05T12:01:00+00:00", time.time(), mock.Mock())
+                ciclo.barrer(reg, "2026-11-05T12:02:00+00:00", time.time(), mock.Mock())
+                ciclo.barrer(reg, "2026-11-05T12:32:00+00:00", time.time(), mock.Mock())
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        reactivadas = [
+            ev for ev in reg.eventos(ident) if ev["kind"] == "fase_reactivada"
+        ]
+        self.assertTrue(reactivadas, "continuar no reabrió la fase bloqueada")
+        # La fase N deja de estar bloqueada y su receta corrió la segunda vez.
+        enc = reg.fold(ident)
+        fases = {f.id: f for f in enc.fases}
+        self.assertNotEqual(fases["N"].estado, "bloqueada")
+        self.assertEqual(fases["N"].ultimo_paso_entrega, "integrado")
 
     def test_continuar_reintenta_el_despliegue_de_una_fase_bloqueada(self):
         reg, ident, espacio, destino, integrar = self.despliegue
