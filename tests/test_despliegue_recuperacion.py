@@ -405,6 +405,14 @@ class RecuperacionDespliegue(unittest.TestCase):
         self.assertEqual(fases["K"].estado, "preparada")
         self.assertEqual(fases["N"].estado, "bloqueada")
         self.assertEqual(fases["O"].estado, "pendiente")
+        # El ajuste exige el avance efectivo: la fase O se lanza sola.
+        self.assertTrue(
+            observador.called, "el barrido no lanz\u00f3 la fase independiente O"
+        )
+        lanzadas = [
+            llamada.args[1].fase_activa for llamada in observador.call_args_list
+        ]
+        self.assertIn("O", lanzadas, lanzadas)
 
     def test_otra_causa_de_pendiente_si_entrega_con_pendientes(self):  # no-roja-en-base: la base ya desvía la pasada con cualquier pendiente; la prueba fija que la excepción es solo del despliegue
         reg, ident, espacio, destino, integrar = self.despliegue
