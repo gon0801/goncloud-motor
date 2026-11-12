@@ -25,6 +25,7 @@ from .comprobacion import (
     VERSION_LECTOR_DEEPSEEK,
     digest,
     firma_producto,
+    guardar_declaradas_de_fase,
     huella_procedimiento,
     hallazgo_fuera_de_alcance_por_restriccion,
     hallazgos_deepseek,
@@ -35,6 +36,7 @@ from .comprobacion import (
     leer_declaradas,
     leer_disputa,
     leer_juicio,
+    sincronizar_declaradas_de_fase,
     version_producto,
 )
 from . import capacidades, necesidades, trabajos_ci
@@ -2010,17 +2012,18 @@ def _barrer_encargos(
                 f"intento-cerrado:{encargo_id}:{enc.proc.pid}:{enc.proc.inicio}",
             )
             enc = registro.fold(encargo_id) or enc
-        # Una orden de continuar sin consumir reabre la fase bloqueada cuyo
-        # despliegue quedó pendiente, antes de trabajar o lanzar otra cosa.
+        # Reintentar o conciliar el despliegue pendiente de una fase bloqueada
+        # no depende de que el encargo este despierto: la fase en curso puede
+        # estar esperando por otra causa sin perder su turno.
         if (
             enc is not None
             and not parada
             and enc.via != "directa"
-            and enc.estado in ("recibido", "ejecutando")
+            and enc.estado in ("recibido", "ejecutando", "esperando_reintento")
             and enc.proc is None
             and not enc.reserva
         ):
-            enc = _reintentar_despliegue_pendiente(registro, enc, hora)
+            enc = _reintentar_despliegue_pendiente(registro, enc, hora, espacio)
         resultado_paso: Resultado = NecesitaAgente(
             str(getattr(enc, "rol", "") or "responsable")
         )
@@ -2904,14 +2907,9 @@ def _juicio_reparado(
 
 def _cubre(espacio: Path, antiguo: str, nuevo: str) -> bool:
     """El SHA integrado `antiguo` ya está contenido en el SHA desplegado `nuevo`."""
-    if not (re.fullmatch(r"[0-9a-f]{40,64}", antiguo or "")
-            and re.fullmatch(r"[0-9a-f]{40,64}", nuevo or "")):
-        return False
-    corrido = subprocess.run(
-        ["git", "-C", str(espacio), "merge-base", "--is-ancestor", antiguo, nuevo],
-        stdin=subprocess.DEVNULL, capture_output=True, timeout=120,
-    )
-    return corrido.returncode == 0
+    from . import despliegue
+
+    return despliegue.cubre(espacio, antiguo, nuevo)
 
 
 def _fase_de_la_causa(enc: Encargo, clase: str):
@@ -4209,6 +4207,7 @@ def _incorporar_responsable(
         _marcar_incorporado(registro, enc, hora)
         return registro.fold(enc.id)
     interno = interno_de(espacio, crear=True)
+    sincronizar_declaradas_de_fase(interno, str(enc.fase_activa or ""))
     enc, error_fases = adoptar_fases(registro, enc, interno, hora)
     if error_fases:
         _anotar_instrumento(
@@ -4249,6 +4248,8 @@ def _incorporar_responsable(
     except ValueError as exc:
         declaradas = None
         error_declaradas = str(exc)
+    if declaradas is not None:
+        guardar_declaradas_de_fase(interno, str(enc.fase_activa or ""))
     version = version_producto(espacio)
     commit_entregado = _commit_entregado(enc, version, espacio)
     registro.anotar(
@@ -8375,13 +8376,16 @@ def _head_desviado(
 
 
 def _observacion_corresponde(
-    observacion, version: str, declaradas: list[dict], procedimiento: str | None
+    observacion, version: str, declaradas: list[dict], procedimiento: str | None,
+    fase: str | None = None,
 ) -> bool:
     """La observacion es de esta version, estas declaradas y este procedimiento.
 
     Cuando una declarada nombra archivos de `.interno/`, el argv no basta: la
     observacion guarda la huella del contenido que ejecuto. Una observacion
-    anterior a esa huella no corresponde y se vuelve a observar.
+    anterior a esa huella no corresponde y se vuelve a observar. Si trae fase y
+    no es la de estas declaradas, pertenece a otra fase y no se cobra aqui: una
+    observacion sin fase es anterior a esta atribucion y se acepta.
     """
     if not isinstance(observacion, dict):
         return False
@@ -8390,6 +8394,8 @@ def _observacion_corresponde(
     if observacion.get("comprobaciones") != declaradas:
         return False
     if procedimiento is not None and observacion.get("procedimiento") != procedimiento:
+        return False
+    if fase is not None and observacion.get("fase") not in (None, "", fase):
         return False
     return True
 
@@ -8401,6 +8407,7 @@ def _observacion_de_la_version(
     declaradas: list[dict],
     directorio: Path,
     procedimiento: str | None,
+    fase: str | None = None,
 ) -> dict | None:
     """La observacion vigente: primero la del intento actual, luego el registro.
 
@@ -8415,14 +8422,14 @@ def _observacion_de_la_version(
         except (OSError, ValueError):
             candidata = None
         if _observacion_corresponde(
-            candidata, version, declaradas, procedimiento
+            candidata, version, declaradas, procedimiento, fase
         ):
             return candidata
     for ev in reversed(registro.eventos(enc.id)):
         if (
             ev["kind"] == "observacion_supervisor"
             and _observacion_corresponde(
-                ev["data"], version, declaradas, procedimiento
+                ev["data"], version, declaradas, procedimiento, fase
             )
         ):
             return ev["data"]
@@ -8518,6 +8525,7 @@ def _registrar_observacion(
             "kind": "observacion_supervisor",
             "data": {
                 "version": version,
+                "fase": observacion.get("fase") or "",
                 "comprobaciones": observacion.get("comprobaciones") or [],
                 "procedimiento": procedimiento,
                 "ejecuciones": observacion.get("ejecuciones") or [],
@@ -8731,8 +8739,10 @@ def _espera_por_observacion(
     no puede viajar como si fuera una espera, o el trabajo queda dormido hasta
     la quietud.
     """
+    interno = interno_de(espacio)
+    sincronizar_declaradas_de_fase(interno, str(enc.fase_activa or ""))
     try:
-        declaradas = leer_declaradas(interno_de(espacio))
+        declaradas = leer_declaradas(interno)
     except ValueError as exc:
         _anotar_instrumento(
             registro, enc, "comprobacion", str(exc),
@@ -8792,7 +8802,8 @@ def _espera_por_observacion(
     esperadas = declaradas
     procedimiento = huella_procedimiento(espacio, esperadas)
     observacion = _observacion_de_la_version(
-        registro, enc, version, esperadas, directorio, procedimiento
+        registro, enc, version, esperadas, directorio, procedimiento,
+        enc.fase_activa,
     )
     if observacion is None:
         iniciar_comprobacion(espacio, directorio)
@@ -10121,34 +10132,70 @@ def _espera_despliegue_sin_autoridad(
     )
 
 
-def _reintentar_despliegue_pendiente(registro, enc: Encargo, hora: str) -> Encargo:
-    """Una orden de continuar sin consumir reabre la fase bloqueada cuyo
-    despliegue quedó pendiente: la receta del mismo SHA vuelve a correr con la
-    corrida que la orden autoriza. Sin orden nueva, la fase sigue bloqueada."""
+def _reintentar_despliegue_pendiente(
+    registro, enc: Encargo, hora: str, espacio: Path | None = None
+) -> Encargo:
+    """Una orden de continuar sin consumir vuelve a correr la receta del mismo
+    SHA de la fase bloqueada, sin reabrirla.
+
+    El producto ya está aprobado e integrado: no se abren intentos del
+    responsable ni del revisor y la fase en curso conserva su turno. Si la
+    receta sale 0, la fase llega a desplegado; si falla, sigue bloqueada como
+    hoy y solo frena a ella y a sus dependientes.
+    """
     from . import despliegue
 
-    if enc.estado not in ("recibido", "ejecutando") or enc.proc is not None or enc.reserva:
+    if enc.estado not in ("recibido", "ejecutando", "esperando_reintento") or enc.proc is not None or enc.reserva:
         return enc
-    ordenes = despliegue.continuaciones(registro, enc.id)
-    if ordenes <= 0:
+    if not any(
+        f.estado == "bloqueada" and f.requiere_despliegue
+        and f.integrado_sha and not f.desplegado_recibo
+        for f in enc.fases
+    ):
         return enc
+    if despliegue.continuaciones(registro, enc.id) <= 0:
+        return enc
+    if espacio is None:
+        espacio = _espacio(registro.base, enc.id)
     for fase in enc.fases:
         if (fase.estado != "bloqueada" or not fase.requiere_despliegue
                 or not fase.integrado_sha or fase.desplegado_recibo):
             continue
         recibo = despliegue.recibo_de(registro, enc, fase)
-        if recibo is None or recibo.get("estado") not in ("fallido", "ocupado"):
+        if recibo is None:
             continue
-        if ordenes <= int(recibo.get("continuadas") or 0):
+        estado_recibo = recibo.get("estado")
+        if estado_recibo not in ("fallido", "ocupado", "ejecutando", "aplicado"):
             continue
-        try:
-            registro.anotar(
-                enc.id,
-                {"kind": "fase_reactivada", "data": {"fase": fase.id, "hora": hora}},
-                f"fase-reactivada:{enc.id}:{fase.id}:{ordenes}",
+        if estado_recibo in ("fallido", "ocupado") and not despliegue.orden_pendiente(
+            registro, enc, fase, int(recibo.get("continuadas") or 0), espacio
+        ):
+            continue
+        resultado = despliegue.iniciar(
+            registro, enc, espacio, despliegue.politica_de_fase(fase), hora,
+            fase=fase,
+        )
+        if resultado.get("estado") == "aplicado":
+            clases = despliegue.clases_de_despliegue_de_fase(
+                registro, enc.id, fase
             )
-        except TransicionIlegal:
-            continue
+            try:
+                registro.anotar(
+                    enc.id,
+                    {"kind": "fase_desplegada", "data": {
+                        "fase": fase.id, "sha": fase.integrado_sha,
+                        "recibo": str(resultado.get("recibo") or ""), "hora": hora,
+                    }},
+                    f"fase-desplegada:{enc.id}:{fase.id}:{fase.integrado_sha}",
+                )
+            except TransicionIlegal:
+                pass
+            fresco = registro.fold(enc.id) or enc
+            for impedimento in list(fresco.impedimentos):
+                if impedimento.clase in clases:
+                    _resolver_impedimento(registro, fresco, impedimento.clase, hora)
+                    fresco = registro.fold(enc.id) or fresco
+            return registro.fold(enc.id) or enc
         return registro.fold(enc.id) or enc
     return enc
 
@@ -10229,7 +10276,7 @@ def _paso_despliegue(
     """El sello se obtiene de la receta ejecutada sobre el commit integrado."""
     from . import despliegue, politica_despliegue
 
-    enc = _reintentar_despliegue_pendiente(registro, enc, hora)
+    enc = _reintentar_despliegue_pendiente(registro, enc, hora, espacio)
     if nivel_objetivo(enc) != "desplegado" or enc.nivel_alcanzado != "integrado":
         return enc
     enc = politica_despliegue.adoptar(registro, enc, espacio, hora)
@@ -10367,6 +10414,9 @@ def _lanzar_uno_en_turno(
                 causa=fresco.causa,
                 siguiente=fresco.siguiente,
                 estrategia=fresco.estrategia,
+            )
+            sincronizar_declaradas_de_fase(
+                interno_de(espacio), str(enc.fase_activa or "")
             )
         epoca = enc.epoca_revisor if rol == "revisor" else enc.epoca_responsable
         sesion = str(
