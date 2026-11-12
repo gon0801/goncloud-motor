@@ -20,6 +20,7 @@ from unittest import mock
 from motor.encargos import comprobacion
 from motor.encargos.aislamiento import ComandoAislado
 from motor.encargos.ciclo import (
+    _devolver,
     _espera_por_observacion,
     _paso_entrega,
     ahora_iso,
@@ -379,6 +380,114 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 Espera,
                 "el script nuevo nombrado dentro de sh -c vuelve a observar antes "
                 "de publicar",
+            )
+
+
+    def test_un_rojo_que_vuelve_gana_al_verde_anterior(self):  # no-roja-en-base: la clave con el resultado nace en la primera vuelta; en 5e83c75 el verde ni se registra y el rojo que vuelve no queda tapado por ese camino
+        """El rojo verdadero sigue rojo aunque antes haya habido un verde.
+
+        Rojo A, verde B y otra vez rojo A: el último resultado es el vigente.
+        La clave del evento no puede colapsar el rojo que vuelve con el rojo
+        anterior y dejar el verde en el medio.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "rojo-vuelve", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+
+            script = r.espacio / ".interno" / "script.py"
+            script.parent.mkdir(exist_ok=True)
+            script.write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "sys.exit(0 if Path('.interno/ok').exists() else 5)\n",
+                encoding="utf-8",
+            )
+            _declarar(r, [sys.executable, ".interno/script.py"])
+            version = firma_producto(r.espacio)
+
+            def observar_y_registrar() -> dict:
+                datos = _observar(r)
+                r.incorporar()
+                return datos
+
+            roja = observar_y_registrar()
+            self.assertEqual(roja["ejecuciones"][0].get("rc"), 5, roja)
+            _espera_por_observacion(r.reg, r.fold(), r.espacio, r.d, ahora_iso())
+
+            (r.espacio / ".interno" / "ok").write_text("", encoding="utf-8")
+            verde = observar_y_registrar()
+            self.assertEqual(verde["ejecuciones"][0].get("rc"), 0, verde)
+            _espera_por_observacion(r.reg, r.fold(), r.espacio, r.d, ahora_iso())
+
+            _devolver(
+                r.reg,
+                r.fold(),
+                "investigar",
+                "el revisor devuelve el trabajo",
+                "corregir",
+                ahora_iso(),
+                "test-rechazo",
+            )
+            (r.espacio / ".interno" / "ok").unlink()
+            vuelve_roja = observar_y_registrar()
+            self.assertEqual(vuelve_roja["ejecuciones"][0].get("rc"), 5, vuelve_roja)
+
+            observaciones = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "observacion_supervisor"
+                and ev["data"].get("version") == version
+            ]
+            self.assertEqual(
+                observaciones[-1]["data"]["ejecuciones"][0].get("rc"),
+                5,
+                "el rojo que vuelve queda vigente; el verde anterior no lo tapa",
+            )
+
+            nuevo = r.reg.base / "ejecucion" / r.enc / "intento-nuevo"
+            nuevo.mkdir()
+            resultado = _espera_por_observacion(
+                r.reg, r.fold(), r.espacio, nuevo, ahora_iso()
+            )
+            self.assertIsNotNone(
+                resultado,
+                "el rojo vigente se devuelve aunque un verde anterior exista",
+            )
+            self.assertEqual(
+                len(_abiertos_del_supervisor(r.fold())),
+                1,
+                "el rojo que vuelve deja su bloqueo abierto",
+            )
+
+    def test_la_huella_no_lee_lo_que_sale_de_interno(self):
+        """Una ruta con `..` no mete en la huella un archivo de fuera de `.interno/`."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "confinamiento", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            (interno / "script.sh").write_text("exit 0\n", encoding="utf-8")
+            (r.espacio / ".runtime").mkdir(exist_ok=True)
+            fuera = r.espacio / ".runtime" / "dato.txt"
+            fuera.write_text("uno\n", encoding="utf-8")
+            declaradas = [
+                {
+                    "objetivo": "lee fuera",
+                    "argv": [sys.executable, ".interno/../.runtime/dato.txt"],
+                }
+            ]
+
+            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            fuera.write_text("dos\n", encoding="utf-8")
+            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(
+                antes, "la ruta de .interno sigue entrando en la huella"
+            )
+            self.assertEqual(
+                antes,
+                despues,
+                "un archivo que sale de .interno no entra en la huella",
             )
 
 
