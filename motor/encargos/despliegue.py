@@ -73,12 +73,18 @@ def continuaciones(registro, encargo_id: str) -> int:
 
 
 def _indice_orden(registro, encargo_id: str, consumidas: int) -> int | None:
-    """Índice de la primera orden de continuar posterior a las ya consumidas."""
+    """Índice de la última orden de continuar posterior a las ya consumidas.
+
+    La última, no la primera: una orden anterior a un `impedimento_resuelto`
+    queda consumida, pero una orden nueva después de esa resolución vuelve a
+    autorizar el reintento.
+    """
     try:
         eventos = registro.eventos(encargo_id)
     except (OSError, ValueError, KeyError, TypeError):
         return None
     vistas = 0
+    ultima = None
     for indice, ev in enumerate(eventos):
         if (
             isinstance(ev, dict) and ev.get("kind") == "orden"
@@ -86,9 +92,9 @@ def _indice_orden(registro, encargo_id: str, consumidas: int) -> int | None:
             and ev["data"].get("accion") == "continuar"
         ):
             vistas += 1
-            if vistas == consumidas + 1:
-                return indice
-    return None
+            if vistas > consumidas:
+                ultima = indice
+    return ultima
 
 
 def cubre(espacio: Path, antiguo: str, nuevo: str) -> bool:
@@ -103,16 +109,27 @@ def cubre(espacio: Path, antiguo: str, nuevo: str) -> bool:
     return corrido.returncode == 0
 
 
+_PREFIJO_CAUSA_MIN = 64
+
+
 def _causa_corresponde(clase: str, causa: str, fase) -> bool:
-    """La causa de un impedimento de despliegue es la del bloqueo de `fase`."""
+    """La causa de un impedimento de despliegue es la del bloqueo de `fase`.
+
+    La huella del bloqueo es la identidad exacta. La causa guardada al bloquear
+    puede venir truncada, así que también vale un prefijo largo; un prefijo
+    corto no atribuye dueño porque podría ser el comienzo de otra causa.
+    """
     huella = str(clase).removeprefix("despliegue:")
     bloqueo = " ".join(str(getattr(fase, "bloqueo_causa", "") or "").split())
     desp = bloqueo.removeprefix("despliegue:").strip()
     causa = " ".join(str(causa or "").split())
-    return (
-        hashlib.sha256(bloqueo.encode()).hexdigest()[:12] == huella
-        or bool(causa and (bloqueo == causa or desp == causa or causa.startswith(desp)))
-    )
+    if hashlib.sha256(bloqueo.encode()).hexdigest()[:12] == huella:
+        return True
+    if not causa or not desp:
+        return False
+    if bloqueo == causa or desp == causa:
+        return True
+    return len(desp) >= _PREFIJO_CAUSA_MIN and causa.startswith(desp)
 
 
 def clases_de_despliegue_de_fase(registro, encargo_id: str, fase) -> set[str]:
@@ -545,9 +562,16 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str, fase=None) -> dic
                     fallido_reintentable = (
                         datos["estado"] == "fallido" and pendiente
                     )
+                    # La fase activa puede esperar por otra causa: la receta de
+                    # una fase bloqueada distinta corre igual, sin destrabar la
+                    # espera ajena. Si la que espera es la propia fase, la espera
+                    # sigue siendo el freno del relanzamiento.
+                    estados_de_encargo = ("recibido", "ejecutando")
+                    if fase.id != enc.fase_activa:
+                        estados_de_encargo += ("esperando_reintento",)
                     reintentable = (
                         (datos["estado"] in ("esperando", "ocupado") or fallido_reintentable)
-                        and enc.estado in ("recibido", "ejecutando")
+                        and enc.estado in estados_de_encargo
                         and (
                             all(p.get("enviado") is False for p in pasos)
                             if datos["estado"] == "esperando"
