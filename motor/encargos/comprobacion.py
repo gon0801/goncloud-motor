@@ -172,23 +172,28 @@ def firma_producto(espacio: Path) -> str:
     return version_producto(espacio).firma
 
 
+_RUTA_INTERNA = re.compile(
+    r"(?:^|[\s/;:'\"(|&=])\.interno(?:/([^\s'\"`;|&()<>]*))?"
+)
+
+
 def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
     """Rutas de `.interno/` nombradas en un argv, relativas a `.interno`.
 
     Un token puede ser la ruta relativa (`.interno/script.sh`), absoluta o de
-    Windows. Se busca el componente `.interno` y se conserva la cola, que es la
-    misma ruta dentro del interno del espacio.
+    Windows, o una linea de shell que la nombra dentro del mismo argumento
+    (`. .interno/script.sh` tras `sh -c`). Se busca `.interno` como componente
+    y se conserva la cola, que es la misma ruta dentro del interno del espacio.
     """
     vistos: set[str] = set()
     salida: list[str] = []
     for token in argv:
-        partes = [p for p in str(token).replace("\\", "/").split("/") if p]
-        if INTERNO not in partes:
-            continue
-        cola = "/".join(partes[partes.index(INTERNO) + 1:])
-        if cola and cola not in vistos:
-            vistos.add(cola)
-            salida.append(cola)
+        normal = str(token).replace("\\", "/")
+        for coincidencia in _RUTA_INTERNA.finditer(normal):
+            cola = coincidencia.group(1) or ""
+            if cola and cola not in vistos:
+                vistos.add(cola)
+                salida.append(cola)
     return sorted(salida)
 
 

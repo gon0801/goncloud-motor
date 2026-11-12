@@ -4251,7 +4251,11 @@ def _incorporar_responsable(
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
         ident = digest(
-            {"comprobaciones": esperadas, "procedimiento": procedimiento}
+            {
+                "comprobaciones": esperadas,
+                "procedimiento": procedimiento,
+                "resultado": _huella_de_observacion(observacion),
+            }
         )[:16]
         registro.anotar(
             enc.id,
@@ -8012,6 +8016,36 @@ def _detalle_en_rojo(ejecucion: dict) -> str:
         if cola:
             lineas.append(f"{nombre} (final):\n{cola}")
     return "\n".join(lineas)
+
+
+def _huella_de_observacion(observacion: dict) -> str:
+    """Identidad del resultado observado, sin la salida que varia entre corridas.
+
+    La version, las declaradas y el procedimiento deciden si una observacion se
+    puede reusar; esta huella distingue una ejecucion nueva de la anterior para
+    que se registre. Un rojo y luego un verde de la misma identidad reutilizable
+    dejan dos eventos, y el verde, mas reciente, queda vigente. Repetir el mismo
+    resultado reusa la clave y no duplica el evento.
+    """
+    ejecuciones = []
+    for ejecucion in observacion.get("ejecuciones") or []:
+        if not isinstance(ejecucion, dict):
+            continue
+        rc = ejecucion.get("rc")
+        ejecuciones.append(
+            [
+                str(ejecucion.get("objetivo") or "comprobacion"),
+                ejecucion.get("argv"),
+                None if rc is None else str(rc),
+                str(ejecucion.get("error_instrumento") or ""),
+            ]
+        )
+    return digest(
+        {
+            "ejecuciones": ejecuciones,
+            "error_instrumento": str(observacion.get("error_instrumento") or ""),
+        }
+    )[:16]
 
 
 def _huella_de_fallas(observacion: dict) -> str:
