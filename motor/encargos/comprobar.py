@@ -44,6 +44,7 @@ def main(path: Path) -> int:
                 return 0
         os.environ["MOTOR_COMPROBADOR_GRUPO"] = str(os.getpid())
         espacio = Path(spec["cwd"])
+        fase = str(spec.get("fase") or "")
         observacion = observar_comprobaciones(
             espacio, interno_de(espacio), Path(spec["directorio"]), path.parent
         )
@@ -57,6 +58,7 @@ def main(path: Path) -> int:
                 "producto": firma,
                 "version": firma,
             }
+        observacion["fase"] = fase
         _publica(
             Path(spec["directorio"]) / "observaciones.json",
             json.dumps(observacion, ensure_ascii=False),

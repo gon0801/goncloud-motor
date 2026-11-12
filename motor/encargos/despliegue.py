@@ -72,6 +72,131 @@ def continuaciones(registro, encargo_id: str) -> int:
     )
 
 
+def _indice_orden(registro, encargo_id: str, consumidas: int) -> int | None:
+    """Índice de la última orden de continuar posterior a las ya consumidas.
+
+    La última, no la primera: una orden anterior a un `impedimento_resuelto`
+    queda consumida, pero una orden nueva después de esa resolución vuelve a
+    autorizar el reintento.
+    """
+    try:
+        eventos = registro.eventos(encargo_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    vistas = 0
+    ultima = None
+    for indice, ev in enumerate(eventos):
+        if (
+            isinstance(ev, dict) and ev.get("kind") == "orden"
+            and isinstance(ev.get("data"), dict)
+            and ev["data"].get("accion") == "continuar"
+        ):
+            vistas += 1
+            if vistas > consumidas:
+                ultima = indice
+    return ultima
+
+
+def cubre(espacio: Path, antiguo: str, nuevo: str) -> bool:
+    """El SHA integrado `antiguo` ya está contenido en el desplegado `nuevo`."""
+    if not (re.fullmatch(r"[0-9a-f]{40,64}", antiguo or "")
+            and re.fullmatch(r"[0-9a-f]{40,64}", nuevo or "")):
+        return False
+    corrido = subprocess.run(
+        ["git", "-C", str(espacio), "merge-base", "--is-ancestor", antiguo, nuevo],
+        stdin=subprocess.DEVNULL, capture_output=True, timeout=120,
+    )
+    return corrido.returncode == 0
+
+
+_PREFIJO_CAUSA_MIN = 64
+
+
+def _causa_corresponde(clase: str, causa: str, fase) -> bool:
+    """La causa de un impedimento de despliegue es la del bloqueo de `fase`.
+
+    La huella del bloqueo es la identidad exacta. La causa guardada al bloquear
+    puede venir truncada, así que también vale un prefijo largo; un prefijo
+    corto no atribuye dueño porque podría ser el comienzo de otra causa.
+    """
+    huella = str(clase).removeprefix("despliegue:")
+    bloqueo = " ".join(str(getattr(fase, "bloqueo_causa", "") or "").split())
+    desp = bloqueo.removeprefix("despliegue:").strip()
+    causa = " ".join(str(causa or "").split())
+    if hashlib.sha256(bloqueo.encode()).hexdigest()[:12] == huella:
+        return True
+    if not causa or not desp:
+        return False
+    if bloqueo == causa or desp == causa:
+        return True
+    return len(desp) >= _PREFIJO_CAUSA_MIN and causa.startswith(desp)
+
+
+def clases_de_despliegue_de_fase(registro, encargo_id: str, fase) -> set[str]:
+    """Clases de los impedimentos de despliegue que pertenecen a `fase`."""
+    try:
+        eventos = registro.eventos(encargo_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+    clases: set[str] = set()
+    for ev in eventos:
+        if not isinstance(ev, dict) or ev.get("kind") != "impedimento":
+            continue
+        crudo = ev.get("data")
+        datos = crudo if isinstance(crudo, dict) else {}
+        clase = str(datos.get("clase") or "")
+        if clase.startswith("despliegue:") and _causa_corresponde(
+            clase, str(datos.get("causa") or ""), fase
+        ):
+            clases.add(clase)
+    return clases
+
+
+def orden_pendiente(
+    registro, enc_arg, fase, consumidas: int, espacio: Path
+) -> bool:
+    """Hay una orden de continuar posterior a `consumidas` sin atender.
+
+    Una orden queda consumida cuando después de ella se resolvió el
+    impedimento de este despliegue o cuando un despliegue posterior ya contiene
+    el SHA de la fase. Así una orden vieja no reabre un despliegue que otra
+    operación ya atendió.
+    """
+    indice = _indice_orden(registro, enc_arg.id, consumidas)
+    if indice is None:
+        return False
+    try:
+        eventos = registro.eventos(enc_arg.id)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    clases = clases_de_despliegue_de_fase(registro, enc_arg.id, fase)
+    for ev in eventos[indice + 1:]:
+        if not isinstance(ev, dict):
+            continue
+        crudo = ev.get("data")
+        datos = crudo if isinstance(crudo, dict) else {}
+        if (
+            ev.get("kind") == "impedimento_resuelto"
+            and str(datos.get("clase") or "") in clases
+        ):
+            return False
+        if ev.get("kind") == "entrega_externa" and datos.get("paso") == "desplegado":
+            nuevo = str(datos.get("sha") or "")
+            if nuevo and cubre(espacio, fase.integrado_sha, nuevo):
+                return False
+    return True
+
+
+def politica_de_fase(fase):
+    """La receta ya persistida de una fase, sin volver a resolver el plan."""
+    from .politica_despliegue import PoliticaDespliegue
+
+    return PoliticaDespliegue(
+        fase.requiere_despliegue, fase.desplegar, fase.checklist, fase.rollback,
+        fase.despliegue_fuente, fase.despliegue_huella,
+    )
+
+
 def _guardar(path: Path, datos: dict) -> None:
     _atomico(path, json.dumps(datos, ensure_ascii=False, sort_keys=True))
 
@@ -181,21 +306,49 @@ def ocupado(registro, enc, fase=None) -> dict:
     return libro
 
 
-def recibo_de(registro, enc, fase) -> dict | None:
-    """El recibo vigente de una fase, con su estado y su conteo de continuadas."""
+def _ruta_del_recibo(registro, enc, fase) -> tuple[Path, dict] | None:
+    """La ruta del recibo del SHA integrado vigente de la fase y su identidad."""
     if not fase.integrado_sha:
         return None
     receta = {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")}
     try:
         _rutas(receta)
-        identidad = {
-            "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
-            "sha": fase.integrado_sha, "receta": receta,
-        }
-        clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
-        return _leer(registro.base / "despliegues" / clave / "recibo.json", identidad)
+    except ValueError:
+        return None
+    identidad = {
+        "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
+        "sha": fase.integrado_sha, "receta": receta,
+    }
+    clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
+    return registro.base / "despliegues" / clave / "recibo.json", identidad
+
+
+def recibo_de(registro, enc, fase) -> dict | None:
+    """El recibo vigente de una fase, con su estado y su conteo de continuadas."""
+    ruta = _ruta_del_recibo(registro, enc, fase)
+    if ruta is None:
+        return None
+    try:
+        return _leer(*ruta)
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def recibo_aplicado_de(registro, enc, fase) -> str | None:
+    """La ruta del recibo aplicado del SHA integrado vigente, si lo hay.
+
+    Mira el SHA que la fase tiene ahora, no el puntero `desplegado_recibo`: una
+    fase reintegrada conserva el puntero de su despliegue anterior y no por eso
+    está desplegada en el SHA nuevo.
+    """
+    ruta = _ruta_del_recibo(registro, enc, fase)
+    if ruta is None:
+        return None
+    try:
+        datos = _leer(*ruta)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return str(ruta[0]) if datos.get("estado") == "aplicado" else None
 
 
 def reabrir_ventana(registro, enc, continuadas: int, fase=None) -> None:
@@ -331,8 +484,17 @@ def comprobar_recibo(enc) -> dict:
     return datos
 
 
-def observacion(registro, enc) -> str:
-    """Una parada espera también al trabajador de despliegue y su reversa."""
+def observacion(registro, enc, fase=None) -> str:
+    """Una parada espera también al trabajador de despliegue y su reversa.
+
+    Con `fase`, mira el trabajador de esa fase y no el puntero del encargo: el
+    reintento de una fase bloqueada corre fuera del turno de la activa.
+    """
+    if fase is not None:
+        directorio = _directorio_de_fase(registro, enc, fase)
+        if directorio is None:
+            return "ausente"
+        return _observacion_en(registro, enc, directorio)
     puntero = registro.base / "despliegues" / (enc.id + ".actual")
     if not puntero.exists():
         return "ausente"
@@ -340,7 +502,13 @@ def observacion(registro, enc) -> str:
         clave = leer_texto(puntero).strip()
         if not re.fullmatch(r"[0-9a-f]{64}", clave):
             return "incierto"
-        directorio = puntero.parent / clave
+        return _observacion_en(registro, enc, puntero.parent / clave)
+    except (OSError, ValueError, KeyError, TypeError):
+        return "incierto"
+
+
+def _observacion_en(registro, enc, directorio: Path) -> str:
+    try:
         datos = leer_json((directorio / "recibo.json"))
         proceso = leer_json((directorio / "proceso.json"))
         if datos.get("encargo") != enc.id:
@@ -368,9 +536,14 @@ def observacion(registro, enc) -> str:
 
 
 def iniciar(registro, enc, espacio: Path, politica, hora: str, fase=None) -> dict:
-    """Inicia una vez o lee el recibo de la misma operación; no espera al script."""
+    """Inicia una vez o lee el recibo de la misma operación; no espera al script.
+
+    Con `fase`, corre o concilia el despliegue de esa fase aunque no sea la
+    activa: el reintento de una fase bloqueada no cambia el turno de la que
+    está en curso.
+    """
     fase = fase or enc.fase_actual
-    sha = fase.integrado_sha if fase is not None else ""
+    sha = fase.integrado_sha
     receta = {k: getattr(politica, k) for k in ("desplegar", "checklist", "rollback")}
     try:
         _rutas(receta)
@@ -379,7 +552,7 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str, fase=None) -> dic
         _maquina(registro.base)
     except ValueError as exc:
         return {"estado": "esperando", "motivo": str(exc)}
-    identidad = {"encargo": enc.id, "fase": fase.id if fase is not None else enc.fase_activa,
+    identidad = {"encargo": enc.id, "fase": fase.id,
                  "repo": enc.entrega.repo, "sha": sha, "receta": receta}
     clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
     directorio = registro.base / "despliegues" / clave
@@ -394,7 +567,8 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str, fase=None) -> dic
         if recibo.exists():
             try:
                 datos = _leer(recibo, identidad)
-                if datos["estado"] != "ejecutando" and observacion(registro, enc) == "vivo":
+                observado = observacion(registro, enc, fase)
+                if datos["estado"] != "ejecutando" and observado == "vivo":
                     return {**datos, "estado": "ejecutando", "recibo": str(recibo),
                             "motivo": "ejecutando receta de despliegue: finalizando trabajador"}
                 if datos["estado"] == "ejecutando":
@@ -410,18 +584,26 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str, fase=None) -> dic
                 if not esperar_cierre:
                     pasos = datos.get("pasos", [])
                     consumidas = int(datos.get("continuadas") or 0)
+                    pendiente = orden_pendiente(registro, enc, fase, consumidas, espacio)
                     fallido_reintentable = (
-                        datos["estado"] == "fallido" and ordenes > consumidas
+                        datos["estado"] == "fallido" and pendiente
                     )
+                    # La fase activa puede esperar por otra causa: la receta de
+                    # una fase bloqueada distinta corre igual, sin destrabar la
+                    # espera ajena. Si la que espera es la propia fase, la espera
+                    # sigue siendo el freno del relanzamiento.
+                    estados_de_encargo = ("recibido", "ejecutando")
+                    if fase.id != enc.fase_activa:
+                        estados_de_encargo += ("esperando_reintento",)
                     reintentable = (
                         (datos["estado"] in ("esperando", "ocupado") or fallido_reintentable)
-                        and enc.estado in ("recibido", "ejecutando")
+                        and enc.estado in estados_de_encargo
                         and (
                             all(p.get("enviado") is False for p in pasos)
                             if datos["estado"] == "esperando"
                             else all(p.get("enviado") for p in pasos)
                         )
-                        and observacion(registro, enc) == "ausente"
+                        and observado == "ausente"
                     )
                     if not reintentable:
                         return {**datos, "recibo": str(recibo)}
@@ -440,7 +622,9 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str, fase=None) -> dic
                      "motivo": "ejecutando receta de despliegue del SHA integrado",
                      "continuadas": continuar_hasta}
             _guardar(recibo, datos)
-            _atomico(directorio.parent / (enc.id + ".actual"), clave)
+            # El puntero es del encargo, no de una fase: solo la activa lo mueve.
+            if fase.id == enc.fase_activa:
+                _atomico(directorio.parent / (enc.id + ".actual"), clave)
             _guardar(directorio / "pedido.json", {
                 "base": str(registro.base.resolve()), "espacio": str(espacio.resolve()),
                 "identidad": identidad,

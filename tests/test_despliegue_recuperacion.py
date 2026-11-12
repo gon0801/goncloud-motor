@@ -489,9 +489,9 @@ class RecuperacionDespliegue(unittest.TestCase):
         lanzadas = [llamada.args[1].fase_activa for llamada in lanzador.call_args_list]
         self.assertIn("O", lanzadas, lanzadas)
 
-        # La ronda nueva (continuar) reabre N, la receta falla igual y la
-        # entrega parcial de la ronda necesita SU propio bloqueo: N se
-        # re-bloquea y O vuelve a solicitarse al lanzador.
+        # La ronda nueva (continuar) corre otra vez la receta de N. Si vuelve a
+        # fallar, N sigue bloqueada sin duplicar el bloqueo y O conserva su
+        # turno: el reintento no reabre la fase.
         esperas = mock.Mock(return_value="2026-11-05T12:00:00+00:00")
         with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso), mock.patch.object(
             ciclo, "_lanzar_uno", lanzador,
@@ -508,9 +508,12 @@ class RecuperacionDespliegue(unittest.TestCase):
         self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
         fases = {f.id: f for f in enc.fases}
         bloqueos = [ev for ev in reg.eventos(ident) if ev["kind"] == "bloqueo_fase"]
-        self.assertEqual(len(bloqueos), 2)
+        self.assertEqual(len(bloqueos), 1)
         self.assertEqual(fases["N"].estado, "bloqueada")
         self.assertEqual(enc.fase_activa, "O", enc.motivo)
+        self.assertFalse(
+            [ev for ev in reg.eventos(ident) if ev["kind"] == "fase_reactivada"]
+        )
         self.assertTrue(
             any(p.startswith("despliegue:") for p in enc.pendientes_entrega)
             or any(p.startswith("despliegue:") for p in fases["N"].pendientes),
@@ -706,22 +709,22 @@ class RecuperacionDespliegue(unittest.TestCase):
             ))
             with mock.patch.object(ciclo, "_sonda_entorno", sonda):
                 ciclo.ordenar(reg, ident, "continuar", "reabrir-N-barrido", base.HORA)
-                # Pasada 1: reactiva N y relanza su receta; pasada 2: concilia
-                # el recibo aplicado y sella desplegado; pasada 3: vence la
-                # espera de conciliación y avanza el nivel.
+                # Pasada 1: corre la receta de N sin cambiar su turno; pasada
+                # 2: concilia el recibo aplicado y la fase llega a desplegado.
                 ciclo.barrer(reg, "2026-11-05T12:01:00+00:00", time.time(), mock.Mock())
                 ciclo.barrer(reg, "2026-11-05T12:02:00+00:00", time.time(), mock.Mock())
                 ciclo.barrer(reg, "2026-11-05T12:32:00+00:00", time.time(), mock.Mock())
-        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
         reactivadas = [
             ev for ev in reg.eventos(ident) if ev["kind"] == "fase_reactivada"
         ]
-        self.assertTrue(reactivadas, "continuar no reabrió la fase bloqueada")
-        # La fase N deja de estar bloqueada y su receta corrió la segunda vez.
+        self.assertFalse(reactivadas, "continuar reabrió la fase bloqueada")
+        # La fase N llega a desplegado sin quitarle el turno a la fase O.
         enc = reg.fold(ident)
         fases = {f.id: f for f in enc.fases}
-        self.assertNotEqual(fases["N"].estado, "bloqueada")
-        self.assertEqual(fases["N"].ultimo_paso_entrega, "integrado")
+        self.assertEqual(fases["N"].estado, "preparada")
+        self.assertEqual(fases["N"].nivel_alcanzado, "desplegado")
+        self.assertEqual(enc.fase_activa, "O")
 
     def test_continuar_reintenta_el_despliegue_de_una_fase_bloqueada(self):
         reg, ident, espacio, destino, integrar = self.despliegue
@@ -764,22 +767,21 @@ class RecuperacionDespliegue(unittest.TestCase):
                 "evidencia": "recibo fallido de N", "causa": causa,
             }}, "bloqueo-N")
             self.assertEqual(reg.fold(ident).fase_activa, "O", reg.fold(ident).motivo)
-            # Continuar reabre la fase bloqueada con su despliegue pendiente.
+            # Continuar corre la receta pendiente de N sin cambiar su turno.
             ciclo.ordenar(reg, ident, "continuar", "reabrir-N", base.HORA)
-            final = reg.fold(ident)
             for _ in range(12):
-                final = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, base.HORA)
-                if final.fase_activa != "N":
+                final = reg.fold(ident)
+                if any(
+                    f.id == "N" and f.estado == "preparada" for f in final.fases
+                ):
                     break
-            reg.anotar(ident, {"kind": "comprobacion", "data": {
-                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de N",
-                "hora": base.HORA,
-            }}, "cierre-N")
+                ciclo._paso_despliegue(reg, final, espacio, base.HORA)
             final = reg.fold(ident)
         self.assertEqual(final.fase_activa, "O", final.motivo)
         self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
         fases = {f.id: f for f in final.fases}
         self.assertEqual(fases["N"].estado, "preparada")
+        self.assertEqual(fases["N"].nivel_alcanzado, "desplegado")
         self.assertIsNotNone(fases["N"].desplegado_recibo)
 
     def test_recibo_de_ensayo_vuelve_a_bloquear_tras_continuar_sin_lanzar_agente(self):

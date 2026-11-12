@@ -11,7 +11,7 @@ constante.
 """
 
 from __future__ import annotations
-from motor.io import leer_json, leer_texto
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import fnmatch
 import hashlib
@@ -586,6 +586,80 @@ def huella_procedimiento(
     return digest({"procedimiento": partes})
 
 
+_MARCADOR_FASE = "comprobaciones.fase"
+_FASES_DECLARADAS = "fases"
+
+
+def _declaradas_de_fase(interno: Path, fase: str) -> Path:
+    return interno / _FASES_DECLARADAS / fase / "comprobaciones.json"
+
+
+def _fase_del_marcador(interno: Path) -> str:
+    try:
+        return leer_texto(interno / _MARCADOR_FASE).strip()
+    except (OSError, UnicodeError):
+        return ""
+
+
+def _marcar_fase(interno: Path, fase: str) -> None:
+    if not fase:
+        return
+    interno.mkdir(parents=True, exist_ok=True)
+    escribir_texto(interno / _MARCADOR_FASE, fase + "\n")
+
+
+def guardar_declaradas_de_fase(interno: Path, fase: str) -> None:
+    """Atribuye lo declarado en `.interno/comprobaciones.json` a la fase activa."""
+    if not fase:
+        return
+    compartido = interno / "comprobaciones.json"
+    if not compartido.is_file():
+        return
+    _marcar_fase(interno, fase)
+    destino = _declaradas_de_fase(interno, fase)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    escribir_texto(destino, leer_texto(compartido))
+
+
+def sincronizar_declaradas_de_fase(interno: Path, fase: str) -> None:
+    """Deja en `.interno/comprobaciones.json` solo lo declarado por `fase`.
+
+    Al cambiar de fase activa, lo compartido se archiva en la fase que lo
+    declaró y se restaura lo propio de la nueva, o se retira. Sin esto, lo
+    declarado por otra fase se ejecutaria y se cobraria a la fase nueva. Sin
+    declaraciones no se crea `.interno/`: el espacio queda limpio.
+    """
+    if not fase:
+        return
+    actual = _fase_del_marcador(interno)
+    compartido = interno / "comprobaciones.json"
+    propio = _declaradas_de_fase(interno, fase)
+    if actual == fase:
+        # El archivo compartido manda sobre su fase: si se borró, la fase ya no
+        # declara nada y su copia no debe resucitarlas al volver.
+        if not compartido.is_file():
+            propio.unlink(missing_ok=True)
+        return
+    if not actual and not compartido.is_file() and not propio.is_file():
+        return
+    if not actual:
+        # Sin marcador previo, lo que haya en el espacio es de la fase vigente.
+        _marcar_fase(interno, fase)
+        return
+    archivo_actual = _declaradas_de_fase(interno, actual)
+    if compartido.is_file():
+        archivo_actual.parent.mkdir(parents=True, exist_ok=True)
+        escribir_texto(archivo_actual, leer_texto(compartido))
+    else:
+        # Borrado mientras la fase era la dueña: su copia tampoco vale.
+        archivo_actual.unlink(missing_ok=True)
+    if propio.is_file():
+        escribir_texto(compartido, leer_texto(propio))
+    else:
+        compartido.unlink(missing_ok=True)
+    _marcar_fase(interno, fase)
+
+
 def leer_declaradas(interno: Path) -> list[dict] | None:
     """Comprobaciones declaradas en `.interno/comprobaciones.json`.
 
@@ -884,6 +958,8 @@ def iniciar_comprobacion(espacio: Path, directorio: Path) -> None:
             previo = comprobador_actual(directorio)
             if previo and observar(previo[0], previo[1]) != "ausente":
                 return
+            fase = str(enc.fase_activa or "")
+            sincronizar_declaradas_de_fase(interno_de(espacio), fase)
             token = uuid.uuid4().hex
             cd = directorio / ("comprobador-" + token)
             cd.mkdir()
@@ -895,6 +971,7 @@ def iniciar_comprobacion(espacio: Path, directorio: Path) -> None:
                 "host": socket.gethostname(),
                 "cwd": str(espacio),
                 "directorio": str(directorio),
+                "fase": fase,
                 "bootstrap": "comprobar.py",
             }
             path = cd / "arranque.json"
