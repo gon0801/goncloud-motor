@@ -230,6 +230,69 @@ class DespliegueReal(unittest.TestCase):
         assert "revisar el recibo" in causa, causa
         assert not list((reg.base / "despliegues").rglob("ocupado.json"))
 
+    def test_negacion_del_proceso_vivo_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que negar el proceso vivo no acredita ocupación
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text('printf "app.cli no está vivo\\n"; exit 75\n')
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_un_fallo_propio_en_cualquier_linea_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que un fallo declarado en otra línea invalida la ocupación
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "app.cli vivo (spapi-diario)\\n"; '
+            'printf "error de datos\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_guardas_libres_con_error_no_son_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que guardas sin carga ni acredita el encabezado solo
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "alias|ciclos running|harvest en cola|harvest jobs|app.cli = true|0|0|0|0\\n"; '
+            'printf "error de datos\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_las_guardas_del_contrato_acreditan_ocupacion(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "alias|ciclos running|harvest en cola|harvest jobs|app.cli = true|0|0|0|1\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [75, 0]
+        libro = json.loads(
+            next((reg.base / "despliegues").rglob("ocupado.json")).read_text()
+        )
+        assert "app.cli" in libro["proceso"], libro
+        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        assert enc.estado == "esperando_reintento", (enc.estado, enc.motivo)
+        assert "app.cli" in enc.motivo, enc.motivo
+
     def test_75_sin_diagnostico_de_ocupacion_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que el ocupado exige el diagnóstico que la receta declara
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue

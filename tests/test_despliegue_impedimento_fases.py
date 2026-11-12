@@ -177,6 +177,57 @@ class ImpedimentoDespliegue(unittest.TestCase):
             False,
         )
 
+    def test_la_cobertura_resuelve_la_causa_de_su_fase_aunque_otra_siga_pendiente(self):
+        # h_c3d8b5ae: la causa de N se resuelve con el despliegue que cubre N,
+        # aunque R conserve un despliegue pendiente en otra rama.
+        sha_n = self.commit("fase N")
+        sha_o = self.commit("fase O, hija del SHA de N")
+        git(self.espacio, "checkout", "-q", "-b", "rama-R")
+        (self.espacio / "archivos" / "R").write_text("R", encoding="utf-8")
+        git(self.espacio, "add", ".")
+        git(self.espacio, "-c", "user.name=t", "-c", "user.email=t@local",
+            "commit", "-qm", "fase R, hija del SHA de N en otra rama")
+        sha_r = git(self.espacio, "rev-parse", "HEAD")
+        git(self.espacio, "checkout", "-q", "main")
+        causa_n = CAUSA + " (fase N)"
+        causa_r = CAUSA + " (fase R)"
+        fase_n = Fase(
+            id="N", resultado="N", estado="bloqueada",
+            requiere_despliegue=True, integrado_sha=sha_n,
+            bloqueo_causa=causa_n, evidencia="recibo fallido de N",
+        )
+        fase_r = Fase(
+            id="R", resultado="R", estado="bloqueada",
+            requiere_despliegue=True, integrado_sha=sha_r,
+            bloqueo_causa=causa_r, evidencia="recibo fallido de R",
+        )
+        fase_o = Fase(
+            id="O", resultado="O", estado="trabajo",
+            requiere_despliegue=True, integrado_sha=sha_o, **RECETA,
+        )
+        enc = _encargo(fases=(fase_n, fase_r, fase_o), fase_activa="O")
+        recibo = _recibo_aplicado(self.reg.base, enc, fase_o)
+        fase_o = replace(fase_o, desplegado_recibo=str(recibo))
+        imped_n = Impedimento(
+            clase="despliegue:" + hashlib.sha256(causa_n.encode()).hexdigest()[:12],
+            causa=causa_n, condicion=CONDICION,
+        )
+        imped_r = Impedimento(
+            clase="despliegue:" + hashlib.sha256(causa_r.encode()).hexdigest()[:12],
+            causa=causa_r, condicion=CONDICION,
+        )
+        enc = replace(enc, fases=(fase_n, fase_r, fase_o), impedimentos=(imped_n, imped_r))
+        self.assertIs(
+            _verificar_impedimento(imped_n.clase, enc, self.espacio,
+                                   self.reg.base, self.reg),
+            True,
+        )
+        self.assertIs(
+            _verificar_impedimento(imped_r.clase, enc, self.espacio,
+                                   self.reg.base, self.reg),
+            False,
+        )
+
     def test_el_reintento_que_despliega_la_propia_fase_resuelve_el_impedimento(self):
         sha_n = self.commit("fase N")
         fase_n = Fase(
