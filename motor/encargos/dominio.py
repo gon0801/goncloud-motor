@@ -2239,6 +2239,10 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
                 ultimo_hecho=hecho,
             )
+        if e.estado == "esperando_reintento" and e.motivo and e.reanuda_en:
+            # Resolver otra causa no borra una espera explícita: su motivo y su
+            # plazo siguen; el barrido la retoma en `reanuda_en`.
+            return replace(e, ultimo_hecho=hecho, hora=hora or e.hora)
         return replace(e, motivo="", siguiente="seguir el mismo encargo", ultimo_hecho=hecho)
     if kind == "entrega_externa":
         return _entrega_externa(e, d, hora)
