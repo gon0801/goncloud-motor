@@ -311,6 +311,82 @@ class LaEntregaPosteriorConsumeLaOrden(BancoReintento):
             "un despliegue posterior que ya contiene el SHA no consumió la orden",
         )
         self.assertTrue(a_sha and a.integrado_sha == a_sha)
+        # Control negativo: un despliegue de otra historia no consume la orden.
+        ajena = base.git(
+            espacio, "commit-tree",
+            base.git(espacio, "rev-parse", "HEAD^{tree}"), "-m", "otra historia",
+        )
+        self.orden(reg, ident, "orden-ajena")
+        reg.anotar(ident, {"kind": "entrega_externa", "data": {
+            "paso": "desplegado", "sha": ajena, "recibo": "", "hora": base.HORA,
+        }}, "despliegue-ajeno")
+        enc = reg.fold(ident)
+        fase_a = next(f for f in enc.fases if f.id == "A")
+        self.assertTrue(
+            ejecutor.orden_pendiente(reg, enc, fase_a, 0, espacio),
+            "un despliegue de otra historia consumió la orden",
+        )
+
+
+class LaReglaDePrefijosDeCausa(BancoReintento):
+    def test_el_prefijo_corto_no_atribuye_y_el_truncado_largo_si(self):
+        reg, ident, espacio, destino, integrar, corridas, sweeps = self.banco(
+            "exit 0"
+        )
+        self.orden(reg, ident, "reintento-con-regla")
+        sweeps((
+            "2026-11-05T12:01:00+00:00", "2026-11-05T12:02:00+00:00",
+        ))
+        a = next(f for f in reg.fold(ident).fases if f.id == "A")
+        self.assertEqual(a.estado, "preparada")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        causa = "x" * 200
+        registro = mock.Mock()
+        registro.eventos.return_value = [
+            {"kind": "impedimento", "data": {
+                "clase": "despliegue:" + "a" * 12, "causa": "fallo por red",
+            }},
+            {"kind": "impedimento", "data": {
+                "clase": "despliegue:" + "b" * 12, "causa": causa + " y más",
+            }},
+        ]
+        corta = types.SimpleNamespace(id="A", bloqueo_causa="despliegue: fallo")
+        self.assertEqual(
+            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", corta),
+            set(),
+            "un prefijo corto atribuyó el impedimento de otra fase",
+        )
+        larga = types.SimpleNamespace(id="C", bloqueo_causa="despliegue: " + causa)
+        self.assertEqual(
+            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", larga),
+            {"despliegue:" + "b" * 12},
+        )
+
+
+class LaGuardaDistingueElShaDeLaFase(BancoReintento):
+    def test_un_recibo_de_otro_sha_no_cuenta_como_desplegado(self):
+        from dataclasses import replace
+
+        reg, ident, espacio, destino, integrar, corridas, sweeps = self.banco(
+            "exit 0"
+        )
+        self.orden(reg, ident, "reintento-guarda")
+        sweeps((
+            "2026-11-05T12:01:00+00:00", "2026-11-05T12:02:00+00:00",
+        ))
+        enc = reg.fold(ident)
+        a = next(f for f in enc.fases if f.id == "A")
+        self.assertEqual(a.estado, "preparada")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        self.assertTrue(ciclo._fase_desplegada_vigente(reg, enc, a))
+        viejo = replace(a, desplegado_recibo="/tmp/recibo-de-otro-sha.json")
+        enc_viejo = replace(
+            enc, fases=tuple(viejo if f.id == "A" else f for f in enc.fases)
+        )
+        self.assertFalse(
+            ciclo._fase_desplegada_vigente(reg, enc_viejo, viejo),
+            "un recibo de otro SHA acreditó el despliegue de la fase",
+        )
 
 
 class LaObservacionDeOtraFaseNoAlimentaLaRevision(BancoReintento):
