@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import sys
 import tempfile
 import unittest
@@ -107,6 +109,46 @@ def _reobserva_al_cambiar(caso, clave, argv, ruta, inicial, final):
             resultado[1] if resultado else None,
             Espera,
             "el cambio del script de .interno vuelve a observar antes de publicar",
+        )
+
+
+def _guion_que_se_modifica_no_acredita(caso, clave, argv):
+    """Un guion que se reescribe a `exit 5` no acredita ese contenido nuevo."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        r = Recorrido(tmp, clave, "crea saludo.txt")
+        caso.addCleanup(r.reg.close)
+        (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+        r.incorporar()
+        script = r.espacio / ".interno" / "script.py"
+        script.parent.mkdir(exist_ok=True)
+        script.write_text(
+            "from pathlib import Path\n"
+            "Path(__file__).write_text('import sys; sys.exit(5)\\n')\n"
+            "import sys\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        _declarar(r, argv)
+
+        verde = _observar(r)
+        caso.assertEqual(verde["ejecuciones"][0].get("rc"), 0, verde)
+        caso.assertEqual(
+            script.read_text(encoding="utf-8"),
+            "import sys; sys.exit(5)\n",
+            "el script dejo un contenido que sale 5",
+        )
+
+        with mock.patch(
+            "motor.encargos.ciclo.iniciar_comprobacion"
+        ) as iniciar:
+            resultado = _espera_por_observacion(
+                r.reg, r.fold(), r.espacio, r.d, ahora_iso()
+            )
+        iniciar.assert_called_once()
+        caso.assertIsInstance(
+            resultado[1] if resultado else None,
+            Espera,
+            "el verde no acredita un contenido que no corrio",
         )
 
 
@@ -507,6 +549,26 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 Espera,
                 "el verde no acredita un contenido que no corrio",
             )
+
+
+    def test_un_script_que_se_modifica_dentro_de_sh_c_no_acredita_su_contenido(self):
+        """El interprete dentro de un `sh -c` tambien se clasifica como ejecutado."""
+        _guion_que_se_modifica_no_acredita(
+            self,
+            "auto-modifica-sh-c",
+            ["/bin/sh", "-c", shlex.join([sys.executable, ".interno/script.py"])],
+        )
+
+    def test_un_script_que_se_modifica_tras_env_no_acredita_su_contenido(self):
+        """El interprete detras de `env` tambien se clasifica como ejecutado."""
+        env = shutil.which("env")
+        if env is None:
+            self.skipTest("no hay env en esta plataforma")
+        _guion_que_se_modifica_no_acredita(
+            self,
+            "auto-modifica-env",
+            [env, sys.executable, ".interno/script.py"],
+        )
 
     def test_un_script_bajo_runtime_nombrado_en_argv_pesa_y_reobserva(self):
         """Una ruta de `.interno/.runtime/` nombrada por el argv se pesa igual."""
