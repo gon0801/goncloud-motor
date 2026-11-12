@@ -1120,7 +1120,10 @@ class AvisosInformanSinPedirNada(unittest.TestCase):
         texto = _cuerpo_de_cierre(enc)
         self.assertIn("no hace falta que hagas nada", texto)
         self.assertIn("herramienta no estaba disponible", texto)
-        self.assertIn("cambió de modelo", texto)
+        # El escalón de relevo corrió sin otro modelo autorizado: el cierre no
+        # promete un cambio de modelo que no hubo.
+        self.assertNotIn("Se cambió de modelo", texto)
+        self.assertIn("no había otro modelo autorizado para seguir", texto)
         self.assertNotIn("Necesito tu decisión", texto)
 
 if __name__ == "__main__":
