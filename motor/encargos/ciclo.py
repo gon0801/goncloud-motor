@@ -25,6 +25,7 @@ from .comprobacion import (
     VERSION_LECTOR_DEEPSEEK,
     digest,
     firma_producto,
+    huella_procedimiento,
     hallazgo_fuera_de_alcance_por_restriccion,
     hallazgos_deepseek,
     iniciar_comprobacion,
@@ -4331,13 +4332,14 @@ def _incorporar_responsable(
         path = directorio / "observaciones.json"
         observacion = None
         esperadas = declaradas
+        procedimiento = huella_procedimiento(espacio, esperadas)
         if path.is_file():
             try:
                 candidata = leer_json(path)
             except ValueError:
                 candidata = None
             if candidata and _observacion_corresponde(
-                candidata, version.firma, esperadas
+                candidata, version.firma, esperadas, procedimiento
             ):
                 observacion = candidata
         if observacion is None:
@@ -4361,20 +4363,7 @@ def _incorporar_responsable(
                 )
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
-        ident = digest({"comprobaciones": esperadas})[:16]
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "observacion_supervisor",
-                "data": {
-                    "version": version.firma,
-                    "comprobaciones": observacion.get("comprobaciones") or [],
-                    "ejecuciones": observacion.get("ejecuciones") or [],
-                    "hora": hora,
-                },
-            },
-            f"observacion:{enc.id}:{version.firma}:{ident}",
-        )
+        _registrar_observacion(registro, enc, version.firma, esperadas, observacion, hora)
         enc = registro.fold(enc.id)
     if commit_entregado and not _deepseek_por_releer(enc):
         abierto = _bloqueo_externo_abierto(enc)
@@ -8386,14 +8375,23 @@ def _head_desviado(
 
 
 def _observacion_corresponde(
-    observacion, version: str, declaradas: list[dict]
+    observacion, version: str, declaradas: list[dict], procedimiento: str | None
 ) -> bool:
-    """La observacion es de esta version y de estas comprobaciones declaradas."""
+    """La observacion es de esta version, estas declaradas y este procedimiento.
+
+    Cuando una declarada nombra archivos de `.interno/`, el argv no basta: la
+    observacion guarda la huella del contenido que ejecuto. Una observacion
+    anterior a esa huella no corresponde y se vuelve a observar.
+    """
     if not isinstance(observacion, dict):
         return False
     if (observacion.get("version") or observacion.get("producto")) != version:
         return False
-    return observacion.get("comprobaciones") == declaradas
+    if observacion.get("comprobaciones") != declaradas:
+        return False
+    if procedimiento is not None and observacion.get("procedimiento") != procedimiento:
+        return False
+    return True
 
 
 def _observacion_de_la_version(
@@ -8402,22 +8400,32 @@ def _observacion_de_la_version(
     version: str,
     declaradas: list[dict],
     directorio: Path,
+    procedimiento: str | None,
 ) -> dict | None:
+    """La observacion vigente: primero la del intento actual, luego el registro.
+
+    El archivo del intento actual es lo que el comprobador acaba de ver. Un
+    verde nuevo no puede quedar tapado por un rojo anterior que coincide en
+    version y declaradas; por eso se lee antes que los eventos guardados.
+    """
+    path = directorio / "observaciones.json"
+    if path.is_file():
+        try:
+            candidata = leer_json(path)
+        except (OSError, ValueError):
+            candidata = None
+        if _observacion_corresponde(
+            candidata, version, declaradas, procedimiento
+        ):
+            return candidata
     for ev in reversed(registro.eventos(enc.id)):
         if (
             ev["kind"] == "observacion_supervisor"
-            and _observacion_corresponde(ev["data"], version, declaradas)
+            and _observacion_corresponde(
+                ev["data"], version, declaradas, procedimiento
+            )
         ):
             return ev["data"]
-    path = directorio / "observaciones.json"
-    if not path.is_file():
-        return None
-    try:
-        candidata = leer_json(path)
-    except (OSError, ValueError):
-        return None
-    if _observacion_corresponde(candidata, version, declaradas):
-        return candidata
     return None
 
 
@@ -8448,6 +8456,76 @@ def _detalle_en_rojo(ejecucion: dict) -> str:
         if cola:
             lineas.append(f"{nombre} (final):\n{cola}")
     return "\n".join(lineas)
+
+
+def _huella_de_observacion(observacion: dict) -> str:
+    """Identidad del resultado observado, sin la salida que varia entre corridas.
+
+    La version, las declaradas y el procedimiento deciden si una observacion se
+    puede reusar; esta huella distingue una ejecucion nueva de la anterior para
+    que se registre. Un rojo y luego un verde de la misma identidad reutilizable
+    dejan dos eventos, y el verde, mas reciente, queda vigente. Repetir el mismo
+    resultado reusa la clave y no duplica el evento.
+    """
+    ejecuciones = []
+    for ejecucion in observacion.get("ejecuciones") or []:
+        if not isinstance(ejecucion, dict):
+            continue
+        rc = ejecucion.get("rc")
+        ejecuciones.append(
+            [
+                str(ejecucion.get("objetivo") or "comprobacion"),
+                ejecucion.get("argv"),
+                None if rc is None else str(rc),
+                str(ejecucion.get("error_instrumento") or ""),
+            ]
+        )
+    return digest(
+        {
+            "ejecuciones": ejecuciones,
+            "error_instrumento": str(observacion.get("error_instrumento") or ""),
+        }
+    )[:16]
+
+
+def _registrar_observacion(
+    registro: Registro,
+    enc: Encargo,
+    version: str,
+    esperadas: list[dict],
+    observacion: dict,
+    hora: str,
+) -> None:
+    """Guarda la observacion seleccionada como el evento vigente de la version.
+
+    La clave incluye la generacion y el resultado: registrar dos veces la misma
+    observacion no duplica, y un resultado nuevo deja su evento. La usan el
+    responsable al incorporar y la entrega al consumir el verde, para que el
+    verde que cierra un bloqueo no se pierda en los intentos siguientes.
+    """
+    procedimiento = observacion.get("procedimiento")
+    ident = digest(
+        {
+            "comprobaciones": esperadas,
+            "procedimiento": procedimiento,
+            "resultado": _huella_de_observacion(observacion),
+            "generacion": enc.generacion,
+        }
+    )[:16]
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "observacion_supervisor",
+            "data": {
+                "version": version,
+                "comprobaciones": observacion.get("comprobaciones") or [],
+                "procedimiento": procedimiento,
+                "ejecuciones": observacion.get("ejecuciones") or [],
+                "hora": hora,
+            },
+        },
+        f"observacion:{enc.id}:{version}:{ident}",
+    )
 
 
 def _huella_de_fallas(observacion: dict) -> str:
@@ -8712,8 +8790,9 @@ def _espera_por_observacion(
         return None
     version = version_producto(espacio).firma
     esperadas = declaradas
+    procedimiento = huella_procedimiento(espacio, esperadas)
     observacion = _observacion_de_la_version(
-        registro, enc, version, esperadas, directorio
+        registro, enc, version, esperadas, directorio, procedimiento
     )
     if observacion is None:
         iniciar_comprobacion(espacio, directorio)
@@ -8727,6 +8806,9 @@ def _espera_por_observacion(
         )
         observado = registro.fold(enc.id) or enc
         return observado, Espera(observado.reanuda_en, observado.motivo)
+    if not observacion.get("error_instrumento"):
+        _registrar_observacion(registro, enc, version, esperadas, observacion, hora)
+        enc = registro.fold(enc.id) or enc
     fallas, instrumentos = _fallas_de_observacion(observacion)
     if instrumentos:
         causa = "la observacion del comprobador no se pudo usar: " + "; ".join(

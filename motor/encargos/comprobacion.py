@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -172,6 +173,419 @@ def firma_producto(espacio: Path) -> str:
     return version_producto(espacio).firma
 
 
+_INTERPRETES_DE_SHELL = {"sh", "bash", "dash", "zsh", "ksh", "ash"}
+
+
+def _indices_de_linea_de_shell(argv: list[str]) -> set[int]:
+    """Los argumentos que son una linea de shell: el valor de un `-c` del shell."""
+    if not argv:
+        return set()
+    nombre = Path(str(argv[0]).replace("\\", "/")).name.lower()
+    if nombre.endswith(".exe"):
+        nombre = nombre[:-4]
+    if nombre not in _INTERPRETES_DE_SHELL:
+        return set()
+    indices: set[int] = set()
+    for i, token in enumerate(argv[:-1]):
+        texto = str(token)
+        if texto.startswith("-") and not texto.startswith("--") and "c" in texto[1:]:
+            indices.add(i + 1)
+    return indices
+
+
+def _ocurrencias_internas(normal: str):
+    """Posiciones de `.interno` como componente y el caracter que las precede."""
+    inicio = 0
+    while True:
+        pos = normal.find(INTERNO, inicio)
+        if pos < 0:
+            return
+        antes = normal[pos - 1] if pos else ""
+        if pos == 0 or antes in "/=:" or antes.isspace() or antes in ";'\"`|&()":
+            yield pos, antes
+        inicio = pos + len(INTERNO)
+
+
+def _une_continuaciones(token: str) -> str:
+    """Elimina `\\` + salto de linea fuera de comillas simples, como el shell."""
+    salida = []
+    i = 0
+    comilla_simple = False
+    while i < len(token):
+        caracter = token[i]
+        if caracter == "'":
+            comilla_simple = not comilla_simple
+            salida.append(caracter)
+            i += 1
+            continue
+        if (
+            not comilla_simple
+            and caracter == "\\"
+            and i + 1 < len(token)
+            and token[i + 1] in "\r\n"
+        ):
+            i += 1
+            if token[i] == "\r" and i + 1 < len(token) and token[i + 1] == "\n":
+                i += 1
+            i += 1
+            continue
+        salida.append(caracter)
+        i += 1
+    return "".join(salida)
+
+
+def _palabras_de_shell(token: str) -> list[str]:
+    """Las palabras de una linea de shell, con los metacaracteres ya separados.
+
+    `punctuation_chars` separa `;`, `()`, `<`, `>`, `|`, `&` y los saltos de
+    linea pegados a la ruta, pero respeta las comillas: un nombre citado con
+    esos caracteres sigue siendo una sola palabra. `\\` + salto de linea es
+    una continuacion y desaparece.
+    """
+    lexer = shlex.shlex(
+        _une_continuaciones(token), posix=True, punctuation_chars=";()<>|&\n\r"
+    )
+    lexer.whitespace = " \t"
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _rutas_en_token(normal: str) -> list[str]:
+    """Las colas de `.interno/` de un token o de una palabra ya separada."""
+    salida = []
+    for pos, antes in _ocurrencias_internas(normal):
+        resto = normal[pos + len(INTERNO):]
+        if not resto.startswith("/"):
+            continue
+        cola = resto[1:].strip()
+        if antes == "=" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", normal):
+            cola = cola.split(":", 1)[0]
+        if cola:
+            salida.append(cola)
+    return salida
+
+
+def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
+    """Rutas de `.interno/` nombradas en un argv, relativas a `.interno`.
+
+    Un token puede ser la ruta relativa (`.interno/script.sh`), absoluta o de
+    Windows, con espacios (`--dir=.interno/mis pruebas`), o una linea de shell
+    que la nombra dentro del mismo argumento (`. .interno/script.sh` tras
+    `sh -c`). En una linea de shell se separan primero las palabras y sus
+    metacaracteres, asi que los espacios citados de una ruta y los argumentos
+    del comando no se confunden con la ruta. Se conserva la cola, que es la
+    misma ruta dentro del interno del espacio.
+    """
+    shell = _indices_de_linea_de_shell(argv)
+    vistos: set[str] = set()
+    salida: list[str] = []
+    for i, token in enumerate(argv):
+        normal = str(token).replace("\\", "/")
+        if i in shell:
+            try:
+                palabras = _palabras_de_shell(str(token))
+            except ValueError:
+                palabras = normal.split()
+            candidatos = [str(p).replace("\\", "/") for p in palabras]
+        else:
+            candidatos = [normal]
+        for candidato in candidatos:
+            for cola in _rutas_en_token(candidato):
+                if cola not in vistos:
+                    vistos.add(cola)
+                    salida.append(cola)
+    return sorted(salida)
+
+
+def _huella_de_lo_interno(interno: Path, relativo: str) -> str:
+    """Contenido de una ruta de `.interno/`: archivo, arbol, ausencia o fuera.
+
+    Un argv puede nombrar `..` o un enlace que sale de `.interno/`; ese
+    contenido no es el procedimiento del espacio y no entra en la huella. Un
+    archivo ilegible tampoco tumba la observacion: deja su marca, distinta de
+    un contenido y de una ausencia. La ruta nombrada se pesa siempre, aunque su
+    nombre coincida con una exclusion del producto (`.runtime`): las
+    exclusiones de la firma no se trasladan al archivo que el argv ejecuta.
+    """
+    base = interno.resolve()
+    path = (interno / relativo).resolve()
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return "fuera"
+    try:
+        if path.is_file():
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        if path.is_dir():
+            arbol = hashlib.sha256()
+            for hijo in sorted(path.rglob("*")):
+                if not hijo.is_file():
+                    continue
+                relativo_hijo = hijo.relative_to(path)
+                if any(p in _EXCLUIDAS for p in relativo_hijo.parts):
+                    continue
+                try:
+                    hijo.resolve().relative_to(base)
+                except (OSError, ValueError):
+                    continue
+                arbol.update(relativo_hijo.as_posix().encode())
+                arbol.update(b"\0")
+                arbol.update(hashlib.sha256(hijo.read_bytes()).hexdigest().encode())
+                arbol.update(b"\0")
+            return "arbol:" + arbol.hexdigest()
+    except OSError:
+        return "ilegible"
+    return "ausente"
+
+
+_INTERPRETES_DE_SCRIPT = _INTERPRETES_DE_SHELL | {
+    "python", "python3", "node", "ruby", "perl", "php", "lua",
+}
+
+
+def _es_script_en_posicion(palabra: str) -> bool:
+    """True si la palabra puede ser el comando o el guion de una linea de shell."""
+    if "=" in palabra.split(INTERNO, 1)[0]:
+        return False
+    return bool(_rutas_internas_del_argv([palabra]))
+
+
+_SEPARADORES_DE_COMANDO = ";|&()\n\r"
+
+
+def _es_separador_de_comando(palabra: str) -> bool:
+    """Un separador o una corrida de separadores (`;;`, `&&`, `\n\n`)."""
+    return bool(palabra) and all(c in _SEPARADORES_DE_COMANDO for c in palabra)
+
+
+def _scripts_en_palabras(palabras: list[str]) -> set[str]:
+    """Las rutas de `.interno/` que ejecuta cada comando de una linea de shell."""
+    salida: set[str] = set()
+    inicio = 0
+    for indice, palabra in enumerate(palabras + [";"]):
+        if _es_separador_de_comando(palabra):
+            salida |= _scripts_del_comando(palabras[inicio:indice])
+            inicio = indice + 1
+    return salida
+
+
+def _resto_tras_env(argv: list[str]) -> list[str]:
+    """Lo que `env` ejecuta: sus banderas y `NAME=valor` no son el comando."""
+    if not argv:
+        return []
+    nombre = Path(str(argv[0]).replace("\\", "/")).name.lower()
+    if nombre.endswith(".exe"):
+        nombre = nombre[:-4]
+    if nombre != "env":
+        return argv
+    i = 1
+    while i < len(argv):
+        token = str(argv[i])
+        if token == "--":
+            i += 1
+            break
+        if token in ("-i", "--ignore-environment"):
+            i += 1
+            continue
+        if token in ("-u", "--unset", "-C", "--chdir"):
+            i += 2
+            continue
+        if token.startswith("--unset=") or token.startswith("--chdir="):
+            i += 1
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        if "=" in token and not token.startswith("="):
+            i += 1
+            continue
+        break
+    return argv[i:]
+
+
+def _script_de_interprete(argv: list[str]) -> str | None:
+    """El primer argumento que no es una bandera de un interprete es su guion.
+
+    `env` se atraviesa: sus banderas y sus `NAME=valor` no son el comando, y el
+    interprete que le sigue conserva la misma regla.
+    """
+    if not argv:
+        return None
+    nombre = Path(str(argv[0]).replace("\\", "/")).name.lower()
+    if nombre.endswith(".exe"):
+        nombre = nombre[:-4]
+    if nombre == "env":
+        return _script_de_interprete(_resto_tras_env(argv))
+    if nombre not in _INTERPRETES_DE_SCRIPT:
+        return None
+    i = 1
+    while i < len(argv):
+        token = str(argv[i])
+        if token in ("-c", "-e", "-m", "-p", "--eval", "--print"):
+            i += 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return token
+    return None
+
+
+_PREFIJOS_DE_COMANDO = ("exec", "command", "builtin")
+_ASIGNACION_DE_ENTORNO = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _sin_prefijos_de_comando(palabras: list[str]) -> list[str]:
+    """Quita asignaciones de entorno y `exec`/`command`/`builtin` del comienzo."""
+    i = 0
+    while i < len(palabras):
+        token = str(palabras[i])
+        if token in _PREFIJOS_DE_COMANDO:
+            i += 1
+            solo_consulta = False
+            while i < len(palabras) and str(palabras[i]).startswith("-"):
+                if str(palabras[i]) in ("-v", "-V"):
+                    solo_consulta = True
+                i += 1
+            if solo_consulta:
+                return []
+            continue
+        if _ASIGNACION_DE_ENTORNO.match(token):
+            i += 1
+            continue
+        break
+    return palabras[i:]
+
+
+def _scripts_del_comando(palabras: list[str]) -> set[str]:
+    """Las rutas de `.interno/` que ejecuta un comando simple de una linea de shell."""
+    salida: set[str] = set()
+    efectivas = _sin_prefijos_de_comando(palabras)
+    if not efectivas:
+        return salida
+    primero = efectivas[0]
+    if primero in (".", "source"):
+        if len(efectivas) > 1 and _es_script_en_posicion(efectivas[1]):
+            salida.update(_rutas_internas_del_argv([efectivas[1]]))
+        return salida
+    if _es_script_en_posicion(primero):
+        salida.update(_rutas_internas_del_argv([primero]))
+    resto = _resto_tras_env(efectivas)
+    if resto and _es_script_en_posicion(resto[0]):
+        salida.update(_rutas_internas_del_argv([resto[0]]))
+    guion = _script_de_interprete(efectivas)
+    if guion is not None:
+        salida.update(_rutas_internas_del_argv([guion]))
+    return salida
+
+
+
+def _rutas_ejecutadas(argv: list[str]) -> set[str]:
+    """Las rutas de `.interno/` que el argv ejecuta como comando o guion.
+
+    Un log o una redireccion que tambien se nombra queda fuera: se pesa con su
+    huella posterior, porque es salida y no contenido ejecutado. Esta
+    distincion evita que una comprobacion que escribe su propio informe quede
+    sin observacion vigente para siempre.
+    """
+    salida: set[str] = set()
+    if not argv:
+        return salida
+    efectivas = _sin_prefijos_de_comando([str(x) for x in argv])
+    if efectivas:
+        for cola in _rutas_internas_del_argv([efectivas[0]]):
+            salida.add(cola)
+        resto = _resto_tras_env(efectivas)
+        if resto:
+            for cola in _rutas_internas_del_argv([resto[0]]):
+                salida.add(cola)
+        guion = _script_de_interprete(efectivas)
+        if guion is not None:
+            for cola in _rutas_internas_del_argv([guion]):
+                salida.add(cola)
+    for indice in _indices_de_linea_de_shell(argv):
+        try:
+            palabras = _palabras_de_shell(str(argv[indice]))
+        except ValueError:
+            # Una linea de shell mal citada no puede tumbar la observacion.
+            palabras = str(argv[indice]).replace("\\", "/").split()
+        salida |= _scripts_en_palabras(palabras)
+    return salida
+
+
+def _huellas_antes_de_ejecutar(
+    espacio: Path, declaradas: list[dict] | None
+) -> dict[str, str]:
+    """La huella de los guiones ejecutados antes de correr."""
+    interno = interno_de(espacio)
+    base = interno.resolve()
+    huellas: dict[str, str] = {}
+    for comprobacion in declaradas or []:
+        argv = comprobacion.get("argv") if isinstance(comprobacion, dict) else None
+        if not isinstance(argv, list):
+            continue
+        for ruta in _rutas_ejecutadas([str(x) for x in argv]):
+            if ruta in huellas:
+                continue
+            path = (interno / ruta).resolve()
+            try:
+                path.relative_to(base)
+            except ValueError:
+                continue
+            if path.is_file():
+                huellas[ruta] = _huella_de_lo_interno(interno, ruta)
+    return huellas
+
+
+def huella_procedimiento(
+    espacio: Path,
+    declaradas: list[dict] | None,
+    antes: dict[str, str] | None = None,
+) -> str | None:
+    """Identidad de lo que ejecutan las comprobaciones declaradas.
+
+    La version del producto excluye `.interno/` y el argv no cambia cuando
+    cambia el script que vive ahi. Esta huella suma el contenido de los
+    archivos de `.interno/` que aparecen en el argv. `None` si ninguna
+    declarada nombra `.interno/`: entonces la version y el argv ya identifican
+    la observacion.
+
+    Con `antes` (la huella de los guiones ejecutados, tomada antes de correr),
+    el archivo que cambio durante la ejecucion conserva la huella de lo que
+    realmente corrio. Las demas rutas, como un log o un directorio de salida,
+    usan la huella posterior: son salida, no contenido ejecutado.
+    """
+    if not declaradas:
+        return None
+    interno = interno_de(espacio)
+    partes = []
+    for comprobacion in declaradas:
+        argv = comprobacion.get("argv") if isinstance(comprobacion, dict) else None
+        if not isinstance(argv, list):
+            continue
+        argv_lista = [str(x) for x in argv]
+        rutas = _rutas_internas_del_argv(argv_lista)
+        if not rutas:
+            continue
+        ejecutadas = _rutas_ejecutadas(argv_lista)
+        archivos = []
+        for ruta in rutas:
+            actual = _huella_de_lo_interno(interno, ruta)
+            previa = (antes or {}).get(ruta)
+            if (
+                ruta in ejecutadas
+                and previa is not None
+                and not previa.startswith("arbol:")
+                and not actual.startswith("arbol:")
+            ):
+                actual = previa
+            archivos.append([ruta, actual])
+        partes.append({"argv": argv_lista, "archivos": archivos})
+    if not partes:
+        return None
+    return digest({"procedimiento": partes})
+
+
 def leer_declaradas(interno: Path) -> list[dict] | None:
     """Comprobaciones declaradas en `.interno/comprobaciones.json`.
 
@@ -312,6 +726,7 @@ def _ejecutar_declaradas(
     comandos: list[dict], espacio: Path, directorio: Path, contenedor: Path
 ) -> dict:
     procedimiento = {"comprobaciones": comandos}
+    antes = _huellas_antes_de_ejecutar(espacio, comandos)
     ejecuciones = []
     for i, c in enumerate(comandos):
         tope = _tope_de(c)
@@ -435,8 +850,14 @@ def _ejecutar_declaradas(
             except ValueError:
                 continue
     firma = firma_producto(espacio)
+    # Despues de ejecutar: la comprobacion puede crear caches o archivos bajo
+    # `.interno/`, y la huella debe ser la que se recalcula al leer el intento.
+    # Un archivo nombrado que cambio durante la ejecucion conserva su huella
+    # previa: ese resultado no acredita el contenido nuevo.
+    huella = huella_procedimiento(espacio, comandos, antes=antes)
     datos = {
         "comprobaciones": procedimiento["comprobaciones"],
+        "procedimiento": huella,
         "ejecuciones": ejecuciones,
         "historial_runtime": runtime,
         "producto": firma,
