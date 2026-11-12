@@ -206,23 +206,26 @@ def _ocurrencias_internas(normal: str):
         inicio = pos + len(INTERNO)
 
 
-_PEGADO_DE_SHELL = re.compile(r"[;|&()<>`]")
+def _palabras_de_shell(token: str) -> list[str]:
+    """Las palabras de una linea de shell, con los metacaracteres ya separados.
 
-
-def _rutas_en_token(normal: str, de_shell: bool = False) -> list[str]:
-    """Las colas de `.interno/` de un token o de una palabra ya separada.
-
-    `shlex` separa por espacios y comillas, pero no por `;`, `&&` o `|` pegados
-    a la ruta; en una palabra de shell se cortan esos delimitadores.
+    `punctuation_chars` separa `;`, `()`, `<`, `>`, `|` y `&` pegados a la
+    ruta, pero respeta las comillas: un nombre citado con esos caracteres sigue
+    siendo una sola palabra.
     """
+    lexer = shlex.shlex(token, posix=True, punctuation_chars=";()<>|&")
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _rutas_en_token(normal: str) -> list[str]:
+    """Las colas de `.interno/` de un token o de una palabra ya separada."""
     salida = []
     for pos, antes in _ocurrencias_internas(normal):
         resto = normal[pos + len(INTERNO):]
         if not resto.startswith("/"):
             continue
         cola = resto[1:].strip()
-        if de_shell:
-            cola = _PEGADO_DE_SHELL.split(cola, 1)[0]
         if antes == "=" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", normal):
             cola = cola.split(":", 1)[0]
         if cola:
@@ -236,10 +239,10 @@ def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
     Un token puede ser la ruta relativa (`.interno/script.sh`), absoluta o de
     Windows, con espacios (`--dir=.interno/mis pruebas`), o una linea de shell
     que la nombra dentro del mismo argumento (`. .interno/script.sh` tras
-    `sh -c`). En una linea de shell se separan primero las palabras, asi que
-    los espacios citados de una ruta y los argumentos del comando no se
-    confunden con la ruta. Se conserva la cola, que es la misma ruta dentro del
-    interno del espacio.
+    `sh -c`). En una linea de shell se separan primero las palabras y sus
+    metacaracteres, asi que los espacios citados de una ruta y los argumentos
+    del comando no se confunden con la ruta. Se conserva la cola, que es la
+    misma ruta dentro del interno del espacio.
     """
     shell = _indices_de_linea_de_shell(argv)
     vistos: set[str] = set()
@@ -248,14 +251,14 @@ def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
         normal = str(token).replace("\\", "/")
         if i in shell:
             try:
-                palabras = shlex.split(str(token))
+                palabras = _palabras_de_shell(str(token))
             except ValueError:
                 palabras = normal.split()
             candidatos = [str(p).replace("\\", "/") for p in palabras]
         else:
             candidatos = [normal]
         for candidato in candidatos:
-            for cola in _rutas_en_token(candidato, de_shell=i in shell):
+            for cola in _rutas_en_token(candidato):
                 if cola not in vistos:
                     vistos.add(cola)
                     salida.append(cola)
