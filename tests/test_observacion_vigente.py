@@ -4,8 +4,9 @@ El 12-nov, en `arreglos-01`, el comprobador corrigio solo `.interno/wsl-arreglos
 y volvio a observar en verde sobre la misma version, pero el motor siguio leyendo
 el `observacion_supervisor` rojo guardado. La identidad de la observacion era la
 version del producto mas el argv declarado: no veia el contenido del script que
-el argv ejecuta. Estas pruebas fijan que la identidad incluye ese contenido y
-que la observacion nueva del intento actual gana al evento viejo.
+el argv ejecuta. Estas pruebas fijan que la identidad incluye ese contenido, que
+la observacion nueva del intento actual gana al evento viejo y que el verde
+consumido en la entrega queda vigente para los intentos siguientes.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ import os
 import sys
 import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from motor.encargos import comprobacion
@@ -71,6 +71,42 @@ def _abiertos_del_supervisor(enc) -> list:
         for h in (enc.fase_actual.hallazgos if enc.fase_actual else ())
         if h.origen == "supervisor" and h.estado == "abierto"
     ]
+
+
+def _reobserva_al_cambiar(caso, clave, argv, ruta, inicial, final):
+    """Abre el bloqueo con un rojo y comprueba que el script nuevo se vuelve a observar."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        r = Recorrido(tmp, clave, "crea saludo.txt")
+        caso.addCleanup(r.reg.close)
+        (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+        script = r.espacio / ruta
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(inicial, encoding="utf-8")
+        _declarar(r, argv)
+
+        roja = _observar(r)
+        caso.assertEqual(roja["ejecuciones"][0].get("rc"), 5, roja)
+        r.incorporar()
+        _espera_por_observacion(r.reg, r.fold(), r.espacio, r.d, ahora_iso())
+        caso.assertEqual(
+            len(_abiertos_del_supervisor(r.fold())),
+            1,
+            "el rc 5 abre el bloqueo del supervisor",
+        )
+
+        script.write_text(final, encoding="utf-8")
+        with mock.patch(
+            "motor.encargos.ciclo.iniciar_comprobacion"
+        ) as iniciar:
+            resultado = _espera_por_observacion(
+                r.reg, r.fold(), r.espacio, r.d, ahora_iso()
+            )
+        iniciar.assert_called_once()
+        caso.assertIsInstance(
+            resultado[1] if resultado else None,
+            Espera,
+            "el cambio del script de .interno vuelve a observar antes de publicar",
+        )
 
 
 class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
@@ -262,7 +298,6 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 "observar antes de publicar",
             )
 
-
     def test_el_verde_de_la_misma_identidad_queda_vigente_entre_intentos(self):
         """Un verde nuevo se registra aunque la identidad reutilizable no cambie.
 
@@ -345,6 +380,144 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 "el verde vigente no vuelve a alimentar la escalera",
             )
 
+    def test_el_verde_consumido_en_la_entrega_queda_vigente(self):
+        """El verde que la entrega consume sin incorporar tambien se registra.
+
+        `_espera_por_observacion` cierra el bloqueo con el archivo del intento,
+        pero si no guarda la observacion, el siguiente intento vuelve al rojo
+        del registro. Aqui la entrega consume el verde y un intento nuevo lo lee.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "verde-entrega", github_con_hallazgos)
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+            r.incorporar()
+            r.juicio({"veredicto": "aprobado", "evidencia": "lei saludo.txt"})
+            r.incorporar()
+
+            script = r.espacio / ".interno" / "script.py"
+            script.parent.mkdir(exist_ok=True)
+            script.write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "sys.exit(0 if Path('.interno/ok').exists() else 5)\n",
+                encoding="utf-8",
+            )
+            _declarar(r, [sys.executable, ".interno/script.py"])
+            version = firma_producto(r.espacio)
+
+            roja = _observar(r)
+            self.assertEqual(roja["ejecuciones"][0].get("rc"), 5, roja)
+            r.incorporar()
+            _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+            self.assertEqual(
+                len(_abiertos_del_supervisor(r.fold())),
+                1,
+                "el rc 5 abre el bloqueo del supervisor",
+            )
+
+            (r.espacio / ".interno" / "ok").write_text("", encoding="utf-8")
+            verde = _observar(r)
+            self.assertEqual(verde["ejecuciones"][0].get("rc"), 0, verde)
+            antes = len(r.reg.eventos(r.enc))
+            _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+            self.assertEqual(
+                _abiertos_del_supervisor(r.fold()),
+                [],
+                "el verde consumido en la entrega cierra el bloqueo",
+            )
+
+            observaciones = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "observacion_supervisor"
+                and ev["data"].get("version") == version
+            ]
+            self.assertTrue(
+                observaciones,
+                "la entrega registra la observacion que consumio",
+            )
+            self.assertEqual(
+                observaciones[-1]["data"]["ejecuciones"][0].get("rc"),
+                0,
+                "el verde consumido en la entrega queda registrado",
+            )
+
+            nuevo = r.reg.base / "ejecucion" / r.enc / "intento-nuevo"
+            nuevo.mkdir()
+            with mock.patch(
+                "motor.encargos.ciclo.iniciar_comprobacion"
+            ) as iniciar:
+                resultado = _espera_por_observacion(
+                    r.reg, r.fold(), r.espacio, nuevo, ahora_iso()
+                )
+            iniciar.assert_not_called()
+            self.assertIsNone(
+                resultado,
+                "desde un intento nuevo gana el verde consumido, no el rojo viejo",
+            )
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            self.assertFalse(
+                any(ev["kind"] == "sin_progreso" for ev in nuevos),
+                "el verde consumido no vuelve a alimentar la escalera",
+            )
+
+    def test_un_script_que_se_modifica_al_correr_no_acredita_su_contenido_nuevo(self):
+        """Un verde no se guarda con el contenido que el script dejo despues.
+
+        El script se reescribe a un contenido que sale 5 y termina su primera
+        corrida en 0. La huella guardada es la del contenido que corrio, no la
+        del que quedo; por eso el motor vuelve a observar y no acepta el verde.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "auto-modifica", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+            r.incorporar()
+
+            script = r.espacio / ".interno" / "script.py"
+            script.parent.mkdir(exist_ok=True)
+            script.write_text(
+                "from pathlib import Path\n"
+                "Path(__file__).write_text('import sys; sys.exit(5)\\n')\n"
+                "import sys\n"
+                "sys.exit(0)\n",
+                encoding="utf-8",
+            )
+            _declarar(r, [sys.executable, ".interno/script.py"])
+
+            verde = _observar(r)
+            self.assertEqual(verde["ejecuciones"][0].get("rc"), 0, verde)
+            self.assertEqual(
+                script.read_text(encoding="utf-8"),
+                "import sys; sys.exit(5)\n",
+                "el script dejo un contenido que sale 5",
+            )
+
+            with mock.patch(
+                "motor.encargos.ciclo.iniciar_comprobacion"
+            ) as iniciar:
+                resultado = _espera_por_observacion(
+                    r.reg, r.fold(), r.espacio, r.d, ahora_iso()
+                )
+            iniciar.assert_called_once()
+            self.assertIsInstance(
+                resultado[1] if resultado else None,
+                Espera,
+                "el verde no acredita un contenido que no corrio",
+            )
+
+    def test_un_script_bajo_runtime_nombrado_en_argv_pesa_y_reobserva(self):
+        """Una ruta de `.interno/.runtime/` nombrada por el argv se pesa igual."""
+        _reobserva_al_cambiar(
+            self,
+            "runtime-nombrado",
+            [sys.executable, ".interno/.runtime/script.py"],
+            ".interno/.runtime/script.py",
+            "import sys\nsys.exit(5)\n",
+            "import sys\nsys.exit(0)\n",
+        )
+
     def test_un_script_nombrado_dentro_de_sh_c_cambia_la_observacion(self):
         """La ruta dentro de `sh -c` cuenta aunque comparta token con el comando.
 
@@ -383,182 +556,82 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 "de publicar",
             )
 
-    def test_un_script_de_sh_c_con_argumentos_pesa_la_ruta_sin_los_argumentos(self):
-        """La ruta de un `sh -c` con argumentos se corta en el espacio, no se traga la cola."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "sh-c-flag", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            script = interno / "script.sh"
-            script.write_text("exit 5\n", encoding="utf-8")
-            declaradas = [
-                {"objetivo": "x", "argv": ["/bin/sh", "-c", ".interno/script.sh --rapido"]}
-            ]
+    def test_un_script_de_sh_c_con_argumentos_vuelve_a_observar(self):
+        """El script de un `sh -c` con argumentos pesa sin tragarse la linea."""
+        _reobserva_al_cambiar(
+            self,
+            "sh-c-flag",
+            ["/bin/sh", "-c", ". .interno/script.sh --rapido"],
+            ".interno/script.sh",
+            "exit 5\n",
+            "exit 0\n",
+        )
 
-            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            script.write_text("exit 0\n", encoding="utf-8")
-            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(antes)
-            self.assertNotEqual(
-                antes,
-                despues,
-                "la ruta del script pesa; los argumentos de la linea no se "
-                "confunden con la ruta",
-            )
-
-    def test_una_ruta_al_inicio_de_una_linea_multilinea_pesa(self):
+    def test_una_ruta_al_inicio_de_una_linea_multilinea_vuelve_a_observar(self):
         """Un salto de línea también separa el componente `.interno`."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "sh-c-multilinea", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            script = interno / "script.sh"
-            script.write_text("exit 5\n", encoding="utf-8")
-            declaradas = [
-                {
-                    "objetivo": "x",
-                    "argv": ["/bin/sh", "-c", "set -e\n.interno/script.sh --rapido"],
-                }
-            ]
+        _reobserva_al_cambiar(
+            self,
+            "sh-c-multilinea",
+            ["/bin/sh", "-c", "set -e\n. .interno/script.sh"],
+            ".interno/script.sh",
+            "exit 5\n",
+            "exit 0\n",
+        )
 
-            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            script.write_text("exit 0\n", encoding="utf-8")
-            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(antes)
-            self.assertNotEqual(
-                antes,
-                despues,
-                "la ruta tras un salto de linea de shell pesa entera",
-            )
-
-    def test_una_bandera_c_que_no_es_de_shell_no_corta_la_ruta(self):
-        """`diff -c` no convierte su argumento en una línea de shell."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "diff-c", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            carpeta = interno / "mis pruebas"
-            carpeta.mkdir()
-            esperado = carpeta / "esperado.txt"
-            esperado.write_text("uno\n", encoding="utf-8")
-            declaradas = [
-                {"objetivo": "x", "argv": ["diff", "-c", ".interno/mis pruebas/esperado.txt"]}
-            ]
-
-            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            esperado.write_text("dos\n", encoding="utf-8")
-            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(antes)
-            self.assertNotEqual(
-                antes,
-                despues,
-                "la ruta con espacios pesa entera aunque la bandera sea -c",
-            )
-
-    def test_una_ruta_con_espacios_citada_en_sh_c_pesa_entera(self):
+    def test_una_ruta_con_espacios_citada_en_sh_c_vuelve_a_observar(self):
         """Las comillas de la línea de shell agrupan la ruta con espacios."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "sh-c-cita", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            carpeta = interno / "mis pruebas"
-            carpeta.mkdir()
-            esperado = carpeta / "esperado.txt"
-            esperado.write_text("uno\n", encoding="utf-8")
-            declaradas = [
-                {
-                    "objetivo": "x",
-                    "argv": ["/bin/sh", "-c", 'cat ".interno/mis pruebas/esperado.txt"'],
-                }
-            ]
+        _reobserva_al_cambiar(
+            self,
+            "sh-c-cita",
+            ["/bin/sh", "-c", '. ".interno/mis pruebas/esperado.txt"'],
+            ".interno/mis pruebas/esperado.txt",
+            "exit 5\n",
+            "exit 0\n",
+        )
 
-            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            esperado.write_text("dos\n", encoding="utf-8")
-            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
+    def test_una_ruta_con_espacios_en_un_argumento_vuelve_a_observar(self):
+        """Un argumento de ruta conserva sus espacios; no se corta en el primero."""
+        _reobserva_al_cambiar(
+            self,
+            "ruta-espacios",
+            [sys.executable, ".interno/mis pruebas/run.py"],
+            ".interno/mis pruebas/run.py",
+            "import sys\nsys.exit(5)\n",
+            "import sys\nsys.exit(0)\n",
+        )
 
-            self.assertIsNotNone(antes)
-            self.assertNotEqual(
-                antes,
-                despues,
-                "la ruta citada con espacios pesa entera",
-            )
-
-    def test_una_asignacion_de_entorno_corta_en_los_dos_puntos(self):
+    def test_una_asignacion_de_entorno_pesa_el_directorio_de_interno(self):
         """`PATH=.interno/bin:$PATH` pesa `.interno/bin`, no el valor del PATH."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "sh-c-path", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            bin_dir = interno / "bin"
-            bin_dir.mkdir()
-            herramienta = bin_dir / "run.sh"
-            herramienta.write_text("exit 5\n", encoding="utf-8")
-            declaradas = [
-                {
-                    "objetivo": "x",
-                    "argv": ["/bin/sh", "-c", "PATH=.interno/bin:$PATH exit 0"],
-                }
-            ]
+        _reobserva_al_cambiar(
+            self,
+            "sh-c-path",
+            ["/bin/sh", "-c", "PATH=.interno/bin:$PATH exit 5"],
+            ".interno/bin/run.sh",
+            "exit 5\n",
+            "exit 0\n",
+        )
 
-            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            herramienta.write_text("exit 0\n", encoding="utf-8")
-            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(antes)
-            self.assertNotEqual(
-                antes,
-                despues,
-                "la asignacion de PATH pesa el directorio de .interno",
-            )
-
-    def test_un_delimitador_pegado_a_la_ruta_no_entra_en_la_huella(self):
+    def test_un_delimitador_pegado_a_la_ruta_vuelve_a_observar(self):
         """Un `;` pegado al nombre del script no forma parte de la ruta."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "sh-c-pegado", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            script = interno / "a.sh"
-            script.write_text("exit 5\n", encoding="utf-8")
-            declaradas = [
-                {"objetivo": "x", "argv": ["/bin/sh", "-c", "cat .interno/a.sh;exit 0"]}
-            ]
+        _reobserva_al_cambiar(
+            self,
+            "sh-c-pegado",
+            ["/bin/sh", "-c", ". .interno/a.sh;"],
+            ".interno/a.sh",
+            "exit 5\n",
+            "exit 0\n",
+        )
 
-            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            script.write_text("exit 0\n", encoding="utf-8")
-            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(antes)
-            self.assertNotEqual(
-                antes,
-                despues,
-                "el delimitador pegado no se confunde con la ruta",
-            )
-
-    def test_un_nombre_citado_con_metacaracter_pesa_entero(self):
+    def test_un_nombre_citado_con_metacaracter_vuelve_a_observar(self):
         """Las comillas protegen un nombre que contiene `;`: no se trunca."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "sh-c-cita-meta", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            script = interno / "a;b.sh"
-            script.write_text("exit 5\n", encoding="utf-8")
-            declaradas = [
-                {"objetivo": "x", "argv": ["/bin/sh", "-c", 'cat ".interno/a;b.sh"']}
-            ]
-
-            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            script.write_text("exit 0\n", encoding="utf-8")
-            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(antes)
-            self.assertNotEqual(
-                antes,
-                despues,
-                "un nombre citado con un metacaracter pesa entero",
-            )
+        _reobserva_al_cambiar(
+            self,
+            "sh-c-cita-meta",
+            ["/bin/sh", "-c", '. ".interno/a;b.sh"'],
+            ".interno/a;b.sh",
+            "exit 5\n",
+            "exit 0\n",
+        )
 
     def test_un_rojo_que_vuelve_gana_al_verde_anterior(self):  # no-roja-en-base: la clave con el resultado nace en la primera vuelta; en 5e83c75 el verde ni se registra y el rojo que vuelve no queda tapado por ese camino
         """El rojo verdadero sigue rojo aunque antes haya habido un verde.
@@ -635,168 +708,6 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 len(_abiertos_del_supervisor(r.fold())),
                 1,
                 "el rojo que vuelve deja su bloqueo abierto",
-            )
-
-    def test_la_huella_no_lee_lo_que_sale_de_interno(self):
-        """Una ruta con `..` no mete en la huella un archivo de fuera de `.interno/`."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "confinamiento", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            (interno / "script.sh").write_text("exit 0\n", encoding="utf-8")
-            fuera = r.espacio / "fuera.txt"
-            fuera.write_text("uno\n", encoding="utf-8")
-            declaradas = [
-                {
-                    "objetivo": "lee fuera",
-                    "argv": [sys.executable, ".interno/../fuera.txt"],
-                }
-            ]
-
-            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            fuera.write_text("dos\n", encoding="utf-8")
-            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(
-                antes, "la ruta de .interno sigue entrando en la huella"
-            )
-            self.assertEqual(
-                antes,
-                despues,
-                "un archivo que sale de .interno no entra en la huella",
-            )
-
-    def test_un_enlace_dentro_de_un_directorio_no_entra_en_la_huella(self):
-        """Un enlace dentro del árbol no mete contenido de fuera de `.interno/`."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "enlace-dir", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            carpeta = interno / "carpeta"
-            carpeta.mkdir()
-            (carpeta / "propio.sh").write_text("exit 0\n", encoding="utf-8")
-            (r.espacio / ".runtime").mkdir(exist_ok=True)
-            fuera = r.espacio / ".runtime" / "dato.txt"
-            fuera.write_text("uno\n", encoding="utf-8")
-            try:
-                (carpeta / "enlace").symlink_to(fuera)
-            except (OSError, NotImplementedError):
-                self.skipTest("la plataforma no permite crear enlaces simbólicos")
-
-            declaradas = [
-                {"objetivo": "lee un arbol", "argv": [sys.executable, ".interno/carpeta"]}
-            ]
-            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            fuera.write_text("dos\n", encoding="utf-8")
-            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(antes)
-            self.assertEqual(
-                antes,
-                despues,
-                "un enlace dentro del arbol no mete contenido de fuera en la huella",
-            )
-
-    def test_una_ruta_ilegible_deja_su_marca_sin_tumbar_la_huella(self):
-        """Un archivo ilegible no levanta: deja una marca distinta de ausente."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "ilegible", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            script = interno / "script.sh"
-            script.write_text("exit 0\n", encoding="utf-8")
-            declaradas = [
-                {"objetivo": "x", "argv": [sys.executable, ".interno/script.sh"]}
-            ]
-
-            legible = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            with mock.patch.object(
-                Path, "read_bytes", side_effect=PermissionError("sin permiso")
-            ):
-                ilegible = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            script.unlink()
-            ausente = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(ilegible)
-            self.assertNotEqual(ilegible, legible)
-            self.assertNotEqual(ilegible, ausente)
-
-
-    def test_una_ruta_con_espacios_en_un_argumento_pesa_entera(self):
-        """Un argumento de ruta conserva sus espacios; no se corta en el primero."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "ruta-espacios", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            carpeta = interno / "mis pruebas"
-            carpeta.mkdir()
-            script = carpeta / "run.sh"
-            script.write_text("exit 5\n", encoding="utf-8")
-            declaradas = [
-                {
-                    "objetivo": "x",
-                    "argv": ["/bin/sh", ".interno/mis pruebas/run.sh"],
-                }
-            ]
-
-            huella_roja = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            script.write_text("exit 0\n", encoding="utf-8")
-            huella_verde = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            self.assertIsNotNone(huella_roja)
-            self.assertNotEqual(
-                huella_roja,
-                huella_verde,
-                "la ruta con espacios pesa entera en la huella",
-            )
-
-    def test_la_huella_se_toma_despues_y_no_cuenta_caches(self):
-        """La huella de un árbol es la de después de ejecutar y sin `__pycache__`."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = Recorrido(tmp, "huella-despues", "crea saludo.txt")
-            self.addCleanup(r.reg.close)
-            interno = comprobacion.interno_de(r.espacio, crear=True)
-            carpeta = interno / "pruebas"
-            carpeta.mkdir()
-            _declarar(
-                r,
-                [
-                    "/bin/sh",
-                    "-c",
-                    "cd .interno/pruebas && mkdir -p __pycache__ && "
-                    "echo x > __pycache__/x.pyc && "
-                    "echo y > generado.txt && exit 0",
-                ],
-            )
-
-            declaradas = comprobacion.leer_declaradas(
-                comprobacion.interno_de(r.espacio)
-            )
-            vacio = comprobacion.huella_procedimiento(r.espacio, declaradas)
-
-            datos = _observar(r)
-            self.assertEqual(datos["ejecuciones"][0].get("rc"), 0, datos)
-            self.assertTrue((carpeta / "__pycache__").is_dir())
-            self.assertTrue((carpeta / "generado.txt").is_file())
-
-            actual = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            self.assertEqual(
-                datos.get("procedimiento"),
-                actual,
-                "la huella guardada es la que se recalcula despues de ejecutar",
-            )
-            self.assertNotEqual(
-                datos.get("procedimiento"),
-                vacio,
-                "el archivo que deja la comprobacion pesa; la huella no es la "
-                "del arbol vacio de antes de ejecutar",
-            )
-            (carpeta / "__pycache__" / "y.pyc").write_text("y\n", encoding="utf-8")
-            mas_cache = comprobacion.huella_procedimiento(r.espacio, declaradas)
-            self.assertEqual(
-                actual,
-                mas_cache,
-                "una cache nueva bajo el arbol no cambia la huella",
             )
 
 
