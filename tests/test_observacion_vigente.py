@@ -587,6 +587,19 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
             ruta=ruta,
         )
 
+
+    def test_un_script_que_se_modifica_tras_saltos_consecutivos_no_acredita(self):
+        """Dos saltos de linea seguidos también separan comandos."""
+        _guion_que_se_modifica_no_acredita(
+            self,
+            "auto-modifica-sh-c-saltos",
+            [
+                "/bin/sh",
+                "-c",
+                "set -e\n\n" + shlex.join([sys.executable, ".interno/script.py"]),
+            ],
+        )
+
     def test_un_script_que_se_modifica_tras_env_no_acredita_su_contenido(self):
         """El interprete detras de `env` tambien se clasifica como ejecutado."""
         env = shutil.which("env")
