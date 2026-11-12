@@ -16,6 +16,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from motor.encargos import comprobacion
@@ -632,6 +633,152 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
             "exit 5\n",
             "exit 0\n",
         )
+
+    def test_un_guion_que_escribe_su_log_converge(self):  # no-roja-en-base: la base no pesa el contenido de .interno; la prueba fija que el log posterior no deja la observacion sin corresponder
+        """El log que el guion escribe no rompe la correspondencia de la observacion."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "guion-con-log", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+            r.incorporar()
+            script = r.espacio / ".interno" / "script.py"
+            script.parent.mkdir(exist_ok=True)
+            script.write_text(
+                "import sys\n"
+                "from pathlib import Path\n"
+                "Path(sys.argv[1]).write_text('hecho\\n')\n"
+                "sys.exit(0)\n",
+                encoding="utf-8",
+            )
+            _declarar(
+                r,
+                [sys.executable, ".interno/script.py", ".interno/log.txt"],
+            )
+
+            verde = _observar(r)
+            self.assertEqual(verde["ejecuciones"][0].get("rc"), 0, verde)
+            self.assertTrue((r.espacio / ".interno" / "log.txt").is_file())
+            r.incorporar()
+
+            with mock.patch(
+                "motor.encargos.ciclo.iniciar_comprobacion"
+            ) as iniciar:
+                resultado = _espera_por_observacion(
+                    r.reg, r.fold(), r.espacio, r.d, ahora_iso()
+                )
+            iniciar.assert_not_called()
+            self.assertIsNone(
+                resultado,
+                "el log que el guion escribe no deja la observacion sin corresponder",
+            )
+
+    def test_un_arbol_que_genera_cache_no_se_reobserva(self):  # no-roja-en-base: la base no pesa el arbol de .interno; la prueba fija que las caches y las salidas no rompen el reuso
+        """Una comprobacion que deja `__pycache__` y una salida no se reobserva."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "arbol-cache", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+            r.incorporar()
+            carpeta = r.espacio / ".interno" / "pruebas"
+            carpeta.mkdir(parents=True, exist_ok=True)
+            _declarar(
+                r,
+                [
+                    "/bin/sh",
+                    "-c",
+                    "cd .interno/pruebas && mkdir -p __pycache__ && "
+                    "echo x > __pycache__/x.pyc && echo y > generado.txt && exit 0",
+                ],
+            )
+
+            verde = _observar(r)
+            self.assertEqual(verde["ejecuciones"][0].get("rc"), 0, verde)
+            self.assertTrue((carpeta / "__pycache__").is_dir())
+            r.incorporar()
+
+            with mock.patch(
+                "motor.encargos.ciclo.iniciar_comprobacion"
+            ) as iniciar:
+                resultado = _espera_por_observacion(
+                    r.reg, r.fold(), r.espacio, r.d, ahora_iso()
+                )
+            iniciar.assert_not_called()
+            self.assertIsNone(
+                resultado,
+                "una cache y una salida bajo el arbol no obligan a reobservar",
+            )
+
+    def test_un_guion_ilegible_no_tumba_la_observacion(self):
+        """Una lectura ilegible deja marca y no impide volver a observar."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "guion-ilegible", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+            r.incorporar()
+            script = r.espacio / ".interno" / "script.py"
+            script.parent.mkdir(exist_ok=True)
+            script.write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+            _declarar(r, [sys.executable, ".interno/script.py"])
+
+            real = Path.read_bytes
+
+            def falla(path):
+                if str(path).endswith("script.py"):
+                    raise PermissionError("sin permiso")
+                return real(path)
+
+            with mock.patch.object(Path, "read_bytes", falla):
+                verde = _observar(r)
+            self.assertEqual(verde["ejecuciones"][0].get("rc"), 0, verde)
+
+            with mock.patch(
+                "motor.encargos.ciclo.iniciar_comprobacion"
+            ) as iniciar:
+                resultado = _espera_por_observacion(
+                    r.reg, r.fold(), r.espacio, r.d, ahora_iso()
+                )
+            iniciar.assert_called_once()
+            self.assertIsInstance(
+                resultado[1] if resultado else None,
+                Espera,
+                "la huella ilegible no se confunde con el contenido legible",
+            )
+
+    def test_un_enlace_que_sale_de_interno_no_entra_en_la_identidad(self):  # no-roja-en-base: la base no pesa .interno; la prueba fija que un enlace que sale del arbol no se cuenta
+        """Un enlace que sale de `.interno/` no pesa en la identidad."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "enlace-fuera", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+            (r.espacio / ".runtime").mkdir(exist_ok=True)
+            fuera = r.espacio / ".runtime" / "guion.py"
+            fuera.write_text("import sys\nsys.exit(5)\n", encoding="utf-8")
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            enlace = interno / "script.py"
+            try:
+                enlace.symlink_to(fuera)
+            except (OSError, NotImplementedError):
+                self.skipTest("la plataforma no permite crear enlaces simbólicos")
+            _declarar(r, [sys.executable, ".interno/script.py"])
+
+            roja = _observar(r)
+            self.assertEqual(roja["ejecuciones"][0].get("rc"), 5, roja)
+            r.incorporar()
+            _espera_por_observacion(r.reg, r.fold(), r.espacio, r.d, ahora_iso())
+
+            fuera.write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+            with mock.patch(
+                "motor.encargos.ciclo.iniciar_comprobacion"
+            ) as iniciar:
+                resultado = _espera_por_observacion(
+                    r.reg, r.fold(), r.espacio, r.d, ahora_iso()
+                )
+            iniciar.assert_not_called()
+            self.assertIsNotNone(
+                resultado,
+                "el contenido fuera de .interno no entra en la identidad",
+            )
 
     def test_un_rojo_que_vuelve_gana_al_verde_anterior(self):  # no-roja-en-base: la clave con el resultado nace en la primera vuelta; en 5e83c75 el verde ni se registra y el rojo que vuelve no queda tapado por ese camino
         """El rojo verdadero sigue rojo aunque antes haya habido un verde.
