@@ -383,6 +383,30 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 "de publicar",
             )
 
+    def test_un_script_de_sh_c_con_argumentos_pesa_la_ruta_sin_los_argumentos(self):
+        """La ruta de un `sh -c` con argumentos se corta en el espacio, no se traga la cola."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sh-c-flag", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            script = interno / "script.sh"
+            script.write_text("exit 5\n", encoding="utf-8")
+            declaradas = [
+                {"objetivo": "x", "argv": ["/bin/sh", "-c", ".interno/script.sh --rapido"]}
+            ]
+
+            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            script.write_text("exit 0\n", encoding="utf-8")
+            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(antes)
+            self.assertNotEqual(
+                antes,
+                despues,
+                "la ruta del script pesa; los argumentos de la linea no se "
+                "confunden con la ruta",
+            )
+
 
     def test_un_rojo_que_vuelve_gana_al_verde_anterior(self):  # no-roja-en-base: la clave con el resultado nace en la primera vuelta; en 5e83c75 el verde ni se registra y el rojo que vuelve no queda tapado por ese camino
         """El rojo verdadero sigue rojo aunque antes haya habido un verde.
@@ -588,22 +612,32 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                     "/bin/sh",
                     "-c",
                     "cd .interno/pruebas && mkdir -p __pycache__ && "
-                    "echo x > __pycache__/x.pyc && exit 0",
+                    "echo x > __pycache__/x.pyc && "
+                    "echo y > generado.txt && exit 0",
                 ],
             )
-
-            datos = _observar(r)
-            self.assertEqual(datos["ejecuciones"][0].get("rc"), 0, datos)
-            self.assertTrue((carpeta / "__pycache__").is_dir())
 
             declaradas = comprobacion.leer_declaradas(
                 comprobacion.interno_de(r.espacio)
             )
+            vacio = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            datos = _observar(r)
+            self.assertEqual(datos["ejecuciones"][0].get("rc"), 0, datos)
+            self.assertTrue((carpeta / "__pycache__").is_dir())
+            self.assertTrue((carpeta / "generado.txt").is_file())
+
             actual = comprobacion.huella_procedimiento(r.espacio, declaradas)
             self.assertEqual(
                 datos.get("procedimiento"),
                 actual,
                 "la huella guardada es la que se recalcula despues de ejecutar",
+            )
+            self.assertNotEqual(
+                datos.get("procedimiento"),
+                vacio,
+                "el archivo que deja la comprobacion pesa; la huella no es la "
+                "del arbol vacio de antes de ejecutar",
             )
             (carpeta / "__pycache__" / "y.pyc").write_text("y\n", encoding="utf-8")
             mas_cache = comprobacion.huella_procedimiento(r.espacio, declaradas)
