@@ -74,6 +74,7 @@ from .dominio import (
     respuesta_consumida,
     revision_externa_pendiente,
     nivel_cumplido,
+    nivel_de,
     nivel_objetivo,
     limita_mas_que,
     sin_nada_en_curso,
@@ -118,6 +119,10 @@ from .resultado import Avanzo, Devolver, Espera, NecesitaAgente, Resultado, perm
 from .suscripciones import CuentaNoDisponible
 
 _UMBRAL_S = 30
+# Un PR de una fase que ya no es la activa se consulta como mucho una vez cada
+# dos minutos por encargo. El merge es una decisión humana: no hace falta
+# enterarse al segundo, y así una pasada nunca gasta una llamada por fase.
+_CONCILIACION_INTERVALO_MIN = 2.0
 
 # Quietud: un encargo abierto que no espera con hora ni tiene agente, lanzamiento
 # o paso externo en curso, y cuyo registro no se mueve. Toda espera con hora
@@ -2021,6 +2026,15 @@ def _barrer_encargos(
             and not enc.reserva
         ):
             enc = _reintentar_despliegue_pendiente(registro, enc, hora)
+        if (
+            enc is not None
+            and not parada
+            and enc.via != "directa"
+            and enc.estado
+            in ("recibido", "ejecutando", "esperando_reintento")
+            and enc.intentos_nuevos
+        ):
+            enc = _conciliar_fases(registro, enc, gh, hora)
         resultado_paso: Resultado = NecesitaAgente(
             str(getattr(enc, "rol", "") or "responsable")
         )
@@ -9214,6 +9228,198 @@ def _entregar_con_falla_permanente(
     return registro.fold(enc.id) or enc
 
 
+def _anotar_conciliacion(
+    registro: Registro, enc: Encargo, fase: Fase, paso: str, hora: str, **extra
+) -> Encargo:
+    datos = {"fase": fase.id, "paso": paso, "hora": hora, **extra}
+    marca = (
+        extra.get("recibo") or extra.get("sha") or extra.get("huella") or hora
+    )
+    registro.anotar(
+        enc.id,
+        {"kind": "conciliacion_fase", "data": datos},
+        f"conciliacion:{enc.id}:{fase.id}:{paso}:{marca}",
+    )
+    return registro.fold(enc.id) or enc
+
+
+def _paso_despliegue_fase(
+    registro: Registro, enc: Encargo, fase: Fase, espacio: Path, hora: str
+) -> Encargo:
+    """Sigue el camino de despliegue de una fase conciliada sin hacerla activa."""
+    from . import despliegue, politica_despliegue
+
+    fase = next((f for f in enc.fases if f.id == fase.id), fase)
+    if (
+        nivel_objetivo(enc) != "desplegado"
+        or nivel_de(fase) != "integrado"
+        or fase.estado == "preparada"
+    ):
+        return enc
+    # Un fallo transitorio al traer el merge commit no debe dejar integrada una
+    # fase que no puede leer su receta: se reintenta al reanudar el despliegue.
+    _asegurar_commit_local(espacio, fase.integrado_sha, enc.entrega.base)
+    libro = despliegue.ocupado(registro, enc, fase)
+    if libro:
+        recibo = despliegue.recibo_de(registro, enc, fase)
+        if not (recibo and recibo.get("estado") == "aplicado"):
+            intentos = int(libro.get("intentos") or 0)
+            if intentos >= TOPE_OCUPADO:
+                return enc
+            reanuda = _reanuda_desde(
+                str(libro.get("ultimo") or hora),
+                ESPERAS_OCUPADO_S[intentos - 1],
+            )
+            if _reanuda_desde(hora, 0) < reanuda:
+                # La espera es de esta fase: la fase activa conserva su turno y
+                # la receta ocupada no se relanza en cada pasada.
+                return enc
+    politica = politica_despliegue.resolver(espacio, enc, fase)
+    if politica.requiere_despliegue is None:
+        return enc
+    if politica.requiere_despliegue is False:
+        return _anotar_conciliacion(registro, enc, fase, "preparada", hora)
+    rutas = {k: getattr(politica, k) for k in ("desplegar", "checklist", "rollback")}
+    if any(rutas.values()) and any(
+        getattr(fase, k) != rutas[k] for k in rutas
+    ):
+        # La receta se resolvió después de recuperar el commit. Se persiste en
+        # la fase para que la identidad del recibo y del libro ocupado coincida
+        # con la que usa el ejecutor.
+        enc = _anotar_conciliacion(
+            registro, enc, fase, "politica", hora, **politica.datos()
+        )
+        fase = next((f for f in enc.fases if f.id == fase.id), fase)
+    resultado = despliegue.iniciar(registro, enc, espacio, politica, hora, fase)
+    if resultado.get("estado") != "aplicado":
+        # La receta sigue corriendo o quedó pendiente. No se marca una espera
+        # del encargo: la fase activa conserva su turno y la próxima pasada
+        # vuelve a leer el mismo recibo.
+        return registro.fold(enc.id) or enc
+    return _anotar_conciliacion(
+        registro, enc, fase, "desplegado", hora,
+        sha=fase.integrado_sha,
+        recibo=str(resultado.get("recibo") or fase.integrado_sha),
+    )
+
+
+def _asegurar_commit_local(espacio: Path, sha: str, base: str) -> None:
+    """Trae el merge commit antes de leer la política desde su árbol.
+
+    El worker del despliegue también lo busca, pero la política se resuelve
+    antes y un commit que solo vive en el remoto dejaría la receta vacía.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40,64}", sha or ""):
+        return
+    if _git(espacio, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0:
+        return
+    if _git(espacio, "fetch", "--quiet", "origin", sha).returncode == 0:
+        return
+    if base:
+        _git(espacio, "fetch", "--quiet", "origin", base)
+
+
+def _conciliar_fases(
+    registro: Registro, enc: Encargo, gh, hora: str
+) -> Encargo:
+    """Concilia los PR de fases que ya no son la activa.
+
+    El sondeo de GitHub está acotado a una consulta por pasada y como mucho
+    cada `_CONCILIACION_INTERVALO_MIN` por fase: un merge humano no cambia al
+    segundo y no puede costar una llamada por fase en cada vuelta. El merge se
+    anota en la fase que corresponde y, si toca desplegarla, la receta corre
+    con su merge commit sin relaunch del responsable y sin mover el turno de la
+    fase activa.
+    """
+    from . import politica_despliegue
+
+    if not enc.fases or enc.entrega.nivel not in (
+        "pr", "integrado", "desplegado"
+    ):
+        return enc
+    espacio = _espacio(registro.base, enc.id)
+    activa = enc.fase_actual
+    # La fase activa tiene prioridad para su propio despliegue: no se lanza la
+    # receta de otra fase en la misma vuelta que la va a lanzar la activa. Una
+    # fase bloqueada no va a lanzar su receta: no puede impedir que se
+    # incorporen los recibos ya aplicados de otra fase.
+    activa_despliega = (
+        activa is not None
+        and nivel_objetivo(enc) == "desplegado"
+        and nivel_de(activa) == "integrado"
+        and activa.estado not in ("preparada", "bloqueada")
+    )
+    if enc.proc is None and not enc.reserva and not activa_despliega:
+        for fase in tuple(enc.fases):
+            if fase.id == enc.fase_activa:
+                continue
+            if fase.estado == "preparada" or nivel_de(fase) != "integrado":
+                continue
+            enc = _paso_despliegue_fase(registro, enc, fase, espacio, hora)
+    if gh is None or gh is _PUERTO_DEL_REGISTRO:
+        return enc
+    candidatas = [
+        fase for fase in enc.fases
+        if fase.id != enc.fase_activa
+        and fase.pr_numero
+        and nivel_de(fase) == "pr"
+        and (
+            not fase.conciliado_en
+            or _minutos_desde(fase.conciliado_en, hora)
+            >= _CONCILIACION_INTERVALO_MIN
+        )
+    ]
+    if not candidatas:
+        return enc
+    candidata = min(candidatas, key=lambda fase: fase.conciliado_en)
+    try:
+        vista = gh.ver(enc.entrega.repo, candidata.pr_numero)
+    except Exception as exc:  # noqa: BLE001  una lectura caída no cambia la fase
+        return _anotar_conciliacion(
+            registro, enc, candidata, "consulta", hora,
+            resultado="error", causa=str(exc)[:300],
+        )
+    if vista.estado != "mergeado" or vista.base != enc.entrega.base:
+        return _anotar_conciliacion(
+            registro, enc, candidata, "consulta", hora,
+            resultado=vista.estado, base=str(vista.base),
+        )
+    if enc.entrega.nivel not in ("integrado", "desplegado"):
+        # La entrega no pide integrar: el PR mergeado se observa, pero la fase
+        # ya estaba en el nivel que el encargo autorizó y no se reescribe.
+        return _anotar_conciliacion(
+            registro, enc, candidata, "consulta", hora,
+            resultado="mergeado", base=str(vista.base),
+        )
+    recibo = vista.merge_commit or vista.head
+    _asegurar_commit_local(espacio, recibo, enc.entrega.base)
+    integrada = replace(
+        candidata, integrado_sha=recibo, ultimo_paso_entrega="integrado"
+    )
+    politica = politica_despliegue.resolver(espacio, enc, integrada)
+    extra = {
+        "sha": recibo,
+        "recibo": recibo,
+        "numero": candidata.pr_numero,
+        "base": vista.base,
+        "resultado": "mergeado",
+    }
+    if politica.requiere_despliegue is not None:
+        extra.update(politica.datos())
+    enc = _anotar_conciliacion(registro, enc, candidata, "integrado", hora, **extra)
+    fase = next((f for f in enc.fases if f.id == candidata.id), None)
+    if (
+        fase is not None
+        and enc.proc is None
+        and not enc.reserva
+        and not activa_despliega
+        and nivel_de(fase) == "integrado"
+        and fase.estado != "preparada"
+    ):
+        enc = _paso_despliegue_fase(registro, enc, fase, espacio, hora)
+    return enc
+
+
 def _paso_entrega_paso(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> tuple[Encargo, Resultado]:
@@ -9222,6 +9428,7 @@ def _paso_entrega_paso(
 
     from .politica_despliegue import adoptar as adoptar_politica_despliegue
 
+    enc = _conciliar_fases(registro, enc, gh, hora)
     enc = adoptar_politica_despliegue(
         registro, enc, _espacio(registro.base, enc.id), hora
     )

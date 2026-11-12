@@ -166,11 +166,10 @@ def _directorio_de_fase(registro, enc, fase):
         return None
 
 
-def ocupado(registro, enc) -> dict:
-    """El libro de intentos ocupados del despliegue de la fase activa; vacío
-    si no hay. Es por identidad: el libro de otra fase del encargo no manda
-    aquí."""
-    directorio = _directorio_de_fase(registro, enc, enc.fase_actual)
+def ocupado(registro, enc, fase=None) -> dict:
+    """El libro de intentos ocupados del despliegue de una fase; vacío si no
+    hay. Es por identidad: el libro de otra fase del encargo no manda aquí."""
+    directorio = _directorio_de_fase(registro, enc, fase or enc.fase_actual)
     if directorio is None:
         return {}
     try:
@@ -369,9 +368,10 @@ def observacion(registro, enc) -> str:
         return "incierto"
 
 
-def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
+def iniciar(registro, enc, espacio: Path, politica, hora: str, fase=None) -> dict:
     """Inicia una vez o lee el recibo de la misma operación; no espera al script."""
-    sha = enc.fase_actual.integrado_sha
+    fase = fase or enc.fase_actual
+    sha = fase.integrado_sha if fase is not None else ""
     receta = {k: getattr(politica, k) for k in ("desplegar", "checklist", "rollback")}
     try:
         _rutas(receta)
@@ -380,7 +380,7 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
         _maquina(registro.base)
     except ValueError as exc:
         return {"estado": "esperando", "motivo": str(exc)}
-    identidad = {"encargo": enc.id, "fase": enc.fase_activa,
+    identidad = {"encargo": enc.id, "fase": fase.id if fase is not None else enc.fase_activa,
                  "repo": enc.entrega.repo, "sha": sha, "receta": receta}
     clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
     directorio = registro.base / "despliegues" / clave
