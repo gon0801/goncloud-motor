@@ -1846,15 +1846,20 @@ def _barrer_encargos(
             _limpiar_encargo_cerrado(registro, enc, hora)
             informes.append(vista(enc))
             continue
+        frenan = [
+            p for p in enc.pendientes_entrega
+            if not p.startswith("despliegue:")
+        ]
         if (
             not parada
-            and enc.pendientes_entrega
+            and frenan
             and enc.proc is None
             and not enc.reserva
             and enc.estado in ("recibido", "ejecutando")
         ):
             # La entrega con pendientes va delante de cualquier paso que pueda
-            # volver a fallar: es el camino que corta la espera y el ciclo.
+            # volver a fallar: es el camino que corta la espera y el ciclo. El
+            # aviso del despliegue es transitorio: no corta, espera con su fase.
             enc = _entregar_con_pendientes(registro, enc, gh, hora)
             informes.append(vista(enc))
             continue
@@ -1910,9 +1915,13 @@ def _barrer_encargos(
                     f"buzon-fallo:{encargo_id}:{type(exc).__name__}",
                 )
             enc = registro.fold(encargo_id) or enc
+        frenan = [
+            p for p in enc.pendientes_entrega
+            if not p.startswith("despliegue:")
+        ]
         if (
             not parada
-            and enc.pendientes_entrega
+            and frenan
             and enc.proc is None
             and not enc.reserva
             and enc.estado in ("recibido", "ejecutando")
@@ -2912,34 +2921,34 @@ def _cubre(espacio: Path, antiguo: str, nuevo: str) -> bool:
 def _fase_de_la_causa(enc: Encargo, clase: str):
     """La fase cuya causa de bloqueo es la del impedimento de despliegue.
 
-    La dueña comparte la huella de la causa (la misma cadena normalizada que
-    produjo la clase) o la contiene, esté la fase bloqueada o reabierta; sin
-    dueña, la verificación conserva el criterio conservador de exigir todo el
-    frente cubierto."""
+    La dueña se reconoce por la huella del bloqueo normalizado, por igualdad
+    con la causa del impedimento, por la forma del pendiente ("despliegue: "
+    más la causa recortada) o por el prefijo recortado de la causa. Una causa
+    que esté CONTENIDA dentro de un bloqueo más largo no atribuye dueño: el
+    bloqueo de una fase ya desplegada no cierra la causa de otra (F9). Sin
+    dueña única, la verificación conserva el criterio conservador de exigir
+    todo el frente cubierto."""
     if not clase.startswith("despliegue:"):
         return None
     huella = clase.removeprefix("despliegue:")
-    # El bloqueo_causa identifica a la fase dueña esté bloqueada o reabierta:
-    # tras fase_reactivada la causa sigue siendo de su fase.
+    causa = " ".join(
+        next((i.causa for i in enc.impedimentos if i.clase == clase), "").split()
+    )
+    candidatas = []
     for f in enc.fases:
         if not f.bloqueo_causa:
             continue
         bloqueo = " ".join(f.bloqueo_causa.split())
-        if hashlib.sha256(bloqueo.encode()).hexdigest()[:12] == huella:
-            return f
-    causa = " ".join(
-        next((i.causa for i in enc.impedimentos if i.clase == clase), "").split()
-    )
-    if causa:
-        for f in enc.fases:
-            if not f.bloqueo_causa:
-                continue
-            bloqueo = " ".join(f.bloqueo_causa.split())
-            if bloqueo == causa or bloqueo in causa or causa in bloqueo:
-                return f
-    return None
-
-
+        desp = bloqueo.removeprefix("despliegue:").strip()
+        if (
+            hashlib.sha256(bloqueo.encode()).hexdigest()[:12] == huella
+            or (causa and (bloqueo == causa or desp == causa
+                           or causa.startswith(desp)))
+        ):
+            candidatas.append(f)
+    # La atribución exige un único candidato: una causa compartida por varias
+    # fases no acredita dueño.
+    return candidatas[0] if len(candidatas) == 1 else None
 def _despliegue_cubierto(enc: Encargo, espacio: Path, clase: str = "") -> bool | None:
     """La causa de despliegue deja de sostenerse cuando producción ya contiene
     el código de su fase: un despliegue posterior cuyo SHA lo incluye, o el

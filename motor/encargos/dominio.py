@@ -2187,6 +2187,16 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             return e
         e = _con_impedimentos(e, restantes, hora)
         hecho = "impedimento resuelto: " + evidencia
+        if clase.startswith("despliegue:") and e.pendientes_entrega:
+            # El pendiente es el aviso de la causa de despliegue: resuelta la
+            # causa, el aviso se va con ella y los demás quedan.
+            e = replace(
+                e,
+                pendientes_entrega=tuple(
+                    p for p in e.pendientes_entrega
+                    if not p.startswith("despliegue:")
+                ),
+            )
         if impedimento_bloquea_trabajo(e):
             return replace(
                 e,

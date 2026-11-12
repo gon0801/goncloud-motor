@@ -548,6 +548,12 @@ def ejecutar(pedido: Path) -> None:
                     ))
             else:
                 datos.update(estado="aplicado", motivo="despliegue y checklist terminaron con salida 0")
+                # El éxito de la identidad reinicia su ventana: el libro del
+                # tope no sobrevive a un despliegue aplicado.
+                try:
+                    (pedido.parent / "ocupado.json").unlink()
+                except OSError:
+                    pass
             _guardar(recibo, datos)
     except Exception as exc:
         datos.update(estado="incierto" if datos["pasos"] else "esperando",

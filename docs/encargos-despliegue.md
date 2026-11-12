@@ -103,7 +103,13 @@ salida distinta de 0, sigue el camino fallido con impedimento. El impedimento
 de despliegue frena solo la fase cuyo despliegue falló y sus dependientes; se
 resuelve cuando un despliegue aplicado ya contiene el SHA de su propia fase
 (recibo aplicado y `git merge-base --is-ancestor`), aunque otra fase conserve
-un despliegue pendiente. Cada lanzamiento de receta fotografia el conteo de
+un despliegue pendiente. La fase dueña de la causa se reconoce por el
+`bloqueo_causa` que la anotó (huella, igualdad o la forma recortada del
+pendiente) esté o no bloqueada; si dos fases comparten la misma causa, la
+atribución es ambigua y la verificación exige cubrir todo el frente. Su
+pendiente es un aviso transitorio: no corta la pasada en una entrega parcial y
+se va cuando la causa se resuelve. La ventana es por identidad: un despliegue
+aplicado reinicia el libro de intentos. Cada lanzamiento de receta fotografia el conteo de
 órdenes de continuar, y solo una orden aplicada después del fallo autoriza
 una corrida: una continuación anterior al despliegue no reintenta nada. Una
 orden sin consumir reabre la fase bloqueada cuyo despliegue quedó pendiente y
