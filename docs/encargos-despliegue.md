@@ -86,11 +86,14 @@ Si falla el despliegue o el checklist, incluido código 75 o timeout, intenta
 `rollback` con el mismo SHA. No marca la fase como desplegada. Una salida 75
 del paso desplegar, con reversa sin cambios, significa que el destino estaba
 ocupado (guardas, candados o un proceso vivo al recrear) cuando su propia
-salida lo acredita: nombra la ocupación o el proceso o guarda que la retiene
-("app.cli vivo", la línea de guardas con un valor vivo), sin negarla ("no
-ocupado") y sin declarar un fallo propio ("error de datos", "verificación
-fallida"). Un 75 del checklist, o un 75 cuya salida niega la ocupación o
-declara otro fallo, no es ocupado: sigue el camino fallido. El
+salida lo acredita por el contrato de la receta: la línea de guardas con algún
+valor de carga mayor que cero (todas menos alias, p. ej. `app.cli` = 1), o la
+línea llana que nombra el proceso vivo o la ocupación sin negarla. La lectura
+es del desenlace completo: un fallo propio declarado en cualquier parte de la
+salida ("error de datos", "verificación fallida") la invalida, igual que una
+negación ("app.cli no está vivo", "no ocupado") o un encabezado de guardas con
+todos los valores en cero. Un 75 del checklist, o un 75 así desacreditado, no
+es ocupado: sigue el camino fallido. El
 recibo queda en estado `ocupado`, no se anota impedimento ni se relanza al
 responsable ni al revisor, y el motor reintenta el mismo SHA solo, con espera
 creciente (15, 30, 60, 120 y 240 minutos desde el último desenlace ocupado) hasta
@@ -98,10 +101,14 @@ agotar una ventana de ~8 horas; al agotarla deja el impedimento en llano con el
 proceso que reportó la receta. Un 75 con reversa que falla, o cualquier otra
 salida distinta de 0, sigue el camino fallido con impedimento. El impedimento
 de despliegue frena solo la fase cuyo despliegue falló y sus dependientes; se
-resuelve cuando un despliegue aplicado ya contiene el SHA de la fase pendiente
-(recibo aplicado y `git merge-base --is-ancestor`), y una orden de continuar
-sobre un encargo con ese despliegue pendiente vuelve a intentar la receta del
-mismo SHA una vez; sin continuar, el recibo fallido no se vuelve a correr. Una parada corta
+resuelve cuando un despliegue aplicado ya contiene el SHA de su propia fase
+(recibo aplicado y `git merge-base --is-ancestor`), aunque otra fase conserve
+un despliegue pendiente. Cada lanzamiento de receta fotografia el conteo de
+órdenes de continuar, y solo una orden aplicada después del fallo autoriza
+una corrida: una continuación anterior al despliegue no reintenta nada. Una
+orden sin consumir reabre la fase bloqueada cuyo despliegue quedó pendiente y
+reabre la ventana del caso ocupado agotada; sin continuar, el recibo fallido
+no se vuelve a correr. Una parada corta
 el comando en curso y permite completar la reversa; el supervisor no confirma
 `detenido` mientras siga vivo ese trabajador o su comando. Si se detuvo antes
 de enviar el primer script, continuar puede reintentar sin repetir producción.

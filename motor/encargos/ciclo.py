@@ -2898,19 +2898,57 @@ def _cubre(espacio: Path, antiguo: str, nuevo: str) -> bool:
     return corrido.returncode == 0
 
 
-def _despliegue_cubierto(enc: Encargo, espacio: Path) -> bool | None:
+def _fase_de_la_causa(enc: Encargo, clase: str):
+    """La fase bloqueada cuya causa es la del impedimento de despliegue.
+
+    La dueña comparte la huella de la causa (la misma cadena normalizada que
+    produjo la clase) o la contiene; sin dueña, la verificación conserva el
+    criterio conservador de exigir todo el frente cubierto."""
+    if not clase.startswith("despliegue:"):
+        return None
+    huella = clase.removeprefix("despliegue:")
+    for f in enc.fases:
+        if f.estado != "bloqueada" or not f.bloqueo_causa:
+            continue
+        bloqueo = " ".join(f.bloqueo_causa.split())
+        if hashlib.sha256(bloqueo.encode()).hexdigest()[:12] == huella:
+            return f
+    causa = " ".join(
+        next((i.causa for i in enc.impedimentos if i.clase == clase), "").split()
+    )
+    if causa:
+        for f in enc.fases:
+            if f.estado != "bloqueada" or not f.bloqueo_causa:
+                continue
+            bloqueo = " ".join(f.bloqueo_causa.split())
+            if bloqueo == causa or bloqueo in causa or causa in bloqueo:
+                return f
+    return None
+
+
+def _despliegue_cubierto(enc: Encargo, espacio: Path, clase: str = "") -> bool | None:
     """La causa de despliegue deja de sostenerse cuando producción ya contiene
-    el código de cada fase con despliegue pendiente: un despliegue posterior
-    cuyo SHA lo incluye, o el reintento que la desplegó. La prueba es el
-    recibo aplicado y la relación de commits, no una promesa."""
+    el código de su fase: un despliegue posterior cuyo SHA lo incluye, o el
+    reintento que la desplegó. La prueba es el recibo aplicado y la relación de
+    commits, no una promesa. Sin fase dueña para la causa, se exige cubierto
+    todo el frente pendiente (criterio conservador)."""
     from . import despliegue
 
     if not enc.fases:
         return None
-    pendientes = [
-        f.integrado_sha for f in enc.fases
-        if f.requiere_despliegue and f.integrado_sha and not f.desplegado_recibo
-    ]
+    duena = _fase_de_la_causa(enc, clase) if clase else None
+    if duena is not None:
+        pendientes = (
+            [duena.integrado_sha]
+            if duena.requiere_despliegue and duena.integrado_sha
+            and not duena.desplegado_recibo
+            else []
+        )
+    else:
+        pendientes = [
+            f.integrado_sha for f in enc.fases
+            if f.requiere_despliegue and f.integrado_sha and not f.desplegado_recibo
+        ]
     if not pendientes:
         return True
     aplicados = []
@@ -2932,8 +2970,6 @@ def _despliegue_cubierto(enc: Encargo, espacio: Path) -> bool | None:
         any(_cubre(espacio, antiguo, nuevo) for nuevo in aplicados)
         for antiguo in pendientes
     )
-
-
 def _verificar_impedimento(
     clase: str, enc: Encargo, espacio: Path, base: Path, registro=None
 ) -> bool | None:
@@ -2961,7 +2997,7 @@ def _verificar_impedimento(
     if clase.startswith("juicio:"):
         return _juicio_reparado(clase, enc, registro, espacio)
     if clase.startswith("despliegue:"):
-        return _despliegue_cubierto(enc, espacio)
+        return _despliegue_cubierto(enc, espacio, clase)
     interno = interno_de(espacio)
     try:
         if clase == "comprobaciones.json":
@@ -9629,6 +9665,38 @@ def _espera_despliegue_sin_autoridad(
     )
 
 
+def _reintentar_despliegue_pendiente(registro, enc: Encargo, hora: str) -> Encargo:
+    """Una orden de continuar sin consumir reabre la fase bloqueada cuyo
+    despliegue quedó pendiente: la receta del mismo SHA vuelve a correr con la
+    corrida que la orden autoriza. Sin orden nueva, la fase sigue bloqueada."""
+    from . import despliegue
+
+    if enc.estado not in ("recibido", "ejecutando") or enc.proc is not None or enc.reserva:
+        return enc
+    ordenes = despliegue.continuaciones(registro, enc.id)
+    if ordenes <= 0:
+        return enc
+    for fase in enc.fases:
+        if (fase.estado != "bloqueada" or not fase.requiere_despliegue
+                or not fase.integrado_sha or fase.desplegado_recibo):
+            continue
+        recibo = despliegue.recibo_de(registro, enc, fase)
+        if recibo is None or recibo.get("estado") not in ("fallido", "ocupado"):
+            continue
+        if ordenes <= int(recibo.get("continuadas") or 0):
+            continue
+        try:
+            registro.anotar(
+                enc.id,
+                {"kind": "fase_reactivada", "data": {"fase": fase.id, "hora": hora}},
+                f"fase-reactivada:{enc.id}:{fase.id}:{ordenes}",
+            )
+        except TransicionIlegal:
+            continue
+        return registro.fold(enc.id) or enc
+    return enc
+
+
 def _despliegue_ocupado(
     registro: Registro, enc: Encargo, despliegue, hora: str
 ) -> dict | None:
@@ -9642,9 +9710,25 @@ def _despliegue_ocupado(
     libro = despliegue.ocupado(registro, enc)
     if not libro:
         return None
+    # Si el recibo de la fase ya acredita el despliegue, la ventana ya no manda.
+    recibo = despliegue.recibo_de(registro, enc, enc.fase_actual)
+    if recibo is not None and recibo.get("estado") == "aplicado":
+        return None
     intentos = int(libro.get("intentos") or 0)
     proceso = str(libro.get("proceso") or "").strip()
     if intentos >= TOPE_OCUPADO:
+        ordenes = despliegue.continuaciones(registro, enc.id)
+        if ordenes > int(libro.get("continuadas") or 0):
+            # La orden de continuar reabre la ventana una vez: la receta del
+            # mismo SHA vuelve a correr y la causa se resuelve si despliega.
+            despliegue.reabrir_ventana(registro, enc, ordenes)
+            if enc.estado == "esperando_reintento":
+                registro.anotar(
+                    enc.id,
+                    {"kind": "plazo", "data": {"hora": hora}},
+                    f"plazo:{enc.id}:{enc.reanuda_en}",
+                )
+            return None
         texto = (
             f"El despliegue estuvo ocupado {intentos} veces desde "
             f"{libro.get('desde') or hora} (última vez {libro.get('ultimo') or hora}). "
@@ -9689,6 +9773,7 @@ def _paso_despliegue(
     """El sello se obtiene de la receta ejecutada sobre el commit integrado."""
     from . import despliegue, politica_despliegue
 
+    enc = _reintentar_despliegue_pendiente(registro, enc, hora)
     if nivel_objetivo(enc) != "desplegado" or enc.nivel_alcanzado != "integrado":
         return enc
     enc = politica_despliegue.adoptar(registro, enc, espacio, hora)

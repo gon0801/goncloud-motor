@@ -2424,6 +2424,8 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         )
     if kind == "bloqueo_fase":
         return _bloqueo_fase(e, d, hora)
+    if kind == "fase_reactivada":
+        return _fase_reactivada(e, d, hora)
     if kind == "arbol":
         return _arbol(e, d, hora)
     if kind == "comprobacion":
@@ -3715,6 +3717,36 @@ def _arbol(e: Encargo, d: dict, hora: str) -> Encargo:
         ultimo_hecho="el árbol de procesos quedó ausente",
         siguiente="ninguna" if estado == "cancelado" else "detenido hasta continuar",
         motivo="" if estado == "detenido" else "cancelado",
+    )
+
+
+def _fase_reactivada(e: Encargo, d: dict, hora: str) -> Encargo:
+    """Continuar reabre la fase bloqueada cuyo despliegue quedó pendiente.
+
+    La orden autoriza una corrida nueva de la receta del mismo SHA: la fase
+    vuelve al trabajo con sus datos y el barrido la vuelve a intentar; si el
+    despliegue vuelve a fallar, la causa se vuelve a anotar sin frenar a las
+    fases independientes."""
+    pedida = str(d.get("fase") or "")
+    fase = next((f for f in e.fases if f.id == pedida), None)
+    if fase is None or fase.estado != "bloqueada":
+        raise TransicionIlegal(f"la fase {pedida or '?'} no está bloqueada")
+    if e.estado in _CERRADOS:
+        raise TransicionIlegal("el encargo ya cerró")
+    return sesiones_de_fase_nueva(
+        replace(
+            con_fase(e, replace(fase, estado="trabajo", pendientes=())),
+            fase_activa=fase.id,
+            estado="recibido",
+            rol="responsable",
+            estrategia="investigar",
+            motivo="",
+            siguiente=f"reintentar el despliegue pendiente de la fase {fase.id}",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            devuelto_con=(),
+            hora=hora or e.hora,
+        )
     )
 
 
