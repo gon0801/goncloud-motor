@@ -306,32 +306,104 @@ def _huella_de_lo_interno(interno: Path, relativo: str) -> str:
     return "ausente"
 
 
-def _rutas_de_las_declaradas(declaradas: list[dict] | None) -> list[str]:
-    """Las rutas de `.interno/` nombradas por las comprobaciones declaradas."""
-    if not declaradas:
-        return []
-    vistos: set[str] = set()
-    salida: list[str] = []
-    for comprobacion in declaradas:
-        argv = comprobacion.get("argv") if isinstance(comprobacion, dict) else None
-        if not isinstance(argv, list):
+_INTERPRETES_DE_SCRIPT = _INTERPRETES_DE_SHELL | {
+    "python", "python3", "node", "ruby", "perl", "php", "lua",
+}
+
+
+def _es_script_en_posicion(palabra: str) -> bool:
+    """True si la palabra puede ser el comando o el guion de una linea de shell."""
+    if "=" in palabra.split(INTERNO, 1)[0]:
+        return False
+    return bool(_rutas_internas_del_argv([palabra]))
+
+
+def _scripts_en_palabras(palabras: list[str]) -> set[str]:
+    """Las rutas de `.interno/` que la linea ejecuta como comando o tras `.`."""
+    salida: set[str] = set()
+    comienzo = True
+    anterior = ""
+    for palabra in palabras:
+        if palabra in (";", "&&", "||", "|", "&", "(", ")"):
+            comienzo = True
+            anterior = palabra
             continue
-        for ruta in _rutas_internas_del_argv([str(x) for x in argv]):
-            if ruta not in vistos:
-                vistos.add(ruta)
-                salida.append(ruta)
+        if (comienzo or anterior in (".", "source")) and _es_script_en_posicion(
+            palabra
+        ):
+            for cola in _rutas_internas_del_argv([palabra]):
+                salida.add(cola)
+        comienzo = False
+        anterior = palabra
+    return salida
+
+
+def _script_de_interprete(argv: list[str]) -> str | None:
+    """El primer argumento que no es una bandera de un interprete es su guion."""
+    if not argv:
+        return None
+    nombre = Path(str(argv[0]).replace("\\", "/")).name.lower()
+    if nombre.endswith(".exe"):
+        nombre = nombre[:-4]
+    if nombre not in _INTERPRETES_DE_SCRIPT:
+        return None
+    i = 1
+    while i < len(argv):
+        token = str(argv[i])
+        if token in ("-c", "-e", "-m", "-p", "--eval", "--print"):
+            i += 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return token
+    return None
+
+
+def _rutas_ejecutadas(argv: list[str]) -> set[str]:
+    """Las rutas de `.interno/` que el argv ejecuta como comando o guion.
+
+    Un log o una redireccion que tambien se nombra queda fuera: se pesa con su
+    huella posterior, porque es salida y no contenido ejecutado. Esta
+    distincion evita que una comprobacion que escribe su propio informe quede
+    sin observacion vigente para siempre.
+    """
+    salida: set[str] = set()
+    if not argv:
+        return salida
+    for cola in _rutas_internas_del_argv([str(argv[0])]):
+        salida.add(cola)
+    guion = _script_de_interprete(argv)
+    if guion is not None:
+        for cola in _rutas_internas_del_argv([guion]):
+            salida.add(cola)
+    for indice in _indices_de_linea_de_shell(argv):
+        salida |= _scripts_en_palabras(_palabras_de_shell(str(argv[indice])))
     return salida
 
 
 def _huellas_antes_de_ejecutar(
     espacio: Path, declaradas: list[dict] | None
 ) -> dict[str, str]:
-    """La huella de cada ruta antes de correr: el contenido que la comprobacion ejecuta."""
+    """La huella de los guiones ejecutados antes de correr."""
     interno = interno_de(espacio)
-    return {
-        ruta: _huella_de_lo_interno(interno, ruta)
-        for ruta in _rutas_de_las_declaradas(declaradas)
-    }
+    base = interno.resolve()
+    huellas: dict[str, str] = {}
+    for comprobacion in declaradas or []:
+        argv = comprobacion.get("argv") if isinstance(comprobacion, dict) else None
+        if not isinstance(argv, list):
+            continue
+        for ruta in _rutas_ejecutadas([str(x) for x in argv]):
+            if ruta in huellas:
+                continue
+            path = (interno / ruta).resolve()
+            try:
+                path.relative_to(base)
+            except ValueError:
+                continue
+            if path.is_file():
+                huellas[ruta] = _huella_de_lo_interno(interno, ruta)
+    return huellas
 
 
 def huella_procedimiento(
@@ -343,14 +415,14 @@ def huella_procedimiento(
 
     La version del producto excluye `.interno/` y el argv no cambia cuando
     cambia el script que vive ahi. Esta huella suma el contenido de los
-    archivos de `.interno/` que aparecen en el argv: lo unico interno que la
-    comprobacion puede ejecutar. `None` si ninguna declarada nombra
-    `.interno/`: entonces la version y el argv ya identifican la observacion.
+    archivos de `.interno/` que aparecen en el argv. `None` si ninguna
+    declarada nombra `.interno/`: entonces la version y el argv ya identifican
+    la observacion.
 
-    Con `antes` (las huellas tomadas antes de correr), un archivo que cambio
-    durante la ejecucion conserva la huella de lo que realmente corrio; un
-    directorio usa la de despues, porque sus hijos generados son la salida de
-    la comprobacion y no el contenido que ejecuto.
+    Con `antes` (la huella de los guiones ejecutados, tomada antes de correr),
+    el archivo que cambio durante la ejecucion conserva la huella de lo que
+    realmente corrio. Las demas rutas, como un log o un directorio de salida,
+    usan la huella posterior: son salida, no contenido ejecutado.
     """
     if not declaradas:
         return None
@@ -360,21 +432,24 @@ def huella_procedimiento(
         argv = comprobacion.get("argv") if isinstance(comprobacion, dict) else None
         if not isinstance(argv, list):
             continue
-        rutas = _rutas_internas_del_argv([str(x) for x in argv])
+        argv_lista = [str(x) for x in argv]
+        rutas = _rutas_internas_del_argv(argv_lista)
         if not rutas:
             continue
+        ejecutadas = _rutas_ejecutadas(argv_lista)
         archivos = []
         for ruta in rutas:
             actual = _huella_de_lo_interno(interno, ruta)
             previa = (antes or {}).get(ruta)
             if (
-                previa is not None
+                ruta in ejecutadas
+                and previa is not None
                 and not previa.startswith("arbol:")
                 and not actual.startswith("arbol:")
             ):
                 actual = previa
             archivos.append([ruta, actual])
-        partes.append({"argv": [str(x) for x in argv], "archivos": archivos})
+        partes.append({"argv": argv_lista, "archivos": archivos})
     if not partes:
         return None
     return digest({"procedimiento": partes})
