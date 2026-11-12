@@ -335,22 +335,76 @@ class RecuperacionDespliegue(unittest.TestCase):
         self.assertEqual(libros, [], "el libro no se reinició al aplicar")
         self.assertEqual(ejecutor.ocupado(reg, reg.fold(ident)), {})
 
-    def test_el_pendiente_de_despliegue_no_entrega_con_pendientes(self):
-        # F4: el aviso del despliegue es transitorio y no convierte la pasada
-        # en una entrega parcial.
+    def test_el_aviso_de_despliegue_bloquea_su_fase_y_avanza_a_la_independiente(self):
+        # h_fed313a0: el pendiente del despliegue conduce la entrega parcial de
+        # SU fase (bloqueo con la causa) y el encargo avanza a la fase
+        # independiente; sin bloqueo anotado a mano ni por la prueba.
         reg, ident, espacio, destino, integrar = self.despliegue
-        integrar()
-        entregas = mock.Mock(
-            side_effect=AssertionError("el despliegue no entrega con pendientes")
-        )
-        with mock.patch.object(ciclo, "_entregar_con_pendientes", entregas):
-            reg.anotar(ident, {"kind": "pendiente_entrega", "data": {
-                "texto": "despliegue: causa transitoria del despliegue",
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -eq 1 ]; then exit 0; fi',
+            "exit 1",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        receta = {"desplegar": "d.sh", "checklist": "c.sh", "rollback": "r.sh"}
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+            {"id": "K", "resultado": "K lista", "requiere_despliegue": True, "despliegue": receta},
+            {"id": "N", "resultado": "N lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+            {"id": "O", "resultado": "O lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+        ]}}, "fases")
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            integrar()
+            base.paso(self.despliegue)
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de K",
                 "hora": base.HORA,
-            }}, "pendiente-despliegue")
-            self.assertTrue(reg.fold(ident).pendientes_entrega)
-            ciclo.barrer(reg, base.HORA, time.time(), mock.Mock())
-        entregas.assert_not_called()
+            }}, "cierre-K")
+            self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
+            (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
+            integrar()
+            self.aprobar_para_supervisor()
+            base.paso(self.despliegue)
+        enc = reg.fold(ident)
+        self.assertEqual(enc.fase_activa, "N", enc.motivo)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        self.assertEqual(len(enc.impedimentos), 1, enc.motivo)
+        self.assertTrue(
+            any(p.startswith("despliegue:") for p in enc.pendientes_entrega),
+            enc.pendientes_entrega,
+        )
+        self.assertFalse(
+            any(f.estado == "bloqueada" for f in enc.fases),
+            "el fallo real aún no bloquea ninguna fase",
+        )
+
+        observador = mock.Mock()
+        sonda = mock.Mock(return_value=types.SimpleNamespace(
+            ok=True, causa="", condicion="",
+        ))
+        with mock.patch.object(ciclo, "_lanzar_uno", observador), mock.patch.object(
+            ciclo, "_sonda_entorno", sonda,
+        ):
+            ciclo.barrer(reg, "2026-11-05T12:01:00+00:00", time.time(), mock.Mock())
+            ciclo.barrer(reg, "2026-11-05T12:02:00+00:00", time.time(), mock.Mock())
+            ciclo.barrer(reg, "2026-11-05T12:03:00+00:00", time.time(), mock.Mock())
+        enc = reg.fold(ident)
+        bloqueos = [ev for ev in reg.eventos(ident) if ev["kind"] == "bloqueo_fase"]
+        self.assertTrue(bloqueos, "la pasada no bloqueó la fase fallida")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        self.assertEqual(enc.fase_activa, "O", enc.motivo)
+        fases = {f.id: f for f in enc.fases}
+        self.assertEqual(fases["K"].estado, "preparada")
+        self.assertEqual(fases["N"].estado, "bloqueada")
+        self.assertEqual(fases["O"].estado, "pendiente")
 
     def test_otra_causa_de_pendiente_si_entrega_con_pendientes(self):  # no-roja-en-base: la base ya desvía la pasada con cualquier pendiente; la prueba fija que la excepción es solo del despliegue
         reg, ident, espacio, destino, integrar = self.despliegue
