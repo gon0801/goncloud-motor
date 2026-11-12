@@ -136,6 +136,25 @@ class ReintentoCorreSoloLaReceta(BancoReintento):
             [],
         )
 
+    def test_reintenta_con_la_fase_activa_esperando_por_otra_causa(self):
+        reg, ident, espacio, destino, integrar, corridas, sweeps = self.banco(
+            "exit 0"
+        )
+        self.orden(reg, ident, "reintento-con-espera")
+        ciclo.marcar_espera(
+            reg, ident, "la fase en curso espera por otra causa",
+            "2026-11-05T13:00:00+00:00", base.HORA,
+        )
+        sweeps((
+            "2026-11-05T12:01:00+00:00", "2026-11-05T12:02:00+00:00",
+        ))
+        final = reg.fold(ident)
+        a = next(f for f in final.fases if f.id == "A")
+        self.assertEqual(final.estado, "esperando_reintento")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
+        self.assertEqual(a.estado, "preparada")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+
     def test_la_receta_que_ya_contiene_el_sha_tambien_despliega(self):
         reg, ident, espacio, destino, integrar, corridas, sweeps = self.banco(
             'printf "ESTADO=sin_cambios\\n"; printf "produccion ya contiene el SHA\\n"; exit 0'
@@ -176,6 +195,51 @@ class LaOrdenAtendidaNoReabre(BancoReintento):
         self.assertEqual(
             [ev for ev in reg.eventos(ident) if ev["kind"] == "fase_desplegada"],
             [],
+        )
+
+    def test_una_orden_nueva_despues_de_la_resuelta_vuelve_a_reintentar(self):
+        reg, ident, espacio, destino, integrar, corridas, sweeps = self.banco(
+            "exit 0"
+        )
+        clase = reg.fold(ident).impedimentos[-1].clase
+        self.orden(reg, ident, "orden-vieja")
+        ciclo._resolver_impedimento(reg, reg.fold(ident), clase, base.HORA)
+        self.orden(reg, ident, "orden-nueva")
+        sweeps((
+            "2026-11-05T12:01:00+00:00", "2026-11-05T12:02:00+00:00",
+        ))
+        final = reg.fold(ident)
+        a = next(f for f in final.fases if f.id == "A")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
+        self.assertEqual(a.estado, "preparada")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+
+
+class ElImpedimentoDeOtraFaseNoSeResuelve(unittest.TestCase):
+    def test_un_prefijo_corto_no_atribuye_el_impedimento(self):
+        registro = mock.Mock()
+        registro.eventos.return_value = [{
+            "kind": "impedimento",
+            "data": {"clase": "despliegue:" + "a" * 12, "causa": "fallo por red"},
+        }]
+        fase = types.SimpleNamespace(id="A", bloqueo_causa="despliegue: fallo")
+        self.assertEqual(
+            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", fase),
+            set(),
+            "un prefijo corto atribuyó a A el impedimento de otra fase",
+        )
+
+    def test_la_causa_truncada_larga_si_atribuye_el_impedimento(self):
+        causa = "x" * 200
+        registro = mock.Mock()
+        registro.eventos.return_value = [{
+            "kind": "impedimento",
+            "data": {"clase": "despliegue:" + "b" * 12, "causa": causa + " y más"},
+        }]
+        fase = types.SimpleNamespace(id="A", bloqueo_causa="despliegue: " + causa)
+        self.assertEqual(
+            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", fase),
+            {"despliegue:" + "b" * 12},
         )
 
 
