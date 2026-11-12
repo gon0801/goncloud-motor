@@ -172,10 +172,11 @@ def firma_producto(espacio: Path) -> str:
     return version_producto(espacio).firma
 
 
-_RUTA_INTERNA = re.compile(
-    r"(?:^|[\s/;:'\"(|&=])"
-    + re.escape(INTERNO)
-    + r"(?:/([^\s'\"`;|&()<>]*))?"
+_RUTA_ARGUMENTO = re.compile(
+    r"(?:^|(?<=[/=:]))" + re.escape(INTERNO) + r"/(.+)$"
+)
+_RUTA_SHELL = re.compile(
+    r"(?:[\s;|&()'\"`])" + re.escape(INTERNO) + r"/([^\s'\"`;|&()<>]*)"
 )
 
 
@@ -183,19 +184,22 @@ def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
     """Rutas de `.interno/` nombradas en un argv, relativas a `.interno`.
 
     Un token puede ser la ruta relativa (`.interno/script.sh`), absoluta o de
-    Windows, o una linea de shell que la nombra dentro del mismo argumento
-    (`. .interno/script.sh` tras `sh -c`). Se busca `.interno` como componente
-    y se conserva la cola, que es la misma ruta dentro del interno del espacio.
+    Windows, con espacios (`--dir=.interno/mis pruebas`), o una linea de shell
+    que la nombra dentro del mismo argumento (`. .interno/script.sh` tras
+    `sh -c`). En un argumento de ruta la cola llega al final del token; en una
+    linea de shell se corta en el delimitador. Se conserva la cola, que es la
+    misma ruta dentro del interno del espacio.
     """
     vistos: set[str] = set()
     salida: list[str] = []
     for token in argv:
         normal = str(token).replace("\\", "/")
-        for coincidencia in _RUTA_INTERNA.finditer(normal):
-            cola = coincidencia.group(1) or ""
-            if cola and cola not in vistos:
-                vistos.add(cola)
-                salida.append(cola)
+        for patron in (_RUTA_ARGUMENTO, _RUTA_SHELL):
+            for coincidencia in patron.finditer(normal):
+                cola = (coincidencia.group(1) or "").strip()
+                if cola and cola not in vistos:
+                    vistos.add(cola)
+                    salida.append(cola)
     return sorted(salida)
 
 
@@ -208,6 +212,8 @@ def _huella_de_lo_interno(interno: Path, relativo: str) -> str:
     un contenido y de una ausencia.
     """
     base = interno.resolve()
+    if any(p in _EXCLUIDAS for p in Path(relativo).parts):
+        return "excluido"
     path = (interno / relativo).resolve()
     try:
         path.relative_to(base)
@@ -221,11 +227,14 @@ def _huella_de_lo_interno(interno: Path, relativo: str) -> str:
             for hijo in sorted(path.rglob("*")):
                 if not hijo.is_file():
                     continue
+                relativo_hijo = hijo.relative_to(path)
+                if any(p in _EXCLUIDAS for p in relativo_hijo.parts):
+                    continue
                 try:
                     hijo.resolve().relative_to(base)
                 except (OSError, ValueError):
                     continue
-                arbol.update(hijo.relative_to(path).as_posix().encode())
+                arbol.update(relativo_hijo.as_posix().encode())
                 arbol.update(b"\0")
                 arbol.update(hashlib.sha256(hijo.read_bytes()).hexdigest().encode())
                 arbol.update(b"\0")
@@ -408,7 +417,6 @@ def _ejecutar_declaradas(
     comandos: list[dict], espacio: Path, directorio: Path, contenedor: Path
 ) -> dict:
     procedimiento = {"comprobaciones": comandos}
-    huella = huella_procedimiento(espacio, comandos)
     ejecuciones = []
     for i, c in enumerate(comandos):
         tope = _tope_de(c)
@@ -532,6 +540,9 @@ def _ejecutar_declaradas(
             except ValueError:
                 continue
     firma = firma_producto(espacio)
+    # Despues de ejecutar: la comprobacion puede crear caches o archivos bajo
+    # `.interno/`, y la huella debe ser la que se recalcula al leer el intento.
+    huella = huella_procedimiento(espacio, comandos)
     datos = {
         "comprobaciones": procedimiento["comprobaciones"],
         "procedimiento": huella,
