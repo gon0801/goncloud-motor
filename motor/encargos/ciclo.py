@@ -1846,20 +1846,18 @@ def _barrer_encargos(
             _limpiar_encargo_cerrado(registro, enc, hora)
             informes.append(vista(enc))
             continue
-        frenan = [
-            p for p in enc.pendientes_entrega
-            if not p.startswith("despliegue:")
-        ]
         if (
             not parada
-            and frenan
+            and enc.pendientes_entrega
             and enc.proc is None
             and not enc.reserva
             and enc.estado in ("recibido", "ejecutando")
         ):
             # La entrega con pendientes va delante de cualquier paso que pueda
             # volver a fallar: es el camino que corta la espera y el ciclo. El
-            # aviso del despliegue es transitorio: no corta, espera con su fase.
+            # aviso del despliegue conduce aquí la entrega parcial de SU fase:
+            # bloquea la fase con la causa y el encargo avanza a las fases
+            # independientes.
             enc = _entregar_con_pendientes(registro, enc, gh, hora)
             informes.append(vista(enc))
             continue
@@ -1915,13 +1913,9 @@ def _barrer_encargos(
                     f"buzon-fallo:{encargo_id}:{type(exc).__name__}",
                 )
             enc = registro.fold(encargo_id) or enc
-        frenan = [
-            p for p in enc.pendientes_entrega
-            if not p.startswith("despliegue:")
-        ]
         if (
             not parada
-            and frenan
+            and enc.pendientes_entrega
             and enc.proc is None
             and not enc.reserva
             and enc.estado in ("recibido", "ejecutando")

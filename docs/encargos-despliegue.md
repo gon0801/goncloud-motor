@@ -107,8 +107,9 @@ un despliegue pendiente. La fase dueña de la causa se reconoce por el
 `bloqueo_causa` que la anotó (huella, igualdad o la forma recortada del
 pendiente) esté o no bloqueada; si dos fases comparten la misma causa, la
 atribución es ambigua y la verificación exige cubrir todo el frente. Su
-pendiente es un aviso transitorio: no corta la pasada en una entrega parcial y
-se va cuando la causa se resuelve. La ventana es por identidad: un despliegue
+pendiente conduce la entrega parcial de su fase: bloquea la fase con la causa y
+el encargo avanza a las fases independientes; el aviso se va cuando la causa se
+resuelve. La ventana es por identidad: un despliegue
 aplicado reinicia el libro de intentos. Cada lanzamiento de receta fotografia el conteo de
 órdenes de continuar, y solo una orden aplicada después del fallo autoriza
 una corrida: una continuación anterior al despliegue no reintenta nada. Una
