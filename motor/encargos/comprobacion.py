@@ -172,12 +172,30 @@ def firma_producto(espacio: Path) -> str:
     return version_producto(espacio).firma
 
 
-_RUTA_ARGUMENTO = re.compile(
-    r"(?:^|(?<=[/=:]))" + re.escape(INTERNO) + r"/(.+)$"
-)
-_RUTA_SHELL = re.compile(
-    r"(?:[\s;|&()'\"`])" + re.escape(INTERNO) + r"/([^\s'\"`;|&()<>]*)"
-)
+_DELIMITADOR_SHELL = re.compile(r"[\s'\"`;|&()<>]")
+
+
+def _indices_de_linea_de_shell(argv: list[str]) -> set[int]:
+    """Los argumentos que son una linea de shell: el valor de un `-c`."""
+    indices: set[int] = set()
+    for i, token in enumerate(argv[:-1]):
+        texto = str(token)
+        if texto.startswith("-") and not texto.startswith("--") and "c" in texto[1:]:
+            indices.add(i + 1)
+    return indices
+
+
+def _ocurrencias_internas(normal: str):
+    """Posiciones de `.interno` como componente y el caracter que las precede."""
+    inicio = 0
+    while True:
+        pos = normal.find(INTERNO, inicio)
+        if pos < 0:
+            return
+        antes = normal[pos - 1] if pos else ""
+        if pos == 0 or antes in "/=: \t;'\"`|&()":
+            yield pos, antes
+        inicio = pos + len(INTERNO)
 
 
 def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
@@ -190,16 +208,25 @@ def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
     linea de shell se corta en el delimitador. Se conserva la cola, que es la
     misma ruta dentro del interno del espacio.
     """
+    shell = _indices_de_linea_de_shell(argv)
     vistos: set[str] = set()
     salida: list[str] = []
-    for token in argv:
+    for i, token in enumerate(argv):
         normal = str(token).replace("\\", "/")
-        for patron in (_RUTA_ARGUMENTO, _RUTA_SHELL):
-            for coincidencia in patron.finditer(normal):
-                cola = (coincidencia.group(1) or "").strip()
-                if cola and cola not in vistos:
-                    vistos.add(cola)
-                    salida.append(cola)
+        for pos, antes in _ocurrencias_internas(normal):
+            resto = normal[pos + len(INTERNO):]
+            if not resto.startswith("/"):
+                continue
+            cola = resto[1:]
+            if antes == "=" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", normal):
+                cola = cola.split(":", 1)[0]
+            elif i in shell:
+                cola = _DELIMITADOR_SHELL.split(cola, 1)[0]
+            else:
+                cola = cola.strip()
+            if cola and cola not in vistos:
+                vistos.add(cola)
+                salida.append(cola)
     return sorted(salida)
 
 
