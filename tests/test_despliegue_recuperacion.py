@@ -178,20 +178,46 @@ class RecuperacionDespliegue(unittest.TestCase):
         self.assertEqual(efecto.read_text(encoding="utf-8"), "enviado\n")
         self.assertFalse((destino / "pasos").exists())
 
-    def test_despliegue_fallido_vuelve_a_bloquear_tras_continuar_sin_repetir_receta(self):
+    def test_continuar_reintenta_el_despliegue_pendiente(self):
         reg, ident, espacio, destino, integrar = self.despliegue
-        with (espacio / "d.sh").open("a", encoding="utf-8") as script:
-            script.write("exit 9\n")
-        integrar()
-        self.aprobar_para_supervisor()
-        final = base.paso(self.despliegue)
-        self.assertNotEqual(final.estado, "necesita_usuario")
-        self.assertTrue(_bloqueo_visible(final))
-        recibo, = (reg.base / "despliegues").rglob("recibo.json")
-        self.assertEqual(json.loads(recibo.read_text(encoding="utf-8"))["estado"], "fallido")
-        pasos = (destino / "pasos").read_text(encoding="utf-8")
-        self.comprobar_bloqueo_tras_continuar()
-        self.assertEqual((destino / "pasos").read_text(encoding="utf-8"), pasos)
+        corridas = destino / "corridas"
+        (espacio / "d.sh").write_text(
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"\n'
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0); '
+            f'n=$((n+1)); printf "%s" "$n" > "{corridas.as_posix()}"; '
+            f'if [ "$n" -ge 2 ]; then exit 0; fi; exit 1\n'
+        )
+        sha = integrar()
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            final = base.paso(self.despliegue)
+            self.assertNotEqual(final.estado, "necesita_usuario")
+            self.assertTrue(_bloqueo_visible(final))
+            recibo, = (reg.base / "despliegues").rglob("recibo.json")
+            self.assertEqual(json.loads(recibo.read_text(encoding="utf-8"))["estado"], "fallido")
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "1")
+            # Sin una orden de continuar el recibo fallido no se vuelve a correr.
+            base.paso(self.despliegue)
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "1")
+            ciclo.ordenar(reg, ident, "continuar", "reintentar-despliegue", base.HORA)
+            final = reg.fold(ident)
+            for _ in range(10):
+                final = base.paso(self.despliegue)
+                if final.nivel_alcanzado == "desplegado":
+                    break
+            else:
+                self.fail(f"el despliegue no llegó a desplegado: {final.motivo}")
+
+        self.assertEqual(final.nivel_alcanzado, "desplegado", final.motivo)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        self.assertEqual(
+            (destino / "pasos").read_text(encoding="utf-8").splitlines(),
+            [f"desplegar:{sha}", f"rollback:{sha}", f"desplegar:{sha}", f"checklist:{sha}"],
+        )
 
     def test_recibo_de_ensayo_vuelve_a_bloquear_tras_continuar_sin_lanzar_agente(self):
         reg, ident, _, destino, integrar = self.despliegue

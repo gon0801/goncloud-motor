@@ -203,13 +203,29 @@ class DespliegueReal(unittest.TestCase):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
         with (espacio / "c.sh").open("a") as f:
-            f.write('printf "ocupado: app.cli vivo\\n"; exit 75\n')
+            f.write('printf "app.cli vivo\\n"; exit 75\n')
         integrar()
         self._ejecucion_en_proceso()
         final = paso(despliegue)
         datos = recibo_final(reg)
         assert datos["estado"] == "fallido", datos
         assert [p["codigo"] for p in datos["pasos"]] == [0, 75, 0], datos["pasos"]
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_negacion_o_error_propio_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que una negación o un fallo declarado no es ocupado aunque la salida mencione la palabra
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "destino no ocupado; error de datos\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [75, 0], datos["pasos"]
         causa = final.impedimentos[-1].causa if final.impedimentos else ""
         assert "revisar el recibo" in causa, causa
         assert not list((reg.base / "despliegues").rglob("ocupado.json"))
@@ -236,7 +252,7 @@ class DespliegueReal(unittest.TestCase):
         reg, ident, espacio, destino, integrar = despliegue
         (espacio / "d.sh").write_text(
             'printf "preparacion completa\\n"; '
-            'printf "ocupado: app.cli vivo (spapi-diario)\\n" >&2; exit 75\n'
+            'printf "app.cli vivo (spapi-diario)\\n" >&2; exit 75\n'
         )
         integrar()
         self._ejecucion_en_proceso()
@@ -265,7 +281,7 @@ class DespliegueReal(unittest.TestCase):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
         (espacio / "d.sh").write_text(
-            'printf "ocupado: app.cli vivo (spapi-diario)\\n'
+            'printf "app.cli vivo (spapi-diario)\\n'
             'ESTADO=abortado_sin_cambios\\n"; exit 75\n'
         )
         integrar()
@@ -275,7 +291,7 @@ class DespliegueReal(unittest.TestCase):
         assert datos["estado"] == "ocupado", datos
         libro = next((reg.base / "despliegues").rglob("ocupado.json"))
         contenido = json.loads(libro.read_text())
-        assert contenido["proceso"] == "ocupado: app.cli vivo (spapi-diario)", contenido
+        assert contenido["proceso"] == "app.cli vivo (spapi-diario)", contenido
 
     def test_75_con_reversa_limpia_espera_y_reintenta_solo(self):
         despliegue = self.despliegue
@@ -286,7 +302,7 @@ class DespliegueReal(unittest.TestCase):
             f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0); '
             f'n=$((n+1)); printf "%s" "$n" > "{corridas.as_posix()}"; '
             f'if [ "$n" -ge 2 ]; then exit 0; fi; '
-            f'printf "ocupado: app.cli vivo\\n"; exit 75\n'
+            f'printf "app.cli vivo\\n"; exit 75\n'
         )
         sha = integrar()
         self._ejecucion_en_proceso()
@@ -327,7 +343,7 @@ class DespliegueReal(unittest.TestCase):
     def test_75_repetido_agota_la_ventana_y_deja_impedimento_en_llano(self):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
-        (espacio / "d.sh").write_text('printf "ocupado: app.cli vivo (spapi-diario)\\n"; exit 75\n')
+        (espacio / "d.sh").write_text('printf "app.cli vivo (spapi-diario)\\n"; exit 75\n')
         integrar()
         self._ejecucion_en_proceso()
         for _ in range(6):
