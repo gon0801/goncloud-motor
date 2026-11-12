@@ -364,6 +364,109 @@ class RecuperacionDespliegue(unittest.TestCase):
             ciclo.barrer(reg, base.HORA, time.time(), mock.Mock())
         entregas.assert_called()
 
+    def test_el_libro_de_otra_fase_no_aplica_a_la_fase_activa(self):
+        # F10: la ventana agotada de N no manda sobre el primer intento de O.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -eq 1 ]; then exit 0; fi',
+            'if [ "$n" -ge 9 ]; then exit 0; fi',
+            'printf "app.cli vivo (spapi-diario)"',
+            "exit 75",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        receta = {"desplegar": "d.sh", "checklist": "c.sh", "rollback": "r.sh"}
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+            {"id": "K", "resultado": "K lista", "requiere_despliegue": True, "despliegue": receta},
+            {"id": "N", "resultado": "N lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+            {"id": "O", "resultado": "O lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+        ]}}, "fases")
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        horas = (
+            "2026-11-05T12:00:00+00:00", "2026-11-05T12:15:00+00:00",
+            "2026-11-05T12:45:00+00:00", "2026-11-05T13:45:00+00:00",
+            "2026-11-05T15:45:00+00:00", "2026-11-05T19:45:00+00:00",
+        )
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            integrar()
+            base.paso(self.despliegue)
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de K",
+                "hora": base.HORA,
+            }}, "cierre-K")
+            self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
+            (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
+            integrar()
+            for hora in horas:
+                ciclo._paso_despliegue(reg, reg.fold(ident), espacio, hora)
+            # La séptima pasada toca el tope de la ventana de N.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, "2026-11-05T19:46:00+00:00")
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "7")
+            enc = reg.fold(ident)
+            causa = enc.impedimentos[-1].causa
+            reg.anotar(ident, {"kind": "bloqueo_fase", "data": {
+                "evidencia": "recibo fallido-ocupado de N", "causa": causa,
+            }}, "bloqueo-N")
+            self.assertEqual(reg.fold(ident).fase_activa, "O", reg.fold(ident).motivo)
+            (espacio / "cambio-o.txt").write_text("cambio de O", encoding="utf-8")
+            integrar()
+            # El primer intento real de O abre su propia ventana.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, base.HORA)
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "8")
+            fin = time.monotonic() + 30
+            while True:
+                recibos_o = [
+                    json.loads(ruta.read_text(encoding="utf-8"))
+                    for ruta in (reg.base / "despliegues").rglob("recibo.json")
+                    if json.loads(ruta.read_text(encoding="utf-8")).get("fase") == "O"
+                ]
+                if any(
+                    d.get("estado") in ("aplicado", "fallido", "incierto", "esperando", "ocupado")
+                    and all("codigo" in p for p in d.get("pasos", []))
+                    for d in recibos_o
+                ):
+                    datos = recibos_o[0]
+                    break
+                assert time.monotonic() < fin, "el recibo de O no llegó a su estado final"
+                time.sleep(0.05)
+            assert datos["estado"] == "ocupado", datos
+            # El libro de O es suyo: intentos 1, no los seis de N.
+            libros = [
+                json.loads(ruta.read_text(encoding="utf-8"))
+                for ruta in (reg.base / "despliegues").rglob("ocupado.json")
+            ]
+            self.assertEqual(
+                [libro["intentos"] for libro in libros if libro["intentos"] >= 2], [6],
+            )
+            propios = [libro for libro in libros if libro["intentos"] == 1]
+            self.assertEqual(len(propios), 1, libros)
+            # Vence la espera de O: su segundo intento despliega la fase.
+            propio = next(
+                ruta for ruta in (reg.base / "despliegues").rglob("ocupado.json")
+                if json.loads(ruta.read_text(encoding="utf-8"))["intentos"] == 1
+            )
+            contenido = json.loads(propio.read_text(encoding="utf-8"))
+            contenido["ultimo"] = "2026-11-04T11:00:00Z"
+            propio.write_text(json.dumps(contenido))
+            final = reg.fold(ident)
+            for _ in range(10):
+                final = ciclo._paso_despliegue(
+                    reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
+                )
+                if final.fase_activa == "O" and final.nivel_alcanzado == "desplegado":
+                    break
+            else:
+                self.fail(f"O no llegó a desplegado: {final.motivo}")
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "9")
+
     def test_una_orden_anterior_no_reabre_la_ventana_ocupada(self):
         # h_51c2637c (ronda 5): la orden previa al despliegue ya no consume
         # la ventana; el libro arranca con la fotografía del recibo.
