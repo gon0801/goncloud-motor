@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from motor.encargos import comprobacion
@@ -489,6 +490,61 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 despues,
                 "un archivo que sale de .interno no entra en la huella",
             )
+
+    def test_un_enlace_dentro_de_un_directorio_no_entra_en_la_huella(self):
+        """Un enlace dentro del árbol no mete contenido de fuera de `.interno/`."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "enlace-dir", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            carpeta = interno / "carpeta"
+            carpeta.mkdir()
+            (carpeta / "propio.sh").write_text("exit 0\n", encoding="utf-8")
+            (r.espacio / ".runtime").mkdir(exist_ok=True)
+            fuera = r.espacio / ".runtime" / "dato.txt"
+            fuera.write_text("uno\n", encoding="utf-8")
+            try:
+                (carpeta / "enlace").symlink_to(fuera)
+            except (OSError, NotImplementedError):
+                self.skipTest("la plataforma no permite crear enlaces simbólicos")
+
+            declaradas = [
+                {"objetivo": "lee un arbol", "argv": [sys.executable, ".interno/carpeta"]}
+            ]
+            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            fuera.write_text("dos\n", encoding="utf-8")
+            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(antes)
+            self.assertEqual(
+                antes,
+                despues,
+                "un enlace dentro del arbol no mete contenido de fuera en la huella",
+            )
+
+    def test_una_ruta_ilegible_deja_su_marca_sin_tumbar_la_huella(self):
+        """Un archivo ilegible no levanta: deja una marca distinta de ausente."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "ilegible", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            script = interno / "script.sh"
+            script.write_text("exit 0\n", encoding="utf-8")
+            declaradas = [
+                {"objetivo": "x", "argv": [sys.executable, ".interno/script.sh"]}
+            ]
+
+            legible = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            with mock.patch.object(
+                Path, "read_bytes", side_effect=PermissionError("sin permiso")
+            ):
+                ilegible = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            script.unlink()
+            ausente = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(ilegible)
+            self.assertNotEqual(ilegible, legible)
+            self.assertNotEqual(ilegible, ausente)
 
 
 if __name__ == "__main__":
