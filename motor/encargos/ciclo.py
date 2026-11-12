@@ -9304,42 +9304,39 @@ def _paso_despliegue_fase(
         or fase.estado == "preparada"
     ):
         return enc
+    if fase.despliegue_espera_en and hora < fase.despliegue_espera_en:
+        # Una receta que no arrancó espera su ventana antes de reintentarse.
+        return enc
     # Un fallo transitorio al traer el merge commit no debe dejar integrada una
     # fase que no puede leer su receta: se reintenta al reanudar el despliegue.
     _asegurar_commit_local(espacio, fase.integrado_sha, enc.entrega.base)
     libro = despliegue.ocupado(registro, enc, fase)
-    if libro:
-        recibo = despliegue.recibo_de(registro, enc, fase)
-        if not (recibo and recibo.get("estado") == "aplicado"):
-            intentos = int(libro.get("intentos") or 0)
-            if intentos >= TOPE_OCUPADO:
-                ordenes = despliegue.continuaciones(registro, enc.id)
-                if ordenes <= int(libro.get("continuadas") or 0):
-                    proceso = str(libro.get("proceso") or "").strip()
-                    causa = (
-                        f"fase {fase.id}: el despliegue estuvo ocupado "
-                        f"{intentos} veces desde {libro.get('desde') or hora} "
-                        f"(última vez {libro.get('ultimo') or hora}); "
-                        "la receta reporta: "
-                        f"{proceso or 'el proceso que ocupa el destino'}. "
-                        "Producción no cambió: cada reversa terminó sin cambios. "
-                        "Una orden de continuar puede reintentar el mismo SHA."
-                    )
-                    return _anotar_impedimento_de_fase(
-                        registro, enc, fase, causa, hora
-                    )
-                # Una orden nueva reabre la ventana una vez y la receta del
-                # mismo SHA vuelve a correr en esta pasada.
-                despliegue.reabrir_ventana(registro, enc, ordenes, fase)
-            else:
-                reanuda = _reanuda_desde(
-                    str(libro.get("ultimo") or hora),
-                    ESPERAS_OCUPADO_S[intentos - 1],
-                )
-                if _reanuda_desde(hora, 0) < reanuda:
-                    # La espera es de esta fase: la fase activa conserva su
-                    # turno y la receta ocupada no se relanza en cada pasada.
-                    return enc
+    recibo = despliegue.recibo_de(registro, enc, fase)
+    estado_recibo = str((recibo or {}).get("estado") or "")
+    # El libro del tope solo manda si la receta sigue declarando el destino
+    # ocupado. Un recibo fallido o en curso tiene su propia causa y no puede
+    # quedar tapado por los intentos ocupados anteriores.
+    if libro and estado_recibo in ("", "ocupado"):
+        intentos = int(libro.get("intentos") or 0)
+        if intentos >= TOPE_OCUPADO:
+            proceso = str(libro.get("proceso") or "").strip()
+            causa = (
+                f"fase {fase.id}: el despliegue estuvo ocupado "
+                f"{intentos} veces desde {libro.get('desde') or hora} "
+                f"(última vez {libro.get('ultimo') or hora}); "
+                "la receta reporta: "
+                f"{proceso or 'el proceso que ocupa el destino'}. "
+                "Producción no cambió: cada reversa terminó sin cambios. "
+                "Una orden de continuar puede reintentar el mismo SHA."
+            )
+            return _anotar_impedimento_de_fase(registro, enc, fase, causa, hora)
+        reanuda = _reanuda_desde(
+            str(libro.get("ultimo") or hora), ESPERAS_OCUPADO_S[intentos - 1]
+        )
+        if _reanuda_desde(hora, 0) < reanuda:
+            # La espera es de esta fase: la fase activa conserva su turno y
+            # la receta ocupada no se relanza en cada pasada.
+            return enc
     politica = politica_despliegue.resolver(espacio, enc, fase)
     if politica.requiere_despliegue is None:
         return enc
@@ -9367,6 +9364,20 @@ def _paso_despliegue_fase(
             causa += "; recibo: " + str(resultado["recibo"])
         causa = f"fase {fase.id}: {causa}"
         return _anotar_impedimento_de_fase(registro, enc, fase, causa, hora)
+    if estado == "esperando":
+        # La receta no arrancó (falta la receta, el SHA o la autoridad). La
+        # causa queda visible y la fase espera antes de reintentarse, sin
+        # marcar una espera global que frene a la fase activa.
+        causa = str(resultado.get("motivo") or "la receta no arrancó")
+        if resultado.get("recibo"):
+            causa += "; recibo: " + str(resultado["recibo"])
+        causa = f"fase {fase.id}: {causa}"
+        enc = _anotar_impedimento_de_fase(registro, enc, fase, causa, hora)
+        reanuda = _reanuda_desde(hora, 30)
+        return _anotar_conciliacion(
+            registro, enc, fase, "espera", hora,
+            causa=causa, reanuda_en=reanuda, huella=reanuda,
+        )
     if estado != "aplicado":
         # La receta sigue corriendo o quedó pendiente. No se marca una espera
         # del encargo: la fase activa conserva su turno y la próxima pasada

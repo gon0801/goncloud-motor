@@ -498,6 +498,9 @@ class Fase:
     # Causa de un despliegue terminalmente fallido en una fase conciliada. La
     # fase no se reintenta sola y el cierre no la espera para siempre.
     despliegue_impedido: str = ""
+    # Hora a la que una receta conciliada que no arrancó vuelve a intentarse.
+    # Evita relanzarla en cada pasada y conserva la causa en el registro.
+    despliegue_espera_en: str = ""
     inspecciones_consumidas: tuple[str, ...] = ()
     entrega_bloqueada_sha: str = ""
     # Resultado del CI real del PR, leído una sola vez después de entregar.
@@ -3934,6 +3937,24 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
             con_fase(e, replace(fase, despliegue_impedido=causa[:500])),
             hora=hora or e.hora,
         )
+    if paso == "espera":
+        causa = str(d.get("causa") or "").strip()
+        reanuda_en = str(d.get("reanuda_en") or "").strip()
+        if not causa or not reanuda_en:
+            raise TransicionIlegal(
+                "la espera de conciliación necesita causa y reanudación"
+            )
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_impedido=causa[:500],
+                    despliegue_espera_en=reanuda_en,
+                ),
+            ),
+            hora=hora or e.hora,
+        )
     if paso == "integrado":
         recibo = str(d.get("recibo") or d.get("sha") or "")
         if not recibo:
@@ -3947,6 +3968,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
             pr_numero=int(d.get("numero") or fase.pr_numero or 0),
             conciliado_en=hora or e.hora,
             despliegue_impedido="",
+            despliegue_espera_en="",
             **datos,
         )
         if str(d.get("fuente") or ""):
@@ -3972,6 +3994,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
                 desplegado_recibo=recibo,
                 conciliado_en=hora or e.hora,
                 despliegue_impedido="",
+                despliegue_espera_en="",
             ),
             f"despliegue {recibo} verificado",
         )

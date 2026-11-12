@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -253,9 +254,15 @@ class _Banco(unittest.TestCase):
         self.addCleanup(parche.stop)
         return reg, ident, gh, fusionado
 
-    def _barrer(self, reg, gh, vueltas=10):
-        for _ in range(vueltas):
-            ciclo.barrer(reg, ciclo.ahora_iso(), time.time(), None, gh=gh)
+    def _barrer(self, reg, gh, vueltas=10, salto_s=60, inicio=None):
+        # Cada pasada avanza un minuto: las esperas por fase se cumplen sin
+        # dormir el proceso de la prueba.
+        inicio = inicio or datetime.now(timezone.utc)
+        for i in range(vueltas):
+            hora = (inicio + timedelta(seconds=salto_s * i)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            ciclo.barrer(reg, hora, time.time(), None, gh=gh)
             time.sleep(0.02)
 
     def _fase(self, enc, ident: str):
@@ -603,9 +610,119 @@ class ConciliacionOcupadaAlTope(_Banco):
         self.assertEqual(a.estado, "bloqueada")
         self.assertEqual(a.nivel_alcanzado, "integrado")
 
+    def test_el_libro_no_tapa_un_recibo_fallido(self):
+        self.hacer_receta_ocupada()
+        reg, ident, gh, fusionado = self._preparar(dependiente=True)
+        with mock.patch.object(ciclo, "ESPERAS_OCUPADO_S", (0, 0, 0, 0, 0)):
+            self._barrer(reg, gh, vueltas=8)
+        enc = reg.fold(ident)
+        a = self._fase(enc, "A")
+        directorio = despliegue._directorio_de_fase(reg, enc, a)
+        self.assertIsNotNone(directorio)
+        recibo_path = directorio / "recibo.json"
+        datos = json.loads(recibo_path.read_text())
+        datos["estado"] = "fallido"
+        datos["motivo"] = "fallo real de la receta"
+        datos["pasos"] = [
+            {
+                "paso": "desplegar", "script": "d.sh", "codigo": 1,
+                "stdout": "", "stderr": "fallo real de la receta",
+                "enviado": True,
+            },
+            {
+                "paso": "rollback", "script": "r.sh", "codigo": 0,
+                "stdout": "", "stderr": "", "enviado": True,
+            },
+        ]
+        recibo_path.write_text(json.dumps(datos))
+
+        self._barrer(reg, gh, vueltas=1)
+
+        enc = reg.fold(ident)
+        causas = [
+            imp.causa for imp in enc.impedimentos
+            if imp.clase.startswith("despliegue:")
+        ]
+        self.assertTrue(
+            any("fallo real de la receta" in c for c in causas), causas
+        )
+
+    def test_una_orden_nueva_reintenta_el_tope_ocupado(self):
+        self.hacer_receta_ocupada()
+        reg, ident, gh, fusionado = self._preparar(dependiente=True)
+        with mock.patch.object(ciclo, "ESPERAS_OCUPADO_S", (0, 0, 0, 0, 0)):
+            self._barrer(reg, gh, vueltas=8)
+        enc = reg.fold(ident)
+        a = self._fase(enc, "A")
+        directorio = despliegue._directorio_de_fase(reg, enc, a)
+        self.assertIsNotNone(directorio)
+        libro = json.loads((directorio / "ocupado.json").read_text())
+        intentos_antes = libro["intentos"]
+        pasos_antes = len((self.destino / "pasos").read_text().splitlines())
+
+        reg.anotar(
+            ident,
+            {
+                "kind": "orden",
+                "data": {
+                    "accion": "continuar", "clave": "reintento-A",
+                    "hora": ciclo.ahora_iso(),
+                },
+            },
+            "orden:reintento-A",
+        )
+        self._barrer(reg, gh, vueltas=2)
+
+        libro = json.loads((directorio / "ocupado.json").read_text())
+        self.assertGreater(libro["intentos"], intentos_antes)
+        pasos = (self.destino / "pasos").read_text().splitlines()
+        self.assertGreater(len(pasos), pasos_antes)
+
 
 class ConciliacionFetchTransitorio(_Banco):
     RECETA_EN_REPO = True
+
+    def test_la_receta_que_no_arranca_conserva_la_causa_y_espera(self):
+        reg, ident, gh, fusionado = self._preparar(
+            dependiente=True, receta_en_repo=True
+        )
+        real = ciclo._git
+        fallando = {"valor": True}
+
+        def git_con_fallo(espacio, *args):
+            if fallando["valor"] and args and args[0] == "fetch":
+                return subprocess.CompletedProcess(
+                    ["git", *args], 1, "", "red caída"
+                )
+            return real(espacio, *args)
+
+        inicio = datetime.now(timezone.utc)
+        with mock.patch.object(ciclo, "_git", side_effect=git_con_fallo):
+            self._barrer(reg, gh, vueltas=1, salto_s=10, inicio=inicio)
+            self._barrer(
+                reg, gh, vueltas=1, salto_s=10,
+                inicio=inicio + timedelta(seconds=10),
+            )
+
+        enc = reg.fold(ident)
+        a = self._fase(enc, "A")
+        self.assertEqual(a.integrado_sha, fusionado.merge_commit)
+        self.assertFalse((self.destino / "pasos").exists())
+        causas = [
+            imp.causa for imp in enc.impedimentos
+            if imp.clase.startswith("despliegue:")
+        ]
+        self.assertTrue(any("falta receta real" in c for c in causas), causas)
+
+        fallando["valor"] = False
+        self._barrer(
+            reg, gh, vueltas=2, salto_s=60,
+            inicio=inicio + timedelta(seconds=40),
+        )
+        enc = reg.fold(ident)
+        a = self._fase(enc, "A")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        self.assertTrue(a.desplegado_recibo)
 
     def test_el_merge_commit_se_vuelve_a_buscar_al_desplegar(self):
         reg, ident, gh, fusionado = self._preparar(
