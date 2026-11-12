@@ -9646,13 +9646,18 @@ def _preguntar_despliegue(registro: Registro, enc: Encargo, causa: str, hora: st
         registro, enc, "despliegue:" + huella, causa,
         "que el despliegue pueda completarse o se retire del pedido", hora,
     )
+    # La ronda de continuar va en la ukey: una orden nueva reanota el aviso
+    # aunque el texto sea idéntico al que la entrega parcial ya consumió.
+    from .despliegue import continuaciones
+
+    ronda = continuaciones(registro, enc.id)
     registro.anotar(
         enc.id,
         {
             "kind": "pendiente_entrega",
             "data": {"texto": "despliegue: " + causa[:400], "hora": hora},
         },
-        f"pendiente-despliegue:{enc.id}:{enc.fase_activa}:{huella}",
+        f"pendiente-despliegue:{enc.id}:{enc.fase_activa}:{huella}:{ronda}",
     )
 
 

@@ -371,7 +371,6 @@ class RecuperacionDespliegue(unittest.TestCase):
             self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
             (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
             integrar()
-            self.aprobar_para_supervisor()
             base.paso(self.despliegue)
         enc = reg.fold(ident)
         self.assertEqual(enc.fase_activa, "N", enc.motivo)
@@ -425,6 +424,48 @@ class RecuperacionDespliegue(unittest.TestCase):
             }}, "pendiente-otro")
             ciclo.barrer(reg, base.HORA, time.time(), mock.Mock())
         entregas.assert_called()
+
+    def test_un_fallo_identico_tras_continuar_reanota_el_aviso(self):
+        # F11: continuar autoriza una corrida; si el reintento falla
+        # idénticamente, el aviso vuelve con la nueva ronda (la ukey del
+        # pendiente lleva la ronda de continuar) y no queda suprimido por la
+        # corrida anterior.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            "exit 1",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        integrar()
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            base.paso(self.despliegue)
+            self.assertEqual(corridas.read_text(encoding="utf-8"), "1")
+            enc = reg.fold(ident)
+            self.assertTrue(
+                any(p.startswith("despliegue:") for p in enc.pendientes_entrega),
+                enc.pendientes_entrega,
+            )
+            ciclo.ordenar(reg, ident, "continuar", "otra-vez", base.HORA)
+            # Pasada 1: relanza la receta (la corrida 2); la pasada concilia
+            # el fallo idéntico y reanota el aviso con la ronda nueva.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, base.HORA)
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, base.HORA)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+        enc = reg.fold(ident)
+        self.assertTrue(
+            any(p.startswith("despliegue:") for p in enc.pendientes_entrega),
+            enc.pendientes_entrega,
+        )
+        self.assertEqual(len(enc.impedimentos), 1)
 
     def test_el_libro_de_otra_fase_no_aplica_a_la_fase_activa(self):
         # F10: la ventana agotada de N no manda sobre el primer intento de O.

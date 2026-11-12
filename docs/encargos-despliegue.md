@@ -112,7 +112,8 @@ el encargo avanza a las fases independientes; el aviso se va cuando la causa se
 resuelve. La ventana es por identidad: un despliegue
 aplicado reinicia el libro de intentos. Cada lanzamiento de receta fotografia el conteo de
 órdenes de continuar, y solo una orden aplicada después del fallo autoriza
-una corrida: una continuación anterior al despliegue no reintenta nada. Una
+una corrida: una continuación anterior al despliegue no reintenta nada. Cada
+ronda vuelve a anotar el aviso si su reintento vuelve a fallar. Una
 orden sin consumir reabre la fase bloqueada cuyo despliegue quedó pendiente y
 reabre la ventana del caso ocupado agotada; sin continuar, el recibo fallido
 no se vuelve a correr. Una parada corta
