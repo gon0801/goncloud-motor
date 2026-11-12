@@ -54,17 +54,21 @@ def _grupo_ausente(pid: int, inicio: str, job: str) -> bool:
         time.sleep(0.05)
 
 
-def _reporte_de_receta(pasos: list) -> str:
-    """La última línea que la receta reportó antes de declararse ocupada."""
-    for clave in ("stdout", "stderr"):
-        lineas = [
-            linea.strip()
-            for linea in str(pasos[0].get(clave, "")).splitlines()
-            if linea.strip()
-        ]
-        if lineas:
-            return lineas[-1][:200]
-    return ""
+def _reporte_de_receta(paso: dict) -> str:
+    """La línea con la que la receta declaró ocupado el destino.
+
+    El contrato de la receta: el 75 solo significa ocupado si la propia
+    salida lo declara. El diagnóstico puede venir por stderr aunque el
+    resumen de preparación vaya por stdout, y no tiene por qué ser la
+    última línea impresa.
+    """
+    diagnosticos = [
+        linea.strip()[:200]
+        for clave in ("stdout", "stderr")
+        for linea in str(paso.get(clave, "")).splitlines()
+        if linea.strip() and "ocupado" in linea.lower()
+    ]
+    return diagnosticos[-1] if diagnosticos else ""
 
 
 def _registrar_ocupado(directorio: Path, hora: str, proceso: str) -> dict:
@@ -413,16 +417,22 @@ def ejecutar(pedido: Path) -> None:
                 codigo = correr("checklist")
             if codigo != 0 or not autorizado:
                 rollback = correr("rollback") if datos["pasos"][0]["enviado"] else "no requerido"
-                if codigo == SALIDA_OCUPADO and autorizado and rollback == 0:
-                    # El destino estaba ocupado y la reversa no hizo cambios:
-                    # producción quedó intacta. Es transitorio; el ciclo reintenta
-                    # el mismo SHA más tarde con espera creciente.
+                desplegar = datos["pasos"][0]
+                diagnostico = _reporte_de_receta(desplegar)
+                if (desplegar.get("codigo") == SALIDA_OCUPADO and autorizado
+                        and rollback == 0 and diagnostico):
+                    # El paso desplegar declaró ocupado el destino en su propia
+                    # salida y la reversa no hizo cambios: producción quedó
+                    # intacta. Es transitorio; el ciclo reintenta el mismo SHA
+                    # más tarde con espera creciente. Un 75 del checklist, o un
+                    # 75 sin ese diagnóstico, no es ocupado: sigue fallido.
                     libro = _registrar_ocupado(
-                        pedido.parent, str(datos.get("hora") or ""), _reporte_de_receta(datos["pasos"])
+                        pedido.parent, str(datos.get("hora") or ""), diagnostico
                     )
                     datos.update(estado="ocupado", motivo=(
-                        f"despliegue ocupado (salida {codigo}, intento {libro['intentos']}); "
-                        f"la receta reporta: {libro['proceso'] or 'sin detalle'}; "
+                        f"despliegue ocupado (salida {desplegar.get('codigo')}, "
+                        f"intento {libro['intentos']}); "
+                        f"la receta reporta: {libro['proceso']}; "
                         "rollback sin cambios (salida 0); se reintenta solo más tarde"
                     ))
                 else:

@@ -83,9 +83,12 @@ la causa concreta y no consume otro turno de revisión.
 
 Un trabajador separado ejecuta la receta, con un tope de 900 segundos por script.
 Si falla el despliegue o el checklist, incluido código 75 o timeout, intenta
-`rollback` con el mismo SHA. No marca la fase como desplegada. Una salida 75 del
-despliegue con reversa sin cambios significa que el destino estaba ocupado
-(guardas, candados o un proceso vivo al recrear): no es un fallo del código. El
+`rollback` con el mismo SHA. No marca la fase como desplegada. Una salida 75
+del paso desplegar que en su propia salida declara la ocupación (una línea que
+menciona `ocupado`), con reversa sin cambios, significa que el destino estaba
+ocupado (guardas, candados o un proceso vivo al recrear): no es un fallo del
+código. Un 75 del checklist, o un 75 del despliegue sin esa declaración, no es
+ocupado: sigue el camino fallido. El
 recibo queda en estado `ocupado`, no se anota impedimento ni se relanza al
 responsable ni al revisor, y el motor reintenta el mismo SHA solo, con espera
 creciente (15, 30, 60, 120 y 240 minutos desde el último desenlace ocupado) hasta
