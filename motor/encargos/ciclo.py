@@ -8635,8 +8635,13 @@ def _entregar_con_pendientes(
         evidencia += f"; el PR #{numero} queda publicado con ellos"
     if causa:
         evidencia += f". No se pudo publicar el PR: {str(causa)[:400]}"
+    # La ronda de continuar va en la serie: la entrega parcial de una ronda
+    # nueva necesita su propio bloqueo, aunque fase, reaperturas, pendientes y
+    # SHA no cambien entre rondas.
+    from .despliegue import continuaciones
+
     _bloquear_fase(registro, enc, pendientes[0], evidencia, hora,
-                   f"{enc.reaperturas}:{len(pendientes)}:{sha}")
+                   f"{enc.reaperturas}:{len(pendientes)}:{sha}:{continuaciones(registro, enc.id)}")
     enc = registro.fold(enc.id) or enc
     _marcar_incorporado(registro, enc, hora)
     if enc.estado == "terminado":

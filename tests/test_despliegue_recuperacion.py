@@ -425,11 +425,9 @@ class RecuperacionDespliegue(unittest.TestCase):
             ciclo.barrer(reg, base.HORA, time.time(), mock.Mock())
         entregas.assert_called()
 
-    def test_un_fallo_identico_tras_continuar_reanota_el_aviso(self):
-        # F11: continuar autoriza una corrida; si el reintento falla
-        # idénticamente, el aviso vuelve con la nueva ronda (la ukey del
-        # pendiente lleva la ronda de continuar) y no queda suprimido por la
-        # corrida anterior.
+    def test_el_segundo_bloqueo_tras_continuar_no_se_deduplica(self):
+        # h_e69c0e8a: la entrega parcial de una ronda nueva necesita su propio
+        # bloqueo: N se re-bloquea con la causa y O vuelve a solicitarse.
         reg, ident, espacio, destino, integrar = self.despliegue
         corridas = destino / "corridas"
         guion = "\n".join([
@@ -437,35 +435,88 @@ class RecuperacionDespliegue(unittest.TestCase):
             f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
             "n=$((n+1))",
             f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -eq 1 ]; then exit 0; fi',
             "exit 1",
         ])
         (espacio / "d.sh").write_text(guion)
-        integrar()
+        receta = {"desplegar": "d.sh", "checklist": "c.sh", "rollback": "r.sh"}
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+            {"id": "K", "resultado": "K lista", "requiere_despliegue": True, "despliegue": receta},
+            {"id": "N", "resultado": "N lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+            {"id": "O", "resultado": "O lista", "requiere": ["K"], "requiere_despliegue": True, "despliegue": receta},
+        ]}}, "fases")
 
         def ejecutar_en_proceso(cmd, cwd, env, log):
             ejecutor.ejecutar(Path(cmd[-1]))
             return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
 
+        lanzador = mock.Mock()
+        sonda = mock.Mock(return_value=types.SimpleNamespace(
+            ok=True, causa="", condicion="",
+        ))
+        esperas = mock.Mock(return_value="2026-11-05T12:00:00+00:00")
         with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            integrar()
             base.paso(self.despliegue)
-            self.assertEqual(corridas.read_text(encoding="utf-8"), "1")
-            enc = reg.fold(ident)
-            self.assertTrue(
-                any(p.startswith("despliegue:") for p in enc.pendientes_entrega),
-                enc.pendientes_entrega,
-            )
-            ciclo.ordenar(reg, ident, "continuar", "otra-vez", base.HORA)
-            # Pasada 1: relanza la receta (la corrida 2); la pasada concilia
-            # el fallo idéntico y reanota el aviso con la ronda nueva.
-            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, base.HORA)
-            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, base.HORA)
-        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
+            reg.anotar(ident, {"kind": "comprobacion", "data": {
+                "clase": "cierre_comprobado", "evidencia": "recibo aplicado de K",
+                "hora": base.HORA,
+            }}, "cierre-K")
+            self.assertEqual(reg.fold(ident).fase_activa, "N", reg.fold(ident).motivo)
+            (espacio / "cambio-n.txt").write_text("cambio de N", encoding="utf-8")
+            integrar()
+            self.aprobar_para_supervisor()
+            base.paso(self.despliegue)
         enc = reg.fold(ident)
-        self.assertTrue(
-            any(p.startswith("despliegue:") for p in enc.pendientes_entrega),
-            enc.pendientes_entrega,
-        )
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "2")
         self.assertEqual(len(enc.impedimentos), 1)
+        self.assertEqual(
+            len([p for p in enc.pendientes_entrega if p.startswith("despliegue:")]), 1,
+        )
+        self.assertFalse(any(f.estado == "bloqueada" for f in enc.fases))
+
+        with mock.patch.object(ciclo, "_lanzar_uno", lanzador), mock.patch.object(
+            ciclo, "_sonda_entorno", sonda,
+        ):
+            ciclo.barrer(reg, "2026-11-05T12:01:00+00:00", time.time(), mock.Mock())
+            ciclo.barrer(reg, "2026-11-05T12:02:00+00:00", time.time(), mock.Mock())
+        enc = reg.fold(ident)
+        fases = {f.id: f for f in enc.fases}
+        bloqueos = [ev for ev in reg.eventos(ident) if ev["kind"] == "bloqueo_fase"]
+        self.assertEqual(len(bloqueos), 1)
+        self.assertEqual(fases["N"].estado, "bloqueada")
+        self.assertEqual(enc.fase_activa, "O", enc.motivo)
+        lanzadas = [llamada.args[1].fase_activa for llamada in lanzador.call_args_list]
+        self.assertIn("O", lanzadas, lanzadas)
+
+        # La ronda nueva (continuar) reabre N, la receta falla igual y la
+        # entrega parcial de la ronda necesita SU propio bloqueo: N se
+        # re-bloquea y O vuelve a solicitarse al lanzador.
+        esperas = mock.Mock(return_value="2026-11-05T12:00:00+00:00")
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso), mock.patch.object(
+            ciclo, "_lanzar_uno", lanzador,
+        ), mock.patch.object(ciclo, "_sonda_entorno", sonda), mock.patch.object(
+            ciclo, "_reanuda_en", esperas,
+        ):
+            ciclo.ordenar(reg, ident, "continuar", "ronda-nueva", base.HORA)
+            for hora in (
+                "2026-11-05T12:03:00+00:00", "2026-11-05T12:04:00+00:00",
+                "2026-11-05T12:05:00+00:00", "2026-11-05T12:06:00+00:00",
+            ):
+                ciclo.barrer(reg, hora, time.time(), mock.Mock())
+        enc = reg.fold(ident)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
+        fases = {f.id: f for f in enc.fases}
+        bloqueos = [ev for ev in reg.eventos(ident) if ev["kind"] == "bloqueo_fase"]
+        self.assertEqual(len(bloqueos), 2)
+        self.assertEqual(fases["N"].estado, "bloqueada")
+        self.assertEqual(enc.fase_activa, "O", enc.motivo)
+        self.assertTrue(
+            any(p.startswith("despliegue:") for p in enc.pendientes_entrega)
+            or any(p.startswith("despliegue:") for p in fases["N"].pendientes),
+        )
+        lanzadas = [llamada.args[1].fase_activa for llamada in lanzador.call_args_list]
+        self.assertIn("O", lanzadas, lanzadas)
 
     def test_el_libro_de_otra_fase_no_aplica_a_la_fase_activa(self):
         # F10: la ventana agotada de N no manda sobre el primer intento de O.
