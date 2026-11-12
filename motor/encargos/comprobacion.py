@@ -206,14 +206,23 @@ def _ocurrencias_internas(normal: str):
         inicio = pos + len(INTERNO)
 
 
-def _rutas_en_token(normal: str) -> list[str]:
-    """Las colas de `.interno/` de un token o de una palabra ya separada."""
+_PEGADO_DE_SHELL = re.compile(r"[;|&()<>`]")
+
+
+def _rutas_en_token(normal: str, de_shell: bool = False) -> list[str]:
+    """Las colas de `.interno/` de un token o de una palabra ya separada.
+
+    `shlex` separa por espacios y comillas, pero no por `;`, `&&` o `|` pegados
+    a la ruta; en una palabra de shell se cortan esos delimitadores.
+    """
     salida = []
     for pos, antes in _ocurrencias_internas(normal):
         resto = normal[pos + len(INTERNO):]
         if not resto.startswith("/"):
             continue
         cola = resto[1:].strip()
+        if de_shell:
+            cola = _PEGADO_DE_SHELL.split(cola, 1)[0]
         if antes == "=" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", normal):
             cola = cola.split(":", 1)[0]
         if cola:
@@ -246,7 +255,7 @@ def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
         else:
             candidatos = [normal]
         for candidato in candidatos:
-            for cola in _rutas_en_token(candidato):
+            for cola in _rutas_en_token(candidato, de_shell=i in shell):
                 if cola not in vistos:
                     vistos.add(cola)
                     salida.append(cola)
