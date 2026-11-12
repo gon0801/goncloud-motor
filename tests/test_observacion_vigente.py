@@ -468,13 +468,12 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
             self.addCleanup(r.reg.close)
             interno = comprobacion.interno_de(r.espacio, crear=True)
             (interno / "script.sh").write_text("exit 0\n", encoding="utf-8")
-            (r.espacio / ".runtime").mkdir(exist_ok=True)
-            fuera = r.espacio / ".runtime" / "dato.txt"
+            fuera = r.espacio / "fuera.txt"
             fuera.write_text("uno\n", encoding="utf-8")
             declaradas = [
                 {
                     "objetivo": "lee fuera",
-                    "argv": [sys.executable, ".interno/../.runtime/dato.txt"],
+                    "argv": [sys.executable, ".interno/../fuera.txt"],
                 }
             ]
 
@@ -545,6 +544,74 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
             self.assertIsNotNone(ilegible)
             self.assertNotEqual(ilegible, legible)
             self.assertNotEqual(ilegible, ausente)
+
+
+    def test_una_ruta_con_espacios_en_un_argumento_pesa_entera(self):
+        """Un argumento de ruta conserva sus espacios; no se corta en el primero."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "ruta-espacios", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            carpeta = interno / "mis pruebas"
+            carpeta.mkdir()
+            script = carpeta / "run.sh"
+            script.write_text("exit 5\n", encoding="utf-8")
+            declaradas = [
+                {
+                    "objetivo": "x",
+                    "argv": ["/bin/sh", ".interno/mis pruebas/run.sh"],
+                }
+            ]
+
+            huella_roja = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            script.write_text("exit 0\n", encoding="utf-8")
+            huella_verde = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(huella_roja)
+            self.assertNotEqual(
+                huella_roja,
+                huella_verde,
+                "la ruta con espacios pesa entera en la huella",
+            )
+
+    def test_la_huella_se_toma_despues_y_no_cuenta_caches(self):
+        """La huella de un árbol es la de después de ejecutar y sin `__pycache__`."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "huella-despues", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            carpeta = interno / "pruebas"
+            carpeta.mkdir()
+            _declarar(
+                r,
+                [
+                    "/bin/sh",
+                    "-c",
+                    "cd .interno/pruebas && mkdir -p __pycache__ && "
+                    "echo x > __pycache__/x.pyc && exit 0",
+                ],
+            )
+
+            datos = _observar(r)
+            self.assertEqual(datos["ejecuciones"][0].get("rc"), 0, datos)
+            self.assertTrue((carpeta / "__pycache__").is_dir())
+
+            declaradas = comprobacion.leer_declaradas(
+                comprobacion.interno_de(r.espacio)
+            )
+            actual = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            self.assertEqual(
+                datos.get("procedimiento"),
+                actual,
+                "la huella guardada es la que se recalcula despues de ejecutar",
+            )
+            (carpeta / "__pycache__" / "y.pyc").write_text("y\n", encoding="utf-8")
+            mas_cache = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            self.assertEqual(
+                actual,
+                mas_cache,
+                "una cache nueva bajo el arbol no cambia la huella",
+            )
 
 
 if __name__ == "__main__":
