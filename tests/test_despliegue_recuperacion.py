@@ -290,6 +290,80 @@ class RecuperacionDespliegue(unittest.TestCase):
                 self.fail(f"el despliegue no llegó a desplegado: {final.motivo}")
         self.assertEqual(corridas.read_text(encoding="utf-8"), "7")
 
+    def test_el_libro_ocupado_se_reinicia_al_desplegar(self):
+        # F1: tras un éxito de la misma identidad la ventana arranca limpia;
+        # el tope no bloquea para siempre.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        corridas = destino / "corridas"
+        guion = "\n".join([
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"',
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0)',
+            "n=$((n+1))",
+            f'printf "%s" "$n" > "{corridas.as_posix()}"',
+            'if [ "$n" -ge 7 ]; then exit 0; fi',
+            'printf "app.cli vivo (spapi-diario)"',
+            "exit 75",
+        ])
+        (espacio / "d.sh").write_text(guion)
+        integrar()
+
+        def ejecutar_en_proceso(cmd, cwd, env, log):
+            ejecutor.ejecutar(Path(cmd[-1]))
+            return {"pid": 99999999, "inicio": "", "boot_id": plataforma.boot_id(), "job": ""}
+
+        horas = (
+            "2026-11-05T12:00:00+00:00", "2026-11-05T12:15:00+00:00",
+            "2026-11-05T12:45:00+00:00", "2026-11-05T13:45:00+00:00",
+            "2026-11-05T15:45:00+00:00", "2026-11-05T19:45:00+00:00",
+        )
+        with mock.patch.object(plataforma, "lanzar_separado", side_effect=ejecutar_en_proceso):
+            for hora in horas:
+                ciclo._paso_despliegue(reg, reg.fold(ident), espacio, hora)
+            # La séptima pasada toca el tope: impedimento; continuar reabre.
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, "2026-11-05T19:46:00+00:00")
+            ciclo.ordenar(reg, ident, "continuar", "otra-ventana", "2026-11-05T19:46:00+00:00")
+            final = reg.fold(ident)
+            for _ in range(10):
+                final = ciclo._paso_despliegue(
+                    reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
+                )
+                if final.nivel_alcanzado == "desplegado":
+                    break
+            else:
+                self.fail(f"el despliegue no llegó a desplegado: {final.motivo}")
+        libros = list((reg.base / "despliegues").rglob("ocupado.json"))
+        self.assertEqual(libros, [], "el libro no se reinició al aplicar")
+        self.assertEqual(ejecutor.ocupado(reg, reg.fold(ident)), {})
+
+    def test_el_pendiente_de_despliegue_no_entrega_con_pendientes(self):
+        # F4: el aviso del despliegue es transitorio y no convierte la pasada
+        # en una entrega parcial.
+        reg, ident, espacio, destino, integrar = self.despliegue
+        integrar()
+        entregas = mock.Mock(
+            side_effect=AssertionError("el despliegue no entrega con pendientes")
+        )
+        with mock.patch.object(ciclo, "_entregar_con_pendientes", entregas):
+            reg.anotar(ident, {"kind": "pendiente_entrega", "data": {
+                "texto": "despliegue: causa transitoria del despliegue",
+                "hora": base.HORA,
+            }}, "pendiente-despliegue")
+            self.assertTrue(reg.fold(ident).pendientes_entrega)
+            ciclo.barrer(reg, base.HORA, time.time(), mock.Mock())
+        entregas.assert_not_called()
+
+    def test_otra_causa_de_pendiente_si_entrega_con_pendientes(self):  # no-roja-en-base: la base ya desvía la pasada con cualquier pendiente; la prueba fija que la excepción es solo del despliegue
+        reg, ident, espacio, destino, integrar = self.despliegue
+        integrar()
+        entregas = mock.Mock(return_value=reg.fold(ident))
+        with mock.patch.object(ciclo, "_entregar_con_pendientes", entregas):
+            reg.anotar(ident, {"kind": "pendiente_entrega", "data": {
+                "texto": "el revisor no concluyó tras el tope",
+                "hora": base.HORA,
+            }}, "pendiente-otro")
+            ciclo.barrer(reg, base.HORA, time.time(), mock.Mock())
+        entregas.assert_called()
+
     def test_una_orden_anterior_no_reabre_la_ventana_ocupada(self):
         # h_51c2637c (ronda 5): la orden previa al despliegue ya no consume
         # la ventana; el libro arranca con la fotografía del recibo.
