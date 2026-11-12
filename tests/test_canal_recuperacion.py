@@ -93,6 +93,11 @@ class Banco(unittest.TestCase):
         self.reg.anotar(ident, {"kind": "sin_progreso", "data": {
             "huella": huella, "escalar": True, "diagnostico": huella, "hora": HORA,
         }}, f"rel-{huella}")
+        # El aviso de relevo solo existe con el agotamiento real; el estado lo
+        # produce el productor real, no el escalón suelto.
+        from motor.encargos import ciclo
+
+        ciclo.marcar_relevo_agotado(self.reg, self.reg.fold(ident), "responsable", HORA)
 
     def detener(self, ident: str) -> None:
         self.reg.anotar(ident, {"kind": "orden", "data": {

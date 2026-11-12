@@ -25,8 +25,9 @@ from motor.encargos import resumen as resumen_encargos
 from motor.encargos.dominio import (
     TransicionIlegal,
     espera_inspeccion_consumida,
-    hubo_relevo,
     reducir,
+    relevo_agotado,
+    relevo_cambio_modelo,
     total_relevos,
     ultima_huella_relevo,
 )
@@ -865,8 +866,13 @@ def _cuerpo_de_cierre(enc) -> str:
             " Una herramienta no estaba disponible y se siguió con la "
             "evidencia que había."
         )
-    if hubo_relevo(enc):
+    if relevo_cambio_modelo(enc):
         cuerpo += " Se cambió de modelo para continuar sin esperar a nadie."
+    elif relevo_agotado(enc):
+        cuerpo += (
+            " Se intentó relevar el trabajo y no había otro modelo autorizado "
+            "para seguir."
+        )
     return f"{cuerpo} {nota}".rstrip()
 
 
@@ -1298,15 +1304,24 @@ def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dic
                 ),
             }
         )
-    if hubo_relevo(enc):
+    if relevo_cambio_modelo(enc):
+        texto_relevo = (
+            "Cambié de modelo para seguir con tu encargo. "
+            "El trabajo continúa sin que hagas nada."
+        )
+    elif relevo_agotado(enc):
+        texto_relevo = (
+            "El relevo se agotó: no había otro modelo autorizado para seguir. "
+            "El trabajo continúa sin que hagas nada."
+        )
+    else:
+        texto_relevo = ""
+    if texto_relevo:
         hechos.append(
             {
                 "tipo": "relevo",
                 "identidad": f"{ultima_huella_relevo(enc)}:{total_relevos(enc)}",
-                "texto": (
-                    "Cambié de modelo para seguir con tu encargo. "
-                    "El trabajo continúa sin que hagas nada."
-                ),
+                "texto": texto_relevo,
             }
         )
     if getattr(enc, "herramientas_no_disponibles", ()):

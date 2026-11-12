@@ -102,6 +102,14 @@ class RelevoSinModelos(unittest.TestCase):
             [],
         )
         self.assertIn("no hay producto", enc.evidencia[-1].lower())
+        # El aviso dice el agotamiento en llano y no inventa una continuación:
+        # el encargo terminó, nadie "continuó con el mismo modelo".
+        from motor.integraciones import directores
+
+        cuerpo = directores._cuerpo_de_cierre(enc)
+        self.assertNotIn("Se cambió de modelo", cuerpo)
+        self.assertIn("no había otro modelo autorizado para seguir", cuerpo)
+        self.assertNotIn("continuó con el mismo modelo", cuerpo)
 
     def test_el_revisor_sin_otro_modelo_tambien_termina_con_pendientes(self):
         self.relevar("revisor")
@@ -128,6 +136,18 @@ class RelevoSinModelos(unittest.TestCase):
         self.assertIn("cuota temporal", enc.motivo)
         self.assertEqual(enc.preguntas, ())
         self.assertEqual(enc.pendientes_entrega, ())
+        # El relevo quedó pendiente, no agotado: el aviso no cuenta un
+        # agotamiento ni una continuación que no ocurrieron.
+        from motor.integraciones import directores
+
+        self.assertEqual(
+            [h for h in directores.hechos_de_avance(enc) if h["tipo"] == "relevo"],
+            [],
+        )
+        cuerpo = directores._cuerpo_de_cierre(enc)
+        self.assertNotIn("El relevo se agotó", cuerpo)
+        self.assertNotIn("continuó con el mismo modelo", cuerpo)
+        self.assertNotIn("Se cambió de modelo", cuerpo)
 
     def test_un_modelo_autorizado_sin_runtime_no_se_da_por_agotado(self):
         self.relevar()
