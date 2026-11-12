@@ -4719,17 +4719,26 @@ def _modelo_en_argv(cmd: list[str]) -> str:
     return ""
 
 
+def _observacion_de_la_fase(datos: dict, fase: str) -> bool:
+    """La observacion es de esta fase, o de antes de que la observacion la trajera."""
+    traida = str(datos.get("fase") or "")
+    return not traida or not fase or traida == fase
+
+
 def _alcance_para_revision(
     registro: Registro, enc: Encargo, espacio: Path, raiz: Path
 ):
     """Alcance desde el fold, con la observacion del supervisor de la version
-    vigente leida del evento, no del archivo mas reciente por mtime."""
+    vigente leida del evento, no del archivo mas reciente por mtime. La
+    observacion es la de la fase activa: la que corrio sus declaradas."""
     alcance = alcance_de(enc)
+    fase = str(enc.fase_activa or "")
     observacion = None
     for ev in reversed(registro.eventos(enc.id)):
         if (
             ev["kind"] == "observacion_supervisor"
             and str(ev["data"].get("version") or "") == alcance.version
+            and _observacion_de_la_fase(ev["data"], fase)
         ):
             observacion = {
                 "version": alcance.version,
@@ -4744,8 +4753,10 @@ def _alcance_para_revision(
             except (OSError, ValueError):
                 continue
             if (
-                candidata.get("version") or candidata.get("producto")
-            ) == alcance.version:
+                (candidata.get("version") or candidata.get("producto"))
+                == alcance.version
+                and _observacion_de_la_fase(candidata, fase)
+            ):
                 observacion = candidata
     if observacion is not None:
         try:
@@ -8396,7 +8407,7 @@ def _observacion_corresponde(
         return False
     if procedimiento is not None and observacion.get("procedimiento") != procedimiento:
         return False
-    if fase is not None and observacion.get("fase") not in (None, "", fase):
+    if not _observacion_de_la_fase(observacion, str(fase or "")):
         return False
     return True
 

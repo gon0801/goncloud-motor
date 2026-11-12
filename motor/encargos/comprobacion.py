@@ -632,20 +632,27 @@ def sincronizar_declaradas_de_fase(interno: Path, fase: str) -> None:
     if not fase:
         return
     actual = _fase_del_marcador(interno)
-    if actual == fase:
-        return
     compartido = interno / "comprobaciones.json"
     propio = _declaradas_de_fase(interno, fase)
+    if actual == fase:
+        # El archivo compartido manda sobre su fase: si se borró, la fase ya no
+        # declara nada y su copia no debe resucitarlas al volver.
+        if not compartido.is_file():
+            propio.unlink(missing_ok=True)
+        return
     if not actual and not compartido.is_file() and not propio.is_file():
         return
     if not actual:
         # Sin marcador previo, lo que haya en el espacio es de la fase vigente.
         _marcar_fase(interno, fase)
         return
+    archivo_actual = _declaradas_de_fase(interno, actual)
     if compartido.is_file():
-        destino = _declaradas_de_fase(interno, actual)
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        escribir_texto(destino, leer_texto(compartido))
+        archivo_actual.parent.mkdir(parents=True, exist_ok=True)
+        escribir_texto(archivo_actual, leer_texto(compartido))
+    else:
+        # Borrado mientras la fase era la dueña: su copia tampoco vale.
+        archivo_actual.unlink(missing_ok=True)
     if propio.is_file():
         escribir_texto(compartido, leer_texto(propio))
     else:

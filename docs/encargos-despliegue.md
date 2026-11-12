@@ -114,9 +114,13 @@ aplicado reinicia el libro de intentos. Cada lanzamiento de receta fotografia el
 órdenes de continuar, y solo una orden aplicada después del fallo autoriza
 una corrida: una continuación anterior al despliegue no reintenta nada. Cada
 ronda vuelve a anotar el aviso si su reintento vuelve a fallar. Una
-orden sin consumir reabre la fase bloqueada cuyo despliegue quedó pendiente y
-reabre la ventana del caso ocupado agotada; sin continuar, el recibo fallido
-no se vuelve a correr. Una parada corta
+orden sin consumir vuelve a correr la receta del mismo SHA de la fase bloqueada
+cuyo despliegue quedó pendiente, sin reabrirla ni abrir intentos del responsable
+o del revisor, y reabre la ventana del caso ocupado agotada; si sale 0 la fase
+llega a `desplegado` y si falla sigue bloqueada. La fase en curso conserva su
+turno. Una orden ya atendida por un `impedimento_resuelto` del mismo despliegue
+o por un despliegue posterior que contiene el SHA no reintenta nada. Sin
+continuar, el recibo fallido no se vuelve a correr. Una parada corta
 el comando en curso y permite completar la reversa; el supervisor no confirma
 `detenido` mientras siga vivo ese trabajador o su comando. Si se detuvo antes
 de enviar el primer script, continuar puede reintentar sin repetir producción.
