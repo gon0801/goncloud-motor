@@ -3736,12 +3736,16 @@ def _cerrar_con_juicio(
                 },
                 f"disputa-resuelta:{enc.id}:{h.id}",
             )
+            huella_region, texto_region, siguiente_region = _region_del_hallazgo(
+                espacio, enc.pr_sha, h
+            )
             _anotar_excepcion(
                 registro, enc, "descarte", enc.pr_sha, h.id, marca, hora,
                 f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{h.id}",
                 ancla=h.ancla,
-                region=_huella_region_del_hallazgo(espacio, enc.pr_sha, h),
-                region_ancla=_texto_region_del_hallazgo(espacio, enc.pr_sha, h),
+                region=huella_region,
+                region_ancla=texto_region,
+                region_contexto=siguiente_region,
             )
         enc = registro.fold(enc.id) or enc
     fuera_ds = [
@@ -5751,79 +5755,85 @@ def _parte_ancla(ancla: str) -> tuple[str, str]:
     return texto, ""
 
 
-def _huella_region_del_hallazgo(espacio: Path, sha: str, hallazgo) -> str:
-    """Huella de la región que el hallazgo ancla en un SHA: su archivo y el
-    contenido de la línea que el ancla señala (sin línea, el archivo entero).
+def _region_del_hallazgo(espacio: Path, sha: str, hallazgo) -> tuple[str, str, list[str] | None]:
+    """(huella, línea anclada, lo que la sigue) de la región que el hallazgo
+    ancla en un SHA.
 
-    La compara el motor entre el SHA del descarte y el SHA vigente para saber
-    si el código que el hallazgo señala sigue igual. El contenido, no la
-    posición: un commit que desplaza la línea no cambia el código señalado y
-    el descarte sigue valiendo. "" si git no puede leer el archivo en ese SHA
-    o la línea del ancla no existe: sin prueba de que la región siga igual,
-    el descarte no se sostiene y el hallazgo vuelve a contar.
+    Con línea: la región es la línea que el ancla señala junto con la línea
+    que le sigue en el archivo; la lista trae ese contenido, o viene vacía si
+    el ancla era la última línea. Sin línea: la región es el archivo entero y
+    basta la huella para compararlo; la lista viene vacía. Huella "" o lista
+    None si git no puede leer el archivo en ese SHA o la línea del ancla no
+    existe: sin prueba de que la región siga igual, el descarte no se
+    sostiene y el hallazgo vuelve a contar.
     """
     ruta, linea = _parte_ancla(getattr(hallazgo, "ancla", "") or "")
     if not ruta or not str(sha or "").strip():
-        return ""
+        return "", "", None
     lectura = _git(espacio, "show", f"{sha}:{ruta}")
     if lectura.returncode != 0:
-        return ""
+        return "", "", None
     lineas = lectura.stdout.splitlines()
-    if linea:
-        numero = int(linea)
-        if numero < 1 or numero > len(lineas):
-            return ""
-        region = lineas[numero - 1]
-    else:
-        region = lectura.stdout
-    return hashlib.sha256(f"{ruta}\0{region}".encode()).hexdigest()
-
-
-def _texto_region_del_hallazgo(espacio: Path, sha: str, hallazgo) -> str:
-    """El contenido de la línea que el ancla señala en ese SHA ("" si no se
-    puede leer o el ancla no trae línea). Es lo que la verificación busca
-    después en el archivo del SHA vigente, sin depender de la posición."""
-    ruta, linea = _parte_ancla(getattr(hallazgo, "ancla", "") or "")
-    if not ruta or not linea or not str(sha or "").strip():
-        return ""
-    lectura = _git(espacio, "show", f"{sha}:{ruta}")
-    if lectura.returncode != 0:
-        return ""
-    lineas = lectura.stdout.splitlines()
+    if not linea:
+        huella = hashlib.sha256(f"{ruta}\0{lectura.stdout}".encode()).hexdigest()
+        return huella, "", []
     numero = int(linea)
     if numero < 1 or numero > len(lineas):
-        return ""
-    return lineas[numero - 1]
+        return "", "", None
+    ancla = lineas[numero - 1]
+    huella = hashlib.sha256(f"{ruta}\0{ancla}".encode()).hexdigest()
+    siguiente = [lineas[numero]] if numero < len(lineas) else []
+    return huella, ancla, siguiente
 
 
-def _region_sigue_en_el_sha(espacio: Path, ruta: str, linea: str, texto: str, sha: str) -> bool:
-    """La región del descarte sigue en el SHA vigente: la línea anclada con
-    su contenido exacto sigue en el archivo (sin línea, el archivo entero es
-    idéntico). Determinista: presencia o ausencia, sin difusos."""
-    if not ruta or not texto or not str(sha or "").strip():
-        return False
+def _region_verificada_en_el_sha(
+    espacio: Path, ruta: str, linea: str, ancla_texto: str,
+    siguiente: list[str] | None, huella_previa: str, sha: str,
+) -> tuple[str, str, list[str]] | None:
+    """Los datos de la región del descarte tal como están en el SHA vigente,
+    si la región sigue: (huella, línea anclada, lo que la sigue). None si ya
+    no está.
+
+    Con línea: la línea anclada con su contenido exacto sigue en el archivo,
+    seguida de la misma línea que la seguía en el descarte (o sigue siendo la
+    última, si lo era). El desplazamiento por líneas agregadas por encima no
+    caduca; cambiar la línea, cambiar lo que la sigue o perderla sí. Sin
+    línea: el archivo entero es idéntico, por su huella. Determinista:
+    presencia o ausencia, sin difusos.
+    """
     lectura = _git(espacio, "show", f"{sha}:{ruta}")
     if lectura.returncode != 0:
-        return False
+        return None
+    lineas = lectura.stdout.splitlines()
     if not linea:
-        return lectura.stdout == texto
-    return texto in lectura.stdout.splitlines()
+        huella = hashlib.sha256(f"{ruta}\0{lectura.stdout}".encode()).hexdigest()
+        return (huella, "", []) if huella == huella_previa else None
+    if not ancla_texto or siguiente is None or len(siguiente) > 1:
+        return None
+    for i, contenido in enumerate(lineas):
+        if contenido != ancla_texto:
+            continue
+        despues = [lineas[i + 1]] if i + 1 < len(lineas) else []
+        if despues == siguiente:
+            huella = hashlib.sha256(f"{ruta}\0{contenido}".encode()).hexdigest()
+            return huella, contenido, despues
+    return None
 
 
 def _anotar_excepcion(
     registro: Registro, enc: Encargo, tipo: str, sha: str, hallazgo: str,
     motivo: str, hora: str, clave: str, ancla: str = "", region: str = "",
-    region_ancla: str = "",
+    region_ancla: str = "", region_contexto: list[str] | None = None,
 ) -> None:
     """La excepción del check de merge, estructurada y con su SHA.
 
     El check solo acepta esta fuente; el texto del PR no autoriza nada. El
-    ancla, la huella de región y el texto de la línea anclada son opcionales:
-    los descartes del revisor los llevan para que el motor pueda comprobar en
-    SHAs posteriores si el código que el hallazgo señala sigue en el archivo,
-    sin depender de la posición de la línea.
+    ancla, la huella de región, la línea anclada y lo que la sigue son
+    opcionales: los descartes del revisor los llevan para que el motor pueda
+    comprobar en SHAs posteriores si el código que el hallazgo señala sigue
+    en el archivo, sin depender de la posición de la línea.
     """
-    datos = {
+    datos: dict[str, object] = {
         "tipo": tipo,
         "sha": str(sha or ""),
         "id": str(hallazgo or ""),
@@ -5836,6 +5846,8 @@ def _anotar_excepcion(
         datos["region"] = str(region)
     if region_ancla:
         datos["region_ancla"] = str(region_ancla)
+    if region_contexto is not None:
+        datos["region_contexto"] = [str(x) for x in region_contexto]
     registro.anotar(
         enc.id,
         {"kind": "excepcion", "data": datos},
@@ -5859,43 +5871,50 @@ def _descarte_sigue_vigente(
     registro: Registro, enc: Encargo, espacio: Path, sha: str, h, hora: str
 ) -> str:
     """El motivo con que el descarte previo del hallazgo `h` cubre el SHA
-    `sha`: la línea que el hallazgo ancla sigue en el archivo con el mismo
-    contenido que tenía en el SHA del descarte (el desplazamiento no caduca,
-    el cambio de contenido sí). Vacío si no lo cubre. Al confirmarlo re-ancla
-    el descarte al SHA vigente con su propio evento `excepcion`, única fuente
-    del marcador que lee el check."""
+    `sha`: la región que el hallazgo ancla —la línea señalada junto con la
+    que la seguía, o el archivo entero— sigue en el SHA vigente. Vacío si no
+    lo cubre. Al confirmarlo re-ancla el descarte al SHA vigente con su
+    propio evento `excepcion`, única fuente del marcador que lee el check."""
     previo = _descarte_previo_por_id(enc.excepciones, h.id, sha)
     if previo is None:
         return ""
     evento = registro.por_ukey(f"excepcion:{enc.id}:descarte:{previo}:{h.id}")
-    region_previa = ""
-    texto_previo = ""
-    ancla_previa = h.ancla
-    if evento is not None:
-        datos = evento.get("data") or {}
-        if isinstance(datos, dict):
-            region_previa = str(datos.get("region") or "")
-            texto_previo = str(datos.get("region_ancla") or "")
-            ancla_previa = str(datos.get("ancla") or h.ancla)
+    datos = (evento or {}).get("data") or {}
+    if not isinstance(datos, dict):
+        datos = {}
+    region_previa = str(datos.get("region") or "")
+    texto_previo = str(datos.get("region_ancla") or "")
+    siguiente_previo = datos.get("region_contexto")
+    ancla_previa = str(datos.get("ancla") or h.ancla)
     ruta, linea = _parte_ancla(ancla_previa)
-    if not texto_previo:
-        # Un descarte anterior a la huella por contenido: el texto de la
-        # línea anclada se lee del SHA del descarte.
-        texto_previo = _texto_region_del_hallazgo(espacio, previo, h)
-    if not region_previa or not texto_previo:
+    if linea and (
+        not texto_previo or not isinstance(siguiente_previo, list)
+    ):
+        # Descarte anterior a guardar la línea y su contexto: se leen del SHA
+        # del descarte, en la posición que el ancla señalaba entonces.
+        _h_previa, texto_previo, siguiente_previo = _region_del_hallazgo(
+            espacio, previo, h
+        )
+    if not region_previa or (
+        linea and (not texto_previo or siguiente_previo is None)
+    ):
         return ""
-    if not _region_sigue_en_el_sha(espacio, ruta, linea, texto_previo, sha):
+    verificados = _region_verificada_en_el_sha(        espacio, ruta, linea, texto_previo, siguiente_previo, region_previa, sha
+    )
+    if verificados is None:
         return ""
+    huella_actual, texto_actual, siguiente_actual = verificados
     motivo = (
         f"descarte del revisor independiente en {previo[:12]} sigue vigente: "
-        "la línea anclada del hallazgo sigue en el archivo sin cambiar"
+        "la región anclada del hallazgo sigue en el archivo sin cambiar"
     )
     _anotar_excepcion(
         registro, enc, "descarte", sha, h.id, motivo, hora,
         f"excepcion:{enc.id}:descarte:{sha}:{h.id}",
         ancla=h.ancla,
-        region=_huella_region_del_hallazgo(espacio, sha, h),
-        region_ancla=texto_previo,
+        region=huella_actual,
+        region_ancla=texto_actual,
+        region_contexto=siguiente_actual,
     )
     return motivo
 
@@ -11160,16 +11179,16 @@ def _recibir_resultado_nuevo(
             },
             f"disputa-resuelta-autoridad:{enc.id}:{hid}",
         )
+        huella_region, texto_region, siguiente_region = _region_del_hallazgo(
+            _espacio(registro.base, enc.id), enc.pr_sha, h
+        )
         _anotar_excepcion(
             registro, enc, "descarte", enc.pr_sha, hid, marca, hora,
             f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{hid}",
             ancla=h.ancla,
-            region=_huella_region_del_hallazgo(
-                _espacio(registro.base, enc.id), enc.pr_sha, h
-            ),
-            region_ancla=_texto_region_del_hallazgo(
-                _espacio(registro.base, enc.id), enc.pr_sha, h
-            ),
+            region=huella_region,
+            region_ancla=texto_region,
+            region_contexto=siguiente_region,
         )
         ya_resueltos.add(hid)
         aplicados = True
