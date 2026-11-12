@@ -151,6 +151,8 @@ class ReintentoCorreSoloLaReceta(BancoReintento):
         final = reg.fold(ident)
         a = next(f for f in final.fases if f.id == "A")
         self.assertEqual(final.estado, "esperando_reintento")
+        self.assertEqual(final.motivo, "la fase en curso espera por otra causa")
+        self.assertEqual(final.reanuda_en, "2026-11-05T13:00:00+00:00")
         self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
         self.assertEqual(a.estado, "preparada")
         self.assertEqual(a.nivel_alcanzado, "desplegado")
@@ -313,7 +315,8 @@ class LaEntregaPosteriorConsumeLaOrden(BancoReintento):
         self.assertTrue(a_sha and a.integrado_sha == a_sha)
         # Control negativo: un despliegue de otra historia no consume la orden.
         ajena = base.git(
-            espacio, "commit-tree",
+            espacio, "-c", "user.name=t", "-c", "user.email=t@local",
+            "commit-tree",
             base.git(espacio, "rev-parse", "HEAD^{tree}"), "-m", "otra historia",
         )
         self.orden(reg, ident, "orden-ajena")
