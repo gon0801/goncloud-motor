@@ -127,6 +127,52 @@ class DescarteEntreShas(unittest.TestCase):
         )
         return vuelta, r, sha_a, linea
 
+    def _con_descarte_historico(self, tmp, clave):
+        """Un descarte en el formato que emitía 927005c: ancla con línea y su
+        huella de región, sin la línea anclada ni su continuación. El evento
+        se pre-anota en la clave del productor, que al repetirla con datos
+        nuevos no la ocupa (append devuelve «ajena»)."""
+        import hashlib
+
+        contenido = "cabecera\nobjetivo\ncontinuacion\nfin\n"
+        vuelta, r = _entrega_pr(self, tmp, clave, _comentarios)
+        vuelta.gh.textos[None] = _comentario(_hallazgo(linea=2))
+        e = vuelta(contenido)
+        self.assertEqual(_ids(e), ["F3"])
+        sha_a = e.pr_sha
+        huella = hashlib.sha256(
+            "saludo.txt\0objetivo".encode()
+        ).hexdigest()
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "excepcion",
+                "data": {
+                    "tipo": "descarte",
+                    "sha": sha_a,
+                    "id": "F3",
+                    "motivo": "el candado del repo da sin errores nuevos",
+                    "ancla": "saludo.txt:2",
+                    "region": huella,
+                    "hora": ahora_iso(),
+                },
+            },
+            f"excepcion:{r.enc}:descarte:{sha_a}:F3",
+        )
+        _descarta_el_revisor(
+            r,
+            "el candado del repo da sin errores nuevos (hoy 246, base 306)",
+        )
+        e = r.fold()
+        self.assertEqual(_ids(e), [])
+        self.assertEqual(
+            [(x[0], x[1], x[2]) for x in e.excepciones],
+            [("descarte", sha_a, "F3")],
+        )
+        evento = r.reg.por_ukey(f"excepcion:{r.enc}:descarte:{sha_a}:F3")
+        self.assertNotIn("region_ancla", evento["data"], "el evento es del formato histórico")
+        return vuelta, r, sha_a
+
     def test_descarte_vigente_tras_commit_que_no_toca_la_region(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, sha_a, _linea = self._con_descarte_en_sha_a(tmp, "descarte-vigente")
@@ -230,6 +276,9 @@ class DescarteEntreShas(unittest.TestCase):
                 }
             )
             r.incorporar()
+            # El reporte sigue a su región: en la nueva lectura el hallazgo
+            # señala la posición desplazada.
+            vuelta.gh.textos[None] = _comentario(_hallazgo(linea=2))
             e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
 
             sha_b = e.pr_sha
@@ -250,7 +299,7 @@ class DescarteEntreShas(unittest.TestCase):
                 "el motor volvió a mandar al responsable a corregir F3",
             )
             veredicto = decidir(
-                [_sticky(sha_b)], _cuerpo_del_pr(vuelta), sha_b
+                [_sticky(sha_b, linea=2)], _cuerpo_del_pr(vuelta), sha_b
             )
             self.assertEqual(veredicto["estado"], "pasa")
 
@@ -359,6 +408,9 @@ class DescarteEntreShas(unittest.TestCase):
                 }
             )
             r.incorporar()
+            # El reporte sigue a su región: en la nueva lectura el hallazgo
+            # señala la posición desplazada.
+            vuelta.gh.textos[None] = _comentario(_hallazgo(linea=2))
             e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
 
             sha_b = e.pr_sha
@@ -379,7 +431,7 @@ class DescarteEntreShas(unittest.TestCase):
                 "el motor volvió a mandar al responsable a corregir F3",
             )
             veredicto = decidir(
-                [_sticky(sha_b)], _cuerpo_del_pr(vuelta), sha_b
+                [_sticky(sha_b, linea=2)], _cuerpo_del_pr(vuelta), sha_b
             )
             self.assertEqual(veredicto["estado"], "pasa")
 
@@ -413,6 +465,144 @@ class DescarteEntreShas(unittest.TestCase):
             )
             veredicto = decidir(
                 [_sticky(sha_b)], _cuerpo_del_pr(vuelta), sha_b
+            )
+            self.assertEqual(veredicto["estado"], "falla")
+
+    def test_una_copia_ajena_no_renueva_el_descarte(self):  # no-roja-en-base: la base caduca el descarte en cualquier commit nuevo, también aquí; la prueba guarda la precisión del mecanismo nuevo (el par tiene que estar donde el hallazgo señala)
+        # La región señalada cambió ("dos" pasó a "dos cambiada" junto al
+        # ancla) y el par viejo sobrevive como copia más abajo: la copia no
+        # renueva el descarte; solo cuenta el lugar que el hallazgo señala.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, sha_a, _linea = self._con_descarte_en_sha_a(
+                tmp,
+                "copia_del_par",
+                contenido="uno\ndos\nseparador\nuno\ndos\n",
+            )
+
+            (r.espacio / "saludo.txt").write_text(
+                "uno\ndos cambiada\nseparador\nuno\ndos\n", encoding="utf-8"
+            )
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "aprobado",
+                    "evidencia": "lei saludo.txt; junto al ancla la continuación cambió",
+                }
+            )
+            r.incorporar()
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            sha_b = e.pr_sha
+            self.assertNotEqual(sha_b, sha_a)
+            self.assertEqual(
+                _ids(e),
+                ["F3"],
+                "la región señalada cambió; la copia ajena no renueva el descarte",
+            )
+            self.assertEqual(
+                [x for x in r.fold().excepciones if x[1] == sha_b],
+                [],
+                "no hay excepción publicada para el SHA nuevo",
+            )
+            veredicto = decidir(
+                [_sticky(sha_b)], _cuerpo_del_pr(vuelta), sha_b
+            )
+            self.assertEqual(veredicto["estado"], "falla")
+
+    def test_el_descarte_historico_se_reconstruye_con_su_ancla(self):  # no-roja-en-base: la base caduca el descarte en cualquier commit nuevo, también aquí; la prueba guarda la precisión del mecanismo nuevo (la reconstrucción usa el ancla guardada, no la actual)
+        # Un descarte del formato histórico (ancla saludo.txt:2 y su huella,
+        # sin línea anclada ni continuación) frente a un commit que agrega
+        # una línea por encima sin tocar la región, y el reporte nuevo la
+        # señala desplazada (saludo.txt:3). La reconstrucción tiene que leer
+        # el ancla GUARDADA (objetivo, línea 2 del SHA del descarte): con la
+        # ancla actual leería la línea 3 equivocada y el descarte caducaría
+        # para una región que está intacta.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, sha_a = self._con_descarte_historico(
+                tmp, "descarte-historico"
+            )
+            antes_estrategias = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "estrategia"
+            ]
+
+            (r.espacio / "saludo.txt").write_text(
+                "nuevo encabezado\ncabecera\nobjetivo\ncontinuacion\nfin\n",
+                encoding="utf-8",
+            )
+            vuelta.gh.textos[None] = _comentario(_hallazgo(linea=3))
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "aprobado",
+                    "evidencia": "lei saludo.txt; la región solo se desplazó",
+                }
+            )
+            r.incorporar()
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            sha_b = e.pr_sha
+            self.assertNotEqual(sha_b, sha_a)
+            self.assertEqual(
+                _ids(e),
+                [],
+                "la región histórica sigue intacta en su posición desplazada",
+            )
+            self.assertEqual(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "estrategia" and ev not in antes_estrategias
+                    and "F3" in str(ev["data"].get("siguiente") or "")
+                ],
+                [],
+                "el motor volvió a mandar al responsable a corregir F3",
+            )
+            veredicto = decidir(
+                [_sticky(sha_b, linea=3)], _cuerpo_del_pr(vuelta), sha_b
+            )
+            self.assertEqual(veredicto["estado"], "pasa")
+
+    def test_el_descarte_historico_caduca_si_su_region_cambio(self):  # no-roja-en-base: la base caduca el descarte en cualquier commit nuevo, también aquí; la prueba guarda la precisión del mecanismo nuevo (la región histórica cambiada caduca aunque el ancla se haya movido)
+        # El escenario del hallazgo: la línea que la región histórica anclaba
+        # cambió en el SHA nuevo ("objetivo" pasó a "objetivo cambiado" en su
+        # posición desplazada) y el descarte caduca, con el reporte nuevo
+        # señalando la posición movida.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, sha_a = self._con_descarte_historico(
+                tmp, "descarte-historico-cambiado"
+            )
+
+            (r.espacio / "saludo.txt").write_text(
+                "nuevo encabezado\ncabecera\nobjetivo cambiado\ncontinuacion\nfin\n",
+                encoding="utf-8",
+            )
+            vuelta.gh.textos[None] = _comentario(_hallazgo(linea=3))
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "aprobado",
+                    "evidencia": "lei saludo.txt; la línea señalada cambió",
+                }
+            )
+            r.incorporar()
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            sha_b = e.pr_sha
+            self.assertNotEqual(sha_b, sha_a)
+            self.assertEqual(
+                _ids(e),
+                ["F3"],
+                "la región que el descarte histórico señalaba ya no está",
+            )
+            self.assertEqual(
+                [x for x in r.fold().excepciones if x[1] == sha_b],
+                [],
+                "no hay excepción publicada para el SHA nuevo",
+            )
+            veredicto = decidir(
+                [_sticky(sha_b, linea=3)], _cuerpo_del_pr(vuelta), sha_b
             )
             self.assertEqual(veredicto["estado"], "falla")
 
