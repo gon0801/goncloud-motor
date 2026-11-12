@@ -201,6 +201,54 @@ class DescarteEntreShas(unittest.TestCase):
             )
             self.assertEqual(veredicto["estado"], "falla")
 
+    def test_el_descarte_sigue_vigente_cuando_la_region_se_desplaza(self):
+        # El commit B agrega líneas por encima y la línea anclada de F3 se
+        # desplaza: el contenido que el hallazgo señala sigue igual, así que
+        # el descarte no caduca por un cambio de número de línea.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, sha_a = self._con_descarte_en_sha_a(tmp, "descarte-desplazado")
+            antes_estrategias = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "estrategia"
+            ]
+
+            contenido = (r.espacio / "saludo.txt").read_text(encoding="utf-8")
+            (r.espacio / "saludo.txt").write_text(
+                "encabezado\n" + contenido, encoding="utf-8"
+            )
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "aprobado",
+                    "evidencia": "lei saludo.txt; el encabezado no toca la línea anclada",
+                }
+            )
+            r.incorporar()
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            sha_b = e.pr_sha
+            self.assertNotEqual(sha_b, sha_a)
+            self.assertEqual(
+                _ids(e),
+                [],
+                "la línea anclada solo se desplazó; el descarte sigue valiendo",
+            )
+            self.assertEqual(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "estrategia" and ev not in antes_estrategias
+                    and "F3" in str(ev["data"].get("siguiente") or "")
+                ],
+                [],
+                "el motor volvió a mandar al responsable a corregir F3",
+            )
+            veredicto = decidir(
+                [_sticky(sha_b)], _cuerpo_del_pr(vuelta), sha_b
+            )
+            self.assertEqual(veredicto["estado"], "pasa")
+
 
 if __name__ == "__main__":
     unittest.main()

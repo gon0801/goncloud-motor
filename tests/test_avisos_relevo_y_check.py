@@ -39,6 +39,16 @@ F3 = {
     "estado": "abierto",
 }
 
+F9 = {
+    "id": "F9",
+    "gravedad": "bloqueante",
+    "criterio": "operativo",
+    "titulo": "El relevo revienta cuando la fase bloqueada deja de ser la actual",
+    "ancla": "dominio.py:1387",
+    "origen": "deepseek",
+    "estado": "abierto",
+}
+
 
 def setUpModule():
     # Estas pruebas no ejercen la jaula: la sonda se da por buena también donde
@@ -184,6 +194,64 @@ class ElAvisoDelRelevo(unittest.TestCase):
             finally:
                 reg.close()
 
+    def test_el_agotamiento_sobrevive_cuando_otra_fase_queda_activa(self):
+        # El relevo de la fase A se agotó y la fase quedó bloqueada con su
+        # pendiente; el encargo sigue con la fase B. El agotamiento está
+        # registrado en la fase bloqueada y el aviso no lo pierde por dejar
+        # de ser la fase actual.
+        from dataclasses import replace as dc_replace
+
+        from motor.encargos.dominio import Fase, relevo_agotado
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            try:
+                ident = recibir(
+                    reg, "termina el pedido", "relevo-dos-fases", HORA,
+                    repo="ejemplo/repo", base_rama="main",
+                )["encargo"]
+                reg.anotar(
+                    ident,
+                    {
+                        "kind": "sin_progreso",
+                        "data": {
+                            "huella": "huella-A", "escalar": True,
+                            "rol": "responsable", "hora": HORA,
+                        },
+                    },
+                    "relevo-A",
+                )
+                ciclo.marcar_relevo_agotado(
+                    reg, reg.fold(ident), "responsable", HORA
+                )
+                reg.anotar(
+                    ident,
+                    {
+                        "kind": "bloqueo_fase",
+                        "data": {
+                            "causa": "sin producto que entregar",
+                            "evidencia": "no hay producto", "hora": HORA,
+                        },
+                    },
+                    "bloqueo-A",
+                )
+                e = reg.fold(ident)
+                bloqueada = e.fase_actual
+                self.assertTrue(bloqueada.pendientes)
+                siguiente = Fase(id="B", resultado="fase B", estado="pendiente")
+                e = dc_replace(
+                    e, fases=(bloqueada, siguiente), fase_activa="B"
+                )
+                self.assertNotEqual(e.fase_actual.id, bloqueada.id)
+                self.assertTrue(
+                    relevo_agotado(e),
+                    "el agotamiento quedó en la fase bloqueada y el aviso lo pierde",
+                )
+                cuerpo = directores._cuerpo_de_cierre(e)
+                self.assertIn("no había otro modelo autorizado para seguir", cuerpo)
+            finally:
+                reg.close()
+
 
 SHA_ENSAYO = "a" * 40
 
@@ -196,7 +264,7 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
     def _con_f3_abierto(
         self, tmp, clave: str, descarte_sha: str = "",
         f3_resuelto: bool = False, corridas: dict | None = None,
-        logs: dict | None = None,
+        logs: dict | None = None, f9_descartado: bool = False,
     ):
         config = {
             "corridas": corridas or {"deepseek-sin-abiertos": "failure"},
@@ -229,7 +297,8 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
                 "data": {
                     "fase": "", "veredicto": "cambios", "revisor": "deepseek",
                     "origen": "deepseek", "version": "", "alcance": "completa",
-                    "hallazgos": [F3], "hora": HORA,
+                    "hallazgos": [F3] + ([F9] if f9_descartado else []),
+                    "hora": HORA,
                 },
             },
             "revision-ds-ensayo",
@@ -247,13 +316,33 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
                 },
                 "excepcion-descarte-ensayo",
             )
-        if f3_resuelto:
-            # El cierre del descarte real: la revisión independiente deja F3
-            # resuelto con su evidencia, y el hallazgo deja de contar.
-            resuelto = dict(
-                F3, estado="resuelto",
-                cierre_evidencia="el candado del repo da sin errores nuevos",
+        if f9_descartado:
+            reg.anotar(
+                ident,
+                {
+                    "kind": "excepcion",
+                    "data": {
+                        "tipo": "descarte", "sha": SHA_ENSAYO, "id": "F9",
+                        "motivo": "el código que señala no existe",
+                        "hora": HORA,
+                    },
+                },
+                "excepcion-descarte-f9",
             )
+        if f9_descartado or f3_resuelto:
+            # El cierre del descarte real: la revisión independiente deja los
+            # hallazgos resueltos con su evidencia, y dejan de contar.
+            resueltos = []
+            if f9_descartado:
+                resueltos.append(dict(
+                    F9, estado="resuelto",
+                    cierre_evidencia="el código que señala no existe",
+                ))
+            if f3_resuelto:
+                resueltos.append(dict(
+                    F3, estado="resuelto",
+                    cierre_evidencia="el candado del repo da sin errores nuevos",
+                ))
             reg.anotar(
                 ident,
                 {
@@ -262,7 +351,7 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
                         "fase": "", "veredicto": "aprobado", "revisor": "glm",
                         "origen": "independiente", "version": "",
                         "alcance": "completa", "cubre": [],
-                        "hallazgos": [resuelto], "hora": HORA,
+                        "hallazgos": resueltos, "hora": HORA,
                     },
                 },
                 "revision-ind-ensayo",
@@ -302,6 +391,26 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
             self.assertIn("F3", texto)
             self.assertIn(TITULO_F3, texto)
             self.assertIn("nadie lo ha descartado", texto)
+            # La fase quedó bloqueada: el aviso no promete una devolución al
+            # responsable que no va a pasar.
+            self.assertNotIn("vuelve al responsable", texto)
+            self.assertIn("el PR no se integra", texto)
+
+    def test_hallazgo_descartado_y_otro_abierto_no_recomienda_integrar(self):
+        # F3 sigue abierto y contando; F9 quedó descartado en el SHA vigente.
+        # El aviso nombra los dos y no recomienda integrar con un bloqueante
+        # sin cubrir.
+        with tempfile.TemporaryDirectory() as tmp:
+            reg, gh, e = self._con_f3_abierto(
+                tmp, "check-ds-mixto-vivo", f9_descartado=True
+            )
+            texto = self._aviso(reg, gh, e)
+            self.assertIn("F3", texto)
+            self.assertIn("nadie lo ha descartado", texto)
+            self.assertIn("F9", texto)
+            self.assertIn("ya no cuenta", texto)
+            self.assertNotIn("antes de integrarlo", texto)
+            self.assertIn("el PR no se integra", texto)
 
     def test_un_rojo_del_check_dice_si_el_revisor_lo_descarto(self):
         # El descarte vive en el SHA vigente: el aviso lo dice, no lo niega.
@@ -318,7 +427,7 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
 
     def test_un_descarte_en_otro_sha_queda_caducado(self):
         # El descarte anterior vive en otro SHA y el hallazgo sigue abierto:
-        # el aviso lo dice en llano y el trabajo vuelve al responsable.
+        # el aviso lo dice en llano y no recomienda integrar.
         with tempfile.TemporaryDirectory() as tmp:
             reg, gh, e = self._con_f3_abierto(
                 tmp, "check-ds-caducado", descarte_sha="b" * 40
@@ -326,9 +435,8 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
             texto = self._aviso(reg, gh, e)
             self.assertIn("lo descartó antes, pero el descarte no cubre el SHA vigente", texto)
             self.assertNotIn("cubre el SHA vigente. El descarte", texto)
-            self.assertIn(
-                "El trabajo vuelve al responsable a corregirlos", texto
-            )
+            self.assertIn("el PR no se integra", texto)
+            self.assertNotIn("vuelve al responsable", texto)
 
     def test_un_rojo_del_check_nombra_el_descartado_vigente(self):
         # F3 ya no cuenta (el descarte real lo dejó resuelto con evidencia):
