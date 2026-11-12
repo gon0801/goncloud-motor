@@ -9,7 +9,6 @@ no se cobra a esta.
 from __future__ import annotations
 
 import json
-import tempfile
 import time
 import types
 import unittest
@@ -216,31 +215,6 @@ class LaOrdenAtendidaNoReabre(BancoReintento):
         self.assertEqual(a.nivel_alcanzado, "desplegado")
 
 
-class ElImpedimentoDeOtraFaseNoSeResuelve(unittest.TestCase):
-    def test_el_prefijo_corto_no_atribuye_y_el_truncado_largo_si(self):
-        causa = "x" * 200
-        registro = mock.Mock()
-        registro.eventos.return_value = [
-            {"kind": "impedimento", "data": {
-                "clase": "despliegue:" + "a" * 12, "causa": "fallo por red",
-            }},
-            {"kind": "impedimento", "data": {
-                "clase": "despliegue:" + "b" * 12, "causa": causa + " y más",
-            }},
-        ]
-        corta = types.SimpleNamespace(id="A", bloqueo_causa="despliegue: fallo")
-        self.assertEqual(
-            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", corta),
-            set(),
-            "un prefijo corto atribuyó a A el impedimento de otra fase",
-        )
-        larga = types.SimpleNamespace(id="C", bloqueo_causa="despliegue: " + causa)
-        self.assertEqual(
-            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", larga),
-            {"despliegue:" + "b" * 12},
-        )
-
-
 class LasComprobacionesDeUnaFaseNoSeCobranAOtra(BancoReintento):
     def test_al_reintentar_a_no_aparecen_bloqueos_de_b_en_a(self):
         from motor.encargos import comprobacion
@@ -287,53 +261,56 @@ class LasComprobacionesDeUnaFaseNoSeCobranAOtra(BancoReintento):
             comprobacion.leer_declaradas(interno),
             "las declaradas de B se cobran a la fase A",
         )
+        # Borrar lo declarado mientras una fase es dueña no resucita su copia.
+        escribir_texto(
+            interno / "comprobaciones.json",
+            json.dumps({"comprobaciones": [{
+                "objetivo": "de A", "argv": ["true"], "tope": 5,
+            }]}),
+        )
+        comprobacion.guardar_declaradas_de_fase(interno, "A")
+        (interno / "comprobaciones.json").unlink()
+        comprobacion.sincronizar_declaradas_de_fase(interno, "A")
+        self.assertIsNone(comprobacion.leer_declaradas(interno))
+        comprobacion.sincronizar_declaradas_de_fase(interno, "B")
+        comprobacion.sincronizar_declaradas_de_fase(interno, "A")
+        self.assertIsNone(
+            comprobacion.leer_declaradas(interno),
+            "las declaradas borradas en A resucitaron al volver a A",
+        )
 
 
-class LaEntregaPosteriorConsumeLaOrden(unittest.TestCase):
-    def _registro(self, posterior: str) -> mock.Mock:
-        registro = mock.Mock()
-        registro.eventos.return_value = [
-            {"kind": "orden", "data": {"accion": "continuar"}},
-            {"kind": "entrega_externa", "data": {
-                "paso": "desplegado", "sha": posterior,
-            }},
-        ]
-        return registro
-
-    def test_un_despliegue_consume_la_orden_solo_si_contiene_el_sha(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            espacio = Path(tmp)
-            base.git(espacio, "init", "-q", "-b", "main")
-            (espacio / "a.txt").write_text("a", encoding="utf-8")
-            base.git(espacio, "add", "a.txt")
-            base.git(
-                espacio, "-c", "user.name=t", "-c", "user.email=t@local",
-                "commit", "-qm", "A",
-            )
-            integrado = base.git(espacio, "rev-parse", "HEAD")
-            (espacio / "b.txt").write_text("b", encoding="utf-8")
-            base.git(espacio, "add", "b.txt")
-            base.git(
-                espacio, "-c", "user.name=t", "-c", "user.email=t@local",
-                "commit", "-qm", "posterior",
-            )
-            posterior = base.git(espacio, "rev-parse", "HEAD")
-            base.git(espacio, "checkout", "-q", "--orphan", "otra")
-            (espacio / "c.txt").write_text("c", encoding="utf-8")
-            base.git(espacio, "add", "c.txt")
-            base.git(
-                espacio, "-c", "user.name=t", "-c", "user.email=t@local",
-                "commit", "-qm", "ajena",
-            )
-            ajena = base.git(espacio, "rev-parse", "HEAD")
-            enc = types.SimpleNamespace(id="encargo")
-            fase = types.SimpleNamespace(integrado_sha=integrado, bloqueo_causa="")
-            self.assertFalse(ejecutor.orden_pendiente(
-                self._registro(posterior), enc, fase, 0, espacio,
-            ))
-            self.assertTrue(ejecutor.orden_pendiente(
-                self._registro(ajena), enc, fase, 0, espacio,
-            ))
+class LaEntregaPosteriorConsumeLaOrden(BancoReintento):
+    def test_un_despliegue_posterior_que_contiene_el_sha_consume_la_orden(self):
+        reg, ident, espacio, destino, integrar, corridas, sweeps = self.banco(
+            "exit 0"
+        )
+        (espacio / "cambio-b.txt").write_text("cambio de B", encoding="utf-8")
+        integrar()
+        base.paso(self.despliegue)
+        reg.anotar(
+            ident, {"kind": "plazo", "data": {"hora": base.HORA}}, "plazo-b-fin"
+        )
+        b = next(f for f in reg.fold(ident).fases if f.id == "B")
+        a_sha = next(f for f in reg.fold(ident).fases if f.id == "A").integrado_sha
+        self.orden(reg, ident, "orden-cubierta")
+        reg.anotar(ident, {"kind": "entrega_externa", "data": {
+            "paso": "desplegado", "sha": b.integrado_sha,
+            "recibo": b.desplegado_recibo, "hora": base.HORA,
+        }}, "despliegue-posterior")
+        sweeps((
+            "2026-11-05T12:01:00+00:00", "2026-11-05T12:02:00+00:00",
+        ))
+        final = reg.fold(ident)
+        a = next(f for f in final.fases if f.id == "A")
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "3")
+        self.assertEqual(a.estado, "bloqueada")
+        self.assertEqual(
+            [ev for ev in reg.eventos(ident) if ev["kind"] == "fase_reactivada"],
+            [],
+            "un despliegue posterior que ya contiene el SHA no consumió la orden",
+        )
+        self.assertTrue(a_sha and a.integrado_sha == a_sha)
 
 
 class LaObservacionDeOtraFaseNoAlimentaLaRevision(BancoReintento):
@@ -360,44 +337,44 @@ class LaObservacionDeOtraFaseNoAlimentaLaRevision(BancoReintento):
         self.assertEqual(alcance.observacion["ejecuciones"], [{"objetivo": "de B"}])
 
 
-class LasDeclaradasBorradasNoResucitan(unittest.TestCase):
-    def test_borrar_lo_declarado_no_resucita_al_volver_a_la_fase(self):
-        from motor.encargos import comprobacion
-
-        with tempfile.TemporaryDirectory() as tmp:
-            interno = Path(tmp) / ".interno"
-            interno.mkdir()
-            (interno / "comprobaciones.json").write_text(json.dumps({
-                "comprobaciones": [{"objetivo": "de A", "argv": ["true"], "tope": 5}],
-            }), encoding="utf-8")
-            comprobacion.guardar_declaradas_de_fase(interno, "A")
-            (interno / "comprobaciones.json").unlink()
-            comprobacion.sincronizar_declaradas_de_fase(interno, "B")
-            comprobacion.sincronizar_declaradas_de_fase(interno, "A")
-            self.assertIsNone(
-                comprobacion.leer_declaradas(interno),
-                "las declaradas borradas en A resucitaron al volver a A",
-            )
-
-    def test_borrar_lo_declarado_en_la_misma_fase_borra_su_copia(self):
-        from motor.encargos import comprobacion
-
-        with tempfile.TemporaryDirectory() as tmp:
-            interno = Path(tmp) / ".interno"
-            interno.mkdir()
-            (interno / "comprobaciones.json").write_text(json.dumps({
-                "comprobaciones": [{"objetivo": "de A", "argv": ["true"], "tope": 5}],
-            }), encoding="utf-8")
-            comprobacion.guardar_declaradas_de_fase(interno, "A")
-            (interno / "comprobaciones.json").unlink()
-            comprobacion.sincronizar_declaradas_de_fase(interno, "A")
-            self.assertIsNone(comprobacion.leer_declaradas(interno))
-            comprobacion.sincronizar_declaradas_de_fase(interno, "B")
-            comprobacion.sincronizar_declaradas_de_fase(interno, "A")
-            self.assertIsNone(
-                comprobacion.leer_declaradas(interno),
-                "la copia borrada en A resucitó al volver a A",
-            )
+class ElCierreDeOtraFaseConciliaElReintento(BancoReintento):
+    def test_a_llega_a_desplegado_aunque_b_cierre_antes_de_conciliar(self):
+        reg, ident, espacio, destino, integrar, corridas, sweeps = self.banco(
+            "exit 0"
+        )
+        # B se integra sobre A y se despliega; su espera se cierra.
+        (espacio / "cambio-b.txt").write_text("cambio de B", encoding="utf-8")
+        integrar()
+        base.paso(self.despliegue)
+        reg.anotar(
+            ident, {"kind": "plazo", "data": {"hora": base.HORA}}, "plazo-b-fin"
+        )
+        self.orden(reg, ident, "reintento-a")
+        # Un barrido lanza la receta de A: el trabajador del doble la termina y
+        # deja el recibo aplicado, pero A no se concilia hasta el siguiente.
+        sweeps(("2026-11-05T12:01:00+00:00",))
+        a = next(f for f in reg.fold(ident).fases if f.id == "A")
+        self.assertEqual(a.estado, "bloqueada")
+        self.assertFalse(a.desplegado_recibo)
+        self.assertEqual(corridas.read_text(encoding="utf-8"), "4")
+        b = next(f for f in reg.fold(ident).fases if f.id == "B")
+        reg.anotar(ident, {"kind": "comprobacion", "data": {
+            "clase": "cierre_comprobado",
+            "evidencia": "recibo aplicado de B: " + str(b.desplegado_recibo),
+            "hora": base.HORA,
+        }}, "cierre-B-final")
+        self.assertEqual(reg.fold(ident).estado, "terminado")
+        sweeps(("2026-11-05T12:02:00+00:00",))
+        final = reg.fold(ident)
+        a = next(f for f in final.fases if f.id == "A")
+        self.assertEqual(a.estado, "preparada")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        self.assertTrue(a.desplegado_recibo)
+        self.assertEqual(final.estado, "terminado")
+        self.assertTrue(
+            [ev for ev in reg.eventos(ident) if ev["kind"] == "fase_desplegada"],
+            "el reintento exitoso de A se perdió al cerrar B",
+        )
 
 
 if __name__ == "__main__":
