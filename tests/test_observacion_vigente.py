@@ -112,14 +112,16 @@ def _reobserva_al_cambiar(caso, clave, argv, ruta, inicial, final):
         )
 
 
-def _guion_que_se_modifica_no_acredita(caso, clave, argv):
+def _guion_que_se_modifica_no_acredita(
+    caso, clave, argv, ruta=".interno/script.py"
+):
     """Un guion que se reescribe a `exit 5` no acredita ese contenido nuevo."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         r = Recorrido(tmp, clave, "crea saludo.txt")
         caso.addCleanup(r.reg.close)
         (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
         r.incorporar()
-        script = r.espacio / ".interno" / "script.py"
+        script = r.espacio / ruta
         script.parent.mkdir(exist_ok=True)
         script.write_text(
             "from pathlib import Path\n"
@@ -570,6 +572,19 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 "-c",
                 "set -e\n" + shlex.join([sys.executable, ".interno/script.py"]),
             ],
+        )
+
+
+    def test_un_guion_con_salto_de_linea_citado_pesa(self):
+        """Un salto de linea dentro de comillas no corta la ruta del guion."""
+        if os.name == "nt":
+            self.skipTest("Windows no admite saltos de linea en el nombre")
+        ruta = ".interno/mis\npruebas.py"
+        _guion_que_se_modifica_no_acredita(
+            self,
+            "guion-salto-citado",
+            ["/bin/sh", "-c", shlex.join([sys.executable, ruta])],
+            ruta=ruta,
         )
 
     def test_un_script_que_se_modifica_tras_env_no_acredita_su_contenido(self):
