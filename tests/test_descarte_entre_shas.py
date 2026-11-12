@@ -106,10 +106,12 @@ def _descarta_el_revisor(r: Recorrido, evidencia: str) -> None:
 
 
 class DescarteEntreShas(unittest.TestCase):
-    def _con_descarte_en_sha_a(self, tmp, clave, linea: int | None = 1):
+    def _con_descarte_en_sha_a(
+        self, tmp, clave, linea: int | None = 1, contenido: str = "uno"
+    ):
         vuelta, r = _entrega_pr(self, tmp, clave, _comentarios)
         vuelta.gh.textos[None] = _comentario(_hallazgo(linea=linea))
-        e = vuelta("uno")
+        e = vuelta(contenido)
         self.assertEqual(_ids(e), ["F3"])
         self.assertEqual(e.estrategia, "investigar")
         sha_a = e.pr_sha
@@ -330,6 +332,89 @@ class DescarteEntreShas(unittest.TestCase):
                 [_sticky(sha_b, linea=None)], _cuerpo_del_pr(vuelta), sha_b
             )
             self.assertEqual(veredicto["estado"], "pasa")
+
+    def test_la_continuacion_intacta_mantiene_el_descarte(self):
+        # La línea anclada tiene continuación con contenido ("dos"): un commit
+        # que desplaza el par completo deja la región íntegra y el descarte
+        # sigue valiendo. La continuación del ancla queda ejercida con
+        # contenido, no solo con el borde de fin de archivo.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, sha_a, _linea = self._con_descarte_en_sha_a(
+                tmp, "descarte-continuacion", contenido="uno\ndos\n"
+            )
+            antes_estrategias = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "estrategia"
+            ]
+
+            (r.espacio / "saludo.txt").write_text(
+                "encabezado\nuno\ndos\n", encoding="utf-8"
+            )
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "aprobado",
+                    "evidencia": "lei saludo.txt; el par uno-dos queda intacto",
+                }
+            )
+            r.incorporar()
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            sha_b = e.pr_sha
+            self.assertNotEqual(sha_b, sha_a)
+            self.assertEqual(
+                _ids(e),
+                [],
+                "la línea anclada y su continuación siguen juntas e intactas",
+            )
+            self.assertEqual(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "estrategia" and ev not in antes_estrategias
+                    and "F3" in str(ev["data"].get("siguiente") or "")
+                ],
+                [],
+                "el motor volvió a mandar al responsable a corregir F3",
+            )
+            veredicto = decidir(
+                [_sticky(sha_b)], _cuerpo_del_pr(vuelta), sha_b
+            )
+            self.assertEqual(veredicto["estado"], "pasa")
+
+    def test_un_cambio_en_la_continuacion_caduca_el_descarte(self):  # no-roja-en-base: la base caduca el descarte en cualquier commit nuevo, también aquí; la prueba guarda la precisión del mecanismo nuevo (la continuación de la línea anclada cuenta)
+        # La línea anclada sigue intacta pero su continuación cambió: la
+        # región ya no está y el descarte caduca. El par tiene que ser exacto.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, sha_a, _linea = self._con_descarte_en_sha_a(
+                tmp, "descarte-continuacion-cambiada", contenido="uno\ndos\n"
+            )
+
+            (r.espacio / "saludo.txt").write_text(
+                "uno\ndos cambiada\n", encoding="utf-8"
+            )
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "aprobado",
+                    "evidencia": "lei saludo.txt; la línea que seguía a uno cambió",
+                }
+            )
+            r.incorporar()
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            sha_b = e.pr_sha
+            self.assertNotEqual(sha_b, sha_a)
+            self.assertEqual(
+                _ids(e),
+                ["F3"],
+                "la continuación de la línea anclada cambió; el hallazgo vuelve a contar",
+            )
+            veredicto = decidir(
+                [_sticky(sha_b)], _cuerpo_del_pr(vuelta), sha_b
+            )
+            self.assertEqual(veredicto["estado"], "falla")
 
 
 if __name__ == "__main__":
