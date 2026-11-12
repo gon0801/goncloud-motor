@@ -1843,9 +1843,7 @@ def _barrer_encargos(
             # prueba el despliegue: se concilia antes de dar el cierre por
             # terminado, en vez de perderlo en la rama de encargos cerrados.
             if enc is not None and enc.estado == "terminado" and not parada:
-                enc = _conciliar_despliegues_aplicados(
-                    registro, enc, _espacio(registro.base, enc.id), hora
-                )
+                enc = _conciliar_despliegues_aplicados(registro, enc, hora)
             # La fase activa puede no tener PR (por ejemplo, cerró sin
             # cambios) y una fase anterior sí. El sondeo de DeepSeek recorre
             # las fases, así que no depende de `enc.pr_numero`.
@@ -10152,29 +10150,53 @@ def _espera_despliegue_sin_autoridad(
     )
 
 
+def _fase_desplegada_vigente(registro, enc: Encargo, fase) -> bool:
+    """La fase ya se concilió para su SHA integrado actual.
+
+    No basta que `desplegado_recibo` tenga valor: una fase reintegrada
+    conserva el puntero de su despliegue anterior. El recibo apuntado debe
+    acreditar el SHA vigente y estar aplicado. Un recibo aplicado sin conciliar
+    no cuenta: el hecho `fase_desplegada` lo deja escrito el reintento.
+    """
+    from . import despliegue
+
+    if not fase.desplegado_recibo or not fase.integrado_sha:
+        return False
+    identidad = {
+        "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
+        "sha": fase.integrado_sha,
+        "receta": {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")},
+    }
+    try:
+        datos = despliegue._leer(Path(fase.desplegado_recibo), identidad)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return datos.get("estado") == "aplicado"
+
+
 def _registrar_fase_desplegada(
     registro, enc: Encargo, fase, resultado: dict, hora: str
 ) -> Encargo:
     """Registra el hecho de una receta aplicada y resuelve su impedimento.
 
     Idempotente por fase y SHA: conciliar el mismo recibo en un barrido
-    posterior o al cerrar otra fase no duplica el hecho.
+    posterior o al cerrar otra fase no duplica el hecho. Un append rechazado
+    no resuelve impedimentos: el hecho no quedó registrado.
     """
     from . import despliegue
 
-    clases = despliegue.clases_de_despliegue_de_fase(registro, enc.id, fase)
-    try:
-        registro.anotar(
-            enc.id,
-            {"kind": "fase_desplegada", "data": {
-                "fase": fase.id, "sha": fase.integrado_sha,
-                "recibo": str(resultado.get("recibo") or ""), "hora": hora,
-            }},
-            f"fase-desplegada:{enc.id}:{fase.id}:{fase.integrado_sha}",
-        )
-    except TransicionIlegal:
-        pass
+    aplicado = registro.anotar(
+        enc.id,
+        {"kind": "fase_desplegada", "data": {
+            "fase": fase.id, "sha": fase.integrado_sha,
+            "recibo": str(resultado.get("recibo") or ""), "hora": hora,
+        }},
+        f"fase-desplegada:{enc.id}:{fase.id}:{fase.integrado_sha}",
+    )
+    if aplicado not in ("nuevo", "igual"):
+        return registro.fold(enc.id) or enc
     fresco = registro.fold(enc.id) or enc
+    clases = despliegue.clases_de_despliegue_de_fase(registro, enc.id, fase)
     for impedimento in list(fresco.impedimentos):
         if impedimento.clase in clases:
             _resolver_impedimento(registro, fresco, impedimento.clase, hora)
@@ -10183,30 +10205,28 @@ def _registrar_fase_desplegada(
 
 
 def _conciliar_despliegues_aplicados(
-    registro, enc: Encargo, espacio: Path, hora: str
+    registro, enc: Encargo, hora: str
 ) -> Encargo:
     """Concilia un reintento ya empezado cuyo recibo salió 0.
 
     La fase bloqueada puede tener el recibo aplicado y aun sin conciliar cuando
     otra fase cierra el encargo. El reintento lo autorizó una orden mientras el
     encargo estaba abierto: un éxito no se pierde por el cierre. No relanza ni
-    abre intentos; solo registra el hecho de la receta aplicada.
+    abre intentos; solo registra el hecho de la receta aplicada, con el recibo
+    ya validado por su identidad.
     """
     from . import despliegue
 
     for fase in enc.fases:
         if (fase.estado != "bloqueada" or not fase.requiere_despliegue
-                or not fase.integrado_sha or fase.desplegado_recibo):
+                or not fase.integrado_sha):
             continue
-        recibo = despliegue.recibo_de(registro, enc, fase)
-        if recibo is None or recibo.get("estado") != "aplicado":
+        ruta = despliegue.recibo_aplicado_de(registro, enc, fase)
+        if ruta is None:
             continue
-        resultado = despliegue.iniciar(
-            registro, enc, espacio, despliegue.politica_de_fase(fase), hora,
-            fase=fase,
+        enc = _registrar_fase_desplegada(
+            registro, enc, fase, {"recibo": ruta}, hora
         )
-        if resultado.get("estado") == "aplicado":
-            enc = _registrar_fase_desplegada(registro, enc, fase, resultado, hora)
     return enc
 
 
@@ -10227,7 +10247,7 @@ def _reintentar_despliegue_pendiente(
         return enc
     if not any(
         f.estado == "bloqueada" and f.requiere_despliegue
-        and f.integrado_sha and not f.desplegado_recibo
+        and f.integrado_sha and not _fase_desplegada_vigente(registro, enc, f)
         for f in enc.fases
     ):
         return enc
@@ -10237,7 +10257,8 @@ def _reintentar_despliegue_pendiente(
         espacio = _espacio(registro.base, enc.id)
     for fase in enc.fases:
         if (fase.estado != "bloqueada" or not fase.requiere_despliegue
-                or not fase.integrado_sha or fase.desplegado_recibo):
+                or not fase.integrado_sha
+                or _fase_desplegada_vigente(registro, enc, fase)):
             continue
         recibo = despliegue.recibo_de(registro, enc, fase)
         if recibo is None:

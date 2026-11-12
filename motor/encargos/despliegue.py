@@ -307,21 +307,49 @@ def ocupado(registro, enc) -> dict:
     return libro
 
 
-def recibo_de(registro, enc, fase) -> dict | None:
-    """El recibo vigente de una fase, con su estado y su conteo de continuadas."""
+def _ruta_del_recibo(registro, enc, fase) -> tuple[Path, dict] | None:
+    """La ruta del recibo del SHA integrado vigente de la fase y su identidad."""
     if not fase.integrado_sha:
         return None
     receta = {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")}
     try:
         _rutas(receta)
-        identidad = {
-            "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
-            "sha": fase.integrado_sha, "receta": receta,
-        }
-        clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
-        return _leer(registro.base / "despliegues" / clave / "recibo.json", identidad)
+    except ValueError:
+        return None
+    identidad = {
+        "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
+        "sha": fase.integrado_sha, "receta": receta,
+    }
+    clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
+    return registro.base / "despliegues" / clave / "recibo.json", identidad
+
+
+def recibo_de(registro, enc, fase) -> dict | None:
+    """El recibo vigente de una fase, con su estado y su conteo de continuadas."""
+    ruta = _ruta_del_recibo(registro, enc, fase)
+    if ruta is None:
+        return None
+    try:
+        return _leer(*ruta)
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def recibo_aplicado_de(registro, enc, fase) -> str | None:
+    """La ruta del recibo aplicado del SHA integrado vigente, si lo hay.
+
+    Mira el SHA que la fase tiene ahora, no el puntero `desplegado_recibo`: una
+    fase reintegrada conserva el puntero de su despliegue anterior y no por eso
+    está desplegada en el SHA nuevo.
+    """
+    ruta = _ruta_del_recibo(registro, enc, fase)
+    if ruta is None:
+        return None
+    try:
+        datos = _leer(*ruta)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return str(ruta[0]) if datos.get("estado") == "aplicado" else None
 
 
 def reabrir_ventana(registro, enc, continuadas: int) -> None:
