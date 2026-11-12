@@ -611,6 +611,55 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
             [env, sys.executable, ".interno/script.py"],
         )
 
+
+    def test_un_script_tras_asignacion_de_entorno_no_acredita_su_contenido(self):
+        """Una asignación de entorno delante del intérprete no oculta el guion."""
+        _guion_que_se_modifica_no_acredita(
+            self,
+            "auto-modifica-asignacion",
+            [
+                "/bin/sh",
+                "-c",
+                "CHECK_MODE=1 "
+                + shlex.join([sys.executable, ".interno/script.py"]),
+            ],
+        )
+
+    def test_un_script_tras_exec_no_acredita_su_contenido(self):
+        """`exec` delante del intérprete no oculta el guion."""
+        _guion_que_se_modifica_no_acredita(
+            self,
+            "auto-modifica-exec",
+            [
+                "/bin/sh",
+                "-c",
+                "exec " + shlex.join([sys.executable, ".interno/script.py"]),
+            ],
+        )
+
+    def test_un_script_tras_command_no_acredita_su_contenido(self):
+        """`command` delante del intérprete no oculta el guion."""
+        _guion_que_se_modifica_no_acredita(
+            self,
+            "auto-modifica-command",
+            [
+                "/bin/sh",
+                "-c",
+                "command " + shlex.join([sys.executable, ".interno/script.py"]),
+            ],
+        )
+
+    def test_un_script_tras_env_con_bandera_no_acredita_su_contenido(self):
+        """`env -i` delante del intérprete no oculta el guion."""
+        env = shutil.which("env")
+        if env is None:
+            self.skipTest("no hay env en esta plataforma")
+        _guion_que_se_modifica_no_acredita(
+            self,
+            "auto-modifica-env-bandera",
+            [env, "-i", sys.executable, ".interno/script.py"],
+        )
+
     def test_un_script_bajo_runtime_nombrado_en_argv_pesa_y_reobserva(self):
         """Una ruta de `.interno/.runtime/` nombrada por el argv se pesa igual."""
         _reobserva_al_cambiar(
