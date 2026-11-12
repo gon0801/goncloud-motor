@@ -318,33 +318,55 @@ def _es_script_en_posicion(palabra: str) -> bool:
     return bool(_rutas_internas_del_argv([palabra]))
 
 
+_SEPARADORES_DE_COMANDO = (";", "&&", "||", "|", "&", "(", ")")
+
+
 def _scripts_en_palabras(palabras: list[str]) -> set[str]:
-    """Las rutas de `.interno/` que la linea ejecuta como comando o tras `.`."""
+    """Las rutas de `.interno/` que ejecuta cada comando de una linea de shell."""
     salida: set[str] = set()
-    comienzo = True
-    anterior = ""
-    for palabra in palabras:
-        if palabra in (";", "&&", "||", "|", "&", "(", ")"):
-            comienzo = True
-            anterior = palabra
-            continue
-        if (comienzo or anterior in (".", "source")) and _es_script_en_posicion(
-            palabra
-        ):
-            for cola in _rutas_internas_del_argv([palabra]):
-                salida.add(cola)
-        comienzo = False
-        anterior = palabra
+    inicio = 0
+    for indice, palabra in enumerate(palabras + [";"]):
+        if palabra in _SEPARADORES_DE_COMANDO:
+            salida |= _scripts_del_comando(palabras[inicio:indice])
+            inicio = indice + 1
     return salida
 
 
 def _script_de_interprete(argv: list[str]) -> str | None:
-    """El primer argumento que no es una bandera de un interprete es su guion."""
+    """El primer argumento que no es una bandera de un interprete es su guion.
+
+    `env` se atraviesa: sus banderas y sus `NAME=valor` no son el comando, y el
+    interprete que le sigue conserva la misma regla.
+    """
     if not argv:
         return None
     nombre = Path(str(argv[0]).replace("\\", "/")).name.lower()
     if nombre.endswith(".exe"):
         nombre = nombre[:-4]
+    if nombre == "env":
+        i = 1
+        while i < len(argv):
+            token = str(argv[i])
+            if token == "--":
+                i += 1
+                break
+            if token in ("-i", "--ignore-environment"):
+                i += 1
+                continue
+            if token in ("-u", "--unset", "-C", "--chdir"):
+                i += 2
+                continue
+            if token.startswith("--unset=") or token.startswith("--chdir="):
+                i += 1
+                continue
+            if token.startswith("-"):
+                i += 1
+                continue
+            if "=" in token and not token.startswith("="):
+                i += 1
+                continue
+            break
+        return _script_de_interprete(argv[i:])
     if nombre not in _INTERPRETES_DE_SCRIPT:
         return None
     i = 1
@@ -358,6 +380,24 @@ def _script_de_interprete(argv: list[str]) -> str | None:
             continue
         return token
     return None
+
+
+def _scripts_del_comando(palabras: list[str]) -> set[str]:
+    """Las rutas de `.interno/` que ejecuta un comando simple de una linea de shell."""
+    salida: set[str] = set()
+    if not palabras:
+        return salida
+    primero = palabras[0]
+    if primero in (".", "source"):
+        if len(palabras) > 1 and _es_script_en_posicion(palabras[1]):
+            salida.update(_rutas_internas_del_argv([palabras[1]]))
+        return salida
+    if _es_script_en_posicion(primero):
+        salida.update(_rutas_internas_del_argv([primero]))
+    guion = _script_de_interprete(palabras)
+    if guion is not None:
+        salida.update(_rutas_internas_del_argv([guion]))
+    return salida
 
 
 def _rutas_ejecutadas(argv: list[str]) -> set[str]:
