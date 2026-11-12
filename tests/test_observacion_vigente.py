@@ -537,6 +537,29 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 "el delimitador pegado no se confunde con la ruta",
             )
 
+    def test_un_nombre_citado_con_metacaracter_pesa_entero(self):
+        """Las comillas protegen un nombre que contiene `;`: no se trunca."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sh-c-cita-meta", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            script = interno / "a;b.sh"
+            script.write_text("exit 5\n", encoding="utf-8")
+            declaradas = [
+                {"objetivo": "x", "argv": ["/bin/sh", "-c", 'cat ".interno/a;b.sh"']}
+            ]
+
+            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            script.write_text("exit 0\n", encoding="utf-8")
+            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(antes)
+            self.assertNotEqual(
+                antes,
+                despues,
+                "un nombre citado con un metacaracter pesa entero",
+            )
+
     def test_un_rojo_que_vuelve_gana_al_verde_anterior(self):  # no-roja-en-base: la clave con el resultado nace en la primera vuelta; en 5e83c75 el verde ni se registra y el rojo que vuelve no queda tapado por ese camino
         """El rojo verdadero sigue rojo aunque antes haya habido un verde.
 
