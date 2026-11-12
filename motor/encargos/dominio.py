@@ -3831,11 +3831,34 @@ def _fase_desplegada(e: Encargo, d: dict, hora: str) -> Encargo:
         pendientes=(),
     )
     firma = fase.producto.firma if fase.producto else ""
-    return replace(
+    fases = _preparar_con_entrada(e.fases, lista, firma)
+    resultado = replace(
         e,
-        fases=_preparar_con_entrada(e.fases, lista, firma),
+        fases=fases,
         ultimo_hecho=f"la fase {fase.id} quedó desplegada",
         hora=hora or e.hora,
+    )
+    if e.estado != "terminado":
+        return resultado
+    # El cierre pudo adelantarse al reintento: la fase recuperada alcanza a sus
+    # dependientes. Se reabre el turno de la siguiente sin tocar la aprobada ni
+    # abrir intentos sobre ella.
+    disponible = _fase_disponible(fases)
+    if disponible is None:
+        return resultado
+    return sesiones_de_fase_nueva(
+        replace(
+            resultado,
+            estado="recibido",
+            fase_activa=disponible.id,
+            rol="responsable",
+            estrategia="investigar",
+            motivo="",
+            siguiente=f"trabajar la fase {disponible.id}",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            devuelto_con=(),
+        )
     )
 
 
