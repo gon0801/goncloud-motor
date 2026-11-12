@@ -495,6 +495,9 @@ class Fase:
     # Última consulta a GitHub para conciliar el PR de esta fase cuando ya no
     # es la activa. Acota el sondeo: una fase no se consulta en cada pasada.
     conciliado_en: str = ""
+    # Causa de un despliegue terminalmente fallido en una fase conciliada. La
+    # fase no se reintenta sola y el cierre no la espera para siempre.
+    despliegue_impedido: str = ""
     inspecciones_consumidas: tuple[str, ...] = ()
     entrega_bloqueada_sha: str = ""
     # Resultado del CI real del PR, leído una sola vez después de entregar.
@@ -3130,6 +3133,7 @@ def _espera_despliegue_pendiente(e: Encargo, fases: tuple[Fase, ...]) -> bool:
         f.estado != "preparada"
         and nivel_de(f) == "integrado"
         and not f.desplegado_recibo
+        and not f.despliegue_impedido
         and f.requiere_despliegue is not False
         for f in fases
     )
@@ -3916,6 +3920,14 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
         return replace(
             con_fase(e, nueva), **_correspondencia_despliegue(e, d)
         )
+    if paso == "impedimento":
+        causa = str(d.get("causa") or "").strip()
+        if not causa:
+            raise TransicionIlegal("la conciliación impedida no trae causa")
+        return replace(
+            con_fase(e, replace(fase, despliegue_impedido=causa[:500])),
+            hora=hora or e.hora,
+        )
     if paso == "integrado":
         recibo = str(d.get("recibo") or d.get("sha") or "")
         if not recibo:
@@ -3928,6 +3940,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
             base=str(d.get("base") or fase.base),
             pr_numero=int(d.get("numero") or fase.pr_numero or 0),
             conciliado_en=hora or e.hora,
+            despliegue_impedido="",
             **datos,
         )
         if str(d.get("fuente") or ""):
@@ -3952,6 +3965,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
                 ultimo_paso_entrega="desplegado",
                 desplegado_recibo=recibo,
                 conciliado_en=hora or e.hora,
+                despliegue_impedido="",
             ),
             f"despliegue {recibo} verificado",
         )

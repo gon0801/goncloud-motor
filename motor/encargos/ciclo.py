@@ -9291,7 +9291,26 @@ def _paso_despliegue_fase(
         )
         fase = next((f for f in enc.fases if f.id == fase.id), fase)
     resultado = despliegue.iniciar(registro, enc, espacio, politica, hora, fase)
-    if resultado.get("estado") != "aplicado":
+    estado = str(resultado.get("estado") or "")
+    if estado in ("fallido", "incierto"):
+        # Un despliegue terminal no puede quedar en silencio: se registra la
+        # causa y la fase deja de retener el cierre. Una orden de continuar
+        # todavía puede reintentar la misma receta.
+        causa = str(resultado.get("motivo") or "despliegue sin verificar")
+        if resultado.get("recibo"):
+            causa += "; recibo: " + str(resultado["recibo"])
+        causa = f"fase {fase.id}: {causa}"
+        clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
+        _anotar_impedimento(
+            registro, enc, clase, causa,
+            "que el despliegue pueda completarse o se retire del pedido",
+            hora,
+        )
+        return _anotar_conciliacion(
+            registro, enc, fase, "impedimento", hora,
+            causa=causa, huella=clase,
+        )
+    if estado != "aplicado":
         # La receta sigue corriendo o quedó pendiente. No se marca una espera
         # del encargo: la fase activa conserva su turno y la próxima pasada
         # vuelve a leer el mismo recibo.

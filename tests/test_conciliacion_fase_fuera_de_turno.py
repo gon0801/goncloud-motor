@@ -110,6 +110,22 @@ class _Banco(unittest.TestCase):
         self.sha_a = git(self.trabajo, "rev-parse", "HEAD")
         git(self.trabajo, "push", "-q", str(self.bare), self.rama_a)
 
+    def hacer_receta_fallida(self) -> None:
+        """La rama A publica una receta que falla sin declarar ocupación."""
+        (self.trabajo / "d.sh").write_text(
+            'printf "desplegar:%s\\n" "$MOTOR_SHA" '
+            f'>> "{self.destino.as_posix()}/pasos"\n'
+            'printf "fallo propio de la receta\\n"\n'
+            "exit 1\n"
+        )
+        git(self.trabajo, "add", "-A")
+        git(
+            self.trabajo, "-c", "user.name=t", "-c", "user.email=t@l",
+            "commit", "-q", "-m", "receta fallida",
+        )
+        self.sha_a = git(self.trabajo, "rev-parse", "HEAD")
+        git(self.trabajo, "push", "-q", str(self.bare), self.rama_a)
+
     def encargo(self, fases: list[dict]) -> tuple[Registro, str, Path]:
         reg = Registro(self.raiz / "base")
         self.addCleanup(reg.close)
@@ -499,6 +515,49 @@ class ConciliacionOcupada(_Banco):
         )
         self.assertEqual(enc.fase_activa, "B")
         self.assertNotEqual(enc.estado, "esperando_reintento")
+
+
+class ConciliacionFallida(_Banco):
+    def test_el_despliegue_fallido_no_queda_en_silencio(self):
+        self.hacer_receta_fallida()
+        reg, ident, gh, fusionado = self._preparar(dependiente=True)
+        self._barrer(reg, gh, vueltas=2)
+        enc = reg.fold(ident)
+        a = self._fase(enc, "A")
+        self.assertEqual(a.integrado_sha, fusionado.merge_commit)
+        self.assertEqual(
+            len([
+                imp for imp in enc.impedimentos
+                if imp.clase.startswith("despliegue:")
+            ]),
+            1,
+        )
+
+        reg.anotar(
+            ident,
+            {
+                "kind": "bloqueo_fase",
+                "data": {
+                    "fase": "B", "evidencia": "B entregada con pendientes",
+                    "causa": "relevo agotado", "hora": ciclo.ahora_iso(),
+                },
+            },
+            "review-bloqueo-B",
+        )
+        self._barrer(reg, gh, vueltas=4)
+
+        enc = reg.fold(ident)
+        a = self._fase(enc, "A")
+        self.assertEqual(enc.estado, "terminado")
+        self.assertEqual(
+            len([
+                imp for imp in enc.impedimentos
+                if imp.clase.startswith("despliegue:")
+            ]),
+            1,
+        )
+        self.assertEqual(a.estado, "bloqueada")
+        self.assertEqual(a.nivel_alcanzado, "integrado")
 
 
 class ConciliacionFetchTransitorio(_Banco):
