@@ -501,6 +501,9 @@ class Fase:
     # Hora a la que una receta conciliada que no arrancó vuelve a intentarse.
     # Evita relanzarla en cada pasada y conserva la causa en el registro.
     despliegue_espera_en: str = ""
+    # Intentos consumidos por esa espera; al tope la fase deja de retener el
+    # cierre y su causa queda como impedimento terminal.
+    despliegue_espera_intentos: int = 0
     inspecciones_consumidas: tuple[str, ...] = ()
     entrega_bloqueada_sha: str = ""
     # Resultado del CI real del PR, leído una sola vez después de entregar.
@@ -3134,7 +3137,10 @@ def _espera_despliegue_pendiente(e: Encargo, fases: tuple[Fase, ...]) -> bool:
     """Una fase integrada con su despliegue pendiente sigue siendo trabajo vivo.
 
     Cerrar el encargo mientras su recibo existe o su receta corre abandonaría
-    un avance que la conciliación completa sin abrir otro turno.
+    un avance que la conciliación completa sin abrir otro turno. Una fase
+    bloqueada sin espera explícita la reconcilia el cierre de main desde su
+    recibo aplicado; una fase no bloqueada o en espera reintentable no tiene
+    ese camino y debe retener el cierre.
     """
     if nivel_objetivo(e) != "desplegado":
         return False
@@ -3144,6 +3150,7 @@ def _espera_despliegue_pendiente(e: Encargo, fases: tuple[Fase, ...]) -> bool:
         and not f.desplegado_recibo
         and not f.despliegue_impedido
         and f.requiere_despliegue is not False
+        and (f.estado != "bloqueada" or bool(f.despliegue_espera_en))
         for f in fases
     )
 
@@ -3940,9 +3947,10 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
     if paso == "espera":
         causa = str(d.get("causa") or "").strip()
         reanuda_en = str(d.get("reanuda_en") or "").strip()
-        if not causa or not reanuda_en:
+        intentos = int(d.get("intentos") or 0)
+        if not causa or not reanuda_en or intentos < 1:
             raise TransicionIlegal(
-                "la espera de conciliación necesita causa y reanudación"
+                "la espera de conciliación necesita causa, reanudación e intentos"
             )
         return replace(
             con_fase(
@@ -3950,6 +3958,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
                 replace(
                     fase,
                     despliegue_espera_en=reanuda_en,
+                    despliegue_espera_intentos=intentos,
                 ),
             ),
             hora=hora or e.hora,
@@ -3968,6 +3977,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
             conciliado_en=hora or e.hora,
             despliegue_impedido="",
             despliegue_espera_en="",
+            despliegue_espera_intentos=0,
             **datos,
         )
         if str(d.get("fuente") or ""):
@@ -3994,6 +4004,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
                 conciliado_en=hora or e.hora,
                 despliegue_impedido="",
                 despliegue_espera_en="",
+                despliegue_espera_intentos=0,
             ),
             f"despliegue {recibo} verificado",
         )
@@ -4631,6 +4642,27 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 sesiones_de_fase_nueva(resultado)
                 if pendientes[0].id != fase.id
                 else resultado
+            )
+        if _espera_despliegue_pendiente(e, fases):
+            # El cierre confirmado no puede abandonar una fase integrada que
+            # espera su despliegue y que el cierre de main no va a reconciliar.
+            return replace(
+                e,
+                fases=fases,
+                estado="recibido",
+                rol="",
+                estrategia="investigar",
+                motivo="",
+                siguiente="esperar la conciliación del despliegue pendiente",
+                evidencia=evidencias,
+                intentos_nuevos=True,
+                escrituras=e.autoridad,
+                ultimo_hecho=(
+                    f"fase {fase.id} preparada; espera la conciliación del "
+                    "despliegue pendiente"
+                ),
+                devuelto_con=(),
+                hora=hora or e.hora,
             )
         # Quien cierra anota cuántas correcciones cubre (vistas o dichas en la
         # nota). Una que entró después no la atendió nadie: el registro rechaza

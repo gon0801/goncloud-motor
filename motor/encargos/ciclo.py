@@ -5226,6 +5226,9 @@ _TOPE_CAUSA_AVISO = 140
 # sexto intento ocupado seguido se rinde con un impedimento en llano.
 ESPERAS_OCUPADO_S = (900, 1800, 3600, 7200, 14400)
 TOPE_OCUPADO = len(ESPERAS_OCUPADO_S) + 1
+# Una receta conciliada que no arranca no puede reintentarse para siempre: al
+# tope deja su causa como impedimento terminal y el cierre deja de esperarla.
+TOPE_ESPERA = 5
 
 
 def _causa_con_aviso(
@@ -9371,7 +9374,11 @@ def _paso_despliegue_fase(
         causa = str(resultado.get("motivo") or "la receta no arrancó")
         if resultado.get("recibo"):
             causa += "; recibo: " + str(resultado["recibo"])
+        intentos = int(fase.despliegue_espera_intentos) + 1
         causa = f"fase {fase.id}: {causa}"
+        if intentos >= TOPE_ESPERA:
+            causa += f" (la receta no arrancó {intentos} veces)"
+            return _anotar_impedimento_de_fase(registro, enc, fase, causa, hora)
         clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
         _anotar_impedimento(
             registro, enc, clase, causa,
@@ -9380,7 +9387,8 @@ def _paso_despliegue_fase(
         reanuda = _reanuda_desde(hora, 30)
         return _anotar_conciliacion(
             registro, enc, fase, "espera", hora,
-            causa=causa, reanuda_en=reanuda, huella=reanuda,
+            causa=causa, reanuda_en=reanuda,
+            huella=f"{reanuda}:{intentos}", intentos=intentos,
         )
     if estado != "aplicado":
         # La receta sigue corriendo o quedó pendiente. No se marca una espera
