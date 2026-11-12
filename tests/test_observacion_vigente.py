@@ -559,6 +559,19 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
             ["/bin/sh", "-c", shlex.join([sys.executable, ".interno/script.py"])],
         )
 
+
+    def test_un_script_que_se_modifica_en_sh_c_multilinea_no_acredita_su_contenido(self):
+        """Un salto de linea dentro de `sh -c` separa el comando y el guion pesa."""
+        _guion_que_se_modifica_no_acredita(
+            self,
+            "auto-modifica-sh-c-multilinea",
+            [
+                "/bin/sh",
+                "-c",
+                "set -e\n" + shlex.join([sys.executable, ".interno/script.py"]),
+            ],
+        )
+
     def test_un_script_que_se_modifica_tras_env_no_acredita_su_contenido(self):
         """El interprete detras de `env` tambien se clasifica como ejecutado."""
         env = shutil.which("env")
