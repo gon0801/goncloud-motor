@@ -199,6 +199,84 @@ class DespliegueReal(unittest.TestCase):
     def test_75_con_reversa_que_falla_sigue_como_hoy(self):  # no-roja-en-base: caracteriza el camino que la fase conserva; la base ya deja fallido con impedimento
         self.comprobar_falla("d.sh", 75, reversa=1)
 
+    def test_75_del_checklist_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido cualquier salida distinta de 0; la prueba fija el límite del camino ocupado nuevo
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        with (espacio / "c.sh").open("a") as f:
+            f.write('printf "ocupado: app.cli vivo\\n"; exit 75\n')
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [0, 75, 0], datos["pasos"]
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+
+    def test_75_sin_diagnostico_de_ocupacion_no_es_ocupado(self):  # no-roja-en-base: la base ya deja fallido un 75; la prueba fija que el ocupado exige el diagnóstico que la receta declara
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text('printf "error de datos\\n"; exit 75\n')
+        integrar()
+        self._ejecucion_en_proceso()
+        final = paso(despliegue)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "fallido", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [75, 0], datos["pasos"]
+        causa = final.impedimentos[-1].causa if final.impedimentos else ""
+        assert "revisar el recibo" in causa, causa
+        assert not list((reg.base / "despliegues").rglob("ocupado.json"))
+        antes = (destino / "pasos").read_text()
+        paso(despliegue)
+        assert (destino / "pasos").read_text() == antes
+
+    def test_el_diagnostico_de_ocupacion_viene_de_la_salida_real(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "preparacion completa\\n"; '
+            'printf "ocupado: app.cli vivo (spapi-diario)\\n" >&2; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
+        libro = next((reg.base / "despliegues").rglob("ocupado.json"))
+        contenido = json.loads(libro.read_text())
+        assert "app.cli vivo (spapi-diario)" in contenido["proceso"], contenido
+        # Ventana agotada: el impedimento cita el proceso que la receta
+        # reportó en su salida real, no la última línea de resumen. La
+        # primera corrida ya consumió el intento 1: quedan 5 de la ventana.
+        for _ in range(5):
+            contenido["ultimo"] = "2026-11-04T11:00:00Z"
+            libro.write_text(json.dumps(contenido))
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+            libro = next((reg.base / "despliegues").rglob("ocupado.json"))
+            contenido = json.loads(libro.read_text())
+        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        causa = enc.impedimentos[-1].causa if enc.impedimentos else ""
+        assert "ocupado 6 veces" in causa, causa
+        assert "app.cli vivo (spapi-diario)" in causa, causa
+        assert "preparacion completa" not in causa, causa
+
+    def test_el_diagnostico_no_lo_reemplaza_una_linea_de_resumen(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text(
+            'printf "ocupado: app.cli vivo (spapi-diario)\\n'
+            'ESTADO=abortado_sin_cambios\\n"; exit 75\n'
+        )
+        integrar()
+        self._ejecucion_en_proceso()
+        ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
+        libro = next((reg.base / "despliegues").rglob("ocupado.json"))
+        contenido = json.loads(libro.read_text())
+        assert contenido["proceso"] == "ocupado: app.cli vivo (spapi-diario)", contenido
+
     def test_75_con_reversa_limpia_espera_y_reintenta_solo(self):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
@@ -208,7 +286,7 @@ class DespliegueReal(unittest.TestCase):
             f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0); '
             f'n=$((n+1)); printf "%s" "$n" > "{corridas.as_posix()}"; '
             f'if [ "$n" -ge 2 ]; then exit 0; fi; '
-            f'printf "app.cli vivo\\n"; exit 75\n'
+            f'printf "ocupado: app.cli vivo\\n"; exit 75\n'
         )
         sha = integrar()
         self._ejecucion_en_proceso()
@@ -249,7 +327,7 @@ class DespliegueReal(unittest.TestCase):
     def test_75_repetido_agota_la_ventana_y_deja_impedimento_en_llano(self):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
-        (espacio / "d.sh").write_text('printf "app.cli vivo (spapi-diario)\\n"; exit 75\n')
+        (espacio / "d.sh").write_text('printf "ocupado: app.cli vivo (spapi-diario)\\n"; exit 75\n')
         integrar()
         self._ejecucion_en_proceso()
         for _ in range(6):
