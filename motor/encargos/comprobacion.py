@@ -221,6 +221,10 @@ def _huella_de_lo_interno(interno: Path, relativo: str) -> str:
             for hijo in sorted(path.rglob("*")):
                 if not hijo.is_file():
                     continue
+                try:
+                    hijo.resolve().relative_to(base)
+                except (OSError, ValueError):
+                    continue
                 arbol.update(hijo.relative_to(path).as_posix().encode())
                 arbol.update(b"\0")
                 arbol.update(hashlib.sha256(hijo.read_bytes()).hexdigest().encode())
