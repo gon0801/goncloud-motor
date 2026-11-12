@@ -3947,10 +3947,17 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
     if paso == "espera":
         causa = str(d.get("causa") or "").strip()
         reanuda_en = str(d.get("reanuda_en") or "").strip()
-        intentos = int(d.get("intentos") or 0)
-        if not causa or not reanuda_en or intentos < 1:
+        # Los eventos anteriores al tope no traían `intentos`: se pliegan como
+        # el primero, sin volver ilegible el registro ya escrito.
+        try:
+            intentos = int(d.get("intentos") or 1)
+        except (TypeError, ValueError):
+            intentos = 1
+        if intentos < 1:
+            intentos = 1
+        if not causa or not reanuda_en:
             raise TransicionIlegal(
-                "la espera de conciliación necesita causa, reanudación e intentos"
+                "la espera de conciliación necesita causa y reanudación"
             )
         return replace(
             con_fase(

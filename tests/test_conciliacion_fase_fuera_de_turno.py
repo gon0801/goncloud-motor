@@ -495,6 +495,30 @@ class ConciliacionCierre(_Banco):
         self.assertEqual(b.estado, "bloqueada")
 
 
+class PlegadoDeEspera(_Banco):
+    def test_una_espera_anterior_sin_intentos_se_pliega(self):
+        reg, ident, espacio = self.encargo(self._fases(dependiente=True))
+        self.assertEqual(
+            reg.anotar(
+                ident,
+                {
+                    "kind": "conciliacion_fase",
+                    "data": {
+                        "fase": "A", "paso": "espera",
+                        "causa": "falta receta real",
+                        "reanuda_en": "2099-01-01T00:00:00Z",
+                        "hora": ciclo.ahora_iso(),
+                    },
+                },
+                "espera-sin-intentos",
+            ),
+            "nuevo",
+        )
+        a = self._fase(reg.fold(ident), "A")
+        self.assertEqual(a.despliegue_espera_en, "2099-01-01T00:00:00Z")
+        self.assertEqual(a.despliegue_espera_intentos, 1)
+
+
 class ConciliacionOcupada(_Banco):
     def test_la_receta_ocupada_no_se_relanza_en_cada_pasada(self):
         self.hacer_receta_ocupada()
