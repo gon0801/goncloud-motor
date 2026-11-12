@@ -261,5 +261,126 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
             )
 
 
+    def test_el_verde_de_la_misma_identidad_queda_vigente_entre_intentos(self):
+        """Un verde nuevo se registra aunque la identidad reutilizable no cambie.
+
+        La version, las declaradas y el script son los mismos; solo aparece
+        `.interno/ok`, que el script consulta. El resultado pasa de rc 5 a rc 0
+        y la observacion nueva debe quedar en el registro. Desde un intento
+        nuevo, sin `observaciones.json`, el motor lee ese verde, no el rojo
+        guardado, y no vuelve a alimentar la escalera.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "verde-misma-identidad", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+
+            script = r.espacio / ".interno" / "script.py"
+            script.parent.mkdir(exist_ok=True)
+            script.write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "sys.exit(0 if Path('.interno/ok').exists() else 5)\n",
+                encoding="utf-8",
+            )
+            _declarar(r, [sys.executable, ".interno/script.py"])
+            version = firma_producto(r.espacio)
+
+            roja = _observar(r)
+            self.assertEqual(roja["ejecuciones"][0].get("rc"), 5, roja)
+            r.incorporar()
+            _espera_por_observacion(r.reg, r.fold(), r.espacio, r.d, ahora_iso())
+            self.assertEqual(
+                len(_abiertos_del_supervisor(r.fold())),
+                1,
+                "el rc 5 abre el bloqueo del supervisor",
+            )
+
+            (r.espacio / ".interno" / "ok").write_text("", encoding="utf-8")
+            self.assertEqual(
+                firma_producto(r.espacio),
+                version,
+                "el archivo que consulta el script vive en .interno y no cambia "
+                "el producto",
+            )
+            verde = _observar(r)
+            self.assertEqual(verde["ejecuciones"][0].get("rc"), 0, verde)
+            r.incorporar()
+
+            observaciones = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "observacion_supervisor"
+                and ev["data"].get("version") == version
+            ]
+            self.assertEqual(
+                observaciones[-1]["data"]["ejecuciones"][0].get("rc"),
+                0,
+                "el verde de la misma identidad se registra y queda vigente; el "
+                "rojo viejo no lo descarta",
+            )
+
+            nuevo = r.reg.base / "ejecucion" / r.enc / "intento-nuevo"
+            nuevo.mkdir()
+            antes = len(r.reg.eventos(r.enc))
+            with mock.patch(
+                "motor.encargos.ciclo.iniciar_comprobacion"
+            ) as iniciar:
+                resultado = _espera_por_observacion(
+                    r.reg, r.fold(), r.espacio, nuevo, ahora_iso()
+                )
+            iniciar.assert_not_called()
+            self.assertIsNone(
+                resultado,
+                "desde un intento nuevo sin observaciones.json gana el verde "
+                "registrado, no el rojo viejo",
+            )
+            e = r.fold()
+            self.assertEqual(_abiertos_del_supervisor(e), [], "el bloqueo se cierra")
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            self.assertFalse(
+                any(ev["kind"] == "sin_progreso" for ev in nuevos),
+                "el verde vigente no vuelve a alimentar la escalera",
+            )
+
+    def test_un_script_nombrado_dentro_de_sh_c_cambia_la_observacion(self):
+        """La ruta dentro de `sh -c` cuenta aunque comparta token con el comando.
+
+        `['/bin/sh', '-c', '. .interno/script.sh']` ejecuta el script. Cambiar
+        solo su contenido debe cambiar la huella del procedimiento y obligar a
+        observar de nuevo, igual que cuando la ruta es un argumento aparte.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sh-c-interno", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+
+            script = r.espacio / ".interno" / "script.sh"
+            script.parent.mkdir(exist_ok=True)
+            script.write_text("exit 5\n", encoding="utf-8")
+            _declarar(r, ["/bin/sh", "-c", ". .interno/script.sh"])
+
+            roja = _observar(r)
+            self.assertEqual(roja["ejecuciones"][0].get("rc"), 5, roja)
+            r.incorporar()
+            _espera_por_observacion(r.reg, r.fold(), r.espacio, r.d, ahora_iso())
+
+            script.write_text("exit 0\n", encoding="utf-8")
+
+            with mock.patch(
+                "motor.encargos.ciclo.iniciar_comprobacion"
+            ) as iniciar:
+                resultado = _espera_por_observacion(
+                    r.reg, r.fold(), r.espacio, r.d, ahora_iso()
+                )
+            iniciar.assert_called_once()
+            self.assertIsInstance(
+                resultado[1] if resultado else None,
+                Espera,
+                "el script nuevo nombrado dentro de sh -c vuelve a observar antes "
+                "de publicar",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
