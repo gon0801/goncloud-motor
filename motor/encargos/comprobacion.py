@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -172,11 +173,18 @@ def firma_producto(espacio: Path) -> str:
     return version_producto(espacio).firma
 
 
-_DELIMITADOR_SHELL = re.compile(r"[\s'\"`;|&()<>]")
+_INTERPRETES_DE_SHELL = {"sh", "bash", "dash", "zsh", "ksh", "ash"}
 
 
 def _indices_de_linea_de_shell(argv: list[str]) -> set[int]:
-    """Los argumentos que son una linea de shell: el valor de un `-c`."""
+    """Los argumentos que son una linea de shell: el valor de un `-c` del shell."""
+    if not argv:
+        return set()
+    nombre = Path(str(argv[0]).replace("\\", "/")).name.lower()
+    if nombre.endswith(".exe"):
+        nombre = nombre[:-4]
+    if nombre not in _INTERPRETES_DE_SHELL:
+        return set()
     indices: set[int] = set()
     for i, token in enumerate(argv[:-1]):
         texto = str(token)
@@ -193,9 +201,24 @@ def _ocurrencias_internas(normal: str):
         if pos < 0:
             return
         antes = normal[pos - 1] if pos else ""
-        if pos == 0 or antes in "/=: \t;'\"`|&()":
+        if pos == 0 or antes in "/=:" or antes.isspace() or antes in ";'\"`|&()":
             yield pos, antes
         inicio = pos + len(INTERNO)
+
+
+def _rutas_en_token(normal: str) -> list[str]:
+    """Las colas de `.interno/` de un token o de una palabra ya separada."""
+    salida = []
+    for pos, antes in _ocurrencias_internas(normal):
+        resto = normal[pos + len(INTERNO):]
+        if not resto.startswith("/"):
+            continue
+        cola = resto[1:].strip()
+        if antes == "=" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", normal):
+            cola = cola.split(":", 1)[0]
+        if cola:
+            salida.append(cola)
+    return salida
 
 
 def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
@@ -204,29 +227,29 @@ def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
     Un token puede ser la ruta relativa (`.interno/script.sh`), absoluta o de
     Windows, con espacios (`--dir=.interno/mis pruebas`), o una linea de shell
     que la nombra dentro del mismo argumento (`. .interno/script.sh` tras
-    `sh -c`). En un argumento de ruta la cola llega al final del token; en una
-    linea de shell se corta en el delimitador. Se conserva la cola, que es la
-    misma ruta dentro del interno del espacio.
+    `sh -c`). En una linea de shell se separan primero las palabras, asi que
+    los espacios citados de una ruta y los argumentos del comando no se
+    confunden con la ruta. Se conserva la cola, que es la misma ruta dentro del
+    interno del espacio.
     """
     shell = _indices_de_linea_de_shell(argv)
     vistos: set[str] = set()
     salida: list[str] = []
     for i, token in enumerate(argv):
         normal = str(token).replace("\\", "/")
-        for pos, antes in _ocurrencias_internas(normal):
-            resto = normal[pos + len(INTERNO):]
-            if not resto.startswith("/"):
-                continue
-            cola = resto[1:]
-            if antes == "=" and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", normal):
-                cola = cola.split(":", 1)[0]
-            elif i in shell:
-                cola = _DELIMITADOR_SHELL.split(cola, 1)[0]
-            else:
-                cola = cola.strip()
-            if cola and cola not in vistos:
-                vistos.add(cola)
-                salida.append(cola)
+        if i in shell:
+            try:
+                palabras = shlex.split(str(token))
+            except ValueError:
+                palabras = normal.split()
+            candidatos = [str(p).replace("\\", "/") for p in palabras]
+        else:
+            candidatos = [normal]
+        for candidato in candidatos:
+            for cola in _rutas_en_token(candidato):
+                if cola not in vistos:
+                    vistos.add(cola)
+                    salida.append(cola)
     return sorted(salida)
 
 
