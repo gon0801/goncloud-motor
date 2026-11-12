@@ -16,7 +16,9 @@ from concurrent.futures import TimeoutError as MiradaTardia
 from dataclasses import replace
 from pathlib import Path
 
-from .copiar import borrar_arbol, copiar_arbol, vaciar_arbol
+from motor.fallas import es_sesion_local
+
+from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
@@ -945,7 +947,7 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
     for sub in (".codex", ".grok", ".local/share/muse", ".kimi-code/sessions", ".kimi-code/file-history", ".claude/projects", ".qwen/projects", ".qwen/tmp", ".local/share/opencode"):
         fuente = origen / sub
         if fuente.is_dir():
-            copiar_arbol(fuente, destino / sub, omitir=("auth.json",))
+            copiar_arbol(fuente, destino / sub, omitir=("auth.json",), sqlite_consistente=True)
 
     indice_kimi = origen / ".kimi-code/session_index.jsonl"
     if indice_kimi.is_file() and not indice_kimi.is_symlink():
@@ -1008,6 +1010,88 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
 
 
 
+_BASES_SESION_CONOCIDAS = ("opencode.db", "session-index.db")
+
+
+def _es_base_sesion_conocida(base: Path) -> bool:
+    """Las bases de sesión que el motor conoce por nombre. Solo a estas se las
+    valida aunque no traigan cabecera SQLite: la cabecera es justo lo primero
+    que se destruye, y un `.db` desconocido puede ser cualquier dato que nunca
+    fue base."""
+    return base.name in _BASES_SESION_CONOCIDAS or (
+        base.name.startswith("state_") and base.name.endswith(".sqlite")
+    )
+
+
+def _es_candado_pasajero(exc: Exception) -> bool:
+    """Un candado ajeno no prueba daño: `database is locked` puede desaparecer
+    en el siguiente intento."""
+    texto = str(exc).lower()
+    return "locked" in texto or "busy" in texto
+
+
+def _causa_sesion_danada(almacen: Path) -> str:
+    """La primera base de sesión cuyo `PRAGMA quick_check` no pasa o no abre,
+    con la causa; `""` si el almacén no tiene bases dañadas. Las bases de sesión
+    conocidas se validan aunque hayan perdido la cabecera: una `opencode.db` con
+    los primeros bytes destruidos es el daño que trajo la PC. El escaneo no se
+    cae por un permiso o una carrera: lo que no se puede revisar queda dicho
+    como causa y la sesión se aparta. Un candado ajeno no es daño: se reintenta
+    una vez y, si sigue, esa base no aparta la sesión (un bloqueo pasajero no
+    pierde la sesión)."""
+    import time
+    import sqlite3
+    from contextlib import closing
+
+    try:
+        bases = sorted(almacen.rglob("*"))
+    except OSError as exc:
+        return f"{almacen.name}: {type(exc).__name__}: {exc}"
+    for base in bases:
+        try:
+            if not base.is_file() or base.is_symlink():
+                continue
+            con_cabecera = es_sqlite(base)
+            if not con_cabecera and (
+                not _es_base_sesion_conocida(base) or base.stat().st_size == 0
+            ):
+                continue
+        except OSError as exc:
+            return f"{base.name}: {type(exc).__name__}: {exc}"
+        causa = ""
+        for reintento in range(2):
+            try:
+                with closing(sqlite3.connect(base)) as db:
+                    filas = db.execute("PRAGMA quick_check").fetchall()
+            except sqlite3.OperationalError as exc:
+                if _es_candado_pasajero(exc):
+                    if reintento == 0:
+                        time.sleep(1)
+                        continue
+                    break
+                causa = f"{base.name}: {type(exc).__name__}: {exc}"
+                break
+            except sqlite3.Error as exc:
+                causa = f"{base.name}: {type(exc).__name__}: {exc}"
+                break
+            if [tuple(fila) for fila in filas] != [("ok",)]:
+                causa = f"{base.name}: quick_check: {filas[0][0] if filas else 'sin respuesta'}"
+            break
+        if causa:
+            return causa
+    return ""
+
+
+def _apartar_sesion(almacen: Path, hora: str) -> Path:
+    """Renombra el almacén de sesión junto a sí mismo con marca de fecha, la misma
+    forma que usó el director en la PC (`opencode.danada-20261111`): la evidencia
+    no se borra y el turno arranca sin ella."""
+    marca = hora[:10].replace("-", "") + "T" + hora[11:16].replace(":", "")
+    apartado = almacen.with_name(f"{almacen.name}.danada-{marca}")
+    almacen.rename(apartado)
+    return apartado
+
+
 def _copiar_sesion_sin_caer(
     registro: Registro, enc: Encargo, origen: Path, destino: Path, sitio: str, hora: str
 ) -> None:
@@ -1020,7 +1104,8 @@ def _copiar_sesion_sin_caer(
     Una copia a medias no se usa como sesión. Guardar deja `.copia-incompleta` en el almacén
     mientras copia y la quita al terminar; si el guardado anterior no terminó, vacía el
     almacén antes, para que lo viejo no se mezcle con lo nuevo. Con la marca puesta no se
-    restaura: el turno arranca sin sesión. Si falla restaurar, se vacía el runtime del turno."""
+    restaura: el turno arranca sin sesión. Si falla restaurar, se vacía el runtime del turno
+    y también se pierde la sesión: el id apunta a archivos que no entraron al runtime."""
     import sqlite3
 
     marca = ".copia-incompleta"
@@ -1032,9 +1117,41 @@ def _copiar_sesion_sin_caer(
             f"copia-sesion:{enc.id}:{sitio}:{enc.generacion}",
         )
 
+    def perder_sesion() -> None:
+        """Apartar la sesión deja el id de sesión apuntando a archivos que ya
+        no están: el turno tiene que arrancar sin ella y no construirla con
+        `--session`."""
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "sesion_perdida",
+                "data": {"rol": enc.rol or "responsable", "hora": hora},
+            },
+            f"sesion-apartada:{enc.id}:{enc.generacion}",
+        )
+
     if sitio == "restaurar" and (origen / marca).exists():
         anotar("la sesión guardada quedó incompleta (falló una copia anterior); el turno arranca sin ella")
+        perder_sesion()
         return
+    if sitio == "restaurar" and origen.is_dir():
+        dana = _causa_sesion_danada(origen)
+        if dana:
+            try:
+                apartado = _apartar_sesion(origen, hora)
+            except OSError as exc:
+                anotar(
+                    f"la sesión guardada está dañada ({dana}) y no se pudo apartar: "
+                    f"{type(exc).__name__}: {exc}; el turno arranca sin ella"
+                )
+                perder_sesion()
+                return
+            anotar(
+                f"la sesión guardada está dañada ({dana}); se apartó como "
+                f"{apartado.name} y el turno arranca sin ella"
+            )
+            perder_sesion()
+            return
     try:
         if sitio == "guardar":
             if (destino / marca).exists():
@@ -1054,7 +1171,114 @@ def _copiar_sesion_sin_caer(
                 (destino / marca).touch()
         except OSError:
             pass
-        anotar(f"{type(exc).__name__}: {exc}; se reintenta en el siguiente turno")
+        if sitio == "restaurar":
+            # La copia no entró al runtime: el id de sesión apunta a archivos
+            # que no están, y reanudar cae con "session not found", cuyo
+            # camino de recuperación borra el almacén (aunque esté sano, por
+            # ejemplo detrás de un candado pasajero). El turno arranca sin
+            # sesión, igual que con la sesión apartada por dañada.
+            perder_sesion()
+            anotar(
+                f"{type(exc).__name__}: {exc}; la sesión no entró al runtime "
+                "y el turno arranca sin ella"
+            )
+        else:
+            anotar(f"{type(exc).__name__}: {exc}; se reintenta en el siguiente turno")
+
+
+def _reflejar_sesion(registro, enc: Encargo) -> Encargo:
+    """Refleja en el encargo del turno los campos de sesión que el registro acaba
+    de cambiar. Sin esto, el lanzamiento de este mismo turno construye
+    `--session` con el id de una sesión cuyos archivos se acaban de apartar:
+    el modo y el argv del lanzador se leen del encargo local, no del registro."""
+    fresco = registro.fold(enc.id) or enc
+    return replace(
+        enc,
+        sesion_responsable=fresco.sesion_responsable,
+        viva_responsable=fresco.viva_responsable,
+        epoca_responsable=fresco.epoca_responsable,
+        sesion_revisor=fresco.sesion_revisor,
+        viva_revisor=fresco.viva_revisor,
+        epoca_revisor=fresco.epoca_revisor,
+    )
+
+
+def _incorporar_falla_sesion_local(
+    registro: Registro,
+    enc: Encargo,
+    agente: str,
+    mensaje: str,
+    hora: str,
+    almacen_previa: bool,
+) -> Encargo:
+    """Un fallo local de la sesión (la base SQLite del agente en su runtime) no es
+    una falla del proveedor: no hay `proveedor_fallo`, no espera el ciclo de 30 min
+    y no marca al proveedor.
+
+    Si este intento restauró de un almacén previo, ese almacén se aparta (renombre
+    con fecha), `sesion_perdida` limpia el id de sesión para que el siguiente turno
+    reconstruya, y el encargo queda listo para que el barrido relance enseguida sin
+    sesión. El intento siguiente corre sin almacén previo: si vuelve a fallar igual,
+    lo que rompe es el entorno, y la espera dice la causa real, nunca "proveedor"."""
+    almacen = _almacen_sesion(registro.base, enc.id, enc.rol)
+    if almacen_previa and almacen.is_dir():
+        dana = _causa_sesion_danada(almacen)
+        por_que = f" ({dana})" if dana else ""
+        try:
+            apartado = _apartar_sesion(almacen, hora)
+        except OSError as exc:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": (
+                            f"falla local de la sesión{por_que} y no se pudo apartar: "
+                            f"{type(exc).__name__}: {exc}"
+                        )[:2000]
+                    },
+                },
+                f"falla-sesion-local:{enc.id}:{enc.generacion}",
+            )
+        else:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": (
+                            f"falla local de la sesión{por_que}; se apartó "
+                            f"{apartado.name}; se reintenta enseguida sin sesión"
+                        )[:2000]
+                    },
+                },
+                f"falla-sesion-local:{enc.id}:{enc.generacion}",
+            )
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "sesion_perdida",
+                    "data": {"rol": enc.rol or "responsable", "hora": hora},
+                },
+                f"sesion-apartada:{enc.id}:{enc.generacion}",
+            )
+            return registro.fold(enc.id)
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "falla_sesion_local",
+            "data": {"agente": agente, "causa": mensaje[:300], "hora": hora},
+        },
+        f"falla-sesion-local-causa:{enc.id}:{enc.generacion}",
+    )
+    marcar_espera(
+        registro,
+        enc.id,
+        f"falla local de la sesión, no del proveedor: {mensaje[:200]}",
+        _reanuda_en(1800),
+        hora,
+    )
+    return registro.fold(enc.id)
 
 
 def _leer_proc(directorio: Path) -> dict | None:
@@ -3708,6 +3932,7 @@ def _incorporar(
         )
         agente = spec.get("agente") or enc.agente or "externo"
         token_intento = str(spec.get("token") or "")
+        almacen_previa = _almacen_sesion(registro.base, enc.id, enc.rol).is_dir()
         if token_intento:
             _copiar_sesion_sin_caer(
                 registro,
@@ -3727,6 +3952,12 @@ def _incorporar(
                 "renovando el acceso de Kimi para continuar la misma sesion",
                 hora,
                 hora,
+            )
+            _marcar_incorporado(registro, enc, hora)
+            return registro.fold(enc.id)
+        if outcome.get("fallo_runtime") and es_sesion_local(str(outcome["fallo_runtime"])):
+            enc = _incorporar_falla_sesion_local(
+                registro, enc, agente, str(outcome["fallo_runtime"]), hora, almacen_previa
             )
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
@@ -9446,6 +9677,7 @@ def _lanzar_uno_en_turno(
         _copiar_sesion_sin_caer(
             registro, enc, _almacen_sesion(registro.base, enc.id, rol), runtime, "restaurar", hora
         )
+        enc = _reflejar_sesion(registro, enc)
         if enc.entrega.nivel != "terminado" and rol == "responsable":
             causa_repo = _asegurar_repo(enc, espacio, registro, hora)
             if causa_repo:

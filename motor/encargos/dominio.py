@@ -47,6 +47,10 @@ _ENTRE_REINTENTOS = (
     "reserva",
     "reserva_cerrada",
     "contexto_entrega",
+    # La recuperación de la copia de sesión no es un suceso distinto entre
+    # esperas: perder la sesión acompaña a las notas de copia, que tampoco
+    # cortan la serie.
+    "sesion_perdida",
 )
 
 _NOTA_COPIA_SESION = "copia de sesión "
@@ -1799,6 +1803,10 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 )
             ),
         )
+    if kind == "falla_sesion_local":
+        # Un fallo local de la sesión no pausa al proveedor: la causa real queda
+        # dicha en el encargo y la espera la pone el evento `espera` que sigue.
+        return replace(e, causa=str(d.get("causa") or ""))
     if kind == "orden":
         return _orden(e, d, hora)
     if kind == "ajuste":

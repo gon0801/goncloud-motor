@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import stat
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 
@@ -66,6 +68,97 @@ def _igual(origen: Path, destino: Path) -> bool:
                 return True
 
 
+_CABECERA_SQLITE = b"SQLite format 3\x00"
+_LATERALES_SQLITE = ("-wal", "-shm", "-journal")
+_TOPE_BLOQUEO_SQLITE = 5.0
+
+
+def es_sqlite(ruta: Path) -> bool:
+    """True si el archivo empieza con la cabecera de una base SQLite. Por cabecera
+    y no por extensión: la misma regla cubre `opencode.db`, `session-index.db` y
+    `state_*.sqlite`, y un `.db` que no es base se copia como un archivo cualquiera."""
+    try:
+        with open(ruta, "rb") as f:
+            return f.read(len(_CABECERA_SQLITE)) == _CABECERA_SQLITE
+    except OSError:
+        return False
+
+
+def _copiar_sqlite(origen: Path, destino: Path) -> None:
+    """Deja en `destino` una sola base consistente con `origen`, copiada con
+    `VACUUM INTO`: la foto incluye lo que el WAL ya comprometió sin checkpoint,
+    y los laterales `-wal`/`-shm` no viajan ni quedan viejos en el destino (un
+    `-wal` de otra generación junto a una base nueva fue lo que dañó la sesión
+    guardada en la PC).
+
+    `VACUUM INTO` es una sentencia ordinaria: un candado ajeno sale acotado por
+    el timeout de la conexión, mientras que `Connection.backup` reintenta el
+    bloqueo por dentro sin límite y sin atender el busy handler, y llegó a
+    detener el barrido entero por una base bloqueada.
+
+    La publicación es por etapas: los laterales del destino se apartan a un
+    nombre único y la base nueva reemplaza al destino solo si todo terminó; si
+    apartar o publicar falla, los laterales apartados vuelven y el conjunto
+    anterior queda como estaba (borrarlos antes de publicar, como se hacía,
+    dejaba un `-wal` viejo junto a la base nueva o la base vieja sin su `-wal`).
+
+    La copia se hace dentro de un directorio privado 0700 junto al destino:
+    `VACUUM INTO` exige crear el archivo destino, y así el temporal nace sin
+    que otros usuarios locales puedan leer el contenido de la sesión, sin la
+    ventana que dejaba crearlo directo en el árbol del destino con la umask."""
+    privado = destino.with_name(f".{destino.name}.{uuid.uuid4().hex}.copia")
+    temporal = privado / destino.name
+    try:
+        privado.mkdir(mode=0o700)
+        try:
+            privado.chmod(0o700)
+        except OSError:
+            pass
+        with closing(
+            sqlite3.connect(origen, timeout=_TOPE_BLOQUEO_SQLITE)
+        ) as fuente:
+            fuente.execute("VACUUM INTO ?", (str(temporal),))
+        try:
+            temporal.chmod(0o600)
+        except OSError:
+            pass
+        try:
+            shutil.copymode(origen, temporal)
+        except OSError:
+            pass
+    except BaseException:
+        _quitar(privado)
+        raise
+    apartados: list[tuple[Path, Path]] = []
+    try:
+        for sufijo in _LATERALES_SQLITE:
+            lateral = destino.with_name(destino.name + sufijo)
+            if not lateral.exists():
+                continue
+            apartado = lateral.with_name(f".{lateral.name}.{uuid.uuid4().hex}.viejo")
+            os.replace(lateral, apartado)
+            apartados.append((lateral, apartado))
+        _escribible(destino)
+        os.replace(temporal, destino)
+    except BaseException:
+        for lateral, apartado in reversed(apartados):
+            try:
+                os.replace(apartado, lateral)
+            except OSError:
+                pass
+        _quitar(privado)
+        raise
+    for _lateral, apartado in apartados:
+        try:
+            apartado.unlink()
+        except OSError:
+            pass
+    try:
+        privado.rmdir()
+    except OSError:
+        pass
+
+
 def _archivo(origen: Path, destino: Path) -> None:
     if destino.is_symlink() or destino.is_dir():
         _quitar(destino)
@@ -84,12 +177,17 @@ def _archivo(origen: Path, destino: Path) -> None:
             temporal.unlink()
 
 
-def copiar_arbol(origen: Path, destino: Path, omitir: tuple[str, ...] = ()) -> None:
+def copiar_arbol(
+    origen: Path, destino: Path, omitir: tuple[str, ...] = (), sqlite_consistente: bool = False
+) -> None:
     """Deja en `destino` lo que hay en `origen`. Los enlaces se copian como enlaces.
 
     Sigue con los demás archivos si uno falla y lo informa al final en un `shutil.Error`,
     igual que `copytree`.
-    """
+
+    Con `sqlite_consistente`, cada base SQLite se copia con el API de respaldo en una
+    sola base y sus laterales `-wal`/`-shm`/`-journal` no se copian: una base en WAL
+    llevada archivo por archivo no es una foto consistente."""
     errores: list[tuple[str, str, str]] = []
     destino.mkdir(parents=True, exist_ok=True)
     def ilegible(exc: OSError) -> None:
@@ -113,15 +211,19 @@ def copiar_arbol(origen: Path, destino: Path, omitir: tuple[str, ...] = ()) -> N
         for nombre in [*archivos, *enlaces]:
             if nombre in omitir:
                 continue
+            if sqlite_consistente and nombre.endswith(_LATERALES_SQLITE):
+                continue
             fuente, meta = Path(raiz) / nombre, aqui / nombre
             try:
                 if fuente.is_symlink():
                     if meta.is_symlink() or meta.exists():
                         _quitar(meta)
                     os.symlink(os.readlink(fuente), meta, target_is_directory=fuente.is_dir())
+                elif sqlite_consistente and es_sqlite(fuente):
+                    _copiar_sqlite(fuente, meta)
                 else:
                     _archivo(fuente, meta)
-            except OSError as exc:
+            except (OSError, sqlite3.Error) as exc:
                 errores.append((str(fuente), str(meta), str(exc)))
     if errores:
         raise shutil.Error(errores)
