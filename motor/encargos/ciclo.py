@@ -4340,7 +4340,8 @@ def _incorporar_responsable(
             except ValueError:
                 candidata = None
             if candidata and _observacion_corresponde(
-                candidata, version.firma, esperadas, procedimiento
+                candidata, version.firma, esperadas, procedimiento,
+                enc.fase_activa,
             ):
                 observacion = candidata
         if observacion is None:
