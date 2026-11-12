@@ -7430,10 +7430,12 @@ def _causa_tuberia_en_llano(caidas, texto: str) -> str:
 
 def _aviso_ci_en_llano(
     clase: str, caidas, texto: str, reabrir: bool = True,
-    sin_relanzamiento: bool = False,
+    sin_relanzamiento: bool = False, recomendar_merge: bool = True,
 ) -> str:
     """El aviso para alguien que no es técnico: qué falló, de quién es y qué
-    conviene hacer. Sin nombres de archivo, hashes ni el log literal."""
+    conviene hacer. Sin nombres de archivo, hashes ni el log literal. La
+    recomendación de integrar se calla cuando otro fragmento del aviso
+    registra un bloqueante de DeepSeek que sigue contando."""
     que = " y ".join(
         dict.fromkeys(_job_en_llano(str(c.get("nombre") or "")) for c in caidas)
     ) or "una comprobación automática"
@@ -7449,18 +7451,22 @@ def _aviso_ci_en_llano(
         )
     if clase == "tuberia":
         causa = _causa_tuberia_en_llano(caidas, texto)
+        cola = (
+            " El cambio ya está revisado; recomiendo mergear y abrir un "
+            "encargo para arreglar la tubería."
+            if recomendar_merge
+            else ""
+        )
         if sin_relanzamiento:
             # No hubo segundo intento (no se pudo identificar el run): no se
             # sabe si era pasajero, así que no se anuncia problema fijo.
             return (
                 f"La tubería falló: {causa}. No se pudo relanzar sola para ver "
-                "si era pasajero. El cambio ya está revisado; recomiendo "
-                "mergear y abrir un encargo para arreglar la tubería."
+                "si era pasajero." + cola
             )
         return (
-            f"La tubería de este proyecto tiene un problema fijo: {causa}. "
-            "El cambio ya está revisado; recomiendo mergear y abrir un encargo "
-            "para arreglar la tubería."
+            f"La tubería de este proyecto tiene un problema fijo: {causa}."
+            + cola
         )
     return (
         f"Falló {que} y no puedo saber con certeza si es del código del cambio "
@@ -7484,6 +7490,16 @@ def _descartes_de_deepseek(enc: Encargo, sha: str) -> tuple[set[str], set[str]]:
     return vigentes, caducados
 
 
+def _deepseek_sin_cubrir(enc: Encargo) -> list:
+    """Los bloqueantes de DeepSeek que siguen contando: abiertos sin un
+    descarte que cubra el SHA vigente. Mientras haya alguno, nada del aviso
+    puede recomendar integrar el cambio."""
+    vigentes, _caducados = _descartes_de_deepseek(enc, enc.pr_sha)
+    return [
+        h for h in bloqueantes_abiertos(enc, "deepseek") if h.id not in vigentes
+    ]
+
+
 def _aviso_deepseek_en_llano(registro: Registro, enc: Encargo) -> str:
     """El aviso llano de un rojo del check deepseek-sin-abiertos.
 
@@ -7497,7 +7513,7 @@ def _aviso_deepseek_en_llano(registro: Registro, enc: Encargo) -> str:
     sha = enc.pr_sha
     abiertos = bloqueantes_abiertos(enc, "deepseek")
     vigentes, caducados = _descartes_de_deepseek(enc, sha)
-    vivos = [h for h in abiertos if h.id not in vigentes]
+    vivos = _deepseek_sin_cubrir(enc)
     frases: list[str] = []
     if abiertos:
         partes = []
@@ -8084,6 +8100,9 @@ def _revisar_ci_del_pr(
             otras.append(c)
     if en_deepseek:
         partes_aviso = []
+        # Mientras DeepSeek mantenga un bloqueante que sigue contando,
+        # ninguna parte del aviso recomienda integrar el cambio.
+        puede_integrar = not _deepseek_sin_cubrir(registro.fold(enc.id) or enc)
         if otras:
             valores_otras = {clases[str(c.get("nombre") or "")] for c in otras}
             clase_otras = (
@@ -8096,6 +8115,7 @@ def _revisar_ci_del_pr(
             partes_aviso.append(_aviso_ci_en_llano(
                 clase_otras, otras, texto_aviso, reabrir=reabrir,
                 sin_relanzamiento=not reintentado,
+                recomendar_merge=puede_integrar,
             ))
         partes_aviso.append(_aviso_deepseek_en_llano(registro, enc))
         aviso = " ".join(partes_aviso)
