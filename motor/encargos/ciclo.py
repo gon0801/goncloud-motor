@@ -1838,6 +1838,14 @@ def _barrer_encargos(
                         f"autoridad-cerrado:{enc.id}:{type(exc).__name__}",
                     )
                     enc = registro.fold(enc.id) or enc
+            # El cierre de la última fase independiente puede adelantarse al
+            # trabajador de un reintento autorizado. Su recibo aplicado ya
+            # prueba el despliegue: se concilia antes de dar el cierre por
+            # terminado, en vez de perderlo en la rama de encargos cerrados.
+            if enc is not None and enc.estado == "terminado" and not parada:
+                enc = _conciliar_despliegues_aplicados(
+                    registro, enc, _espacio(registro.base, enc.id), hora
+                )
             # La fase activa puede no tener PR (por ejemplo, cerró sin
             # cambios) y una fase anterior sí. El sondeo de DeepSeek recorre
             # las fases, así que no depende de `enc.pr_numero`.
@@ -10144,6 +10152,64 @@ def _espera_despliegue_sin_autoridad(
     )
 
 
+def _registrar_fase_desplegada(
+    registro, enc: Encargo, fase, resultado: dict, hora: str
+) -> Encargo:
+    """Registra el hecho de una receta aplicada y resuelve su impedimento.
+
+    Idempotente por fase y SHA: conciliar el mismo recibo en un barrido
+    posterior o al cerrar otra fase no duplica el hecho.
+    """
+    from . import despliegue
+
+    clases = despliegue.clases_de_despliegue_de_fase(registro, enc.id, fase)
+    try:
+        registro.anotar(
+            enc.id,
+            {"kind": "fase_desplegada", "data": {
+                "fase": fase.id, "sha": fase.integrado_sha,
+                "recibo": str(resultado.get("recibo") or ""), "hora": hora,
+            }},
+            f"fase-desplegada:{enc.id}:{fase.id}:{fase.integrado_sha}",
+        )
+    except TransicionIlegal:
+        pass
+    fresco = registro.fold(enc.id) or enc
+    for impedimento in list(fresco.impedimentos):
+        if impedimento.clase in clases:
+            _resolver_impedimento(registro, fresco, impedimento.clase, hora)
+            fresco = registro.fold(enc.id) or fresco
+    return registro.fold(enc.id) or enc
+
+
+def _conciliar_despliegues_aplicados(
+    registro, enc: Encargo, espacio: Path, hora: str
+) -> Encargo:
+    """Concilia un reintento ya empezado cuyo recibo salió 0.
+
+    La fase bloqueada puede tener el recibo aplicado y aun sin conciliar cuando
+    otra fase cierra el encargo. El reintento lo autorizó una orden mientras el
+    encargo estaba abierto: un éxito no se pierde por el cierre. No relanza ni
+    abre intentos; solo registra el hecho de la receta aplicada.
+    """
+    from . import despliegue
+
+    for fase in enc.fases:
+        if (fase.estado != "bloqueada" or not fase.requiere_despliegue
+                or not fase.integrado_sha or fase.desplegado_recibo):
+            continue
+        recibo = despliegue.recibo_de(registro, enc, fase)
+        if recibo is None or recibo.get("estado") != "aplicado":
+            continue
+        resultado = despliegue.iniciar(
+            registro, enc, espacio, despliegue.politica_de_fase(fase), hora,
+            fase=fase,
+        )
+        if resultado.get("estado") == "aplicado":
+            enc = _registrar_fase_desplegada(registro, enc, fase, resultado, hora)
+    return enc
+
+
 def _reintentar_despliegue_pendiente(
     registro, enc: Encargo, hora: str, espacio: Path | None = None
 ) -> Encargo:
@@ -10188,26 +10254,9 @@ def _reintentar_despliegue_pendiente(
             fase=fase,
         )
         if resultado.get("estado") == "aplicado":
-            clases = despliegue.clases_de_despliegue_de_fase(
-                registro, enc.id, fase
+            return _registrar_fase_desplegada(
+                registro, enc, fase, resultado, hora
             )
-            try:
-                registro.anotar(
-                    enc.id,
-                    {"kind": "fase_desplegada", "data": {
-                        "fase": fase.id, "sha": fase.integrado_sha,
-                        "recibo": str(resultado.get("recibo") or ""), "hora": hora,
-                    }},
-                    f"fase-desplegada:{enc.id}:{fase.id}:{fase.integrado_sha}",
-                )
-            except TransicionIlegal:
-                pass
-            fresco = registro.fold(enc.id) or enc
-            for impedimento in list(fresco.impedimentos):
-                if impedimento.clase in clases:
-                    _resolver_impedimento(registro, fresco, impedimento.clase, hora)
-                    fresco = registro.fold(enc.id) or fresco
-            return registro.fold(enc.id) or enc
         return registro.fold(enc.id) or enc
     return enc
 
