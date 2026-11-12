@@ -47,19 +47,25 @@ class BancoReintento(unittest.TestCase):
             "boot_id": plataforma.boot_id(), "job": "",
         }
 
-    def banco(self, retry: str):
+    def banco(self, retry: str, con_dependiente: bool = False):
         """K desplegada, A bloqueada por su despliegue y B en curso."""
         reg, ident, espacio, destino, integrar = self.despliegue
         self._guion(retry)
         corridas = destino / "corridas"
-        reg.anotar(ident, {"kind": "fases", "data": {"fases": [
+        fases = [
             {"id": "K", "resultado": "K lista", "requiere_despliegue": True,
              "despliegue": RECETA},
             {"id": "A", "resultado": "A lista", "requiere": ["K"],
              "requiere_despliegue": True, "despliegue": RECETA},
             {"id": "B", "resultado": "B lista", "requiere": ["K"],
              "requiere_despliegue": True, "despliegue": RECETA},
-        ]}}, "fases")
+        ]
+        if con_dependiente:
+            fases.append(
+                {"id": "C", "resultado": "C lista", "requiere": ["A"],
+                 "requiere_despliegue": True, "despliegue": RECETA}
+            )
+        reg.anotar(ident, {"kind": "fases", "data": {"fases": fases}}, "fases")
 
         def sweeps(horas):
             with mock.patch.object(
@@ -458,6 +464,40 @@ class ElCierreDeOtraFaseConciliaElReintento(BancoReintento):
             [ev for ev in reg.eventos(ident) if ev["kind"] == "fase_desplegada"],
             "el reintento exitoso de A se perdió al cerrar B",
         )
+
+    def test_la_fase_que_dependia_de_a_recibe_su_turno_al_conciliar(self):
+        reg, ident, espacio, destino, integrar, corridas, sweeps = self.banco(
+            "exit 0", con_dependiente=True
+        )
+        (espacio / "cambio-b.txt").write_text("cambio de B", encoding="utf-8")
+        integrar()
+        base.paso(self.despliegue)
+        reg.anotar(
+            ident, {"kind": "plazo", "data": {"hora": base.HORA}}, "plazo-b-fin"
+        )
+        self.orden(reg, ident, "reintento-a-con-dependiente")
+        sweeps(("2026-11-05T12:01:00+00:00",))
+        a = next(f for f in reg.fold(ident).fases if f.id == "A")
+        self.assertEqual(a.estado, "bloqueada")
+        b = next(f for f in reg.fold(ident).fases if f.id == "B")
+        reg.anotar(ident, {"kind": "comprobacion", "data": {
+            "clase": "cierre_comprobado",
+            "evidencia": "recibo aplicado de B: " + str(b.desplegado_recibo),
+            "hora": base.HORA,
+        }}, "cierre-B-dependiente")
+        self.assertEqual(reg.fold(ident).estado, "terminado")
+        sweeps((
+            "2026-11-05T12:02:00+00:00", "2026-11-05T12:03:00+00:00",
+        ))
+        final = reg.fold(ident)
+        a = next(f for f in final.fases if f.id == "A")
+        c = next(f for f in final.fases if f.id == "C")
+        self.assertEqual(a.estado, "preparada")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        self.assertEqual(final.estado, "recibido")
+        self.assertEqual(final.fase_activa, "C")
+        self.assertTrue(final.intentos_nuevos)
+        self.assertNotEqual(c.estado, "bloqueada")
 
 
 if __name__ == "__main__":
