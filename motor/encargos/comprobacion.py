@@ -350,7 +350,12 @@ def _es_script_en_posicion(palabra: str) -> bool:
     return bool(_rutas_internas_del_argv([palabra]))
 
 
-_SEPARADORES_DE_COMANDO = (";", "&&", "||", "|", "&", "(", ")", "\n", "\r")
+_SEPARADORES_DE_COMANDO = ";|&()\n\r"
+
+
+def _es_separador_de_comando(palabra: str) -> bool:
+    """Un separador o una corrida de separadores (`;;`, `&&`, `\n\n`)."""
+    return bool(palabra) and all(c in _SEPARADORES_DE_COMANDO for c in palabra)
 
 
 def _scripts_en_palabras(palabras: list[str]) -> set[str]:
@@ -358,7 +363,7 @@ def _scripts_en_palabras(palabras: list[str]) -> set[str]:
     salida: set[str] = set()
     inicio = 0
     for indice, palabra in enumerate(palabras + [";"]):
-        if palabra in _SEPARADORES_DE_COMANDO:
+        if _es_separador_de_comando(palabra):
             salida |= _scripts_del_comando(palabras[inicio:indice])
             inicio = indice + 1
     return salida
