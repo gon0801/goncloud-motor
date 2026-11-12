@@ -131,7 +131,13 @@ def _registrar_ocupado(directorio: Path, hora: str, proceso: str) -> dict:
         intentos = int(previo.get("intentos", 0))
         continuadas = int(previo.get("continuadas", 0))
     except (OSError, ValueError, KeyError, TypeError):
-        desde, intentos, continuadas = hora, 0, 0
+        desde, intentos = hora, 0
+        # El libro arranca con la fotografía del recibo: una orden anterior
+        # al despliegue ya no reabre la ventana al agotarse.
+        try:
+            continuadas = int(leer_json(directorio / "recibo.json").get("continuadas", 0))
+        except (OSError, ValueError, KeyError, TypeError):
+            continuadas = 0
     libro = {
         "intentos": intentos + 1,
         "desde": desde,

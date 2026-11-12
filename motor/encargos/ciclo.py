@@ -2005,6 +2005,17 @@ def _barrer_encargos(
                 f"intento-cerrado:{encargo_id}:{enc.proc.pid}:{enc.proc.inicio}",
             )
             enc = registro.fold(encargo_id) or enc
+        # Una orden de continuar sin consumir reabre la fase bloqueada cuyo
+        # despliegue quedó pendiente, antes de trabajar o lanzar otra cosa.
+        if (
+            enc is not None
+            and not parada
+            and enc.via != "directa"
+            and enc.estado in ("recibido", "ejecutando")
+            and enc.proc is None
+            and not enc.reserva
+        ):
+            enc = _reintentar_despliegue_pendiente(registro, enc, hora)
         resultado_paso: Resultado = NecesitaAgente(
             str(getattr(enc, "rol", "") or "responsable")
         )
@@ -2899,16 +2910,19 @@ def _cubre(espacio: Path, antiguo: str, nuevo: str) -> bool:
 
 
 def _fase_de_la_causa(enc: Encargo, clase: str):
-    """La fase bloqueada cuya causa es la del impedimento de despliegue.
+    """La fase cuya causa de bloqueo es la del impedimento de despliegue.
 
     La dueña comparte la huella de la causa (la misma cadena normalizada que
-    produjo la clase) o la contiene; sin dueña, la verificación conserva el
-    criterio conservador de exigir todo el frente cubierto."""
+    produjo la clase) o la contiene, esté la fase bloqueada o reabierta; sin
+    dueña, la verificación conserva el criterio conservador de exigir todo el
+    frente cubierto."""
     if not clase.startswith("despliegue:"):
         return None
     huella = clase.removeprefix("despliegue:")
+    # El bloqueo_causa identifica a la fase dueña esté bloqueada o reabierta:
+    # tras fase_reactivada la causa sigue siendo de su fase.
     for f in enc.fases:
-        if f.estado != "bloqueada" or not f.bloqueo_causa:
+        if not f.bloqueo_causa:
             continue
         bloqueo = " ".join(f.bloqueo_causa.split())
         if hashlib.sha256(bloqueo.encode()).hexdigest()[:12] == huella:
@@ -2918,7 +2932,7 @@ def _fase_de_la_causa(enc: Encargo, clase: str):
     )
     if causa:
         for f in enc.fases:
-            if f.estado != "bloqueada" or not f.bloqueo_causa:
+            if not f.bloqueo_causa:
                 continue
             bloqueo = " ".join(f.bloqueo_causa.split())
             if bloqueo == causa or bloqueo in causa or causa in bloqueo:
