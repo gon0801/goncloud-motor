@@ -9,6 +9,7 @@ no se cobra a esta.
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 import types
 import unittest
@@ -289,6 +290,111 @@ class LasComprobacionesDeUnaFaseNoSeCobranAOtra(BancoReintento):
             comprobacion.leer_declaradas(interno),
             "las declaradas de B se cobran a la fase A",
         )
+
+
+class LaEntregaPosteriorConsumeLaOrden(unittest.TestCase):
+    def _registro(self, posterior: str) -> mock.Mock:
+        registro = mock.Mock()
+        registro.eventos.return_value = [
+            {"kind": "orden", "data": {"accion": "continuar"}},
+            {"kind": "entrega_externa", "data": {
+                "paso": "desplegado", "sha": posterior,
+            }},
+        ]
+        return registro
+
+    def test_un_despliegue_que_contiene_el_sha_consume_la_orden(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            espacio = Path(tmp)
+            base.git(espacio, "init", "-q", "-b", "main")
+            (espacio / "a.txt").write_text("a", encoding="utf-8")
+            base.git(espacio, "add", "a.txt")
+            base.git(
+                espacio, "-c", "user.name=t", "-c", "user.email=t@local",
+                "commit", "-qm", "A",
+            )
+            integrado = base.git(espacio, "rev-parse", "HEAD")
+            (espacio / "b.txt").write_text("b", encoding="utf-8")
+            base.git(espacio, "add", "b.txt")
+            base.git(
+                espacio, "-c", "user.name=t", "-c", "user.email=t@local",
+                "commit", "-qm", "posterior",
+            )
+            posterior = base.git(espacio, "rev-parse", "HEAD")
+            enc = types.SimpleNamespace(id="encargo")
+            fase = types.SimpleNamespace(integrado_sha=integrado, bloqueo_causa="")
+            self.assertFalse(ejecutor.orden_pendiente(
+                self._registro(posterior), enc, fase, 0, espacio,
+            ))
+
+    def test_un_despliegue_que_no_contiene_el_sha_deja_la_orden_pendiente(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            espacio = Path(tmp)
+            base.git(espacio, "init", "-q", "-b", "main")
+            (espacio / "a.txt").write_text("a", encoding="utf-8")
+            base.git(espacio, "add", "a.txt")
+            base.git(
+                espacio, "-c", "user.name=t", "-c", "user.email=t@local",
+                "commit", "-qm", "A",
+            )
+            integrado = base.git(espacio, "rev-parse", "HEAD")
+            base.git(espacio, "checkout", "-q", "--orphan", "otra")
+            (espacio / "c.txt").write_text("c", encoding="utf-8")
+            base.git(espacio, "add", "c.txt")
+            base.git(
+                espacio, "-c", "user.name=t", "-c", "user.email=t@local",
+                "commit", "-qm", "ajena",
+            )
+            ajena = base.git(espacio, "rev-parse", "HEAD")
+            enc = types.SimpleNamespace(id="encargo")
+            fase = types.SimpleNamespace(integrado_sha=integrado, bloqueo_causa="")
+            self.assertTrue(ejecutor.orden_pendiente(
+                self._registro(ajena), enc, fase, 0, espacio,
+            ))
+
+
+class LaObservacionDeOtraFaseNoAlimentaLaRevision(BancoReintento):
+    def test_el_alcance_usa_la_observacion_de_la_fase_activa(self):
+        from motor.encargos.dominio import alcance_de
+
+        reg, ident, espacio, destino, integrar, corridas, sweeps = self.banco(
+            "exit 0"
+        )
+        enc = reg.fold(ident)
+        self.assertEqual(enc.fase_activa, "B")
+        version = alcance_de(enc).version
+        reg.anotar(ident, {"kind": "observacion_supervisor", "data": {
+            "version": version, "fase": "B",
+            "ejecuciones": [{"objetivo": "de B"}],
+        }}, "observacion-b")
+        reg.anotar(ident, {"kind": "observacion_supervisor", "data": {
+            "version": version, "fase": "A",
+            "ejecuciones": [{"objetivo": "de A"}],
+        }}, "observacion-a")
+        alcance = ciclo._alcance_para_revision(
+            reg, reg.fold(ident), espacio, reg.base / "ejecucion" / ident,
+        )
+        self.assertEqual(alcance.observacion["ejecuciones"], [{"objetivo": "de B"}])
+
+
+class LasDeclaradasBorradasNoResucitan(unittest.TestCase):
+    def test_borrar_lo_declarado_no_resucita_al_volver_a_la_fase(self):
+        from motor.encargos import comprobacion
+
+        with tempfile.TemporaryDirectory() as tmp:
+            interno = Path(tmp) / ".interno"
+            interno.mkdir()
+            (interno / "comprobaciones.json").write_text(json.dumps({
+                "comprobaciones": [{"objetivo": "de A", "argv": ["true"], "tope": 5}],
+            }), encoding="utf-8")
+            comprobacion.guardar_declaradas_de_fase(interno, "A")
+            (interno / "comprobaciones.json").unlink()
+            comprobacion.sincronizar_declaradas_de_fase(interno, "B")
+            comprobacion.sincronizar_declaradas_de_fase(interno, "A")
+            self.assertIsNone(
+                comprobacion.leer_declaradas(interno),
+                "las declaradas borradas en A resucitaron al volver a A",
+            )
 
 
 if __name__ == "__main__":
