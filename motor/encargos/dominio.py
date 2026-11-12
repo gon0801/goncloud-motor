@@ -2239,6 +2239,10 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
                 ultimo_hecho=hecho,
             )
+        if e.estado == "esperando_reintento" and e.motivo and e.reanuda_en:
+            # Resolver otra causa no borra una espera explícita: su motivo y su
+            # plazo siguen; el barrido la retoma en `reanuda_en`.
+            return replace(e, ultimo_hecho=hecho, hora=hora or e.hora)
         return replace(e, motivo="", siguiente="seguir el mismo encargo", ultimo_hecho=hecho)
     if kind == "entrega_externa":
         return _entrega_externa(e, d, hora)
@@ -2471,6 +2475,8 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         return _bloqueo_fase(e, d, hora)
     if kind == "fase_reactivada":
         return _fase_reactivada(e, d, hora)
+    if kind == "fase_desplegada":
+        return _fase_desplegada(e, d, hora)
     if kind == "arbol":
         return _arbol(e, d, hora)
     if kind == "comprobacion":
@@ -3791,6 +3797,67 @@ def _fase_reactivada(e: Encargo, d: dict, hora: str) -> Encargo:
             escrituras=e.autoridad,
             devuelto_con=(),
             hora=hora or e.hora,
+        )
+    )
+
+
+def _fase_desplegada(e: Encargo, d: dict, hora: str) -> Encargo:
+    """El reintento de una receta pendiente desplegó el SHA de una fase.
+
+    El producto ya estaba aprobado e integrado, así que la fase queda lista sin
+    abrir un intento del responsable ni del revisor. No mueve la fase activa:
+    la que estaba en curso conserva su turno y su estado.
+    """
+    pedida = str(d.get("fase") or "")
+    fase = next((f for f in e.fases if f.id == pedida), None)
+    if fase is None:
+        raise TransicionIlegal(f"la fase {pedida or '?'} no existe")
+    recibo = str(d.get("recibo") or "")
+    sha = str(d.get("sha") or "")
+    if not recibo or not sha:
+        raise TransicionIlegal("una fase desplegada necesita recibo y SHA")
+    if sha != fase.integrado_sha:
+        raise TransicionIlegal("el despliegue no corresponde al SHA integrado de la fase")
+    if fase.estado == "preparada":
+        return e
+    evidencia = f"despliegue del SHA {sha[:12]} verificado con salida 0"
+    lista = replace(
+        fase,
+        estado="preparada",
+        desplegado_recibo=recibo,
+        ultimo_paso_entrega="desplegado",
+        evidencia=evidencia,
+        bloqueo_causa="",
+        pendientes=(),
+    )
+    firma = fase.producto.firma if fase.producto else ""
+    fases = _preparar_con_entrada(e.fases, lista, firma)
+    resultado = replace(
+        e,
+        fases=fases,
+        ultimo_hecho=f"la fase {fase.id} quedó desplegada",
+        hora=hora or e.hora,
+    )
+    if e.estado != "terminado":
+        return resultado
+    # El cierre pudo adelantarse al reintento: la fase recuperada alcanza a sus
+    # dependientes. Se reabre el turno de la siguiente sin tocar la aprobada ni
+    # abrir intentos sobre ella.
+    disponible = _fase_disponible(fases)
+    if disponible is None:
+        return resultado
+    return sesiones_de_fase_nueva(
+        replace(
+            resultado,
+            estado="recibido",
+            fase_activa=disponible.id,
+            rol="responsable",
+            estrategia="investigar",
+            motivo="",
+            siguiente=f"trabajar la fase {disponible.id}",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            devuelto_con=(),
         )
     )
 
