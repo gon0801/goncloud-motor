@@ -217,29 +217,26 @@ class LaOrdenAtendidaNoReabre(BancoReintento):
 
 
 class ElImpedimentoDeOtraFaseNoSeResuelve(unittest.TestCase):
-    def test_un_prefijo_corto_no_atribuye_el_impedimento(self):
+    def test_el_prefijo_corto_no_atribuye_y_el_truncado_largo_si(self):
+        causa = "x" * 200
         registro = mock.Mock()
-        registro.eventos.return_value = [{
-            "kind": "impedimento",
-            "data": {"clase": "despliegue:" + "a" * 12, "causa": "fallo por red"},
-        }]
-        fase = types.SimpleNamespace(id="A", bloqueo_causa="despliegue: fallo")
+        registro.eventos.return_value = [
+            {"kind": "impedimento", "data": {
+                "clase": "despliegue:" + "a" * 12, "causa": "fallo por red",
+            }},
+            {"kind": "impedimento", "data": {
+                "clase": "despliegue:" + "b" * 12, "causa": causa + " y más",
+            }},
+        ]
+        corta = types.SimpleNamespace(id="A", bloqueo_causa="despliegue: fallo")
         self.assertEqual(
-            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", fase),
+            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", corta),
             set(),
             "un prefijo corto atribuyó a A el impedimento de otra fase",
         )
-
-    def test_la_causa_truncada_larga_si_atribuye_el_impedimento(self):
-        causa = "x" * 200
-        registro = mock.Mock()
-        registro.eventos.return_value = [{
-            "kind": "impedimento",
-            "data": {"clase": "despliegue:" + "b" * 12, "causa": causa + " y más"},
-        }]
-        fase = types.SimpleNamespace(id="A", bloqueo_causa="despliegue: " + causa)
+        larga = types.SimpleNamespace(id="C", bloqueo_causa="despliegue: " + causa)
         self.assertEqual(
-            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", fase),
+            ejecutor.clases_de_despliegue_de_fase(registro, "encargo", larga),
             {"despliegue:" + "b" * 12},
         )
 
@@ -303,7 +300,7 @@ class LaEntregaPosteriorConsumeLaOrden(unittest.TestCase):
         ]
         return registro
 
-    def test_un_despliegue_que_contiene_el_sha_consume_la_orden(self):
+    def test_un_despliegue_consume_la_orden_solo_si_contiene_el_sha(self):
         with tempfile.TemporaryDirectory() as tmp:
             espacio = Path(tmp)
             base.git(espacio, "init", "-q", "-b", "main")
@@ -321,23 +318,6 @@ class LaEntregaPosteriorConsumeLaOrden(unittest.TestCase):
                 "commit", "-qm", "posterior",
             )
             posterior = base.git(espacio, "rev-parse", "HEAD")
-            enc = types.SimpleNamespace(id="encargo")
-            fase = types.SimpleNamespace(integrado_sha=integrado, bloqueo_causa="")
-            self.assertFalse(ejecutor.orden_pendiente(
-                self._registro(posterior), enc, fase, 0, espacio,
-            ))
-
-    def test_un_despliegue_que_no_contiene_el_sha_deja_la_orden_pendiente(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            espacio = Path(tmp)
-            base.git(espacio, "init", "-q", "-b", "main")
-            (espacio / "a.txt").write_text("a", encoding="utf-8")
-            base.git(espacio, "add", "a.txt")
-            base.git(
-                espacio, "-c", "user.name=t", "-c", "user.email=t@local",
-                "commit", "-qm", "A",
-            )
-            integrado = base.git(espacio, "rev-parse", "HEAD")
             base.git(espacio, "checkout", "-q", "--orphan", "otra")
             (espacio / "c.txt").write_text("c", encoding="utf-8")
             base.git(espacio, "add", "c.txt")
@@ -348,6 +328,9 @@ class LaEntregaPosteriorConsumeLaOrden(unittest.TestCase):
             ajena = base.git(espacio, "rev-parse", "HEAD")
             enc = types.SimpleNamespace(id="encargo")
             fase = types.SimpleNamespace(integrado_sha=integrado, bloqueo_causa="")
+            self.assertFalse(ejecutor.orden_pendiente(
+                self._registro(posterior), enc, fase, 0, espacio,
+            ))
             self.assertTrue(ejecutor.orden_pendiente(
                 self._registro(ajena), enc, fase, 0, espacio,
             ))
@@ -394,6 +377,26 @@ class LasDeclaradasBorradasNoResucitan(unittest.TestCase):
             self.assertIsNone(
                 comprobacion.leer_declaradas(interno),
                 "las declaradas borradas en A resucitaron al volver a A",
+            )
+
+    def test_borrar_lo_declarado_en_la_misma_fase_borra_su_copia(self):
+        from motor.encargos import comprobacion
+
+        with tempfile.TemporaryDirectory() as tmp:
+            interno = Path(tmp) / ".interno"
+            interno.mkdir()
+            (interno / "comprobaciones.json").write_text(json.dumps({
+                "comprobaciones": [{"objetivo": "de A", "argv": ["true"], "tope": 5}],
+            }), encoding="utf-8")
+            comprobacion.guardar_declaradas_de_fase(interno, "A")
+            (interno / "comprobaciones.json").unlink()
+            comprobacion.sincronizar_declaradas_de_fase(interno, "A")
+            self.assertIsNone(comprobacion.leer_declaradas(interno))
+            comprobacion.sincronizar_declaradas_de_fase(interno, "B")
+            comprobacion.sincronizar_declaradas_de_fase(interno, "A")
+            self.assertIsNone(
+                comprobacion.leer_declaradas(interno),
+                "la copia borrada en A resucitó al volver a A",
             )
 
 
