@@ -33,10 +33,36 @@ TOPE_S = 900
 # destino estaba ocupado (guardas, candados o un proceso vivo al recrear), no
 # que el código esté mal. Solo cuenta como ocupado con la reversa sin cambios.
 SALIDA_OCUPADO = 75
+# La salida real de la receta acredita la ocupación nombrándola o nombrando
+# el proceso/guarda que la retiene ("app.cli vivo", la línea de guardas con
+# "running" vivo). Una negación ("no ocupado") o un fallo propio declarado
+# ("error de datos", "verificación fallida") la desacredita: eso queda fallido.
+OCUPACION = re.compile(
+    r"ocupad[oa]s?\b|\b(?:vivo|viva|running|live|activo|activa|en\s+curso|en\s+ejecuci[óo]n)\b",
+    re.IGNORECASE,
+)
+SIN_OCUPACION = re.compile(
+    r"\bno\s+(?:\S+\s+)?ocupad|\b(?:error|fallo|fall[óo]|falla|fallida|fallido)\b",
+    re.IGNORECASE,
+)
 # Con KILL_ON_JOB_CLOSE el Job de Windows tarda un instante en desaparecer; mientras
 # tanto OpenJobObject puede responder acceso denegado. Eso no es un grupo vivo: se
 # reintenta la observación hasta que el sistema termine de cerrarlo.
 ESPERA_GRUPO_S = 5.0
+
+
+def _continuaciones(registro, encargo_id: str) -> int:
+    """Órdenes de continuar aplicadas al encargo: cada una autoriza una
+    corrida nueva de un despliegue que quedó fallido."""
+    try:
+        eventos = registro.eventos(encargo_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+    return sum(
+        1 for ev in eventos
+        if isinstance(ev, dict) and ev.get("kind") == "orden"
+        and isinstance(ev.get("data"), dict) and ev["data"].get("accion") == "continuar"
+    )
 
 
 def _guardar(path: Path, datos: dict) -> None:
@@ -57,16 +83,16 @@ def _grupo_ausente(pid: int, inicio: str, job: str) -> bool:
 def _reporte_de_receta(paso: dict) -> str:
     """La línea con la que la receta declaró ocupado el destino.
 
-    El contrato de la receta: el 75 solo significa ocupado si la propia
-    salida lo declara. El diagnóstico puede venir por stderr aunque el
-    resumen de preparación vaya por stdout, y no tiene por qué ser la
-    última línea impresa.
+    Sin marcador impuesto: cuenta la salida que acredita la ocupación o el
+    proceso o guarda que la retiene, venga por stdout o stderr. Una salida
+    que niega la ocupación ("no ocupado") o declara un fallo propio ("error
+    de datos") no acredita ocupación alguna: el 75 queda fallido.
     """
     diagnosticos = [
         linea.strip()[:200]
         for clave in ("stdout", "stderr")
         for linea in str(paso.get(clave, "")).splitlines()
-        if linea.strip() and "ocupado" in linea.lower()
+        if linea.strip() and OCUPACION.search(linea) and not SIN_OCUPACION.search(linea)
     ]
     return diagnosticos[-1] if diagnosticos else ""
 
@@ -271,6 +297,7 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
     directorio = registro.base / "despliegues" / clave
     recibo = directorio / "recibo.json"
     esperar_cierre = False
+    continuar_hasta = 0
     with turno(registro.base):
         if recibo.exists():
             try:
@@ -290,8 +317,13 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
                         return {**datos, "recibo": str(recibo)}
                 if not esperar_cierre:
                     pasos = datos.get("pasos", [])
+                    ordenes = _continuaciones(registro, enc.id)
+                    consumidas = int(datos.get("continuadas") or 0)
+                    fallido_reintentable = (
+                        datos["estado"] == "fallido" and ordenes > consumidas
+                    )
                     reintentable = (
-                        datos["estado"] in ("esperando", "ocupado")
+                        (datos["estado"] in ("esperando", "ocupado") or fallido_reintentable)
                         and enc.estado in ("recibido", "ejecutando")
                         and (
                             all(p.get("enviado") is False for p in pasos)
@@ -302,6 +334,10 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
                     )
                     if not reintentable:
                         return {**datos, "recibo": str(recibo)}
+                    # Cada orden de continuar autoriza una corrida: se anota la
+                    # consumida en el recibo nuevo para que una espera o un
+                    # fallo repetido no reensayen solos.
+                    continuar_hasta = ordenes if fallido_reintentable else consumidas
                     previo = directorio / ("preparacion-" + str(time.time_ns()) + ".json")
                     _guardar(previo, datos)
             except (OSError, ValueError, KeyError) as exc:
@@ -311,7 +347,8 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
                 return {"estado": "esperando", "motivo": "despliegue sin autorización vigente"}
             directorio.mkdir(parents=True, exist_ok=True)
             datos = {**identidad, "estado": "ejecutando", "hora": hora, "pasos": [],
-                     "motivo": "ejecutando receta de despliegue del SHA integrado"}
+                     "motivo": "ejecutando receta de despliegue del SHA integrado",
+                     "continuadas": continuar_hasta}
             _guardar(recibo, datos)
             _atomico(directorio.parent / (enc.id + ".actual"), clave)
             _guardar(directorio / "pedido.json", {

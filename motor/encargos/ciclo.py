@@ -2749,6 +2749,8 @@ def _es_verificable(clase: str) -> bool:
 
 
 def _evidencia_de(clase: str) -> str:
+    if clase.startswith("despliegue:"):
+        return "un despliegue aplicado ya contiene el código de la fase pendiente"
     if clase.startswith("inspeccion:"):
         return "hay un juicio corregido o una inspección distinta sin consumir"
     if clase.startswith("juicio:"):
@@ -2884,6 +2886,54 @@ def _juicio_reparado(
     return True
 
 
+def _cubre(espacio: Path, antiguo: str, nuevo: str) -> bool:
+    """El SHA integrado `antiguo` ya está contenido en el SHA desplegado `nuevo`."""
+    if not (re.fullmatch(r"[0-9a-f]{40,64}", antiguo or "")
+            and re.fullmatch(r"[0-9a-f]{40,64}", nuevo or "")):
+        return False
+    corrido = subprocess.run(
+        ["git", "-C", str(espacio), "merge-base", "--is-ancestor", antiguo, nuevo],
+        stdin=subprocess.DEVNULL, capture_output=True, timeout=120,
+    )
+    return corrido.returncode == 0
+
+
+def _despliegue_cubierto(enc: Encargo, espacio: Path) -> bool | None:
+    """La causa de despliegue deja de sostenerse cuando producción ya contiene
+    el código de cada fase con despliegue pendiente: un despliegue posterior
+    cuyo SHA lo incluye, o el reintento que la desplegó. La prueba es el
+    recibo aplicado y la relación de commits, no una promesa."""
+    from . import despliegue
+
+    if not enc.fases:
+        return None
+    pendientes = [
+        f.integrado_sha for f in enc.fases
+        if f.requiere_despliegue and f.integrado_sha and not f.desplegado_recibo
+    ]
+    if not pendientes:
+        return True
+    aplicados = []
+    for f in enc.fases:
+        if not f.desplegado_recibo or not f.integrado_sha:
+            continue
+        identidad = {
+            "encargo": enc.id, "fase": f.id, "repo": enc.entrega.repo,
+            "sha": f.integrado_sha,
+            "receta": {k: getattr(f, k) for k in ("desplegar", "checklist", "rollback")},
+        }
+        try:
+            datos = despliegue._leer(Path(f.desplegado_recibo), identidad)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+        if datos.get("estado") == "aplicado":
+            aplicados.append(str(datos.get("sha") or f.integrado_sha))
+    return all(
+        any(_cubre(espacio, antiguo, nuevo) for nuevo in aplicados)
+        for antiguo in pendientes
+    )
+
+
 def _verificar_impedimento(
     clase: str, enc: Encargo, espacio: Path, base: Path, registro=None
 ) -> bool | None:
@@ -2910,6 +2960,8 @@ def _verificar_impedimento(
         )
     if clase.startswith("juicio:"):
         return _juicio_reparado(clase, enc, registro, espacio)
+    if clase.startswith("despliegue:"):
+        return _despliegue_cubierto(enc, espacio)
     interno = interno_de(espacio)
     try:
         if clase == "comprobaciones.json":

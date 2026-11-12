@@ -1395,20 +1395,27 @@ def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Enc
 
 def fuente_de_impedimento(clase: str) -> str:
     # La entrega tiene su propia fuente: una máquina sin llave o sin gh puede
-    # producir el producto; solo no puede publicarlo.
+    # producir el producto; solo no puede publicarlo. El despliegue también:
+    # frenó una fase concreta y condena a sus dependientes (bloqueo_fase +
+    # dependencia_bloqueada); no impide producir las fases independientes.
     if clase.startswith("entrega:"):
         return "entrega"
+    if clase.startswith("despliegue:"):
+        return "despliegue"
     return "entorno" if clase == "entorno" else "instrumento"
 
 
 def impedimento_bloquea_trabajo(e: Encargo) -> bool:
-    """Solo una causa que impide producir frena el turno. La de entrega deja
-    trabajar: se atiende al publicar o al entregar con pendientes, aunque el
-    aviso siga visible en el registro."""
+    """Solo una causa que impide producir frena el turno. Las de entrega y de
+    despliegue dejan trabajar: se atienden al publicar o en su propia fase y
+    sus dependientes, aunque el aviso siga visible en el registro."""
     if not e.impedimentos:
-        return bool(e.impedimento) and not str(e.impedimento).startswith("entrega:")
+        return bool(e.impedimento) and not str(e.impedimento).startswith(
+            ("entrega:", "despliegue:")
+        )
     return any(
-        fuente_de_impedimento(i.clase) != "entrega" for i in e.impedimentos
+        fuente_de_impedimento(i.clase) in ("instrumento", "entorno")
+        for i in e.impedimentos
     )
 
 
