@@ -172,6 +172,77 @@ def firma_producto(espacio: Path) -> str:
     return version_producto(espacio).firma
 
 
+def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
+    """Rutas de `.interno/` nombradas en un argv, relativas a `.interno`.
+
+    Un token puede ser la ruta relativa (`.interno/script.sh`), absoluta o de
+    Windows. Se busca el componente `.interno` y se conserva la cola, que es la
+    misma ruta dentro del interno del espacio.
+    """
+    vistos: set[str] = set()
+    salida: list[str] = []
+    for token in argv:
+        partes = [p for p in str(token).replace("\\", "/").split("/") if p]
+        if INTERNO not in partes:
+            continue
+        cola = "/".join(partes[partes.index(INTERNO) + 1:])
+        if cola and cola not in vistos:
+            vistos.add(cola)
+            salida.append(cola)
+    return sorted(salida)
+
+
+def _huella_de_lo_interno(interno: Path, relativo: str) -> str:
+    """Contenido de una ruta de `.interno/`: archivo, arbol o ausencia."""
+    path = interno / relativo
+    if path.is_file():
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    if path.is_dir():
+        arbol = hashlib.sha256()
+        for hijo in sorted(path.rglob("*")):
+            if not hijo.is_file():
+                continue
+            arbol.update(hijo.relative_to(path).as_posix().encode())
+            arbol.update(b"\0")
+            arbol.update(hashlib.sha256(hijo.read_bytes()).hexdigest().encode())
+            arbol.update(b"\0")
+        return "arbol:" + arbol.hexdigest()
+    return "ausente"
+
+
+def huella_procedimiento(
+    espacio: Path, declaradas: list[dict] | None
+) -> str | None:
+    """Identidad de lo que ejecutan las comprobaciones declaradas.
+
+    La version del producto excluye `.interno/` y el argv no cambia cuando
+    cambia el script que vive ahi. Esta huella suma el contenido de los
+    archivos de `.interno/` que aparecen en el argv: lo unico interno que la
+    comprobacion puede ejecutar. `None` si ninguna declarada nombra
+    `.interno/`: entonces la version y el argv ya identifican la observacion.
+    """
+    if not declaradas:
+        return None
+    interno = interno_de(espacio)
+    partes = []
+    for comprobacion in declaradas:
+        argv = comprobacion.get("argv") if isinstance(comprobacion, dict) else None
+        if not isinstance(argv, list):
+            continue
+        rutas = _rutas_internas_del_argv([str(x) for x in argv])
+        if not rutas:
+            continue
+        partes.append(
+            {
+                "argv": [str(x) for x in argv],
+                "archivos": [[r, _huella_de_lo_interno(interno, r)] for r in rutas],
+            }
+        )
+    if not partes:
+        return None
+    return digest({"procedimiento": partes})
+
+
 def leer_declaradas(interno: Path) -> list[dict] | None:
     """Comprobaciones declaradas en `.interno/comprobaciones.json`.
 
@@ -312,6 +383,7 @@ def _ejecutar_declaradas(
     comandos: list[dict], espacio: Path, directorio: Path, contenedor: Path
 ) -> dict:
     procedimiento = {"comprobaciones": comandos}
+    huella = huella_procedimiento(espacio, comandos)
     ejecuciones = []
     for i, c in enumerate(comandos):
         tope = _tope_de(c)
@@ -437,6 +509,7 @@ def _ejecutar_declaradas(
     firma = firma_producto(espacio)
     datos = {
         "comprobaciones": procedimiento["comprobaciones"],
+        "procedimiento": huella,
         "ejecuciones": ejecuciones,
         "historial_runtime": runtime,
         "producto": firma,
