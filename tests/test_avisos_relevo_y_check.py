@@ -1,6 +1,6 @@
 """Los avisos dicen lo que pasó: el relevo agotado no promete un cambio de
-modelo que no hubo, y el rojo del check deepseek-sin-abiertos nombra los
-hallazgos abiertos y su descarte.
+modelo ni una continuación que no hubo, y el rojo del check deepseek-sin-abiertos
+nombra los hallazgos con la vigencia real de su descarte.
 
 Caso real (enc_fd795218afa32147, PR #442): el aviso final dijo "Se cambió de
 modelo" cuando el relevo no encontró otro modelo autorizado, y el aviso del
@@ -57,9 +57,13 @@ def tearDownModule():
         parche.stop()
 
 
-def _encargo_con_relevo(reg: Registro, modelos: tuple[tuple[str, str], ...]):
+def _encargo_con_relevo(
+    reg: Registro, modelos: tuple[tuple[str, str], ...], agotado: bool = False
+):
     """Un encargo con un escalón de relevo y los intentos que de verdad
-    corrieron: `modelos` son pares (agente, modelo) en orden."""
+    corrieron: `modelos` son pares (agente, modelo) en orden. `agotado` deja
+    el pendiente con el productor real (`marcar_relevo_agotado`), que es el
+    único registro que demuestra que el relevo se agotó."""
     ident = recibir(
         reg, "termina el pedido", "relevo-aviso", HORA,
         repo="ejemplo/repo", base_rama="main",
@@ -108,7 +112,10 @@ def _encargo_con_relevo(reg: Registro, modelos: tuple[tuple[str, str], ...]):
         },
         "relevo-1",
     )
-    return reg.fold(ident)
+    enc = reg.fold(ident)
+    if agotado:
+        enc = ciclo.marcar_relevo_agotado(reg, enc, "responsable", HORA)
+    return enc
 
 
 class ElAvisoDelRelevo(unittest.TestCase):
@@ -116,19 +123,43 @@ class ElAvisoDelRelevo(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")
             try:
-                enc = _encargo_con_relevo(reg, (("opencode", GLM),))
+                enc = _encargo_con_relevo(
+                    reg, (("opencode", GLM),), agotado=True
+                )
 
                 cuerpo = directores._cuerpo_de_cierre(enc)
                 self.assertNotIn("Se cambió de modelo", cuerpo)
                 self.assertIn("no había otro modelo autorizado para seguir", cuerpo)
+                self.assertNotIn("continuó con el mismo modelo", cuerpo)
 
                 hechos = directores.hechos_de_avance(enc)
                 relevo = [h for h in hechos if h["tipo"] == "relevo"]
                 self.assertEqual(len(relevo), 1)
                 self.assertNotIn("Cambié de modelo", relevo[0]["texto"])
+                self.assertNotIn("continué con el mismo", relevo[0]["texto"])
                 self.assertIn(
                     "no había otro modelo autorizado para seguir",
                     relevo[0]["texto"],
+                )
+            finally:
+                reg.close()
+
+    def test_un_relevo_pendiente_no_afirma_agotamiento_ni_continuacion(self):
+        # El escalón existe y el mismo modelo volvió a correr: sin el pendiente
+        # del agotamiento, el aviso no dice que se agotó ni que continuó nada.
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            try:
+                enc = _encargo_con_relevo(reg, (("opencode", GLM),))
+
+                cuerpo = directores._cuerpo_de_cierre(enc)
+                self.assertNotIn("Se cambió de modelo", cuerpo)
+                self.assertNotIn("no había otro modelo autorizado", cuerpo)
+                self.assertNotIn("continuó con el mismo modelo", cuerpo)
+
+                hechos = directores.hechos_de_avance(enc)
+                self.assertEqual(
+                    [h for h in hechos if h["tipo"] == "relevo"], []
                 )
             finally:
                 reg.close()
@@ -162,12 +193,15 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
     fase quedó bloqueada (terminado con entrega parcial), DeepSeek mantiene F3
     abierto en el registro y el check deepseek-sin-abiertos salió rojo."""
 
-    def _con_f3_abierto(self, tmp, clave: str, descarte: bool):
+    def _con_f3_abierto(
+        self, tmp, clave: str, descarte_sha: str = "",
+        f3_resuelto: bool = False, corridas: dict | None = None,
+        logs: dict | None = None,
+    ):
         config = {
-            "corridas": {"deepseek-sin-abiertos": "failure"},
-            "logs_job": {
-                "deepseek-sin-abiertos": "estado=falla nota=hay hallazgos"
-            },
+            "corridas": corridas or {"deepseek-sin-abiertos": "failure"},
+            "logs_job": logs
+            or {"deepseek-sin-abiertos": "estado=falla nota=hay hallazgos"},
         }
         fake = Path(tmp) / "fake"
         fake.mkdir()
@@ -200,18 +234,38 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
             },
             "revision-ds-ensayo",
         )
-        if descarte:
+        if descarte_sha:
             reg.anotar(
                 ident,
                 {
                     "kind": "excepcion",
                     "data": {
-                        "tipo": "descarte", "sha": SHA_ENSAYO, "id": "F3",
+                        "tipo": "descarte", "sha": descarte_sha, "id": "F3",
                         "motivo": "el candado del repo da sin errores nuevos",
                         "hora": HORA,
                     },
                 },
                 "excepcion-descarte-ensayo",
+            )
+        if f3_resuelto:
+            # El cierre del descarte real: la revisión independiente deja F3
+            # resuelto con su evidencia, y el hallazgo deja de contar.
+            resuelto = dict(
+                F3, estado="resuelto",
+                cierre_evidencia="el candado del repo da sin errores nuevos",
+            )
+            reg.anotar(
+                ident,
+                {
+                    "kind": "revision",
+                    "data": {
+                        "fase": "", "veredicto": "aprobado", "revisor": "glm",
+                        "origen": "independiente", "version": "",
+                        "alcance": "completa", "cubre": [],
+                        "hallazgos": [resuelto], "hora": HORA,
+                    },
+                },
+                "revision-ind-ensayo",
             )
         reg.anotar(
             ident,
@@ -242,7 +296,7 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
 
     def test_un_rojo_del_check_nombra_el_hallazgo_abierto(self):
         with tempfile.TemporaryDirectory() as tmp:
-            reg, gh, e = self._con_f3_abierto(tmp, "check-ds-abierto", False)
+            reg, gh, e = self._con_f3_abierto(tmp, "check-ds-abierto")
             texto = self._aviso(reg, gh, e)
             self.assertNotIn("no puedo saber con certeza", texto)
             self.assertIn("F3", texto)
@@ -250,12 +304,73 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
             self.assertIn("nadie lo ha descartado", texto)
 
     def test_un_rojo_del_check_dice_si_el_revisor_lo_descarto(self):
+        # El descarte vive en el SHA vigente: el aviso lo dice, no lo niega.
         with tempfile.TemporaryDirectory() as tmp:
-            reg, gh, e = self._con_f3_abierto(tmp, "check-ds-descartado", True)
+            reg, gh, e = self._con_f3_abierto(
+                tmp, "check-ds-descartado", descarte_sha=SHA_ENSAYO
+            )
             texto = self._aviso(reg, gh, e)
             self.assertNotIn("no puedo saber con certeza", texto)
             self.assertIn("F3", texto)
             self.assertIn("el revisor independiente lo descartó", texto)
+            self.assertIn("cubre el SHA vigente", texto)
+            self.assertNotIn("no cubre el SHA vigente", texto)
+
+    def test_un_descarte_en_otro_sha_queda_caducado(self):
+        # El descarte anterior vive en otro SHA y el hallazgo sigue abierto:
+        # el aviso lo dice en llano y el trabajo vuelve al responsable.
+        with tempfile.TemporaryDirectory() as tmp:
+            reg, gh, e = self._con_f3_abierto(
+                tmp, "check-ds-caducado", descarte_sha="b" * 40
+            )
+            texto = self._aviso(reg, gh, e)
+            self.assertIn("lo descartó antes, pero el descarte no cubre el SHA vigente", texto)
+            self.assertNotIn("cubre el SHA vigente. El descarte", texto)
+            self.assertIn(
+                "El trabajo vuelve al responsable a corregirlos", texto
+            )
+
+    def test_un_rojo_del_check_nombra_el_descartado_vigente(self):
+        # F3 ya no cuenta (el descarte real lo dejó resuelto con evidencia):
+        # el aviso lo nombra con id, título y vigencia, no dice que no hay
+        # hallazgos.
+        with tempfile.TemporaryDirectory() as tmp:
+            reg, gh, e = self._con_f3_abierto(
+                tmp, "check-ds-resuelto", descarte_sha=SHA_ENSAYO,
+                f3_resuelto=True,
+            )
+            texto = self._aviso(reg, gh, e)
+            self.assertNotIn("no puedo saber con certeza", texto)
+            self.assertIn("F3", texto)
+            self.assertIn(TITULO_F3, texto)
+            self.assertIn("el revisor independiente lo descartó", texto)
+            self.assertIn("cubre el SHA vigente", texto)
+            self.assertNotIn(
+                "no tiene hallazgos de DeepSeek abiertos", texto
+            )
+
+    def test_checks_mixtos_conservan_el_detalle_de_deepseek(self):
+        # El check de DeepSeek y otro check en rojo: el aviso conserva el
+        # detalle conocido de DeepSeek (F3 y su título) junto a la explicación
+        # del otro check, sin caer en el "no puedo saber" global.
+        with tempfile.TemporaryDirectory() as tmp:
+            reg, gh, e = self._con_f3_abierto(
+                tmp,
+                "check-ds-mixto",
+                corridas={
+                    "deepseek-sin-abiertos": "failure",
+                    "otro-check": "failure",
+                },
+                logs={
+                    "deepseek-sin-abiertos": "estado=falla nota=hay hallazgos",
+                    "otro-check": "fallo sin clasificar",
+                },
+            )
+            texto = self._aviso(reg, gh, e)
+            self.assertIn("F3", texto)
+            self.assertIn(TITULO_F3, texto)
+            self.assertIn("DeepSeek mantiene estos hallazgos", texto)
+            self.assertIn("«otro-check»", texto)
 
 
 if __name__ == "__main__":

@@ -1110,20 +1110,23 @@ class AvisosInformanSinPedirNada(unittest.TestCase):
             reg = Registro(Path(tmp) / "base")
             self.addCleanup(reg.close)
             recibo = ciclo.recibir(reg, "x", "aviso", ahora_iso())
-            enc = reg.fold(recibo["encargo"])
+            enc = ciclo.marcar_relevo_agotado(
+                reg, reg.fold(recibo["encargo"]), "responsable", ahora_iso()
+            )
         enc = replace(
             enc,
             escalones=(("responsable", "aviso", "relevo"),),
-            pendientes_entrega=("un bloqueo abierto",),
             herramientas_no_disponibles=("comprobacion",),
         )
         texto = _cuerpo_de_cierre(enc)
         self.assertIn("no hace falta que hagas nada", texto)
         self.assertIn("herramienta no estaba disponible", texto)
-        # El escalón de relevo corrió sin otro modelo autorizado: el cierre no
-        # promete un cambio de modelo que no hubo.
+        # El relevo se agotó de verdad (el pendiente del productor real lo
+        # registra): el cierre lo dice en llano y no promete un cambio de
+        # modelo que no hubo, ni una continuación que no pasó.
         self.assertNotIn("Se cambió de modelo", texto)
         self.assertIn("no había otro modelo autorizado para seguir", texto)
+        self.assertNotIn("continuó con el mismo modelo", texto)
         self.assertNotIn("Necesito tu decisión", texto)
 
 if __name__ == "__main__":
