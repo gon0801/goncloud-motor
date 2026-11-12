@@ -90,7 +90,8 @@ def recibo_final(reg, limite=30):
             datos = json.loads(recibos[0].read_text())
             pasos = datos.get("pasos", [])
             if (
-                datos.get("estado") in ("aplicado", "fallido", "incierto", "esperando")
+                datos.get("estado")
+                in ("aplicado", "fallido", "incierto", "esperando", "ocupado")
                 and all("codigo" in p for p in pasos)
             ):
                 return datos
@@ -168,11 +169,14 @@ class DespliegueReal(unittest.TestCase):
         assert len((destino / "pasos").read_text().splitlines()) == 2
         assert not (reg.base / "destino").exists()
 
-    def comprobar_falla(self, script, codigo):
+    def comprobar_falla(self, script, codigo, reversa=0):
         despliegue = self.despliegue
         reg, _, espacio, destino, integrar = despliegue
         with (espacio / script).open("a") as f:
             f.write(f"exit {codigo}\n")
+        if reversa:
+            with (espacio / "r.sh").open("a") as f:
+                f.write(f"exit {reversa}\n")
         sha = integrar()
         final = paso(despliegue)
         assert final.nivel_alcanzado == "integrado"
@@ -192,8 +196,82 @@ class DespliegueReal(unittest.TestCase):
     def test_falla_checklist_3_ejecuta_rollback_y_nunca_sella(self):
         self.comprobar_falla("c.sh", 3)
 
-    def test_falla_despliegue_75_ejecuta_rollback_y_nunca_sella(self):
-        self.comprobar_falla("d.sh", 75)
+    def test_75_con_reversa_que_falla_sigue_como_hoy(self):  # no-roja-en-base: caracteriza el camino que la fase conserva; la base ya deja fallido con impedimento
+        self.comprobar_falla("d.sh", 75, reversa=1)
+
+    def test_75_con_reversa_limpia_espera_y_reintenta_solo(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        corridas = destino / "corridas"
+        (espacio / "d.sh").write_text(
+            f'printf "desplegar:%s\\n" "$MOTOR_SHA" >> "{destino.as_posix()}/pasos"\n'
+            f'n=$(cat "{corridas.as_posix()}" 2>/dev/null || echo 0); '
+            f'n=$((n+1)); printf "%s" "$n" > "{corridas.as_posix()}"; '
+            f'if [ "$n" -ge 2 ]; then exit 0; fi; '
+            f'printf "app.cli vivo\\n"; exit 75\n'
+        )
+        sha = integrar()
+        self._ejecucion_en_proceso()
+        ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
+        assert [p["codigo"] for p in datos["pasos"]] == [75, 0]
+        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        assert enc.estado == "esperando_reintento", (enc.estado, enc.motivo)
+        assert (
+            "se reintenta solo a las 2026-11-05T12:15:00Z" in enc.motivo
+        ), enc.motivo
+        assert "se trabó" not in enc.motivo
+        assert "app.cli vivo" in enc.motivo
+        assert not enc.impedimentos, enc.impedimentos
+        assert relevos_de(enc, "responsable") == 0
+        assert relevos_de(enc, "revisor") == 0
+        libro = next((reg.base / "despliegues").rglob("ocupado.json"))
+        datos = json.loads(libro.read_text())
+        assert datos["intentos"] == 1
+        # Vence la espera: el desenlace ocupado queda en el pasado y el mismo
+        # SHA se reintenta solo hasta llegar a desplegado.
+        datos["ultimo"] = "2026-11-05T11:00:00Z"
+        libro.write_text(json.dumps(datos))
+        final = enc
+        for _ in range(10):
+            final = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+            if final.nivel_alcanzado == "desplegado":
+                break
+        assert final.nivel_alcanzado == "desplegado", (
+            final.nivel_alcanzado,
+            final.motivo,
+        )
+        assert (destino / "pasos").read_text().splitlines() == [
+            f"desplegar:{sha}", f"rollback:{sha}", f"desplegar:{sha}", f"checklist:{sha}",
+        ]
+
+    def test_75_repetido_agota_la_ventana_y_deja_impedimento_en_llano(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        (espacio / "d.sh").write_text('printf "app.cli vivo (spapi-diario)\\n"; exit 75\n')
+        integrar()
+        self._ejecucion_en_proceso()
+        for _ in range(6):
+            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+            libro = next((reg.base / "despliegues").rglob("ocupado.json"), None)
+            if libro is not None:
+                datos = json.loads(libro.read_text())
+                # Un día entero en el pasado: vence hasta la espera más larga
+                # de la ventana creciente y deja que el siguiente reintento
+                # corra en el mismo minuto de la prueba.
+                datos["ultimo"] = "2026-11-04T11:00:00Z"
+                libro.write_text(json.dumps(datos))
+        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        assert enc.nivel_alcanzado == "integrado"
+        causa = enc.impedimentos[-1].causa if enc.impedimentos else ""
+        assert "ocupado 6 veces" in causa, causa
+        assert "app.cli vivo (spapi-diario)" in causa
+        assert "revisar el recibo" not in causa
+        assert relevos_de(enc, "responsable") == 0
+        assert relevos_de(enc, "revisor") == 0
+        datos = recibo_final(reg)
+        assert datos["estado"] == "ocupado", datos
 
     def test_sin_capacidad_espera_sin_consumir_revisor(self):  # no-roja-en-base: la base ya espera sin consumir revisor; la prueba migra del contador a relevos_de
         despliegue = self.despliegue
