@@ -83,7 +83,15 @@ la causa concreta y no consume otro turno de revisión.
 
 Un trabajador separado ejecuta la receta, con un tope de 900 segundos por script.
 Si falla el despliegue o el checklist, incluido código 75 o timeout, intenta
-`rollback` con el mismo SHA. No marca la fase como desplegada. Una parada corta
+`rollback` con el mismo SHA. No marca la fase como desplegada. Una salida 75 del
+despliegue con reversa sin cambios significa que el destino estaba ocupado
+(guardas, candados o un proceso vivo al recrear): no es un fallo del código. El
+recibo queda en estado `ocupado`, no se anota impedimento ni se relanza al
+responsable ni al revisor, y el motor reintenta el mismo SHA solo, con espera
+creciente (15, 30, 60, 120 y 240 minutos desde el último desenlace ocupado) hasta
+agotar una ventana de ~8 horas; al agotarla deja el impedimento en llano con el
+proceso que reportó la receta. Un 75 con reversa que falla, o cualquier otra
+salida distinta de 0, sigue el camino fallido con impedimento. Una parada corta
 el comando en curso y permite completar la reversa; el supervisor no confirma
 `detenido` mientras siga vivo ese trabajador o su comando. Si se detuvo antes
 de enviar el primer script, continuar puede reintentar sin repetir producción.

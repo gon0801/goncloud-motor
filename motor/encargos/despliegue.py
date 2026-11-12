@@ -29,6 +29,10 @@ from motor.encargos.frontera import _atomico, _autorizado_ahora, autoridad_ausen
 from motor.encargos.registro import Registro
 
 TOPE_S = 900
+# El contrato de la receta (docs/encargos-despliegue.md): 75 significa que el
+# destino estaba ocupado (guardas, candados o un proceso vivo al recrear), no
+# que el código esté mal. Solo cuenta como ocupado con la reversa sin cambios.
+SALIDA_OCUPADO = 75
 # Con KILL_ON_JOB_CLOSE el Job de Windows tarda un instante en desaparecer; mientras
 # tanto OpenJobObject puede responder acceso denegado. Eso no es un grupo vivo: se
 # reintenta la observación hasta que el sistema termine de cerrarlo.
@@ -48,6 +52,50 @@ def _grupo_ausente(pid: int, inicio: str, job: str) -> bool:
         if time.monotonic() >= fin:
             return False
         time.sleep(0.05)
+
+
+def _reporte_de_receta(pasos: list) -> str:
+    """La última línea que la receta reportó antes de declararse ocupada."""
+    for clave in ("stdout", "stderr"):
+        lineas = [
+            linea.strip()
+            for linea in str(pasos[0].get(clave, "")).splitlines()
+            if linea.strip()
+        ]
+        if lineas:
+            return lineas[-1][:200]
+    return ""
+
+
+def _registrar_ocupado(directorio: Path, hora: str, proceso: str) -> dict:
+    """El libro de intentos ocupados sobrevive al reseteo del recibo en cada reintento."""
+    try:
+        previo = leer_json(directorio / "ocupado.json")
+        desde = str(previo.get("desde") or hora)
+        intentos = int(previo.get("intentos", 0))
+    except (OSError, ValueError, KeyError, TypeError):
+        desde, intentos = hora, 0
+    libro = {
+        "intentos": intentos + 1,
+        "desde": desde,
+        "ultimo": hora,
+        "proceso": proceso,
+    }
+    _guardar(directorio / "ocupado.json", libro)
+    return libro
+
+
+def ocupado(registro, enc) -> dict:
+    """El libro de intentos ocupados de la operación vigente; vacío si no hay."""
+    puntero = registro.base / "despliegues" / (enc.id + ".actual")
+    try:
+        clave = leer_texto(puntero).strip()
+        libro = leer_json(puntero.parent / clave / "ocupado.json")
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    if not isinstance(libro.get("intentos"), int) or libro["intentos"] < 1:
+        return {}
+    return libro
 
 
 def _correr(reg, encargo: str, paso: str, script: str, copia: Path, env: dict, bash: str):
@@ -237,10 +285,15 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
                     else:
                         return {**datos, "recibo": str(recibo)}
                 if not esperar_cierre:
+                    pasos = datos.get("pasos", [])
                     reintentable = (
-                        datos["estado"] == "esperando"
+                        datos["estado"] in ("esperando", "ocupado")
                         and enc.estado in ("recibido", "ejecutando")
-                        and all(p.get("enviado") is False for p in datos.get("pasos", []))
+                        and (
+                            all(p.get("enviado") is False for p in pasos)
+                            if datos["estado"] == "esperando"
+                            else all(p.get("enviado") for p in pasos)
+                        )
                         and observacion(registro, enc) == "ausente"
                     )
                     if not reintentable:
@@ -360,10 +413,23 @@ def ejecutar(pedido: Path) -> None:
                 codigo = correr("checklist")
             if codigo != 0 or not autorizado:
                 rollback = correr("rollback") if datos["pasos"][0]["enviado"] else "no requerido"
-                datos.update(estado="fallido" if datos["pasos"][0]["enviado"] else "esperando", motivo=(
-                    f"despliegue sin verificar (salida {codigo}); rollback salida {rollback}; "
-                    "revisar el recibo antes de un nuevo despliegue"
-                ))
+                if codigo == SALIDA_OCUPADO and autorizado and rollback == 0:
+                    # El destino estaba ocupado y la reversa no hizo cambios:
+                    # producción quedó intacta. Es transitorio; el ciclo reintenta
+                    # el mismo SHA más tarde con espera creciente.
+                    libro = _registrar_ocupado(
+                        pedido.parent, str(datos.get("hora") or ""), _reporte_de_receta(datos["pasos"])
+                    )
+                    datos.update(estado="ocupado", motivo=(
+                        f"despliegue ocupado (salida {codigo}, intento {libro['intentos']}); "
+                        f"la receta reporta: {libro['proceso'] or 'sin detalle'}; "
+                        "rollback sin cambios (salida 0); se reintenta solo más tarde"
+                    ))
+                else:
+                    datos.update(estado="fallido" if datos["pasos"][0]["enviado"] else "esperando", motivo=(
+                        f"despliegue sin verificar (salida {codigo}); rollback salida {rollback}; "
+                        "revisar el recibo antes de un nuevo despliegue"
+                    ))
             else:
                 datos.update(estado="aplicado", motivo="despliegue y checklist terminaron con salida 0")
             _guardar(recibo, datos)

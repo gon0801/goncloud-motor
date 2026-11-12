@@ -5080,6 +5080,14 @@ _AVISO_ENTREGA_DEVUELTA = (
 # reserva ese espacio para el aviso y, si hace falta, recorta solo la causa.
 _TOPE_CAUSA_AVISO = 140
 
+# Un despliegue ocupado (salida 75 con reversa sin cambios) es transitorio: se
+# reintenta solo con espera creciente desde el último desenlace ocupado. La suma
+# (465 min) más el tope de 900 s de cada corrida cubre una ventana de ~8 h; la
+# ingesta diaria del destino tarda 30-50 min y queda cubierta de sobra. Al
+# sexto intento ocupado seguido se rinde con un impedimento en llano.
+ESPERAS_OCUPADO_S = (900, 1800, 3600, 7200, 14400)
+TOPE_OCUPADO = len(ESPERAS_OCUPADO_S) + 1
+
 
 def _causa_con_aviso(
     causa: str, aviso: str, tope: int = _TOPE_CAUSA_AVISO
@@ -9569,6 +9577,60 @@ def _espera_despliegue_sin_autoridad(
     )
 
 
+def _despliegue_ocupado(
+    registro: Registro, enc: Encargo, despliegue, hora: str
+) -> dict | None:
+    """Gestiona un despliegue ocupado (salida 75 con reversa sin cambios).
+
+    Devuelve un resultado ya gestionado (espera anotada o impedimento en llano)
+    o None para que el paso siga y la receta se relance. El producto ya está
+    aprobado e integrado: entre reintentos no se relanza al responsable ni al
+    revisor, solo la receta del mismo SHA.
+    """
+    libro = despliegue.ocupado(registro, enc)
+    if not libro:
+        return None
+    intentos = int(libro.get("intentos") or 0)
+    proceso = str(libro.get("proceso") or "").strip()
+    if intentos >= TOPE_OCUPADO:
+        texto = (
+            f"El despliegue estuvo ocupado {intentos} veces desde "
+            f"{libro.get('desde') or hora} (última vez {libro.get('ultimo') or hora}). "
+            f"El proceso que lo ocupaba, según la receta: {proceso or 'el que reporte la receta'}. "
+            "Producción no cambió: cada reversa terminó sin cambios. Cuando ese proceso "
+            "termine el despliegue puede reintentarse con el mismo SHA."
+        )
+        _preguntar_despliegue(registro, enc, texto, hora)
+        return {"estado": "impedido", "motivo": texto}
+    reanuda = _reanuda_desde(str(libro.get("ultimo") or hora), ESPERAS_OCUPADO_S[intentos - 1])
+    if _reanuda_desde(hora, 0) < reanuda:
+        maquina = ""
+        try:
+            from .maquina import de_base
+
+            maquina = str(de_base(registro.base).nombre or "").strip()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            maquina = ""
+        objetivo = f"un proceso de {maquina}" if maquina else "un proceso de la máquina destino"
+        texto = (
+            f"el despliegue está esperando a que termine {objetivo}"
+            + (f" ({proceso})" if proceso else "")
+            + f"; se reintenta solo a las {reanuda}"
+        )
+        marcar_espera(registro, enc.id, texto, reanuda, hora)
+        return {"estado": "ocupado", "motivo": texto}
+    if enc.estado == "esperando_reintento":
+        # La espera venció: reabre el encargo con el mismo evento plazo que usa
+        # el barrido (deduplicado por ukey) para que el recibo ocupado vuelva a
+        # ser reintentable en este mismo paso.
+        registro.anotar(
+            enc.id,
+            {"kind": "plazo", "data": {"hora": hora}},
+            f"plazo:{enc.id}:{enc.reanuda_en}",
+        )
+    return None
+
+
 def _paso_despliegue(
     registro: Registro, enc: Encargo, espacio: Path, hora: str
 ) -> Encargo:
@@ -9600,6 +9662,12 @@ def _paso_despliegue(
         resultado = {"estado": "esperando", "motivo":
                      "falta declarar si la fase despliega y su receta real"}
     else:
+        gestionado = _despliegue_ocupado(registro, enc, despliegue, hora)
+        if gestionado is not None:
+            return registro.fold(enc.id) or enc
+        # El guard pudo reabrir el encargo con el plazo: `iniciar` decide el
+        # relanzamiento con el estado fresco.
+        enc = registro.fold(enc.id) or enc
         resultado = despliegue.iniciar(registro, enc, espacio, politica, hora)
     fresco = registro.fold(enc.id) or enc
     if not fresco.escrituras or not fresco.intentos_nuevos:
