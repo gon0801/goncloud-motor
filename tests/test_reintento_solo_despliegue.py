@@ -382,13 +382,15 @@ class LaGuardaDistingueElShaDeLaFase(BancoReintento):
         self.assertEqual(a.estado, "preparada")
         self.assertEqual(a.nivel_alcanzado, "desplegado")
         self.assertTrue(ciclo._fase_desplegada_vigente(reg, enc, a))
-        viejo = replace(a, desplegado_recibo="/tmp/recibo-de-otro-sha.json")
+        k = next(f for f in enc.fases if f.id == "K")
+        self.assertTrue(k.desplegado_recibo)
+        viejo = replace(a, desplegado_recibo=k.desplegado_recibo)
         enc_viejo = replace(
             enc, fases=tuple(viejo if f.id == "A" else f for f in enc.fases)
         )
         self.assertFalse(
             ciclo._fase_desplegada_vigente(reg, enc_viejo, viejo),
-            "un recibo de otro SHA acreditó el despliegue de la fase",
+            "un recibo aplicado de otro SHA acreditó el despliegue de la fase",
         )
 
 
