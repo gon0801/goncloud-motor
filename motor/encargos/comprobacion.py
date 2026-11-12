@@ -378,7 +378,12 @@ def _rutas_ejecutadas(argv: list[str]) -> set[str]:
         for cola in _rutas_internas_del_argv([guion]):
             salida.add(cola)
     for indice in _indices_de_linea_de_shell(argv):
-        salida |= _scripts_en_palabras(_palabras_de_shell(str(argv[indice])))
+        try:
+            palabras = _palabras_de_shell(str(argv[indice]))
+        except ValueError:
+            # Una linea de shell mal citada no puede tumbar la observacion.
+            palabras = str(argv[indice]).replace("\\", "/").split()
+        salida |= _scripts_en_palabras(palabras)
     return salida
 
 
