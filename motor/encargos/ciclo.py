@@ -79,6 +79,7 @@ from .dominio import (
     prompt_responsable,
     prompt_revisor,
     recibo_de,
+    RELEVO_AGOTADO as _RELEVO_AGOTADO,
     reducir,
     siguiente_escalon,
     vista,
@@ -7467,40 +7468,95 @@ def _aviso_ci_en_llano(
     )
 
 
+def _descartes_de_deepseek(enc: Encargo, sha: str) -> tuple[set[str], set[str]]:
+    """Los ids de DeepSeek con descarte que cubre el SHA `sha` (vigentes) y
+    los que solo tienen descarte en otro SHA (caducados). La fuente es el
+    pliegue `Encargo.excepciones`, derivado de los eventos `excepcion`."""
+    vigentes: set[str] = set()
+    caducados: set[str] = set()
+    for tipo_x, sha_x, hid_x, _motivo_x, _hora_x in enc.excepciones:
+        if tipo_x != "descarte" or not hid_x or not sha_x:
+            continue
+        if sha_x == sha:
+            vigentes.add(hid_x)
+        elif hid_x not in vigentes:
+            caducados.add(hid_x)
+    return vigentes, caducados
+
+
 def _aviso_deepseek_en_llano(registro: Registro, enc: Encargo) -> str:
     """El aviso llano de un rojo del check deepseek-sin-abiertos.
 
     En vez del "no puedo saber si es código o tubería", nombra los hallazgos
-    Critical, High o Medium que DeepSeek mantiene abiertos (id y título) y si
-    el revisor independiente los descartó. La fuente es el registro del motor,
-    no el texto del PR.
+    Critical, High o Medium que DeepSeek mantiene abiertos (id y título) con
+    la vigencia real de su descarte sobre el SHA vigente, y también los que
+    el revisor independiente ya descartó para este SHA. La fuente es el
+    registro del motor, no el texto del PR.
     """
     enc = registro.fold(enc.id) or enc
+    sha = enc.pr_sha
     abiertos = bloqueantes_abiertos(enc, "deepseek")
-    if not abiertos:
-        return (
-            "Falló el control deepseek-sin-abiertos y el registro del motor no "
-            "tiene hallazgos de DeepSeek abiertos: el sticky del PR manda sobre "
-            "el check. Recomiendo revisar el PR antes de integrarlo."
+    vigentes, caducados = _descartes_de_deepseek(enc, sha)
+    vivos = [h for h in abiertos if h.id not in vigentes]
+    frases: list[str] = []
+    if abiertos:
+        partes = []
+        for h in abiertos:
+            if h.id in vigentes:
+                partes.append(
+                    f"{h.id} «{h.titulo}» sigue abierto; el revisor "
+                    "independiente lo descartó y el descarte cubre el SHA "
+                    "vigente"
+                )
+            elif h.id in caducados:
+                partes.append(
+                    f"{h.id} «{h.titulo}» sigue abierto; el revisor "
+                    "independiente lo descartó antes, pero el descarte no "
+                    "cubre el SHA vigente"
+                )
+            else:
+                partes.append(
+                    f"{h.id} «{h.titulo}» sigue abierto y nadie lo ha descartado"
+                )
+        frases.append(
+            "DeepSeek mantiene estos hallazgos Critical, High o Medium "
+            "abiertos: " + "; ".join(partes) + "."
         )
-    descartados = {
-        x[2] for x in enc.excepciones if x[0] == "descarte" and x[2]
-    }
-    partes = []
-    for h in abiertos:
-        if h.id in descartados:
-            partes.append(
-                f"{h.id} «{h.titulo}» sigue abierto; el revisor independiente "
-                "lo descartó antes, pero el descarte no cubre el SHA vigente"
+        if vivos:
+            frases.append(
+                "El trabajo vuelve al responsable a corregirlos; no tienes "
+                "que hacer nada."
             )
         else:
-            partes.append(f"{h.id} «{h.titulo}» sigue abierto y nadie lo ha descartado")
-    return (
-        "DeepSeek mantiene estos hallazgos Critical, High o Medium abiertos: "
-        + "; ".join(partes)
-        + ". El trabajo vuelve al responsable a corregirlos; no tienes que "
-        "hacer nada."
-    )
+            frases.append(
+                "El descarte del revisor independiente los cubre; el sticky "
+                "del PR manda sobre el check."
+            )
+    descartados = [hid for hid in sorted(vigentes) if hid not in {h.id for h in abiertos}]
+    if descartados:
+        fase = enc.fase_actual
+        titulos = {h.id: h.titulo for h in (fase.hallazgos if fase else ())}
+        partes = []
+        for hid in descartados:
+            titulo = titulos.get(hid)
+            nombre = f"{hid} «{titulo}»" if titulo else hid
+            partes.append(f"{nombre} ya no cuenta: el revisor independiente lo descartó y el descarte cubre el SHA vigente")
+        frases.append(
+            "DeepSeek los tenía abiertos y el revisor independiente los "
+            "descartó: " + "; ".join(partes) + "."
+        )
+        frases.append(
+            "El sticky del PR manda sobre el check; recomiendo revisar el PR "
+            "antes de integrarlo."
+        )
+    if not frases:
+        return (
+            "Falló el control deepseek-sin-abiertos y el registro del motor "
+            "no tiene hallazgos de DeepSeek abiertos ni descartados para el "
+            "SHA vigente: el sticky del PR manda sobre el check. Recomiendo "
+            "revisar el PR antes de integrarlo."
+        )
+    return " ".join(frases)
 
 
 def _anotar_ci_del_pr(
@@ -8016,17 +8072,37 @@ def _revisar_ci_del_pr(
     else:
         clase, reabrir = "incierto", False
     reintento = "permanente" if clase == "tuberia" else ""
-    aviso = _aviso_ci_en_llano(
-        clase, caidas, texto_aviso, reabrir=reabrir,
-        sin_relanzamiento=sin_relanzamiento,
-    )
-    if caidas and all(
-        trabajos_ci.trabajo(str(c.get("nombre") or "")) == "deepseek-sin-abiertos"
-        for c in caidas
-    ):
-        # El rojo del check de DeepSeek no es un "no sé": la causa vive en el
-        # registro y el aviso la nombra.
-        aviso = _aviso_deepseek_en_llano(registro, enc)
+    # El rojo del check de DeepSeek no es un "no sé": la causa vive en el
+    # registro y el aviso la nombra. Con otros checks también en rojo, el
+    # detalle de DeepSeek se conserva junto a la explicación de los demás.
+    se_relanzara = valores == {"tuberia"} and not reintentado and not sin_relanzamiento
+    en_deepseek, otras = [], []
+    for c in caidas:
+        nombre = str(c.get("nombre") or "")
+        if trabajos_ci.trabajo(nombre) == "deepseek-sin-abiertos":
+            en_deepseek.append(c)
+        else:
+            otras.append(c)
+    if en_deepseek:
+        partes_aviso = []
+        if otras:
+            valores_otras = {clases[str(c.get("nombre") or "")] for c in otras}
+            clase_otras = (
+                "codigo" if "codigo" in valores_otras
+                else "tuberia" if valores_otras == {"tuberia"}
+                else "incierto"
+            )
+            partes_aviso.append(_aviso_ci_en_llano(
+                clase_otras, otras, texto_aviso, reabrir=reabrir,
+                sin_relanzamiento=not se_relanzara,
+            ))
+        partes_aviso.append(_aviso_deepseek_en_llano(registro, enc))
+        aviso = " ".join(partes_aviso)
+    else:
+        aviso = _aviso_ci_en_llano(
+            clase, caidas, texto_aviso, reabrir=reabrir,
+            sin_relanzamiento=sin_relanzamiento,
+        )
     return _anotar_ci_del_pr(
         registro,
         enc,
@@ -10235,9 +10311,9 @@ def marcar_pregunta(
     return vista(registro.fold(encargo_id))
 
 
-_RELEVO_AGOTADO = "El relevo agotó los modelos autorizados"
-
-
+# La marca vive en dominio (RELEVO_AGOTADO, importada como _RELEVO_AGOTADO):
+# `relevo_agotado` la lee del pliegue y una sola fuente decide qué es un
+# relevo agotado.
 def marcar_relevo_agotado(
     registro: Registro, enc: Encargo, rol: str, hora: str
 ) -> Encargo:

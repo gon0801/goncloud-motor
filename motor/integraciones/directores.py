@@ -25,8 +25,8 @@ from motor.encargos import resumen as resumen_encargos
 from motor.encargos.dominio import (
     TransicionIlegal,
     espera_inspeccion_consumida,
-    hubo_relevo,
     reducir,
+    relevo_agotado,
     relevo_cambio_modelo,
     total_relevos,
     ultima_huella_relevo,
@@ -868,10 +868,10 @@ def _cuerpo_de_cierre(enc) -> str:
         )
     if relevo_cambio_modelo(enc):
         cuerpo += " Se cambió de modelo para continuar sin esperar a nadie."
-    elif hubo_relevo(enc):
+    elif relevo_agotado(enc):
         cuerpo += (
             " Se intentó relevar el trabajo y no había otro modelo autorizado "
-            "para seguir: continuó con el mismo modelo."
+            "para seguir."
         )
     return f"{cuerpo} {nota}".rstrip()
 
@@ -1309,10 +1309,10 @@ def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dic
             "Cambié de modelo para seguir con tu encargo. "
             "El trabajo continúa sin que hagas nada."
         )
-    elif hubo_relevo(enc):
+    elif relevo_agotado(enc):
         texto_relevo = (
-            "El relevo se agotó: no había otro modelo autorizado para seguir "
-            "y continué con el mismo. El trabajo continúa sin que hagas nada."
+            "El relevo se agotó: no había otro modelo autorizado para seguir. "
+            "El trabajo continúa sin que hagas nada."
         )
     else:
         texto_relevo = ""
