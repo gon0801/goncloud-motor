@@ -8075,7 +8075,6 @@ def _revisar_ci_del_pr(
     # El rojo del check de DeepSeek no es un "no sé": la causa vive en el
     # registro y el aviso la nombra. Con otros checks también en rojo, el
     # detalle de DeepSeek se conserva junto a la explicación de los demás.
-    se_relanzara = valores == {"tuberia"} and not reintentado and not sin_relanzamiento
     en_deepseek, otras = [], []
     for c in caidas:
         nombre = str(c.get("nombre") or "")
@@ -8092,9 +8091,11 @@ def _revisar_ci_del_pr(
                 else "tuberia" if valores_otras == {"tuberia"}
                 else "incierto"
             )
+            # Sin rerun de tubería en curso, la parte de los demás checks no
+            # puede prometer el segundo intento que no va a pasar.
             partes_aviso.append(_aviso_ci_en_llano(
                 clase_otras, otras, texto_aviso, reabrir=reabrir,
-                sin_relanzamiento=not se_relanzara,
+                sin_relanzamiento=not reintentado,
             ))
         partes_aviso.append(_aviso_deepseek_en_llano(registro, enc))
         aviso = " ".join(partes_aviso)
