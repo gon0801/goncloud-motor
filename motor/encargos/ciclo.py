@@ -4255,6 +4255,7 @@ def _incorporar_responsable(
                 "comprobaciones": esperadas,
                 "procedimiento": procedimiento,
                 "resultado": _huella_de_observacion(observacion),
+                "generacion": enc.generacion,
             }
         )[:16]
         registro.anotar(

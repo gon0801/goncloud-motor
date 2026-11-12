@@ -173,7 +173,9 @@ def firma_producto(espacio: Path) -> str:
 
 
 _RUTA_INTERNA = re.compile(
-    r"(?:^|[\s/;:'\"(|&=])\.interno(?:/([^\s'\"`;|&()<>]*))?"
+    r"(?:^|[\s/;:'\"(|&=])"
+    + re.escape(INTERNO)
+    + r"(?:/([^\s'\"`;|&()<>]*))?"
 )
 
 
@@ -198,20 +200,34 @@ def _rutas_internas_del_argv(argv: list[str]) -> list[str]:
 
 
 def _huella_de_lo_interno(interno: Path, relativo: str) -> str:
-    """Contenido de una ruta de `.interno/`: archivo, arbol o ausencia."""
-    path = interno / relativo
-    if path.is_file():
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    if path.is_dir():
-        arbol = hashlib.sha256()
-        for hijo in sorted(path.rglob("*")):
-            if not hijo.is_file():
-                continue
-            arbol.update(hijo.relative_to(path).as_posix().encode())
-            arbol.update(b"\0")
-            arbol.update(hashlib.sha256(hijo.read_bytes()).hexdigest().encode())
-            arbol.update(b"\0")
-        return "arbol:" + arbol.hexdigest()
+    """Contenido de una ruta de `.interno/`: archivo, arbol, ausencia o fuera.
+
+    Un argv puede nombrar `..` o un enlace que sale de `.interno/`; ese
+    contenido no es el procedimiento del espacio y no entra en la huella. Un
+    archivo ilegible tampoco tumba la observacion: deja su marca, distinta de
+    un contenido y de una ausencia.
+    """
+    base = interno.resolve()
+    path = (interno / relativo).resolve()
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return "fuera"
+    try:
+        if path.is_file():
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        if path.is_dir():
+            arbol = hashlib.sha256()
+            for hijo in sorted(path.rglob("*")):
+                if not hijo.is_file():
+                    continue
+                arbol.update(hijo.relative_to(path).as_posix().encode())
+                arbol.update(b"\0")
+                arbol.update(hashlib.sha256(hijo.read_bytes()).hexdigest().encode())
+                arbol.update(b"\0")
+            return "arbol:" + arbol.hexdigest()
+    except OSError:
+        return "ilegible"
     return "ausente"
 
 
