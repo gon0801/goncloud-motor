@@ -780,6 +780,24 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 "el contenido fuera de .interno no entra en la identidad",
             )
 
+    def test_una_linea_sh_c_mal_citada_no_tumba_la_observacion(self):  # no-roja-en-base: la base no parsea la linea de shell; la prueba fija que la huella nueva no levanta
+        """Una comilla sin cerrar en `sh -c` no impide observar."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sh-c-mal-citada", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+            r.incorporar()
+            script = r.espacio / ".interno" / "script.sh"
+            script.parent.mkdir(exist_ok=True)
+            script.write_text("exit 0\n", encoding="utf-8")
+            _declarar(r, ["/bin/sh", "-c", "echo '.interno/script.sh"])
+
+            datos = _observar(r)
+            self.assertIsNotNone(
+                datos["ejecuciones"][0].get("rc"),
+                "la linea mal citada se ejecuta o falla, pero no tumba la observacion",
+            )
+
     def test_un_rojo_que_vuelve_gana_al_verde_anterior(self):  # no-roja-en-base: la clave con el resultado nace en la primera vuelta; en 5e83c75 el verde ni se registra y el rojo que vuelve no queda tapado por ese camino
         """El rojo verdadero sigue rojo aunque antes haya habido un verde.
 
