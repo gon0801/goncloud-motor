@@ -431,25 +431,53 @@ def _script_de_interprete(argv: list[str]) -> str | None:
     return None
 
 
+_PREFIJOS_DE_COMANDO = ("exec", "command", "builtin")
+_ASIGNACION_DE_ENTORNO = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _sin_prefijos_de_comando(palabras: list[str]) -> list[str]:
+    """Quita asignaciones de entorno y `exec`/`command`/`builtin` del comienzo."""
+    i = 0
+    while i < len(palabras):
+        token = str(palabras[i])
+        if token in _PREFIJOS_DE_COMANDO:
+            i += 1
+            solo_consulta = False
+            while i < len(palabras) and str(palabras[i]).startswith("-"):
+                if str(palabras[i]) in ("-v", "-V"):
+                    solo_consulta = True
+                i += 1
+            if solo_consulta:
+                return []
+            continue
+        if _ASIGNACION_DE_ENTORNO.match(token):
+            i += 1
+            continue
+        break
+    return palabras[i:]
+
+
 def _scripts_del_comando(palabras: list[str]) -> set[str]:
     """Las rutas de `.interno/` que ejecuta un comando simple de una linea de shell."""
     salida: set[str] = set()
-    if not palabras:
+    efectivas = _sin_prefijos_de_comando(palabras)
+    if not efectivas:
         return salida
-    primero = palabras[0]
+    primero = efectivas[0]
     if primero in (".", "source"):
-        if len(palabras) > 1 and _es_script_en_posicion(palabras[1]):
-            salida.update(_rutas_internas_del_argv([palabras[1]]))
+        if len(efectivas) > 1 and _es_script_en_posicion(efectivas[1]):
+            salida.update(_rutas_internas_del_argv([efectivas[1]]))
         return salida
     if _es_script_en_posicion(primero):
         salida.update(_rutas_internas_del_argv([primero]))
-    resto = _resto_tras_env(palabras)
+    resto = _resto_tras_env(efectivas)
     if resto and _es_script_en_posicion(resto[0]):
         salida.update(_rutas_internas_del_argv([resto[0]]))
-    guion = _script_de_interprete(palabras)
+    guion = _script_de_interprete(efectivas)
     if guion is not None:
         salida.update(_rutas_internas_del_argv([guion]))
     return salida
+
 
 
 def _rutas_ejecutadas(argv: list[str]) -> set[str]:
@@ -463,16 +491,18 @@ def _rutas_ejecutadas(argv: list[str]) -> set[str]:
     salida: set[str] = set()
     if not argv:
         return salida
-    for cola in _rutas_internas_del_argv([str(argv[0])]):
-        salida.add(cola)
-    resto = _resto_tras_env([str(x) for x in argv])
-    if resto:
-        for cola in _rutas_internas_del_argv([resto[0]]):
+    efectivas = _sin_prefijos_de_comando([str(x) for x in argv])
+    if efectivas:
+        for cola in _rutas_internas_del_argv([efectivas[0]]):
             salida.add(cola)
-    guion = _script_de_interprete(argv)
-    if guion is not None:
-        for cola in _rutas_internas_del_argv([guion]):
-            salida.add(cola)
+        resto = _resto_tras_env(efectivas)
+        if resto:
+            for cola in _rutas_internas_del_argv([resto[0]]):
+                salida.add(cola)
+        guion = _script_de_interprete(efectivas)
+        if guion is not None:
+            for cola in _rutas_internas_del_argv([guion]):
+                salida.add(cola)
     for indice in _indices_de_linea_de_shell(argv):
         try:
             palabras = _palabras_de_shell(str(argv[indice]))
