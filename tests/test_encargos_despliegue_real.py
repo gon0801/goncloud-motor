@@ -13,6 +13,7 @@ from motor import plataforma
 from motor.encargos import ciclo
 from motor.encargos.dominio import relevos_de
 from motor.encargos.registro import Registro
+from motor.encargos.resultado import Espera
 from tests.entorno import deja_breakaway
 
 HORA = "2026-11-05T12:00:00+00:00"
@@ -69,7 +70,7 @@ def paso(caso):
     # anteriores salieron apretados.
     limite = time.monotonic() + 30
     while True:
-        final = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        final, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
         if "ejecutando receta" not in final.motivo or final.nivel_alcanzado == "desplegado":
             return final
         assert time.monotonic() < limite, final.motivo
@@ -289,7 +290,7 @@ class DespliegueReal(unittest.TestCase):
             next((reg.base / "despliegues").rglob("ocupado.json")).read_text()
         )
         assert "app.cli" in libro["proceso"], libro
-        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        enc, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
         assert enc.estado == "esperando_reintento", (enc.estado, enc.motivo)
         assert "app.cli" in enc.motivo, enc.motivo
 
@@ -334,7 +335,7 @@ class DespliegueReal(unittest.TestCase):
             ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
             libro = next((reg.base / "despliegues").rglob("ocupado.json"))
             contenido = json.loads(libro.read_text())
-        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        enc, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
         causa = enc.impedimentos[-1].causa if enc.impedimentos else ""
         assert "ocupado 6 veces" in causa, causa
         assert "app.cli vivo (spapi-diario)" in causa, causa
@@ -373,7 +374,8 @@ class DespliegueReal(unittest.TestCase):
         datos = recibo_final(reg)
         assert datos["estado"] == "ocupado", datos
         assert [p["codigo"] for p in datos["pasos"]] == [75, 0]
-        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        enc, resultado = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        assert resultado == Espera(enc.reanuda_en, enc.motivo), resultado
         assert enc.estado == "esperando_reintento", (enc.estado, enc.motivo)
         assert (
             "se reintenta solo a las 2026-11-05T12:15:00Z" in enc.motivo
@@ -392,7 +394,7 @@ class DespliegueReal(unittest.TestCase):
         libro.write_text(json.dumps(datos))
         final = enc
         for _ in range(10):
-            final = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+            final, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
             if final.nivel_alcanzado == "desplegado":
                 break
         assert final.nivel_alcanzado == "desplegado", (
@@ -419,7 +421,7 @@ class DespliegueReal(unittest.TestCase):
                 # corra en el mismo minuto de la prueba.
                 datos["ultimo"] = "2026-11-04T11:00:00Z"
                 libro.write_text(json.dumps(datos))
-        enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        enc, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
         assert enc.nivel_alcanzado == "integrado"
         causa = enc.impedimentos[-1].causa if enc.impedimentos else ""
         assert "ocupado 6 veces" in causa, causa
@@ -726,7 +728,7 @@ class DespliegueReal(unittest.TestCase):
 
         try:
             inicio = time.monotonic()
-            enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+            enc, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
             assert enc.nivel_alcanzado == "integrado"
             # 15 s: lo que se afirma es que el paso no bloquea los 20 s del
             # script; sin carga vuelve en ~1 s y en un runner cargado el
