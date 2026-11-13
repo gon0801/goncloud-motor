@@ -2628,7 +2628,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             )
         if e.proc is not None or e.reserva:
             raise TransicionIlegal("hay un escritor abierto")
-        if e.estado in ("cancelado", "terminado"):
+        if e.orden_parada == "cancelar" or e.estado in ("cancelado", "terminado"):
             raise TransicionIlegal("el encargo ya cerró")
         evidencia = str(d.get("evidencia") or "")
         if not evidencia:
