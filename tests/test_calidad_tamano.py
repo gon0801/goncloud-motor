@@ -79,6 +79,12 @@ class Repo:
         destino.parent.mkdir(parents=True, exist_ok=True)
         destino.write_text(texto, encoding="utf-8")
 
+    def enlazar(self, ruta: str, destino: str) -> None:
+        enlace = self.raiz / ruta
+        enlace.unlink(missing_ok=True)
+        enlace.parent.mkdir(parents=True, exist_ok=True)
+        enlace.symlink_to(destino)
+
     def commit(self) -> str:
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "base")
@@ -411,6 +417,30 @@ class ArchivoQueNoEsUtf8(unittest.TestCase):
         self.assertNotIn("Traceback", corrida.stderr)
 
 
+class EnlacesYSubmodulosEnElArbol(unittest.TestCase):
+    """Un enlace o un submódulo bajo `motor/` saca código de la medida."""
+
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/grande.py", _relleno(1200))
+        self.base = self.repo.commit()
+
+    def test_una_carpeta_de_motor_enlazada_fuera_falla_nombrandola(self):
+        self.repo.escribir("fuera/encargos/ciclo.py", _relleno(1300))
+        self.repo.enlazar("motor/encargos", "../fuera/encargos")
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/encargos es un enlace simbólico", corrida.stderr)
+        self.assertNotIn("Traceback", corrida.stderr)
+
+    def test_un_submodulo_bajo_motor_falla_nombrandolo(self):
+        self.repo.escribir("motor/vendor/.git", "gitdir: ../../.git/modules/vendor\n")
+        self.repo.escribir("motor/vendor/chico.py", _relleno(10))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/vendor es un submódulo", corrida.stderr)
+
+
 class CabezaLeidaDeGit(unittest.TestCase):
     """Con `--cabeza`, los dos lados salen de git y el árbol de trabajo no cuenta."""
 
@@ -459,6 +489,24 @@ class CabezaLeidaDeGit(unittest.TestCase):
         corrida = clon.tamano("--base", self.base, "--cabeza", "origin/pr")
         self.assertEqual(corrida.returncode, 0, corrida.stderr)
 
+    def test_un_submodulo_en_la_cabeza_falla_nombrandolo(self):
+        self.repo.git("update-index", "--add", "--cacheinfo", f"160000,{self.base},motor/sub.py")
+        self.repo.git("commit", "-q", "-m", "submódulo")
+        cabeza = self.repo.git("rev-parse", "HEAD")
+        corrida = self.repo.tamano("--base", self.base, "--cabeza", cabeza)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn(f"motor/sub.py en {cabeza} es un submódulo", corrida.stderr)
+
+    def test_motor_entero_enlazado_a_otra_carpeta_en_la_cabeza_falla(self):
+        self.repo.escribir("otro/grande.py", _relleno(1300))
+        shutil.rmtree(self.repo.raiz / "motor")
+        self.repo.enlazar("motor", "otro")
+        cabeza = self.repo.commit()
+        self.repo.git("checkout", "-q", self.base)
+        corrida = self.repo.tamano("--base", self.base, "--cabeza", cabeza)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn(f"motor en {cabeza} es un enlace simbólico", corrida.stderr)
+
 
 def _numerado(desde: int, hasta: int) -> str:
     return "".join(f"x{n} = {n}\n" for n in range(desde, hasta))
@@ -481,10 +529,12 @@ class JobDeLaBase(unittest.TestCase):
         self.origen.escribir("README", "base\n")
         self.base = self.origen.commit()
 
-    def _pr(self, cambios: dict[str, str]) -> str:
+    def _pr(self, cambios: dict[str, str], enlaces: dict[str, str] | None = None) -> str:
         self.origen.git("checkout", "-q", "-b", "pr", self.base)
         for ruta, texto in cambios.items():
             self.origen.escribir(ruta, texto)
+        for ruta, destino in (enlaces or {}).items():
+            self.origen.enlazar(ruta, destino)
         cabeza = self.origen.commit()
         self.origen.git("checkout", "-q", "main")
         return cabeza
@@ -493,10 +543,27 @@ class JobDeLaBase(unittest.TestCase):
         self.origen.escribir(ruta, texto)
         self.origen.commit()
 
-    def _job(self, cabeza: str) -> subprocess.CompletedProcess:
+    def _clon(self) -> Repo:
+        """El checkout de la base: solo `main`, sin la rama ni los objetos del PR."""
         checkout = Repo(self.origen.raiz.parent / "clon")
         if not checkout.raiz.exists():
-            checkout = self.origen.clonar()
+            checkout = self.origen.clonar("--single-branch", "--branch", "main")
+        return checkout
+
+    def _job(self, cabeza: str) -> subprocess.CompletedProcess:
+        checkout = self._clon()
+        ya_esta = subprocess.run(
+            ["git", "cat-file", "-e", f"{cabeza}^{{commit}}"],
+            cwd=checkout.raiz,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(
+            ya_esta.returncode, 0, "la cabeza del PR solo puede llegar por el fetch del guion"
+        )
+        return self._guion(checkout, cabeza)
+
+    def _guion(self, checkout: Repo, cabeza: str) -> subprocess.CompletedProcess:
         _, guion = _bloque_run(FLUJO_DE_LA_BASE.read_text(encoding="utf-8").splitlines())
         binarios = checkout.raiz.parent / "bin"
         binarios.mkdir(exist_ok=True)
@@ -523,6 +590,16 @@ class JobDeLaBase(unittest.TestCase):
         self.assertIn("motor/grande.py: archivo de 1201 líneas", corrida.stderr)
         self.assertIn(f"en {self.base} mide 1200", corrida.stderr)
 
+    def test_un_pr_que_enlaza_un_archivo_de_motor_a_uno_mas_grande_fuera_falla(self):
+        cabeza = self._pr(
+            {"fuera/grande.py": _numerado(0, 1300)},
+            enlaces={"motor/grande.py": "../fuera/grande.py"},
+        )
+        corrida = self._job(cabeza)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
+        self.assertIn("motor/grande.py en ", corrida.stderr)
+        self.assertIn(" es un enlace simbólico", corrida.stderr)
+
     def test_un_pr_atrasado_que_no_toca_motor_pasa_aunque_la_base_se_encogio(self):
         cabeza = self._pr({"README": "pr\n"})
         self._avanzar_la_base("motor/grande.py", _numerado(100, 1200))
@@ -548,9 +625,20 @@ class JobDeLaBase(unittest.TestCase):
     def test_una_cabeza_que_no_es_un_sha_no_llega_a_git(self):
         for cabeza in ("main", "$(touch pwn)", "a" * 39):
             with self.subTest(cabeza=cabeza):
-                corrida = self._job(cabeza)
+                corrida = self._guion(self._clon(), cabeza)
                 self.assertEqual(corrida.returncode, 1)
                 self.assertIn("no es un SHA válido", corrida.stderr)
+
+    def test_el_check_se_publica_con_el_nombre_que_dice_agents(self):
+        lineas = FLUJO_DE_LA_BASE.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lineas[lineas.index("jobs:") + 1], "  tamano-desde-la-base:")
+        self.assertEqual(
+            [linea for linea in lineas if linea.startswith("    name:")],
+            [],
+            "GitHub publica el check con el name: del job; sin él, con su id",
+        )
+        agentes = (RAIZ / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("job `tamano-desde-la-base`", agentes)
 
     def test_el_job_no_recibe_secretos_ni_trae_el_codigo_del_pr(self):
         texto = FLUJO_DE_LA_BASE.read_text(encoding="utf-8")
