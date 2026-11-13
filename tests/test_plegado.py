@@ -7,6 +7,7 @@ escribe el motor, y corre `tools/plegado.py` como lo corre una persona.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -49,6 +50,16 @@ def _armar(ruta: Path, encargos: dict[str, list[tuple[str, dict | str]]]) -> Non
             )
     db.commit()
     db.close()
+
+
+def _sin_lectura(ruta: Path) -> Path:
+    _armar(ruta, {"enc_a": [_ENTREGA]})
+    ruta.chmod(0)
+    return ruta
+
+
+_SIN_PERMISOS_POSIX = unittest.skipIf(
+    os.name == "nt" or os.geteuid() == 0, "necesita permisos de POSIX sin ser root")
 
 
 def _ejecutar(*args: str | Path, herramienta: Path = HERRAMIENTA) -> subprocess.CompletedProcess[str]:
@@ -124,6 +135,23 @@ class Comprobar(unittest.TestCase):
                 self.assertEqual(hecho.returncode, 2, hecho.stderr)
                 self.assertEqual(hecho.stdout, "")
                 self.assertIn("evento 2", hecho.stderr)
+
+    @_SIN_PERMISOS_POSIX
+    def test_un_registro_que_no_se_puede_abrir_sale_con_dos_y_lo_nombra(self):
+        _sin_lectura(self.registro)
+        for opciones in ((), ("--json",)):
+            with self.subTest(opciones=opciones):
+                hecho = _ejecutar("comprobar", *opciones, self.registro)
+                self.assertEqual(hecho.returncode, 2, hecho.stderr)
+                self.assertEqual(hecho.stdout, "")
+                self.assertIn(str(self.registro), hecho.stderr)
+
+    def test_un_evento_anidado_mas_alla_de_lo_que_json_decodifica_sale_con_dos(self):
+        _armar(self.registro, {"enc_a": [("entrega", "[" * 200_000 + "]" * 200_000)]})
+        hecho = _ejecutar("comprobar", "--json", self.registro)
+        self.assertEqual(hecho.returncode, 2, hecho.stderr)
+        self.assertEqual(hecho.stdout, "")
+        self.assertIn("evento 1", hecho.stderr)
 
     def test_el_texto_de_un_registro_sano_dice_cuantos_pliegan_y_cada_invariante(self):
         _armar(self.registro, {"enc_a": [_ENTREGA, *_intento("hostA")]})
@@ -363,6 +391,14 @@ class Comparar(_RepoFalso):
                           herramienta=self.herramienta)
         self.assertEqual(hecho.returncode, 2, hecho.stderr)
         self.assertEqual(hecho.stdout, "")
+
+    @_SIN_PERMISOS_POSIX
+    def test_un_registro_que_no_se_puede_abrir_sale_con_dos_y_lo_nombra(self):
+        cerrado = _sin_lectura(self.dir / "cerrado.sqlite")
+        hecho = _ejecutar("comparar", "--base", "HEAD", cerrado, herramienta=self.herramienta)
+        self.assertEqual(hecho.returncode, 2, hecho.stderr)
+        self.assertEqual(hecho.stdout, "")
+        self.assertIn(str(cerrado), hecho.stderr)
 
     def test_el_texto_sin_diferencias_nombra_la_ref_y_cuantos_encargos_compara(self):
         hecho = _ejecutar("comparar", "--base", "HEAD", self.registro, herramienta=self.herramienta)
