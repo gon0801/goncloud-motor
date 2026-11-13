@@ -27,8 +27,16 @@ jobs:
       - name: Ningún archivo ni función de motor/ crece por encima de su límite
         env:
           BASE_REF: ${{ github.base_ref }}
+          ANTES_DEL_PUSH: ${{ github.event.before }}
         run: |
-          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"; else base="HEAD^1"; fi
+          if [ -n "$BASE_REF" ]; then
+            base="origin/$BASE_REF"
+          elif git cat-file -e "${ANTES_DEL_PUSH}^{commit}" 2>/dev/null; then
+            base="$ANTES_DEL_PUSH"
+          else
+            echo "::warning::tamano: el push no trae un commit previo en este clon (rama nueva o historia reescrita); solo se compara el último commit contra HEAD^1"
+            base="HEAD^1"
+          fi
           python tools/calidad.py tamano --base "$base"
       - name: Marcadores que deciden, anotados como eventos
         run: python tools/calidad.py marcadores
