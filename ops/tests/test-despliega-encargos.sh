@@ -561,11 +561,18 @@ sin_temporales "base relativa" "$S/tmp-maquinas"
 
 # "No pude mirar" nunca es "no hay": la base por omisión de la Mac está vacía y la del
 # servicio, en otro lado, no pliega. Si la compuerta no puede leer cuál es, no deja pasar.
-compuerta_mac() { # <nombre> <resultado esperado>
+modulo_mac() { # <nombre>
   espera "$1: el módulo termina" 0 \
     env HOME="$S/mac" TMPDIR="$S/tmp-maquinas" python3 "$RAIZ/ops/compuerta_plegado.py" "$S/mac/motor-sucesor" "$SHA"
+}
+compuerta_mac() { # <nombre> <resultado esperado>
+  modulo_mac "$1"
   contiene "$1" "$S/salida" "$2"
   no_contiene "$1: no dice que no hay registro" "$S/salida" "resultado sin_registro"
+}
+sin_registro_mac() { # <nombre>
+  modulo_mac "$1"
+  contiene "$1" "$S/salida" "resultado sin_registro"
 }
 base_aparte() { # <argumentos del supervisor en el plist>
   reset_maquinas
@@ -591,18 +598,69 @@ compuerta_mac "sin --base" "resultado no_pude el LaunchAgent no dice con qué --
 base_aparte '<string>supervisor</string><string>--base</string>'
 compuerta_mac "--base sin valor" "resultado no_pude el LaunchAgent no dice con qué --base arranca el supervisor"
 
-echo "# un --base=RUTA se lee como lo lee el supervisor"
+echo "# --base se lee como lo lee el supervisor"
 base_aparte '<string>supervisor</string><string>--base='"$S"'/mac/aparte/.motor-encargos</string>'
 compuerta_mac "--base=RUTA" "resultado no_pliega 2 1"
+base_aparte '<string>supervisor</string><string>--base</string><string>'"$S"'/mac/.motor-encargos</string><string>--base</string><string>'"$S"'/mac/aparte/.motor-encargos</string>'
+compuerta_mac "dos --base toman el último" "resultado no_pliega 2 1"
+base_aparte '<string>supervisor</string><string>--bas</string><string>'"$S"'/mac/aparte/.motor-encargos</string>'
+compuerta_mac "--base abreviado, que el supervisor acepta" "resultado no_pliega 2 1"
+base_aparte '<string>supervisor</string><string>--base=-datos/.motor-encargos</string>'
+mkdir -p "$S/mac/motor-sucesor/-datos/.motor-encargos"
+registro "$S/mac/motor-sucesor/-datos" enc_mac_uno roto_mac
+compuerta_mac "--base=-datos" "resultado no_pliega 2 1"
+base_aparte '<string>supervisor</string><string>--base</string><string>--una-vez</string>'
+compuerta_mac "--base seguido de otra opción" \
+  "resultado no_pude el LaunchAgent no dice con qué --base arranca el supervisor: argument --base: expected one argument"
 
-echo "# un registro que es un enlace roto no es un registro que no existe"
+echo "# un enlace roto en cualquier tramo del camino no es un registro que no existe"
 reset_maquinas
 ln -s "$S/mac/no-esta/registro.sqlite" "$S/mac/.motor-encargos/registro.sqlite"
-compuerta_mac "registro enlace roto" "resultado no_pude no pude leer el registro de encargos"
+compuerta_mac "registro enlace roto" "resultado no_pude no pude leer el registro de encargos: hay un enlace roto en el camino"
 base_aparte '<string>supervisor</string><string>--base</string><string>'"$S"'/mac/desmontada</string>'
 ln -s "$S/mac/no-esta" "$S/mac/desmontada"
-compuerta_mac "base enlace roto" "resultado no_pude no pude leer el registro de encargos"
+compuerta_mac "base enlace roto" \
+  "resultado no_pude no pude leer la base que declara el LaunchAgent: hay un enlace roto en el camino"
 rm -f "$S/mac/desmontada"
+base_aparte '<string>supervisor</string><string>--base</string><string>'"$S"'/mac/volumen/datos/.motor-encargos</string>'
+ln -s "$S/mac/no-esta" "$S/mac/volumen"
+compuerta_mac "un tramo de la base dos niveles arriba es un enlace roto" \
+  "resultado no_pude no pude leer la base que declara el LaunchAgent: hay un enlace roto en el camino"
+rm -f "$S/mac/volumen"
+reset_maquinas
+rm -f "$PLIST_MAC"
+ln -s "$S/mac/no-esta.plist" "$PLIST_MAC"
+compuerta_mac "plist enlace roto" "resultado no_pude no pude leer el plist del LaunchAgent: hay un enlace roto en el camino"
+rm -rf "$S/mac/Library"
+ln -s "$S/mac/no-esta" "$S/mac/Library"
+compuerta_mac "~/Library enlace roto" "resultado no_pude no pude leer el plist del LaunchAgent: hay un enlace roto en el camino"
+rm -f "$S/mac/Library"
+
+echo "# un error al mirar que no es \"no existe\" no es un registro que no existe"
+reset_maquinas
+chmod 000 "$S/mac/.motor-encargos"
+compuerta_mac "registro sin permiso" "resultado no_pude no pude leer el registro de encargos: PermissionError"
+chmod 755 "$S/mac/.motor-encargos"
+
+echo "# un padre que es un enlace sano y un registro que aún no existe: no hay registro"
+reset_maquinas
+rm -rf "$S/mac/.motor-encargos" "$S/mac/real"
+mkdir -p "$S/mac/real"
+ln -s "$S/mac/real" "$S/mac/.motor-encargos"
+sin_registro_mac "padre enlace sano"
+rm -rf "$S/mac/real"
+
+echo "# con servicio, su base tiene que existir; sin servicio, la base por omisión puede faltar"
+base_aparte '<string>supervisor</string><string>--base</string><string>'"$S"'/mac/desmontado/.motor-encargos</string>'
+compuerta_mac "base declarada que no existe" "resultado no_pude la base que declara el LaunchAgent no existe"
+base_aparte '<string>supervisor</string><string>--base</string><string>'"$S"'/mac/vacia</string>'
+mkdir -p "$S/mac/vacia"
+sin_registro_mac "base declarada sin registro"
+rm -rf "$S/mac/vacia"
+reset_maquinas
+rm -f "$PLIST_MAC"
+rm -rf "$S/mac/.motor-encargos"
+sin_registro_mac "sin plist y sin la base por omisión"
 sin_temporales "no pude mirar" "$S/tmp-maquinas"
 
 echo "# el comprobador no cae al recibo del motor viejo"
