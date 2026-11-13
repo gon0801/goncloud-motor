@@ -106,12 +106,19 @@ ESTADOS = ("recibido", "terminado")
 
 
 @dataclass(frozen=True)
+class Hallazgo:
+    id: str
+{hallazgo}
+
+@dataclass(frozen=True)
 class Encargo:
     estado: str
-
+    hallazgos: tuple = ()
+{encargo}
 
 def reducir(estado, evento, nuevo=True):
-    return Encargo(FINAL if evento["kind"] == "cierre" else "recibido")
+    final = {final!r} if evento["kind"] == "cierre" else "recibido"
+    return Encargo(final, hallazgos=tuple(Hallazgo(i) for i in {hallazgos!r}))
 """
 
 
@@ -127,16 +134,23 @@ class Comparar(unittest.TestCase):
         for paquete in ("motor", "motor/encargos"):
             (self.repo / paquete / "__init__.py").touch()
         shutil.copy(HERRAMIENTA, self.repo / "tools" / "plegado.py")
-        self._dominio("recibido")
         self._git("init", "-q")
-        self._git("add", ".")
-        self._git("commit", "-q", "-m", "base")
+        self._base()
         self.registro = self.dir / "registro.sqlite"
-        _armar(self.registro, {"enc_a": [("entrega", {}), ("cierre", {})]})
+        _armar(self.registro, {"enc_a": [("entrega", {}), ("cierre", {})],
+                               "enc_b": [("entrega", {})]})
 
-    def _dominio(self, final: str) -> None:
-        texto = f"FINAL = {final!r}\n{_DOMINIO_FALSO}"
+    def _dominio(self, final: str = "recibido", hallazgos: tuple[str, ...] = ("h1",),
+                 encargo: str = "", hallazgo: str = "") -> None:
+        texto = _DOMINIO_FALSO.format(final=final, hallazgos=hallazgos,
+                                      encargo=f"    {encargo}" if encargo else "",
+                                      hallazgo=f"    {hallazgo}" if hallazgo else "")
         (self.repo / "motor" / "encargos" / "dominio.py").write_text(texto)
+
+    def _base(self, encargo: str = "") -> None:
+        self._dominio(encargo=encargo)
+        self._git("add", ".")
+        self._git("commit", "-q", "--allow-empty", "-m", "base")
 
     def _git(self, *args: str) -> None:
         subprocess.run(
@@ -144,8 +158,8 @@ class Comparar(unittest.TestCase):
             cwd=self.repo, check=True, capture_output=True,
         )
 
-    def _comparar(self) -> tuple[int, dict]:
-        return _correr("comparar", "--base", "HEAD", "--json", self.registro,
+    def _comparar(self, *opciones: str) -> tuple[int, dict]:
+        return _correr("comparar", "--base", "HEAD", "--json", *opciones, self.registro,
                        herramienta=self.repo / "tools" / "plegado.py")
 
     def test_el_mismo_reductor_en_las_dos_refs_no_difiere(self):  # no-roja-en-base: control; muestra que comparar no reporta por defecto
@@ -154,11 +168,60 @@ class Comparar(unittest.TestCase):
         self.assertEqual(salida["registros"][0]["diferencias"], [])
 
     def test_un_reductor_que_cambia_el_estado_final_se_reporta(self):
-        self._dominio("terminado")
+        self._dominio(final="terminado")
         codigo, salida = self._comparar()
         self.assertEqual(codigo, 1)
         (reg,) = salida["registros"]
         self.assertEqual(reg["diferencias"], [{"encargo": "enc_a", "campos": ["estado"], "detalle": ""}])
+
+    def test_un_campo_que_solo_existe_en_el_arbol_es_forma_y_sale_con_cero(self):
+        self._dominio(encargo='prioridad: str = "alta"')
+        codigo, salida = self._comparar()
+        self.assertEqual(codigo, 0)
+        (reg,) = salida["registros"]
+        self.assertEqual(reg["diferencias"], [])
+        self.assertEqual(reg["forma"], [{"ruta": "prioridad", "solo_en": "arbol", "encargos": 2}])
+
+    def test_un_campo_que_el_arbol_quita_es_forma_del_lado_de_la_base(self):
+        self._base(encargo='vieja: int = 0')
+        self._dominio()
+        codigo, salida = self._comparar()
+        self.assertEqual(codigo, 0)
+        self.assertEqual(salida["registros"][0]["forma"],
+                         [{"ruta": "vieja", "solo_en": "base", "encargos": 2}])
+
+    def test_una_clave_nueva_dentro_de_un_objeto_de_una_lista_es_forma_con_su_ruta(self):
+        self._dominio(hallazgo='severidad: str = "media"')
+        codigo, salida = self._comparar()
+        self.assertEqual(codigo, 0)
+        (reg,) = salida["registros"]
+        self.assertEqual(reg["diferencias"], [])
+        self.assertEqual(reg["forma"], [{"ruta": "hallazgos[].severidad", "solo_en": "arbol", "encargos": 2}])
+
+    def test_un_valor_anidado_distinto_sale_con_uno_aunque_tambien_cambie_la_forma(self):
+        self._dominio(hallazgos=("otro",), encargo='prioridad: str = "alta"')
+        codigo, salida = self._comparar()
+        self.assertEqual(codigo, 1)
+        (reg,) = salida["registros"]
+        self.assertEqual([(d["encargo"], d["campos"]) for d in reg["diferencias"]],
+                         [("enc_a", ["hallazgos[].id"]), ("enc_b", ["hallazgos[].id"])])
+        self.assertEqual([f["ruta"] for f in reg["forma"]], ["prioridad"])
+
+    def test_una_lista_que_cambia_de_largo_es_diferencia_de_valor(self):
+        self._dominio(hallazgos=("h1", "h2"))
+        codigo, salida = self._comparar()
+        self.assertEqual(codigo, 1)
+        (reg,) = salida["registros"]
+        self.assertEqual([d["campos"] for d in reg["diferencias"]], [["hallazgos"], ["hallazgos"]])
+        self.assertEqual(reg["forma"], [])
+
+    def test_la_opcion_estricta_vuelve_fallo_una_diferencia_de_forma(self):
+        self._dominio(encargo='prioridad: str = "alta"')
+        codigo, salida = self._comparar("--estricto")
+        self.assertEqual(codigo, 1)
+        self.assertFalse(salida["ok"])
+        (reg,) = salida["registros"]
+        self.assertEqual((reg["diferencias"], [f["ruta"] for f in reg["forma"]]), ([], ["prioridad"]))
 
 
 if __name__ == "__main__":
