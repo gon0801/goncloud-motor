@@ -251,6 +251,24 @@ ruta_runtime_encargos_de() {
   fi
 }
 
+# sha_del_arbol <m> <ruta>: el commit en el que está ese árbol de la máquina; != 0 si no se pudo leer.
+sha_del_arbol() {
+  local m=$1 ruta=$2 salida
+  [ -n "$ruta" ] || return 1
+  if [ "$m" = pc ]; then
+    salida="$(ssh_a "$(host_de pc)" "git -C \"$ruta\" rev-parse HEAD" 2>/dev/null)" || return 1
+  else
+    salida="$(en_posix "$m" "$m" "$ruta" <<'REMOTO' 2>/dev/null
+set -euo pipefail
+git -C "$2" rev-parse HEAD
+REMOTO
+)" || return 1
+  fi
+  salida="$(printf '%s' "$salida" | tr -d '\r\n')"
+  [ -n "$salida" ] || return 1
+  printf '%s' "$salida"
+}
+
 # reinicia_supervisor <m>: relanza el supervisor justo después de mover su
 # árbol. En Mac y Mini usa el LaunchAgent: si el plist está instalado pero no
 # cargado, lo carga; si no está instalado, lo dice. En la PC mata solo el
