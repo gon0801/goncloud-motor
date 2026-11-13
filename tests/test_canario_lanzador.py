@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -517,26 +518,45 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         )
 
     def test_no_escribe_en_un_registro_enlazado(self):
+        """SQLite escribe en el registro, su -wal y su -shm: ninguno puede ser el de la base viva."""
         pedido = self.pedido()
         Registro(self.viva).close()
-        vivo, otro = self.viva / "registro.sqlite", self.tmp / "otro.sqlite"
+        otro = self.tmp / "otro.sqlite"
         otro.write_bytes(b"")
-        registro = self.base / "registro.sqlite"
-        for nombre, enlazar in (
-            ("enlace al registro vivo", registro.symlink_to),
-            ("enlace a otro archivo", lambda _: registro.symlink_to(otro)),
-            ("enlace duro al registro vivo", lambda fuente: os.link(fuente, registro)),
-        ):
-            with self.subTest(nombre):
-                enlazar(vivo)
-                try:
-                    with self.assertRaises(canario_lanzador.NoSePuede) as negado:
-                        preparar(pedido)
-                    self.assertEqual(negado.exception.paso, "preparar")
-                finally:
-                    registro.unlink()
+        casos = (
+            ("enlace al vivo", lambda vivo, propio: propio.symlink_to(vivo)),
+            ("enlace a otro archivo", lambda _vivo, propio: propio.symlink_to(otro)),
+            ("enlace duro al vivo", lambda vivo, propio: os.link(vivo, propio)),
+        )
+        for nombre in ("registro.sqlite", "registro.sqlite-wal", "registro.sqlite-shm"):
+            vivo, propio = self.viva / nombre, self.base / nombre
+            if not vivo.exists():
+                vivo.write_bytes(b"")
+            for caso, enlazar in casos:
+                with self.subTest(archivo=nombre, caso=caso):
+                    enlazar(vivo, propio)
+                    try:
+                        with self.assertRaises(canario_lanzador.NoSePuede) as negado:
+                            preparar(pedido)
+                        self.assertEqual(negado.exception.paso, "preparar")
+                    finally:
+                        propio.unlink()
         Registro(self.base).close()
         self.assertEqual(preparar(pedido)[0], "banco")
+
+    def test_un_registro_que_no_deja_leer_las_ramas_no_tumba_la_limpieza(self):
+        bloqueado = sqlite3.OperationalError("database is locked")
+        with mock.patch.object(canario_lanzador, "_ramas", side_effect=bloqueado):
+            codigo, informe = self.correr()
+
+        ident = informe["encargo"]
+        limpieza = {b["resto"]: b for b in informe["limpieza"]}
+        ramas = limpieza["las ramas remotas del encargo"]
+        self.assertEqual(ramas["resultado"], "falló")
+        self.assertIn("database is locked", ramas["causa"])
+        for resto in (f"espacio/{ident}", f"ejecucion/{ident}", f"trabajos/{ident}.json de la flota"):
+            self.assertEqual(limpieza[resto]["resultado"], "borrado", resto)
+        self.assertEqual(codigo, 1)
 
     def test_limpiar_borra_un_espacio_con_archivos_de_solo_lectura(self):
         """Git deja sus objetos de solo lectura; en Windows eso basta para que rmtree no
