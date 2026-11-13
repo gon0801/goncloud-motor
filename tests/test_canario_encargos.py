@@ -21,12 +21,15 @@ from datetime import datetime, timezone
 from typing import get_args
 
 from motor import plataforma
+from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, VersionProducto
 from ops.canario_encargos import (
     ESPERADO,
+    LIMPIEZA,
     PR,
     TABLA,
     ArchivoDesplegado,
     Esperado,
+    FaseVista,
     NoPliega,
     NombreFila,
     Observacion,
@@ -39,6 +42,7 @@ from ops.canario_encargos import (
     leer_esperado,
     main,
     observar,
+    vista,
 )
 from tests import git_env_limpio
 from tests.test_compuerta_e2e import (
@@ -59,21 +63,39 @@ TOPES = Topes(minutos_termina=90, minutos=45, turnos_por_rol=2, rondas=1)
 NO_MEDIDAS = ("no pierde", "no repite", "se detiene")
 
 
+UNO = FaseVista("uno", "preparada", "desplegado", cumplido=True, desplegable=True)
+
+
 def _pliegue(**cambios) -> Pliegue:
     base = Pliegue(
         estado="terminado",
         nivel_autorizado="desplegado",
         nivel_efectivo="desplegado",
+        motivo_efectivo="",
         nivel_alcanzado="desplegado",
+        fase_activa="uno",
         base="main",
         recibido=RECIBIDO,
         cierre=CIERRE,
-        desplegables=("uno",),
+        completo=True,
+        fases=(UNO,),
         turnos=(("responsable", 1), ("revisor", 1)),
         rondas=1,
         violaciones=(),
     )
     return dataclasses.replace(base, **cambios)
+
+
+RESTOS_LIMPIOS = (
+    Resto("rama", "la rama remota r", False),
+    Resto("pr", "ningún PR que cerrar", False),
+    Resto("espacio", "espacio/x", True),
+    Resto("ejecucion", "ejecucion/x", True),
+    Resto("runtime", "runtime/x", False),
+    Resto("despliegue", "despliegues/k", False),
+    Resto("referencia", "la referencia origin/r", False),
+    Resto("proceso", "algún proceso", False),
+)
 
 
 def _obs(**cambios) -> Observacion:
@@ -83,14 +105,9 @@ def _obs(**cambios) -> Observacion:
         pliegue=_pliegue(),
         prs=(PR("uno", 7, "mergeado", "main", SHA),),
         recibos=(Recibo("uno", "aplicado", SHA),),
-        restos=(
-            Resto("rama", "la rama remota r", False),
-            Resto("runtime", "runtime/x", False),
-            Resto("espacio", "espacio/x", True),
-            Resto("ejecucion", "ejecucion/x", True),
-            Resto("proceso", "algún proceso", False),
-        ),
+        restos=RESTOS_LIMPIOS,
         version=Version(SHA, SHA, SHA),
+        actualizado=RECIBIDO,
         archivo=ArchivoDesplegado("corridas/m.txt", "marca", True),
     )
     return dataclasses.replace(base, **cambios)
@@ -132,12 +149,6 @@ class Termina(unittest.TestCase):
         self.assertEqual(fila.resultado, "falla")
         self.assertIn("detenido", fila.observado)
 
-    def test_terminar_en_un_nivel_menor_al_pedido_falla(self):
-        obs = _obs(pliegue=_pliegue(nivel_alcanzado="integrado", nivel_efectivo="integrado"))
-        fila = _fila(obs, "termina")
-        self.assertEqual(fila.resultado, "falla")
-        self.assertIn("integrado", fila.observado)
-
     def test_terminar_despues_del_tope_falla(self):
         fila = _fila(_obs(pliegue=_pliegue(cierre="2026-01-10T12:00:00Z")), "termina")
         self.assertEqual(fila.resultado, "falla")
@@ -145,6 +156,109 @@ class Termina(unittest.TestCase):
 
     def test_sin_registro_no_se_mide(self):
         self.assertEqual(_fila(_obs(pliegue=None), "termina").resultado, "no medido")
+
+    def test_una_entrega_parcial_no_termina_aunque_la_fase_activa_llegue(self):
+        bloqueada = FaseVista("uno", "bloqueada", "integrado", False, True, "la receta falló")
+        dos = FaseVista("dos", "preparada", "desplegado", True, True)
+        obs = _obs(pliegue=_pliegue(completo=False, fases=(bloqueada, dos), fase_activa="dos"))
+        fila = _fila(obs, "termina")
+        self.assertEqual(fila.resultado, "falla")
+        self.assertIn("entrega parcial: la fase uno quedó bloqueada (la receta falló)", fila.observado)
+
+    def test_una_fase_por_debajo_de_lo_que_el_motor_exige_no_termina(self):
+        uno = FaseVista("uno", "preparada", "integrado", cumplido=False, desplegable=True)
+        fila = _fila(_obs(pliegue=_pliegue(fases=(uno, UNO))), "termina")
+        self.assertEqual(fila.resultado, "falla")
+        self.assertIn("la fase uno quedó en nivel integrado", fila.observado)
+
+    def test_el_tope_compara_la_duracion_exacta(self):
+        justo = _fila(_obs(pliegue=_pliegue(cierre="2026-01-10T11:30:00Z")), "termina")
+        self.assertEqual(justo.resultado, "pasa", justo.observado)
+        pasado = _fila(_obs(pliegue=_pliegue(cierre="2026-01-10T11:30:20Z")), "termina")
+        self.assertEqual(pasado.resultado, "falla")
+        self.assertIn("90 min 20 s", pasado.observado)
+
+
+def _encargo(*fases: Fase, nivel: str = "desplegado", **cambios) -> Encargo:
+    return Encargo(
+        id="enc_x", clave="c", huella="h", director="d", texto="t", adjuntos=(),
+        restricciones=(), canal="", estado="terminado", hora_cierre=CIERRE,
+        entrega=EntregaAutorizada(nivel=nivel, repo="r", base="main"),
+        fases=fases, fase_activa=fases[-1].id, **cambios,
+    )
+
+
+RECIBIDO_EV = [{"id": 1, "ts": RECIBIDO, "kind": "recibido", "data": {}}]
+
+
+class TerminaConLasReglasDelMotor(unittest.TestCase):
+    """`vista` juzga cada fase con `nivel_cumplido`, `nivel_objetivo` y
+    `objetivo_completo` del dominio, no con una copia de sus reglas."""
+
+    def termina(self, e: Encargo):
+        return _fila(_obs(pliegue=vista(e, RECIBIDO_EV)), "termina")
+
+    def test_una_ultima_fase_que_no_requiere_despliegue_no_tumba_el_nivel(self):
+        e = _encargo(
+            Fase("uno", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="desplegado"),
+            Fase("dos", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="integrado",
+                 requiere_despliegue=False, despliegue_fuente=".motor.toml"),
+        )
+        self.assertEqual(e.nivel_alcanzado, "integrado")
+        fila = self.termina(e)
+        self.assertEqual(fila.resultado, "pasa", fila.observado)
+        self.assertIn("dos integrado (no requiere despliegue)", fila.observado)
+        self.assertIn("el motor reporta nivel integrado porque mira solo su fase activa, dos",
+                      fila.observado)
+
+    def test_sin_cambios_termina_cuando_se_pidio_pr(self):
+        e = _encargo(
+            Fase("uno", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="sin_cambios",
+                 revisado=VersionProducto("f", ())),
+            nivel="pr",
+        )
+        fila = self.termina(e)
+        self.assertEqual(fila.resultado, "pasa", fila.observado)
+
+    def test_sin_cambios_no_termina_cuando_se_pidio_desplegado(self):
+        e = _encargo(
+            Fase("uno", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="sin_cambios",
+                 revisado=VersionProducto("f", ())),
+        )
+        self.assertEqual(self.termina(e).resultado, "falla")
+
+    def test_el_objetivo_que_el_motor_bajo_se_cumple_y_se_dice(self):
+        e = _encargo(
+            Fase("uno", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="integrado"),
+            nivel_efectivo="integrado", nivel_efectivo_motivo="la máquina no puede desplegar",
+        )
+        fila = self.termina(e)
+        self.assertEqual(fila.resultado, "pasa", fila.observado)
+        self.assertIn("bajó el objetivo de desplegado a integrado: la máquina no puede desplegar",
+                      fila.observado)
+        entregado = _fila(_obs(pliegue=vista(e, RECIBIDO_EV)), "entregado")
+        self.assertEqual(entregado.resultado, "falla")
+
+    def test_una_fase_bloqueada_es_entrega_parcial_aunque_la_activa_este_desplegada(self):
+        e = _encargo(
+            Fase("uno", "r", evidencia="e", estado="bloqueada", ultimo_paso_entrega="integrado",
+                 bloqueo_causa="la receta falló"),
+            Fase("dos", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="desplegado"),
+        )
+        self.assertEqual(e.nivel_alcanzado, "desplegado")
+        fila = self.termina(e)
+        self.assertEqual(fila.resultado, "falla")
+        self.assertIn("entrega parcial", fila.observado)
+
+    def test_una_revision_sin_origen_cuenta_como_independiente(self):
+        eventos = [
+            *RECIBIDO_EV,
+            {"id": 2, "ts": RECIBIDO, "kind": "revision", "data": {}},
+            {"id": 3, "ts": RECIBIDO, "kind": "revision", "data": {"origen": "independiente"}},
+            {"id": 4, "ts": RECIBIDO, "kind": "revision", "data": {"origen": "deepseek"}},
+        ]
+        e = _encargo(Fase("uno", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="desplegado"))
+        self.assertEqual(vista(e, eventos).rondas, 2)
 
 
 class Entregado(unittest.TestCase):
@@ -180,9 +294,41 @@ class Entregado(unittest.TestCase):
         fila = _fila(_obs(prs=(PR("uno", 7, None),)), "entregado")
         self.assertEqual(fila.resultado, "no medido")
 
+    def test_un_merge_commit_vacio_no_coincide_con_un_recibo_sin_sha(self):
+        obs = _obs(prs=(PR("uno", 7, "mergeado", "main", ""),), recibos=(Recibo("uno", "aplicado", ""),))
+        fila = _fila(obs, "entregado")
+        self.assertEqual(fila.resultado, "no medido", fila.observado)
+        self.assertIn("commit de merge del PR #7", fila.observado)
+
+    def test_dos_bases_vacias_no_coinciden(self):
+        obs = _obs(pliegue=_pliegue(base=""), prs=(PR("uno", 7, "mergeado", "", SHA),))
+        fila = _fila(obs, "entregado")
+        self.assertEqual(fila.resultado, "no medido", fila.observado)
+        self.assertIn("base pedida", fila.observado)
+
+    def test_un_pr_sin_base_no_se_da_por_mergeado_en_la_pedida(self):
+        fila = _fila(_obs(prs=(PR("uno", 7, "mergeado", "", SHA),)), "entregado")
+        self.assertEqual(fila.resultado, "no medido", fila.observado)
+
+    def test_un_encargo_cancelado_o_detenido_no_esta_entregado(self):
+        for estado in ("cancelado", "detenido"):
+            self.falla(_obs(pliegue=_pliegue(estado=estado)), f"quedó {estado}")
+
+    def test_desplegado_sin_fases_desplegables_no_esta_entregado(self):
+        sin = FaseVista("uno", "preparada", "integrado", True, desplegable=False)
+        self.falla(_obs(pliegue=_pliegue(fases=(sin,))), "ninguna fase requiere despliegue")
+
+    def test_un_recibo_de_otra_fase_no_cuenta(self):
+        self.falla(_obs(recibos=(Recibo("dos", "aplicado", SHA),)), "la fase uno no tiene recibo")
+
+    def test_sin_ningun_pr_no_esta_entregado(self):
+        self.falla(_obs(prs=()), "ninguna fase tiene PR")
+
     def test_un_encargo_integrado_no_pide_recibo(self):
         obs = _obs(
-            pliegue=_pliegue(nivel_autorizado="integrado", nivel_alcanzado="integrado"),
+            pliegue=_pliegue(
+                nivel_autorizado="integrado", nivel_efectivo="integrado", nivel_alcanzado="integrado",
+            ),
             recibos=(),
         )
         self.assertEqual(_fila(obs, "entregado").resultado, "pasa")
@@ -218,6 +364,40 @@ class Limpio(unittest.TestCase):
         fila = _fila(_obs(restos=(Resto("rama", "la rama remota r", None),)), "limpio")
         self.assertEqual(fila.resultado, "no medido")
 
+    def test_sin_restos_revisados_no_se_mide(self):
+        fila = _fila(_obs(restos=()), "limpio")
+        self.assertEqual(fila.resultado, "no medido")
+        for _tipo, regla, _plazo in LIMPIEZA:
+            self.assertIn(regla, fila.observado)
+
+    def test_una_regla_sin_revisar_no_se_mide(self):
+        restos = tuple(r for r in RESTOS_LIMPIOS if r.tipo != "despliegue")
+        fila = _fila(_obs(restos=restos), "limpio")
+        self.assertEqual(fila.resultado, "no medido")
+        self.assertIn("despliegues/<clave>", fila.observado)
+
+    def test_lo_que_queda_de_un_despliegue_no_esta_limpio(self):
+        restos = (*RESTOS_LIMPIOS, Resto("despliegue", "despliegues/k (pedido.json)", True))
+        fila = _fila(_obs(restos=restos), "limpio")
+        self.assertEqual(fila.resultado, "falla")
+        self.assertIn("despliegues/k (pedido.json)", fila.observado)
+
+    def test_la_copia_vence_justo_a_los_siete_dias(self):
+        antes = _fila(_obs(hora="2026-01-17T10:19:59Z"), "limpio")
+        self.assertEqual(antes.resultado, "pasa", antes.observado)
+        justo = _fila(_obs(hora="2026-01-17T10:20:00Z"), "limpio")
+        self.assertEqual(justo.resultado, "falla")
+
+    def test_la_referencia_vence_con_la_primera_actualizacion_tras_el_cierre(self):
+        restos = (*RESTOS_LIMPIOS, Resto("referencia", "la referencia origin/r", True))
+        antes = _fila(_obs(restos=restos, actualizado=RECIBIDO), "limpio")
+        self.assertEqual(antes.resultado, "pasa", antes.observado)
+        self.assertIn("la próxima actualización", antes.observado)
+        despues = _fila(_obs(restos=restos, actualizado="2026-01-10T10:25:00Z"), "limpio")
+        self.assertEqual(despues.resultado, "falla")
+        sin_hora = _fila(_obs(restos=restos, actualizado=""), "limpio")
+        self.assertEqual(sin_hora.resultado, "no medido")
+
     def test_un_encargo_sin_cerrar_no_se_mide(self):
         fila = _fila(_obs(pliegue=_pliegue(estado="ejecutando", cierre="")), "limpio")
         self.assertEqual(fila.resultado, "no medido")
@@ -230,6 +410,13 @@ class CuestaPoco(unittest.TestCase):
 
     def test_una_ronda_de_mas_cuesta(self):
         self.assertEqual(_fila(_obs(pliegue=_pliegue(rondas=2)), "cuesta poco").resultado, "falla")
+
+    def test_el_tope_de_minutos_no_redondea(self):
+        justo = _fila(_obs(pliegue=_pliegue(cierre="2026-01-10T10:45:00Z")), "cuesta poco")
+        self.assertEqual(justo.resultado, "pasa")
+        pasado = _fila(_obs(pliegue=_pliegue(cierre="2026-01-10T10:45:20Z")), "cuesta poco")
+        self.assertEqual(pasado.resultado, "falla")
+        self.assertIn("45 min 20 s (tope 45)", pasado.observado)
 
     def test_pasar_los_minutos_cuesta(self):
         obs = _obs(pliegue=_pliegue(cierre="2026-01-10T10:50:00Z"))
@@ -289,6 +476,16 @@ class LoEsperado(unittest.TestCase):
             [(f.nombre, f.discrepancia) for f in filas if f.discrepancia],
             [("versión", "dejó de medirse")],
         )
+
+    def test_cada_discrepancia_se_nombra(self):
+        casos = (
+            (_obs(version=Version("", SHA, SHA)), "falla", "dejó de medirse"),
+            (_obs(), "no medido", "ya se mide: actualiza el esperado"),
+            (_obs(version=Version(SHA, OTRO, SHA)), "no medido", "ya se mide: actualiza el esperado"),
+        )
+        for obs, esperado, discrepancia in casos:
+            fila = _fila(obs, "versión", _esperado(versión=esperado))
+            self.assertEqual(fila.discrepancia, discrepancia, (esperado, fila.resultado))
 
     def test_el_esperado_del_repo_nombra_cada_fila(self):
         esperado = leer_esperado(ESPERADO)
@@ -426,10 +623,7 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         esperado = _esperado(limpio="falla")
         self.assertEqual(_fila(obs, "entregado", esperado).resultado, "pasa")
         self.assertEqual(_fila(obs, "legible", esperado).resultado, "pasa")
-        self.assertEqual(
-            _fila(obs, "limpio", esperado).resultado,
-            "falla" if restos[f"la rama remota {rama}"].queda else "pasa",
-        )
+        self.assertEqual(_fila(obs, "limpio", esperado).resultado, "falla")
 
         # Lo que el canario borra o deja vivo, la observación lo ve al volver a mirar.
         _git(self.tmp / "repo.git", "branch", "-D", rama)

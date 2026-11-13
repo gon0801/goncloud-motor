@@ -65,6 +65,13 @@ class LeerEscenario(unittest.TestCase):
         datos["fases"][0]["id"] = 1
         self.rechaza(datos, "fases[0].id")
 
+    def test_un_id_de_fase_que_el_motor_rechaza_se_rechaza(self):
+        for fid in ("u no", " uno", "uno/dos", ""):
+            datos = _base()
+            datos["fases"][0]["id"] = fid
+            with self.subTest(fid=fid):
+                self.rechaza(datos, "fases[0].id")
+
     def test_una_lane_desconocida_se_rechaza(self):
         datos = _base()
         datos["fases"][0]["lane"] = "rapida"
