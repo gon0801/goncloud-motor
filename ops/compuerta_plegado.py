@@ -20,6 +20,7 @@ valores del registro.
 Solo stdlib y Python 3.9: el python3 de ssh en la Mini es el del sistema.
 """
 
+import argparse
 import json
 import os
 import pathlib
@@ -41,17 +42,31 @@ class NoPude(Exception):
 
 
 def existe(ruta, que):
-    """False solo si ahí no hay nada. Un enlace roto o un error de lectura es NoPude."""
+    """False solo si al camino le falta un tramo de verdad.
+
+    os.stat dice "no existe" igual por un tramo que falta que por un enlace roto en
+    cualquier tramo, así que recorre el camino desde la raíz. Un tramo que lstat ve y
+    stat no resuelve es un enlace roto. Eso, o cualquier otro error al mirar, es NoPude.
+    """
     try:
-        os.stat(str(ruta))
-        return True
+        for tramo in (*reversed(ruta.parents), ruta):
+            try:
+                os.stat(str(tramo))
+            except FileNotFoundError:
+                os.lstat(str(tramo))
+                raise NoPude("no pude leer %s: hay un enlace roto en el camino" % que) from None
     except FileNotFoundError:
-        if not any(os.path.islink(str(r)) for r in (ruta, ruta.parent)):
-            return False
-        causa = "hay un enlace roto en el camino"
+        return False
     except OSError as exc:
-        causa = type(exc).__name__
-    raise NoPude("no pude leer %s: %s" % (que, causa))
+        raise NoPude("no pude leer %s: %s" % (que, type(exc).__name__)) from None
+    return True
+
+
+class ArgumentosDelSupervisor(argparse.ArgumentParser):
+    """Un error de argparse es NoPude, no la salida del proceso."""
+
+    def error(self, message):
+        raise NoPude("el LaunchAgent no dice con qué --base arranca el supervisor: " + message)
 
 
 def servicio(home):
@@ -76,22 +91,23 @@ def servicio(home):
         raise NoPude("el plist del LaunchAgent no trae ProgramArguments como lista de textos")
     if argumentos and pathlib.Path(argumentos[0]).exists():
         py = argumentos[0]
-    # El supervisor exige --base y argparse se queda con la última, en cualquiera de las dos formas.
-    texto = ""
-    for i, argumento in enumerate(argumentos):
-        if i and argumentos[i - 1] == "--base":
-            texto = argumento
-        elif argumento.startswith("--base="):
-            texto = argumento[len("--base="):]
-    if not texto or texto.startswith("-"):
+    # argparse, como el supervisor: gana la última, --base=-x vale y --bas también.
+    lector = ArgumentosDelSupervisor(add_help=False)
+    lector.add_argument("--base", type=pathlib.Path)
+    siguen = argumentos[argumentos.index("supervisor") + 1:] if "supervisor" in argumentos else []
+    base = lector.parse_known_args(siguen)[0].base
+    if base is None:
         raise NoPude("el LaunchAgent no dice con qué --base arranca el supervisor")
-    base = pathlib.Path(texto)
     if not base.is_absolute():
         # launchd la resuelve contra el WorkingDirectory; ssh corre desde el home.
         directorio = datos.get("WorkingDirectory")
         if not isinstance(directorio, str) or not directorio:
             raise NoPude("el --base del LaunchAgent es relativo y el plist no trae WorkingDirectory")
         base = pathlib.Path(directorio) / base
+    # `motor instala-encargos` crea la base antes de dar el plist, y el plist manda ahí la
+    # bitácora del servicio: con el plist puesto, que falte es un volumen desmontado.
+    if not existe(base, "la base que declara el LaunchAgent"):
+        raise NoPude("la base que declara el LaunchAgent no existe: %s" % base)
     return py, base
 
 
