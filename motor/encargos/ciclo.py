@@ -17,7 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from motor.fallas import es_sesion_local
-from motor.github import BaseMovida, Conflicto, MergeRechazado, PoliticaBloquea
+from motor.github import PASAJERAS, Conflicto, MergeRechazado, PoliticaBloquea
 
 from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .comprobacion import (
@@ -10322,10 +10322,10 @@ def _paso_entrega_paso(
                 return _traer_la_base_al_pr(registro, enc, gh, hora)
             causa = f"no se pudo integrar el PR #{enc.pr_numero}: {exc}"
             checks = None
-            # Ni la base que cambió en pleno merge ni unos checks sin leer o en
+            # Ni una respuesta pasajera de GitHub ni unos checks sin leer o en
             # marcha son un rechazo de la política: se reintenta sin preguntar.
             espera = ""
-            if isinstance(exc, BaseMovida) and (
+            if isinstance(exc, PASAJERAS) and (
                 _fallos_de_repo_seguidos(enc, causa) + 1 < TOPE_FALLOS_REPO
             ):
                 espera = causa
