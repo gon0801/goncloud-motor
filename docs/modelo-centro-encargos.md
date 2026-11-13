@@ -20,7 +20,8 @@ buena la reconstrucción.
 
 1. Recibe un encargo y lo termina solo, de punta a punta.
 2. Lo que reporta es verdad. "Entregado" significa entregado, desplegado y
-   limpio. No deja ramas, temporales ni basura.
+   limpio. No deja ramas, temporales ni basura. Lo que no se pidió desplegar se
+   reporta con otra palabra.
 3. Aguanta un apagón sin perder trabajo y sin repetirlo.
 4. Un cambio chico cuesta poco.
 5. Cuando algo no se puede, se detiene y dice por qué. No se queda en bucle.
@@ -145,11 +146,11 @@ Un encargo queda `detenido` por una de estas cuatro causas y por ninguna otra:
 una orden del dueño, el tope de una espera, la falta de avance, o un PR mergeado
 en una base distinta de la pedida.
 
-Se agrega un hecho final, `limpio`. Un encargo `terminado` o `cancelado` queda
-`limpio` cuando el motor comprobó que ya no existe nada de lo que creó, salvo la
-copia de trabajo. Esa copia se conserva 7 días por si llega una corrección
-tardía y se borra sola al vencer el plazo. Una copia en ese plazo no impide
-decir "entregado".
+Se agrega un hecho final, `limpio`. Cada recurso que el motor crea tiene una
+regla en la tabla de limpieza: unos se borran y otros se conservan. Un encargo
+`terminado` o `cancelado` queda `limpio` cuando cada recurso cumplió su regla.
+Lo que la regla conserva no cuenta como resto. Son dos cosas: el recibo del
+despliegue, que es el comprobante, y la copia de trabajo durante sus 7 días.
 
 ### Qué significa cada palabra del reporte
 
@@ -157,22 +158,17 @@ El motor usa estas palabras y ninguna otra para decir cómo quedó un encargo.
 
 | El motor dice | Solo cuando |
 |---|---|
-| entregado | Todas las fases cumplieron el nivel pedido, según la tabla de abajo, y el encargo está `limpio` |
+| entregado | El nivel pedido es `desplegado`. Todas las fases están mergeadas en la base pedida, cada una tiene el recibo del despliegue de su commit, y el encargo está `limpio` |
+| integrado | El nivel pedido es `integrado`, o es `pr` y David ya mergeó. Todas las fases están mergeadas en la base pedida y el encargo está `limpio`. No hubo despliegue porque no se pidió |
 | listo para tu merge | El nivel pedido es `pr`. El PR está abierto, listo, revisado y sin bloqueantes. Falta el merge de David |
-| entrega parcial | Alguna fase quedó bloqueada o sin trabajar. El reporte nombra cada fase y su causa |
+| respondido | El nivel pedido es `terminado`. El resultado llegó al director, no hay PR, y el encargo está `limpio` |
+| entrega parcial | Alguna fase quedó bloqueada, sin trabajar o cancelada por David al cerrar su PR. El reporte nombra cada fase y su causa |
 | detenido | El encargo está `detenido`. El reporte dice cuál de las cuatro causas y qué lo reanuda |
-| cancelado | Lo ordenó David, o David cerró el PR sin mergear. El PR quedó cerrado y la rama borrada |
-| falta limpiar | El trabajo terminó y la limpieza no. El reporte nombra lo que queda |
+| cancelado | David ordenó cancelar el encargo, o cerró sin mergear los PR de todas sus fases. Los PR quedaron cerrados y las ramas borradas |
+| falta limpiar | El trabajo terminó y algún recurso no cumplió su regla de limpieza. El reporte nombra lo que queda |
 
-Lo que exige "entregado" depende del nivel pedido. El motor lo comprueba contra
-GitHub y contra el recibo, no contra su propio registro.
-
-| Nivel pedido | Se cumple cuando |
-|---|---|
-| `terminado` | El resultado llegó al director. No hay PR |
-| `pr` | David mergeó el PR. Antes de eso el motor dice "listo para tu merge" |
-| `integrado` | El motor mergeó el PR en la base pedida |
-| `desplegado` | El motor mergeó el PR y existe el recibo del despliegue de ese commit |
+El motor comprueba cada condición contra GitHub y contra el recibo, no contra su
+propio registro.
 
 ### Estados del PR y qué hace el motor en cada uno
 
@@ -183,14 +179,15 @@ El registro guarda el estado observado del PR. Ninguna celda queda sin tratar.
 | Sin PR | Abre el PR | Abre el PR |
 | Borrador | Lo marca listo | Lo marca listo |
 | Abierto | Lo revisa y reporta "listo para tu merge". Lo sigue observando | Lo revisa y lo mergea |
-| Mergeado en la base pedida | Anota que lo integró David y limpia | Anota integrado y despliega si se pidió |
+| Mergeado en la base pedida | Anota que lo integró David, limpia y reporta "integrado" | Anota integrado y despliega si se pidió |
 | Mergeado en otra base | Se detiene y dice cuál base | Se detiene y dice cuál base |
-| Cerrado sin merge | La fase queda cancelada por David. Borra la rama y lo reporta | Igual |
+| Cerrado sin merge | La fase queda cancelada por David y su rama se borra. El encargo sigue con las demás fases | Igual |
 
 ### Limpieza: qué crea el motor y cuándo lo borra
 
-La limpieza es parte de la entrega. Cada recurso tiene una regla, y el motor
-comprueba que el recurso ya no existe antes de anotar `limpio`.
+La limpieza es parte de la entrega. Cada recurso tiene una regla. Antes de
+anotar `limpio`, el motor comprueba que lo que se borra ya no existe y que solo
+queda lo que la regla conserva.
 
 | Lo que el motor crea | Hoy | Regla |
 |---|---|---|
@@ -239,8 +236,8 @@ de activar una versión.
 4. Un encargo de punta a punta en cada máquina. Ese canario de encargos no
    existe todavía. `ops/canario` ejercita el motor de planes, y
    `ops/ensayo_encargos.py` es la receta de un ensayo anterior. El canario se
-   construye antes del paso 4, y su resultado se compara con la lista de la
-   primera sección.
+   construye en el paso 1, y su resultado se compara con la lista de la primera
+   sección.
 
 Una prueba por combinación reportada deja de ser la norma.
 
@@ -250,8 +247,8 @@ Cada paso es un PR que no cambia el comportamiento observable, salvo donde este
 documento lo dice.
 
 1. Red de seguridad. El plegado de registros reales, las invariantes, los
-   límites de tamaño en CI y la suspensión de `medium_mismo_pr` que pide la
-   decisión 6.
+   límites de tamaño en CI, la suspensión de `medium_mismo_pr` que pide la
+   decisión 6 y el canario de encargos.
 2. Escritura. `Registro.append_many`, `anotar` estricto, y los dos pasos con más
    estados a medias: recibir un resultado y cerrar con el juicio.
 3. Reductor por tabla, validación separada y estados con dato tipado.
@@ -276,23 +273,27 @@ documento lo dice.
 David aprobó las siete el 2026-11-12. Cada una entra a
 `motor/encargos/politica.py` en el paso que la hace cumplir.
 
-1. **Palabras del reporte.** Valen las dos tablas de "Qué significa cada palabra
-   del reporte". "Entregado" exige el nivel pedido cumplido y el encargo
-   `limpio`. Con nivel `pr` el motor dice "listo para tu merge" hasta que David
-   mergea.
+1. **Palabras del reporte.** Vale la tabla de "Qué significa cada palabra del
+   reporte". "Entregado" queda reservado para lo desplegado y limpio. Lo
+   mergeado sin despliegue se reporta "integrado". Con nivel `pr` el motor dice
+   "listo para tu merge" hasta que David mergea.
 2. **Limpieza.** Vale la tabla de limpieza, con 7 días para la copia de trabajo.
    En GitHub se activa el borrado de la rama al mergear, como segunda red.
 3. **PR cerrado a mano.** Significa que David cancela esa fase. El motor no la
-   reabre, borra la rama y lo reporta.
-4. **PR mergeado a mano con nivel `pr`.** Cuenta como integrado por David, y el
-   motor limpia.
+   reabre, borra la rama y la reporta como cancelada dentro de "entrega
+   parcial". Si David cierra los PR de todas las fases, el encargo queda
+   "cancelado".
+4. **PR mergeado a mano con nivel `pr`.** Cuenta como integrado por David. El
+   motor limpia y reporta "integrado".
 5. **Tope de las esperas técnicas.** 60 minutos por omisión para las que hoy no
    tienen tope. Al llegar, el encargo se detiene y avisa. Las reglas que ya
    tienen su valor, como los 30 minutos de DeepSeek, no cambian.
 6. **Durante la reconstrucción.** No entran funciones nuevas a `ciclo.py` ni a
    `dominio.py`. La regla `medium_mismo_pr` de `motor/encargos/politica.py`
    queda suspendida para esos dos archivos: sus hallazgos Medium de DeepSeek van
-   a una lista en vez de a otro parche. El paso 1 cambia `politica.py`, la tabla
+   a una lista en vez de a otro parche. Mientras dura la suspensión, un Medium
+   anclado en uno de esos archivos queda fuera de alcance, y por eso
+   `deepseek_bloquea` no lo cuenta. El paso 1 cambia `politica.py`, la tabla
    generada de `AGENTS.md` y `CLAUDE.md`, y sus pruebas. La suspensión termina
    con la reconstrucción.
 7. **Quién reconstruye.** Sesiones directas, con revisión del flujo completo en
