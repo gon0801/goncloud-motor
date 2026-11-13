@@ -1,4 +1,5 @@
-"""El `gh` de los agentes no abre, mergea, cierra, marca listo ni revisa PRs, por ninguna de sus formas."""
+"""El `gh` de los agentes no abre, mergea, cierra, marca listo ni revisa PRs, ni integra una rama sin
+PR, por ninguna de sus formas."""
 
 from __future__ import annotations
 
@@ -39,6 +40,25 @@ BLOQUEADOS = (
     ["api", "graphql", "-F", MUTACION % "addPullRequestReview"],
     ["api", "graphql", "--raw-field", MUTACION % "submitPullRequestReview"],
     ["api", "graphql", "-f", MUTACION % "createPullRequest"],
+    ["pr", "new", "--fill"],
+    ["api", "-X", "PUT", "repos/o/r/pulls/5/merge?merge_method=squash"],
+    ["api", "repos/o/r/merges", "-f", "base=main", "-f", "head=encargo/x"],
+    ["api", "-X", "PATCH", "repos/o/r/git/refs/heads/main", "-f", "sha=abc"],
+    ["api", "--method=PATCH", "/repos/o/r/git/refs/heads/release/1", "-F", "force=true"],
+    ["api", "repos/o/r/git/refs", "-f", "ref=refs/heads/main", "-f", "sha=abc"],
+    ["api", "graphql", "-f", MUTACION % "mergeBranch"],
+    ["api", "graphql", "-f", MUTACION % "updateRef"],
+    ["api", "graphql", "-f", MUTACION % "updateRefs"],
+    ["api", "graphql", "-f", MUTACION % "createRef"],
+    ["api", "/graphql", "-f", MUTACION % "mergePullRequest"],
+    ["api", "graphql", "-F", "query=@consulta.graphql"],
+    ["api", "graphql", "--field=query=@-"],
+    ["api", "graphql", "--input", "cuerpo.json"],
+    ["api", "graphql", "--input=-"],
+    ["api", "-X", "PATCH", "repos/o/r/pulls/5", "--input", "cuerpo.json"],
+    ["alias", "set", "m", "pr merge"],
+    ["alias", "set", "--clobber", "m", "pr merge"],
+    ["alias", "import", "alias.yml"],
 )
 
 PERMITIDOS = (
@@ -60,11 +80,19 @@ PERMITIDOS = (
         "-f",
         'query={repository(owner:"o",name:"r"){pullRequest(number:5){mergeable}}}',
     ],
+    ["api", "repos/o/r/pulls/5/merge?x=1"],
+    ["api", "repos/o/r/git/refs"],
+    ["api", "repos/o/r/git/refs/heads/main"],
+    ["api", "-X", "GET", "repos/o/r/git/refs", "-f", "per_page=5"],
+    ["api", "repos/o/r/git/matching-refs/heads/encargo"],
+    ["api", "graphql", "-F", "n=5", "-f", "query=query($n:Int!){viewer{login}}"],
+    ["api", "repos/o/r/issues/5/comments", "-F", "body=@nota.md"],
+    ["alias", "list"],
 )
 
 
 class TestGhDeLosAgentes(unittest.TestCase):
-    def test_las_cinco_acciones_se_bloquean_por_toda_forma_y_lo_demas_pasa(self):
+    def test_integrar_abrir_o_revisar_se_bloquea_por_toda_forma_y_lo_demas_pasa(self):
         with tempfile.TemporaryDirectory() as tmp:
             real = Path(tmp) / "gh"
             real.write_text('#!/bin/sh\necho real "$@"\n', encoding="utf-8")
