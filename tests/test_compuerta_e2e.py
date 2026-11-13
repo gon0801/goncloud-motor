@@ -6,8 +6,8 @@ El banco recibe el encargo con `ciclo.recibir` y avanza solo con
 únicamente el reloj lógico y el GitHub falso: no inyecta aprobaciones,
 integraciones ni despliegues, no usa `Recorrido.juicio`, `_incorporar`,
 `_paso_entrega` ni `_paso_despliegue`, y no escribe eventos internos. El agente
-de ensayo es un programa de la prueba que viaja en la semilla del repo
-(`trabajo.sh` + `agente.py` con el escenario de la variante embebido); lee el
+de ensayo es `ops/agente_ensayo.py`; la semilla del repo trae el `trabajo.sh`
+que lo llama y el `escenario.json` de la variante. El agente lee el
 prompt y la revisión por el protocolo normal, escribe producto,
 `.interno/fases.json`, comprobaciones declaradas y el juicio en el resultado
 del revisor. El PR, el merge, la comprobación declarada y el despliegue los
@@ -47,11 +47,13 @@ from motor.encargos.dominio import vista
 from motor.encargos.registro import Registro
 from motor.encargos.rutas import elegir
 from motor.github import FakeGitHub
+from ops.agente_ensayo import Comprobacion, Escenario, _escribir
 from tests import git_env_limpio
 from tests.entorno import deja_breakaway, requiere_windows
 
 RAIZ = Path(__file__).resolve().parent.parent
 PY = Path(sys.executable).resolve().as_posix()
+AGENTE = RAIZ / "ops" / "agente_ensayo.py"
 SEPARA_TRABAJADOR = os.name != "nt" or deja_breakaway()
 
 
@@ -161,7 +163,7 @@ class LaSeleccionDelEnsayo(unittest.TestCase):
         # el agente escribe la ejecuta bash y cada "\r" de fin de línea entra
         # en la redirección (F1). El programa del agente fija el salto en toda
         # escritura.
-        arbol = ast.parse(_AGENTE)
+        arbol = ast.parse(AGENTE.read_text(encoding="utf-8"))
         escrituras = [
             n
             for n in ast.walk(arbol)
@@ -181,15 +183,10 @@ class LaSeleccionDelEnsayo(unittest.TestCase):
         escenario = _escenario_tres_fases(
             True, Path(tempfile.gettempdir()) / "dest-compuerta"
         )
-        programa = _AGENTE.replace(
-            "@ESCENARIO@", json.dumps(escenario, ensure_ascii=False, indent=1)
-        )
-        ns: dict = {}
-        exec(compile(programa, "agente.py", "exec"), ns)
         espacio = Path(tempfile.mkdtemp())
         interno = espacio / ".interno"
         interno.mkdir()
-        ns["_escribir"](interno, espacio, "uno")
+        _escribir(escenario, interno, espacio, "uno")
         for nombre in ("d.sh", "c.sh", "r.sh", ".motor.toml"):
             datos = (espacio / nombre).read_bytes()
             self.assertNotIn(b"\r", datos, f"{nombre} con CR")
@@ -205,152 +202,8 @@ class _DeepSeekAprueba(FakeGitHub):
 
 # --------------------------------------------------------------------------- agente de ensayo
 
-_AGENTE = '''"""Agente de ensayo del banco compuerta: un programa de la prueba, no un modelo.
-
-Lee el turno por el protocolo normal (el prompt del turno o la revision.json
-que el lanzador deja en el intento) y escribe producto y juicio. El motor lo
-lanza con `bash trabajo.sh` sobre el espacio del encargo."""
-import json
-import re
-from pathlib import Path
-
-ESCENARIO = json.loads(r"""@ESCENARIO@""")
-
-
-def _intento(espacio: Path) -> Path:
-    raiz = espacio.parent.parent / "ejecucion" / espacio.name
-    return raiz / (raiz / "actual").read_text(encoding="utf-8").strip()
-
-
-def _prompt(espacio: Path, dir_: Path) -> str:
-    arranque = json.loads((dir_ / "arranque.json").read_text(encoding="utf-8"))
-    runtime = espacio.parent.parent / "runtime" / espacio.name / arranque["token"]
-    return (runtime / "prompt.md").read_text(encoding="utf-8")
-
-
-def _fase_activa(prompt: str) -> str:
-    m = re.search(r"Trabaja solo la fase activa \\(([\\w-]+)\\)", prompt)
-    return m.group(1) if m else ""
-
-
-def _fase_activa_del_revisor(prompt: str) -> str:
-    m = re.search(r"(?:cubre solo la|fase final) fase ([\\w-]+):", prompt)
-    return m.group(1) if m else ""
-
-
-def _bloqueantes_del_prompt(prompt: str) -> dict:
-    abiertos = {}
-    for linea in prompt.splitlines():
-        m = re.match(r"^(h_[0-9a-f]+) \\[[a-z_]+\\] (.+)$", linea)
-        if m:
-            abiertos[m.group(1)] = m.group(2).strip()
-    return abiertos
-
-
-def _escribir(interno: Path, espacio: Path, fase: str) -> None:
-    interno.mkdir(parents=True, exist_ok=True)
-    for ruta, contenido in ESCENARIO["producto"].get(fase, {}).items():
-        destino = espacio / ruta
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        destino.write_text(contenido, encoding="utf-8", newline="\\n")
-    (interno / "contexto.md").write_text(
-        "producto de la fase " + fase + " escrito por el agente de ensayo",
-        encoding="utf-8", newline="\\n",
-    )
-    (interno / "evidencia.txt").write_text(
-        "los archivos de la fase " + fase + " quedaron con el contenido del escenario",
-        encoding="utf-8", newline="\\n",
-    )
-    (interno / "cuerpo-pr.md").write_text(
-        "Fase " + fase + " del banco compuerta. Comprobado con las comprobaciones declaradas.",
-        encoding="utf-8", newline="\\n",
-    )
-    declaradas = ESCENARIO.get("comprobaciones", {}).get(fase)
-    if declaradas:
-        (interno / "comprobaciones.json").write_text(
-            json.dumps({"comprobaciones": declaradas}, indent=1),
-            encoding="utf-8", newline="\\n",
-        )
-
-
-def trabajar(espacio: Path, dir_: Path) -> None:
-    interno = espacio / ".interno"
-    prompt = _prompt(espacio, dir_)
-    fase = _fase_activa(prompt)
-    if not fase:
-        # Primera vuelta: organiza el trabajo en fases y toma la primera.
-        (interno / "fases.json").write_text(
-            json.dumps({"fases": ESCENARIO["fases"]}, indent=1),
-            encoding="utf-8", newline="\\n",
-        )
-        fase = ESCENARIO["fases"][0]["id"]
-    _escribir(interno, espacio, fase)
-    abiertos = _bloqueantes_del_prompt(prompt)
-    if abiertos and ESCENARIO.get("arregla", True):
-        for titulo in abiertos.values():
-            for patron, fichas in ESCENARIO.get("arreglos", {}).items():
-                if patron in titulo:
-                    for ruta, contenido in fichas.items():
-                        destino = espacio / ruta
-                        destino.parent.mkdir(parents=True, exist_ok=True)
-                        destino.write_text(contenido, encoding="utf-8", newline="\\n")
-
-
-def revisar(espacio: Path, dir_: Path) -> None:
-    revision = json.loads((dir_ / "revision.json").read_text(encoding="utf-8"))
-    prompt = _prompt(espacio, dir_)
-    fase = _fase_activa_del_revisor(prompt)
-    alcance = str(revision.get("alcance") or "completa")
-    exigido = ESCENARIO.get("exigido", ESCENARIO["producto"]).get(fase, {})
-    cumple = all(
-        (espacio / ruta).is_file()
-        and (espacio / ruta).read_text(encoding="utf-8") == contenido
-        for ruta, contenido in exigido.items()
-    )
-    cubre = _bloqueantes_del_prompt(prompt)
-    juicio = {
-        "version": revision["version"],
-        "evidencia": (
-            "comparé el producto de la fase " + fase + " con el pedido: "
-            + ("coincide" if cumple else "no coincide con lo pedido")
-        ),
-    }
-    if fase in ESCENARIO.get("bloquear_fase", ()) or not cumple:
-        juicio["veredicto"] = "cambios"
-        juicio["bloqueantes"] = [{
-            "criterio": "comportamiento",
-            "titulo": ESCENARIO.get(
-                "titulo_bloqueo",
-                "el producto de la fase " + fase + " no cumple el pedido",
-            ),
-            "reproduccion": "comparar el producto de la fase con el pedido",
-            "ancla": (sorted(exigido) or ["producto"])[0] + ":1",
-        }]
-    else:
-        juicio["veredicto"] = "aprobado"
-        if alcance == "correccion" and cubre and ESCENARIO.get("resuelve", True):
-            juicio["resueltos"] = sorted(cubre)
-        juicio["aprobadas"] = [sorted(exigido)] if exigido else []
-    Path(revision["resultado"]).write_text(
-        json.dumps(juicio, ensure_ascii=False), encoding="utf-8", newline="\\n"
-    )
-
-
-def main() -> None:
-    espacio = Path.cwd()
-    dir_ = _intento(espacio)
-    if (dir_ / "revision.json").is_file():
-        revisar(espacio, dir_)
-    else:
-        trabajar(espacio, dir_)
-
-
-if __name__ == "__main__":
-    main()
-'''
-
 _TRABAJO_SH = """#!/bin/bash
-exec "@PY@" "$(dirname "$0")/agente.py"
+exec "@PY@" "@AGENTE@" "$(dirname "$0")/escenario.json"
 """
 
 _GITATTRS = "* -text\n"
@@ -441,7 +294,7 @@ class Banco:
         nivel: str = "desplegado",
         config: dict | None = None,
         gh_cls=FakeGitHub,
-        escenario: dict,
+        escenario: Escenario,
         pedido: str = "banco compuerta: deja el producto de cada fase con su despliegue local",
     ):
         self.tmp = tmp
@@ -478,18 +331,18 @@ class Banco:
         self.ident = salida["encargo"]
         self.espacio = self.base / "espacio" / self.ident
 
-    def _semilla(self, tmp: Path, escenario: dict) -> None:
+    def _semilla(self, tmp: Path, escenario: Escenario) -> None:
         semilla = tmp / "semilla"
         semilla.mkdir()
         (semilla / ".gitattributes").write_text(_GITATTRS, encoding="utf-8")
         (semilla / "base.txt").write_text("base\n", encoding="utf-8")
         (semilla / "trabajo.sh").write_text(
-            _TRABAJO_SH.replace("@PY@", PY), encoding="utf-8", newline="\n"
+            _TRABAJO_SH.replace("@PY@", PY).replace("@AGENTE@", AGENTE.as_posix()),
+            encoding="utf-8",
+            newline="\n",
         )
-        (semilla / "agente.py").write_text(
-            _AGENTE.replace(
-                "@ESCENARIO@", json.dumps(escenario, ensure_ascii=False, indent=1)
-            ),
+        (semilla / "escenario.json").write_text(
+            json.dumps(escenario, ensure_ascii=False, indent=1),
             encoding="utf-8",
             newline="\n",
         )
@@ -586,12 +439,12 @@ class CompuertaReal(unittest.TestCase):
         if not SEPARA_TRABAJADOR:
             _trabajador_contenido(self)
 
-    def banco(self, escenario: dict, **kw) -> Banco:
+    def banco(self, escenario: Escenario, **kw) -> Banco:
         banco = Banco(self.tmp, escenario=escenario, **kw)
         self.addCleanup(banco.reg.close)
         return banco
 
-    def _comprobaciones(self, fases: dict) -> dict:
+    def _comprobaciones(self, fases: dict[str, str]) -> dict[str, list[Comprobacion]]:
         return {
             fase: [{
                 "objetivo": "saludo.txt con la palabra de la fase",
@@ -637,7 +490,7 @@ class CompuertaReal(unittest.TestCase):
         )["prs"]
 
 
-def _escenario_tres_fases(receta_creada: bool, destino: Path) -> dict:
+def _escenario_tres_fases(receta_creada: bool, destino: Path) -> Escenario:
     """Tres fases con despliegue local inocuo. Con `receta_creada`, la fase
     uno escribe en su producto el .motor.toml y la receta que las siguientes
     usan; sin ella, la receta ya está en la semilla (lo aporta la prueba)."""
