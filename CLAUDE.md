@@ -32,8 +32,9 @@ Los mismos comandos corren en local y en el job `gate` de `.github/workflows/qua
   `json.loads(...read_text...)` fuera de `motor/io.py`; solo `motor/daemon.py` queda exento
   por la prohibición de tocar el modo planes.
 - `python3 tools/calidad.py tamano --base origin/main` falla si un archivo de `motor/` de más
-  de 1,000 líneas o una función de más de 100 mide más que en la base, o si uno que en la base
-  no existe o cabe pasa del límite. Los tamaños se leen de git; no hay línea base que editar.
+  de 1,000 líneas o una función de más de 100 mide más que en la base, en líneas o en tokens
+  de código, o si uno que en la base no existe o cabe pasa del límite. Borrar comentarios o
+  líneas en blanco no deja espacio. Los tamaños se leen de git; no hay línea base que editar.
   Se arregla sacando código de ahí.
 - `python3 tools/pruebas_nuevas.py --base origin/main` falla si una prueba nueva o cambiada
   pasa con el código de la base, salvo que lleve `# no-roja-en-base: <razón>`.
