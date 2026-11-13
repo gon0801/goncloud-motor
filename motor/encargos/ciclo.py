@@ -9280,18 +9280,39 @@ def _anotar_conciliacion(
 
 
 def _anotar_impedimento_de_fase(
-    registro: Registro, enc: Encargo, fase: Fase, causa: str, hora: str
+    registro: Registro, enc: Encargo, fase: Fase, causa: str, hora: str,
+    intentos: int | None = None,
 ) -> Encargo:
     """Un despliegue terminal deja la causa visible y la fase deja de retener
-    el cierre. No marca una espera global ni relanza roles."""
+    el cierre. No marca una espera global ni relanza roles. `intentos` da
+    identidad al hecho de cada lanzamiento; sin él se conserva el dedupe."""
     clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
     _anotar_impedimento(
         registro, enc, clase, causa,
         "que el despliegue pueda completarse o se retire del pedido", hora,
     )
+    huella = f"{clase}:{intentos}" if intentos is not None else clase
     return _anotar_conciliacion(
-        registro, enc, fase, "impedimento", hora, causa=causa, huella=clase
+        registro, enc, fase, "impedimento", hora, causa=causa, huella=huella
     )
+
+
+def _vuelve_a_lanzar(registro: Registro, enc: Encargo, fase: Fase, recibo) -> bool:
+    """Si `iniciar` va a lanzar o ya tiene un trabajador, frente a solo leer un
+    recibo terminal. Evita marcar `en_curso` en una relectura fallida."""
+    from . import despliegue
+
+    if recibo is None:
+        return True
+    estado = str(recibo.get("estado") or "")
+    if estado in ("ejecutando", "ocupado"):
+        return True
+    if estado == "aplicado":
+        return False
+    if estado in ("fallido", "esperando"):
+        ordenes = despliegue.continuaciones(registro, enc.id)
+        return ordenes > int(recibo.get("continuadas") or 0)
+    return True
 
 
 def _paso_despliegue_fase(
@@ -9310,11 +9331,23 @@ def _paso_despliegue_fase(
     if fase.despliegue_espera_en and hora < fase.despliegue_espera_en:
         # Una receta que no arrancó espera su ventana antes de reintentarse.
         return enc
+    recibo = despliegue.recibo_de(registro, enc, fase)
+    if fase.despliegue_espera_agotada:
+        # Sin una orden nueva no se consulta el remoto ni se reintenta: el tope
+        # también detiene los fetch, no solo `iniciar`.
+        ordenes = despliegue.continuaciones(registro, enc.id)
+        if ordenes <= int(fase.despliegue_orden_consumida):
+            return enc
+        # Una orden nueva reabre la espera agotada una vez.
+        enc = _anotar_conciliacion(
+            registro, enc, fase, "reintento", hora,
+            huella=f"agotada:{ordenes}", ordenes=ordenes,
+        )
+        fase = next((f for f in enc.fases if f.id == fase.id), fase)
     # Un fallo transitorio al traer el merge commit no debe dejar integrada una
     # fase que no puede leer su receta: se reintenta al reanudar el despliegue.
     _asegurar_commit_local(espacio, fase.integrado_sha, enc.entrega.base)
     libro = despliegue.ocupado(registro, enc, fase)
-    recibo = despliegue.recibo_de(registro, enc, fase)
     estado_recibo = str((recibo or {}).get("estado") or "")
     # El libro del tope solo manda si la receta sigue declarando el destino
     # ocupado. Un recibo fallido o en curso tiene su propia causa y no puede
@@ -9332,7 +9365,10 @@ def _paso_despliegue_fase(
                 "Producción no cambió: cada reversa terminó sin cambios. "
                 "Una orden de continuar puede reintentar el mismo SHA."
             )
-            return _anotar_impedimento_de_fase(registro, enc, fase, causa, hora)
+            return _anotar_impedimento_de_fase(
+                registro, enc, fase, causa, hora,
+                intentos=int(fase.despliegue_intentos),
+            )
         reanuda = _reanuda_desde(
             str(libro.get("ultimo") or hora), ESPERAS_OCUPADO_S[intentos - 1]
         )
@@ -9356,6 +9392,14 @@ def _paso_despliegue_fase(
             registro, enc, fase, "politica", hora, **politica.datos()
         )
         fase = next((f for f in enc.fases if f.id == fase.id), fase)
+    if _vuelve_a_lanzar(registro, enc, fase, recibo):
+        intentos_lanzamiento = int(fase.despliegue_intentos) + 1
+        enc = _anotar_conciliacion(
+            registro, enc, fase, "en_curso", hora,
+            huella=f"{fase.integrado_sha}:{intentos_lanzamiento}",
+            intentos=intentos_lanzamiento,
+        )
+        fase = next((f for f in enc.fases if f.id == fase.id), fase)
     resultado = despliegue.iniciar(registro, enc, espacio, politica, hora, fase)
     estado = str(resultado.get("estado") or "")
     if estado in ("fallido", "incierto"):
@@ -9366,7 +9410,10 @@ def _paso_despliegue_fase(
         if resultado.get("recibo"):
             causa += "; recibo: " + str(resultado["recibo"])
         causa = f"fase {fase.id}: {causa}"
-        return _anotar_impedimento_de_fase(registro, enc, fase, causa, hora)
+        return _anotar_impedimento_de_fase(
+            registro, enc, fase, causa, hora,
+            intentos=int(fase.despliegue_intentos),
+        )
     if estado == "esperando":
         # La receta no arrancó (falta la receta, el SHA o la autoridad). La
         # causa queda visible y la fase espera antes de reintentarse, sin
@@ -9378,7 +9425,18 @@ def _paso_despliegue_fase(
         causa = f"fase {fase.id}: {causa}"
         if intentos >= TOPE_ESPERA:
             causa += f" (la receta no arrancó {intentos} veces)"
-            return _anotar_impedimento_de_fase(registro, enc, fase, causa, hora)
+            enc = _anotar_impedimento_de_fase(
+                registro, enc, fase, causa, hora,
+                intentos=int(fase.despliegue_intentos),
+            )
+            return _anotar_conciliacion(
+                registro, enc, fase, "espera_agotada", hora,
+                causa=causa,
+                huella=(
+                    f"agotada:{intentos}:"
+                    f"{despliegue.continuaciones(registro, enc.id)}"
+                ),
+            )
         clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
         _anotar_impedimento(
             registro, enc, clase, causa,

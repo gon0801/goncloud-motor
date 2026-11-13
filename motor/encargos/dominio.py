@@ -504,6 +504,15 @@ class Fase:
     # Intentos consumidos por esa espera; al tope la fase deja de retener el
     # cierre y su causa queda como impedimento terminal.
     despliegue_espera_intentos: int = 0
+    # Una receta conciliada lanzada y todavía sin recibo final. El cierre no
+    # puede retirar la autorización mientras el trabajador está entre pasos.
+    despliegue_en_curso: bool = False
+    # La espera agotó su tope: no se reintenta sin una orden nueva.
+    despliegue_espera_agotada: bool = False
+    # Última orden de continuar consumida por un reintento de esta fase.
+    despliegue_orden_consumida: int = 0
+    # Intentos de lanzamiento anotados; da identidad al `en_curso` de cada uno.
+    despliegue_intentos: int = 0
     inspecciones_consumidas: tuple[str, ...] = ()
     entrega_bloqueada_sha: str = ""
     # Resultado del CI real del PR, leído una sola vez después de entregar.
@@ -3150,7 +3159,11 @@ def _espera_despliegue_pendiente(e: Encargo, fases: tuple[Fase, ...]) -> bool:
         and not f.desplegado_recibo
         and not f.despliegue_impedido
         and f.requiere_despliegue is not False
-        and (f.estado != "bloqueada" or bool(f.despliegue_espera_en))
+        and (
+            f.estado != "bloqueada"
+            or bool(f.despliegue_espera_en)
+            or f.despliegue_en_curso
+        )
         for f in fases
     )
 
@@ -3941,7 +3954,66 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
         if not causa:
             raise TransicionIlegal("la conciliación impedida no trae causa")
         return replace(
-            con_fase(e, replace(fase, despliegue_impedido=causa[:500])),
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_impedido=causa[:500],
+                    despliegue_en_curso=False,
+                ),
+            ),
+            hora=hora or e.hora,
+        )
+    if paso == "en_curso":
+        # La receta se lanzó y el trabajador corre entre pasos: el cierre no
+        # puede retirar su autorización. Un intento nuevo limpia el terminal.
+        intentos = int(d.get("intentos") or (fase.despliegue_intentos + 1))
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_en_curso=True,
+                    despliegue_espera_en="",
+                    despliegue_impedido="",
+                    despliegue_espera_agotada=False,
+                    despliegue_intentos=intentos,
+                ),
+            ),
+            hora=hora or e.hora,
+        )
+    if paso == "espera_agotada":
+        causa = str(d.get("causa") or "").strip()
+        if not causa:
+            raise TransicionIlegal("la espera agotada no trae causa")
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_impedido=causa[:500],
+                    despliegue_espera_en="",
+                    despliegue_en_curso=False,
+                    despliegue_espera_agotada=True,
+                ),
+            ),
+            hora=hora or e.hora,
+        )
+    if paso == "reintento":
+        # Una orden nueva reabre la espera agotada una vez y resetea el conteo.
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_impedido="",
+                    despliegue_espera_en="",
+                    despliegue_espera_intentos=0,
+                    despliegue_en_curso=False,
+                    despliegue_espera_agotada=False,
+                    despliegue_orden_consumida=int(d.get("ordenes") or 0),
+                ),
+            ),
             hora=hora or e.hora,
         )
     if paso == "espera":
@@ -3966,6 +4038,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
                     fase,
                     despliegue_espera_en=reanuda_en,
                     despliegue_espera_intentos=intentos,
+                    despliegue_en_curso=False,
                 ),
             ),
             hora=hora or e.hora,
@@ -3985,6 +4058,9 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
             despliegue_impedido="",
             despliegue_espera_en="",
             despliegue_espera_intentos=0,
+            despliegue_en_curso=False,
+            despliegue_espera_agotada=False,
+            despliegue_orden_consumida=0,
             **datos,
         )
         if str(d.get("fuente") or ""):
@@ -4012,6 +4088,9 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
                 despliegue_impedido="",
                 despliegue_espera_en="",
                 despliegue_espera_intentos=0,
+                despliegue_en_curso=False,
+                despliegue_espera_agotada=False,
+                despliegue_orden_consumida=0,
             ),
             f"despliegue {recibo} verificado",
         )

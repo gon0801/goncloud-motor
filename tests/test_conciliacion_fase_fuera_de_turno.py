@@ -495,6 +495,146 @@ class ConciliacionCierre(_Banco):
         self.assertEqual(b.estado, "bloqueada")
 
 
+class ConciliacionCierreDuranteReceta(_Banco):
+    RECETA_EN_REPO = True
+
+    def _barrer_con_cierre(self, cierre: str):
+        reg, ident, gh, fusionado = self._preparar(dependiente=True)
+        correr_real = despliegue._correr
+
+        def correr(reg_worker, encargo, paso, script, copia, env, bash):
+            salida = correr_real(
+                reg_worker, encargo, paso, script, copia, env, bash
+            )
+            if paso == "desplegar":
+                self.assertEqual(salida[0].returncode, 0)
+                if cierre == "confirmado":
+                    self._completar_b(reg, ident)
+                else:
+                    reg.anotar(
+                        ident,
+                        {
+                            "kind": "bloqueo_fase",
+                            "data": {
+                                "fase": "B",
+                                "evidencia": "B entregada con pendientes",
+                                "causa": "relevo agotado",
+                                "hora": ciclo.ahora_iso(),
+                            },
+                        },
+                        f"review-bloqueo-B-{cierre}",
+                    )
+            return salida
+
+        with mock.patch.object(despliegue, "_correr", side_effect=correr):
+            self._barrer(reg, gh, vueltas=1)
+        self._barrer(reg, gh, vueltas=4)
+        return reg.fold(ident), fusionado
+
+    def test_el_cierre_confirmado_espera_al_trabajador_de_a(self):
+        enc, fusionado = self._barrer_con_cierre("confirmado")
+        a = self._fase(enc, "A")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        self.assertEqual(a.estado, "preparada")
+        self.assertTrue(a.desplegado_recibo)
+        self.assertNotEqual(enc.estado, "terminado")
+        self.assertEqual(_fase_disponible(enc.fases).id, "C")
+
+    def test_el_cierre_con_pendientes_espera_al_trabajador_de_a(self):
+        enc, fusionado = self._barrer_con_cierre("bloqueado")
+        a = self._fase(enc, "A")
+        b = self._fase(enc, "B")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        self.assertEqual(a.estado, "preparada")
+        self.assertTrue(a.desplegado_recibo)
+        self.assertEqual(b.estado, "bloqueada")
+        self.assertEqual(enc.fase_activa, "C")
+        self.assertNotEqual(enc.estado, "terminado")
+
+    def _barrer_con_cierre_tras_agotada(self, cierre: str):
+        reg, ident, gh, fusionado = self._preparar(
+            dependiente=True, receta_en_repo=True
+        )
+        real_git = ciclo._git
+        inicio = datetime.now(timezone.utc)
+
+        def sin_fetch(espacio, *args):
+            if args and args[0] == "fetch":
+                return subprocess.CompletedProcess(
+                    ["git", *args], 1, "", "red caída"
+                )
+            return real_git(espacio, *args)
+
+        with mock.patch.object(ciclo, "_git", side_effect=sin_fetch):
+            self._barrer(reg, gh, vueltas=5, salto_s=40, inicio=inicio)
+
+        reg.anotar(
+            ident,
+            {
+                "kind": "orden",
+                "data": {
+                    "accion": "continuar", "clave": "retry-A",
+                    "hora": (inicio + timedelta(seconds=170)).isoformat(),
+                },
+            },
+            "orden-retry-A",
+        )
+
+        correr_real = despliegue._correr
+
+        def correr(reg_worker, encargo, paso, script, copia, env, bash):
+            salida = correr_real(
+                reg_worker, encargo, paso, script, copia, env, bash
+            )
+            if paso == "desplegar":
+                self.assertEqual(salida[0].returncode, 0)
+                if cierre == "confirmado":
+                    self._completar_b(reg, ident)
+                else:
+                    reg.anotar(
+                        ident,
+                        {
+                            "kind": "bloqueo_fase",
+                            "data": {
+                                "fase": "B",
+                                "evidencia": "B entregada con pendientes",
+                                "causa": "relevo agotado",
+                                "hora": ciclo.ahora_iso(),
+                            },
+                        },
+                        "review-bloqueo-B-retry",
+                    )
+            return salida
+
+        with mock.patch.object(despliegue, "_correr", side_effect=correr):
+            self._barrer(
+                reg, gh, vueltas=1,
+                inicio=inicio + timedelta(seconds=200),
+            )
+        self._barrer(
+            reg, gh, vueltas=4,
+            inicio=inicio + timedelta(seconds=260),
+        )
+        return reg.fold(ident)
+
+    def test_el_cierre_confirmado_espera_al_reintento_de_a(self):
+        enc = self._barrer_con_cierre_tras_agotada("confirmado")
+        a = self._fase(enc, "A")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        self.assertEqual(a.estado, "preparada")
+        self.assertNotEqual(enc.estado, "terminado")
+        self.assertEqual(_fase_disponible(enc.fases).id, "C")
+
+    def test_el_cierre_con_pendientes_espera_al_reintento_de_a(self):
+        enc = self._barrer_con_cierre_tras_agotada("bloqueado")
+        a = self._fase(enc, "A")
+        b = self._fase(enc, "B")
+        self.assertEqual(a.nivel_alcanzado, "desplegado")
+        self.assertEqual(a.estado, "preparada")
+        self.assertEqual(b.estado, "bloqueada")
+        self.assertEqual(_fase_disponible(enc.fases).id, "C")
+
+
 class PlegadoDeEspera(_Banco):
     def test_una_espera_anterior_sin_intentos_se_pliega(self):
         reg, ident, espacio = self.encargo(self._fases(dependiente=True))
@@ -589,6 +729,31 @@ class ConciliacionFallida(_Banco):
         )
         self.assertEqual(a.estado, "bloqueada")
         self.assertEqual(a.nivel_alcanzado, "integrado")
+
+    def test_releer_el_recibo_fallido_no_marca_en_curso(self):
+        self.hacer_receta_fallida()
+        reg, ident, gh, fusionado = self._preparar(dependiente=True)
+        self._barrer(reg, gh, vueltas=3)
+        enc = reg.fold(ident)
+        a = self._fase(enc, "A")
+        self.assertEqual(a.integrado_sha, fusionado.merge_commit)
+        self.assertFalse(a.despliegue_en_curso)
+        self.assertTrue(a.despliegue_impedido)
+
+        reg.anotar(
+            ident,
+            {
+                "kind": "bloqueo_fase",
+                "data": {
+                    "fase": "B", "evidencia": "B entregada con pendientes",
+                    "causa": "relevo agotado", "hora": ciclo.ahora_iso(),
+                },
+            },
+            "review-bloqueo-B-releer",
+        )
+        self._barrer(reg, gh, vueltas=4)
+
+        self.assertEqual(reg.fold(ident).estado, "terminado")
 
 
 class ConciliacionOcupadaAlTope(_Banco):
@@ -890,6 +1055,93 @@ class ConciliacionFetchTransitorio(_Banco):
         self._barrer(reg, gh, vueltas=2)
 
         self.assertEqual(reg.fold(ident).estado, "terminado")
+
+    def test_el_tope_de_espera_no_reintenta_en_cada_barrido(self):
+        reg, ident, gh, fusionado = self._preparar(
+            dependiente=True, receta_en_repo=True
+        )
+        real_git, real_iniciar = ciclo._git, despliegue.iniciar
+        inicio, intentos = datetime.now(timezone.utc), []
+
+        def sin_fetch(espacio, *args):
+            if args and args[0] == "fetch":
+                return subprocess.CompletedProcess(
+                    ["git", *args], 1, "", "red caída"
+                )
+            return real_git(espacio, *args)
+
+        def iniciar(*args, **kwargs):
+            resultado = real_iniciar(*args, **kwargs)
+            intentos.append(resultado.get("estado"))
+            return resultado
+
+        with mock.patch.object(
+            ciclo, "_git", side_effect=sin_fetch
+        ), mock.patch.object(despliegue, "iniciar", side_effect=iniciar):
+            self._barrer(reg, gh, vueltas=5, salto_s=40, inicio=inicio)
+            self.assertEqual(len(intentos), 5, intentos)
+            self._barrer(
+                reg, gh, vueltas=3, salto_s=1,
+                inicio=inicio + timedelta(seconds=161),
+            )
+            self.assertEqual(len(intentos), 5, intentos)
+
+    def test_el_segundo_tope_no_reutiliza_el_evento_y_no_hace_fetch(self):
+        reg, ident, gh, fusionado = self._preparar(
+            dependiente=True, receta_en_repo=True
+        )
+        real_git, real_iniciar = ciclo._git, despliegue.iniciar
+        inicio, intentos, fetches = datetime.now(timezone.utc), [], []
+
+        def sin_fetch(espacio, *args):
+            if args and args[0] == "fetch":
+                fetches.append(args)
+                return subprocess.CompletedProcess(
+                    ["git", *args], 1, "", "red caída"
+                )
+            return real_git(espacio, *args)
+
+        def iniciar(*args, **kwargs):
+            resultado = real_iniciar(*args, **kwargs)
+            intentos.append(resultado.get("estado"))
+            return resultado
+
+        with mock.patch.object(
+            ciclo, "_git", side_effect=sin_fetch
+        ), mock.patch.object(despliegue, "iniciar", side_effect=iniciar):
+            self._barrer(reg, gh, vueltas=5, salto_s=40, inicio=inicio)
+            self.assertEqual(len(intentos), 5, intentos)
+            fetch_tope = len(fetches)
+            self._barrer(
+                reg, gh, vueltas=3, salto_s=1,
+                inicio=inicio + timedelta(seconds=161),
+            )
+            self.assertEqual(len(intentos), 5, intentos)
+            self.assertEqual(len(fetches), fetch_tope)
+
+            reg.anotar(
+                ident,
+                {
+                    "kind": "orden",
+                    "data": {
+                        "accion": "continuar", "clave": "retry-A",
+                        "hora": (inicio + timedelta(seconds=170)).isoformat(),
+                    },
+                },
+                "orden-retry-A-tope",
+            )
+            self._barrer(
+                reg, gh, vueltas=5, salto_s=40,
+                inicio=inicio + timedelta(seconds=200),
+            )
+            self.assertEqual(len(intentos), 10, intentos)
+            fetch_tope2 = len(fetches)
+            self._barrer(
+                reg, gh, vueltas=3, salto_s=1,
+                inicio=inicio + timedelta(seconds=361),
+            )
+            self.assertEqual(len(intentos), 10, intentos)
+            self.assertEqual(len(fetches), fetch_tope2)
 
     def test_el_merge_commit_se_vuelve_a_buscar_al_desplegar(self):
         reg, ident, gh, fusionado = self._preparar(
