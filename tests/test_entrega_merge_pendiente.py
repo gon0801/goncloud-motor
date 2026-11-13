@@ -251,6 +251,70 @@ class OtrasRespuestasPasajerasAlMergear(unittest.TestCase):
         self.assertTrue(any("Head branch was modified" in c for c in causas), causas)
 
 
+_POLITICA = RuntimeError(
+    "X Pull request #1 is not mergeable: the base branch policy prohibits the merge."
+)
+
+
+def _en_orden(*respuestas):
+    """El merge `n` recibe la respuesta `n` del CLI; la última se repite."""
+    merges = []
+
+    def cli(*args):
+        if args[:2] == ("pr", "merge"):
+            merges.append(args)
+        respuesta = respuestas[min(len(merges), len(respuestas)) - 1]
+        if isinstance(respuesta, BaseException):
+            raise respuesta
+        return respuesta(*args)
+
+    return cli
+
+
+def _sin_leer_checks(fabrica):
+    def fabrica_sin_checks(directorio):
+        gh = fabrica(directorio)
+
+        def checks_requeridos(repo, numero, sha):
+            raise RuntimeError("gh pr checks 1: HTTP 503: Service Unavailable")
+
+        gh.checks_requeridos = checks_requeridos
+        return gh
+
+    return fabrica_sin_checks
+
+
+class CadaRespuestaConSuSerie(unittest.TestCase):
+    """Las esperas de un tipo no gastan los intentos de otro tipo."""
+
+    def recorrer(self, fabrica):
+        tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+        vuelta, r = _entrega_pr(self, tmp, "merge-series", fabrica, nivel="integrado")
+        _hasta_dejar_de_esperar(vuelta, r, vuelta("hola"))
+        barrer(r.reg, ahora_iso(), time.time(), None, gh=vuelta.gh)
+        e = r.fold()
+        self.assertNotEqual(e.estado, "esperando_reintento")
+        self.assertEqual(e.nivel_alcanzado, "pr")
+        self.assertEqual(r.eventos("pregunta"), [])
+        return len(vuelta.gh.intentos), [i.causa for i in e.impedimentos if i.clase == "merge"]
+
+    def test_dos_lecturas_de_checks_fallidas_dejan_a_la_base_movida_sus_tres_intentos(self):
+        merges, causas = self.recorrer(_sin_leer_checks(_github_contesta(
+            _en_orden(_POLITICA, _POLITICA, RuntimeError(_BASE_MODIFICADA)), veces=99,
+        )))
+        self.assertEqual(merges, 2 + 3)
+        self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
+
+    def test_dos_bases_movidas_dejan_al_5xx_sus_tres_intentos(self):
+        error_502, _ = _PASAJERAS["5xx"]
+        merges, causas = self.recorrer(_github_contesta(
+            _en_orden(RuntimeError(_BASE_MODIFICADA), RuntimeError(_BASE_MODIFICADA), error_502),
+            veces=99,
+        ))
+        self.assertEqual(merges, 2 + 3)
+        self.assertTrue(any("HTTP 502" in c for c in causas), causas)
+
+
 class EntregaMergePendiente(unittest.TestCase):
     def preparar(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
