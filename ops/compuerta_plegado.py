@@ -64,6 +64,12 @@ def servicio(home):
         py = argumentos[0]
     if "--base" in argumentos[:-1]:
         base = pathlib.Path(argumentos[argumentos.index("--base") + 1])
+        if not base.is_absolute():
+            # launchd la resuelve contra el WorkingDirectory; ssh corre desde el home.
+            directorio = datos.get("WorkingDirectory")
+            if not isinstance(directorio, str) or not directorio:
+                raise NoPude("el --base del LaunchAgent es relativo y el plist no trae WorkingDirectory")
+            base = pathlib.Path(directorio) / base
     return py, base
 
 
