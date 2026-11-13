@@ -30,6 +30,7 @@ from unittest import mock
 from motor import plataforma
 from motor.encargos.registro import Registro
 from motor.github import FakeGitHub
+from motor.servicio import vincular_base
 from ops import canario_encargos, canario_lanzador
 from ops.canario_encargos import Fila
 from ops.canario_lanzador import Borrado, Informe, Pedido, main, preparar
@@ -38,6 +39,34 @@ from tests.test_compuerta_e2e import _git
 RAIZ = Path(__file__).resolve().parents[1]
 FALSO = RAIZ / "tests" / "canario_supervisor_falso.py"
 CERRADOS = ("terminado", "detenido", "cancelado")
+INFORME = "canario-informe.json"
+
+# El lanzador como proceso propio, con el GitHub falso y el supervisor que se le pasen,
+# y SIGHUP como lo recibe un proceso de ssh aunque quien corre la prueba lo ignore.
+_LANZADOR = (
+    "import json, signal, sys\n"
+    "from pathlib import Path\n"
+    "signal.signal(signal.SIGHUP, signal.SIG_DFL)\n"
+    "from motor.github import FakeGitHub\n"
+    "from ops.canario_lanzador import main\n"
+    "argv, falso, supervisor = json.loads(sys.argv[1]), Path(sys.argv[2]), json.loads(sys.argv[3])\n"
+    "raise SystemExit(main(argv, gh=FakeGitHub(falso), supervisor=supervisor))\n"
+)
+
+
+class _SesionQueSeCae(io.StringIO):
+    """La salida de ssh en la PC al caerse la sesión: desde la línea que trae `tras`,
+    escribir falla con EINVAL."""
+
+    def __init__(self, tras: str = ""):
+        super().__init__()
+        self.tras, self.caida = tras, not tras
+
+    def write(self, texto: str) -> int:
+        if self.caida:
+            raise OSError(errno.EINVAL, "Invalid argument")
+        self.caida = self.tras in texto
+        return super().write(texto)
 
 _TRABAJO_SH = """#!/bin/bash
 set -euo pipefail
@@ -67,6 +96,11 @@ _ESCENARIO = {
 def _matar(pid_en: Path) -> None:
     with contextlib.suppress(OSError, ValueError):
         os.kill(int(pid_en.read_text(encoding="utf-8")), signal.SIGKILL)
+
+
+def _matar_grupo(pid_en: Path) -> None:
+    with contextlib.suppress(OSError, ValueError):
+        os.killpg(int(pid_en.read_text(encoding="utf-8")), signal.SIGKILL)
 
 
 def _matar_identidad(ruta: Path) -> None:
@@ -161,16 +195,22 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         trabajador del motor corta el despliegue y corre la reversa hasta el final."""
         return {"ops/despliega.sh": "sleep 600\n", "ops/rollback.sh": f"set -eu\n{reversa}\n"}
 
+    def argv(self, *extra: str) -> list[str]:
+        if "--tope-min" not in extra:
+            # Un encargo que no avanza falla al tope y no espera los 90 min de lo esperado.
+            extra = (*extra, "--tope-min", "0.5")
+        return [
+            "--repo", str(self.repo), "--base", str(self.base), "--base-viva", str(self.viva),
+            "--despliegue", str(self.destino), "--corrida", "prueba", "--intervalo-s", "0.2",
+            *extra,
+        ]
+
     def correr(
         self, *extra: str, modo: tuple[str, ...] = (), supervisor: list[str] | None = None,
     ) -> tuple[int, dict]:
         hijo = self.tmp / "hijo.pid"
         self.addCleanup(_matar, hijo)
-        argv = [
-            "--repo", str(self.repo), "--base", str(self.base), "--base-viva", str(self.viva),
-            "--despliegue", str(self.destino), "--corrida", "prueba", "--intervalo-s", "0.2",
-            *extra,
-        ]
+        argv = self.argv(*extra)
         supervisor = supervisor or [
             sys.executable, "-B", str(FALSO), "--base", str(self.base), "--hijo", str(hijo), *modo,
         ]
@@ -462,6 +502,94 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         for tipo in ("espacio", "ejecucion"):
             self.assertFalse((self.base / tipo / ident).exists(), tipo)
 
+    def test_una_sesion_perdida_no_corta_la_corrida(self):
+        """Al caerse ssh, escribir en la sesión falla con EPIPE y puede llegar un SIGHUP."""
+        hijo, grupo = self.tmp / "hijo.pid", self.tmp / "supervisor.pid"
+        self.addCleanup(_matar, hijo)
+        self.addCleanup(_matar_grupo, grupo)
+        supervisor = [
+            "/bin/sh", "-c", 'echo $$ > "$0"; exec "$@"', str(grupo),
+            sys.executable, "-B", str(FALSO), "--base", str(self.base), "--hijo", str(hijo),
+        ]
+        lanzador = subprocess.Popen(
+            [sys.executable, "-B", "-c", _LANZADOR, json.dumps(self.argv()), str(self.fake),
+             json.dumps(supervisor)],
+            cwd=RAIZ, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.addCleanup(lambda: lanzador.poll() is None and lanzador.kill())
+        assert lanzador.stdout is not None and lanzador.stderr is not None
+        for linea in lanzador.stderr:
+            if b"canario [lanzar]" in linea:
+                break
+        lanzador.stdout.close()
+        lanzador.stderr.close()
+        lanzador.send_signal(signal.SIGHUP)
+        codigo = lanzador.wait(timeout=120)
+        self.hijo = int(hijo.read_text(encoding="utf-8")) if hijo.is_file() else 0
+
+        self.assertTrue((self.base / INFORME).is_file(), f"salió {codigo} sin dejar su informe")
+        informe = json.loads((self.base / INFORME).read_text(encoding="utf-8"))
+        ident = informe["encargo"]
+        self.assertEqual((informe["corrida"], informe["fin"]), ("prueba", "terminado"), informe)
+        self.assertEqual((codigo, informe["codigo"]), (0, 0), informe["tabla"])
+        self.assertEqual({b["resultado"] for b in informe["limpieza"]}, {"borrado"}, informe["limpieza"])
+        self.assertEqual(_git(self.repo, "branch", "--list", f"encargo/{ident}"), "")
+        self.assertFalse((self.base / "espacio" / ident).exists())
+        self.queda_cerrado()
+
+    def test_una_salida_que_falla_como_la_de_la_pc_no_corta_la_corrida(self):
+        """En la PC, al caerse ssh, escribir en la sesión falla con EINVAL."""
+        hijo = self.tmp / "hijo.pid"
+        self.addCleanup(_matar, hijo)
+        supervisor = [sys.executable, "-B", str(FALSO), "--base", str(self.base), "--hijo", str(hijo)]
+
+        with contextlib.redirect_stdout(_SesionQueSeCae()), \
+                contextlib.redirect_stderr(_SesionQueSeCae("canario [lanzar]")):
+            codigo = main(self.argv(), gh=FakeGitHub(self.fake), supervisor=supervisor)
+
+        informe = json.loads((self.base / INFORME).read_text(encoding="utf-8"))
+        self.assertEqual((codigo, informe["codigo"], informe["fin"]), (0, 0, "terminado"), informe)
+        self.assertFalse((self.base / "espacio" / informe["encargo"]).exists())
+
+    def test_cada_corrida_recoge_los_restos_de_las_anteriores_ya_cerradas(self):
+        with mock.patch.object(canario_lanzador, "limpiar", return_value=()):
+            _, vieja = self.correr("--corrida", "vieja")
+        viejo = vieja["encargo"]
+        restos = [
+            self.base / "espacio" / viejo, self.base / "ejecucion" / viejo,
+            self.flota / "trabajos" / f"{viejo}.json",
+        ]
+        self.assertEqual(vieja["fin"], "terminado", self.avances)
+        for resto in restos:
+            self.assertTrue(os.path.lexists(resto), f"la corrida vieja no dejó {resto}")
+        self.assertIn(viejo, _git(self.repo, "branch", "--list", f"encargo/{viejo}"))
+
+        codigo, nueva = self.correr("--corrida", "nueva")
+
+        self.assertNotEqual(nueva["encargo"], viejo)
+        for resto in restos:
+            self.assertFalse(os.path.lexists(resto), f"no recogió {resto}")
+        self.assertEqual(_git(self.repo, "branch", "--list", f"encargo/{viejo}"), "")
+        self.assertEqual(
+            {b["resto"]: b["resultado"] for b in nueva["recogida"]}[f"espacio/{viejo}"], "borrado",
+        )
+        self.assertIn("encargo/enc_ajeno", _git(self.repo, "branch", "--list", "encargo/enc_ajeno"))
+        self.assertEqual(codigo, 0, nueva["tabla"])
+
+    def test_recoger_no_toca_los_restos_de_un_encargo_abierto(self):
+        pedido = self.pedido()
+        preparar(pedido)
+        abierto = canario_lanzador.encargar(pedido, "canario-abierto")
+        restos = [self.base / "espacio" / abierto / "x", self.base / "ejecucion" / abierto / "x"]
+        for resto in restos:
+            resto.parent.mkdir(parents=True)
+            resto.write_text("{}", encoding="utf-8")
+
+        canario_lanzador.recoger(pedido)
+
+        for resto in restos:
+            self.assertTrue(resto.is_file(), f"borró {resto} de un encargo abierto")
+
     def test_no_corre_sobre_la_base_viva_ni_con_sus_secretos(self):
         for argv in (["--base", str(self.viva)], ["--base", str(self.viva / "sub")]):
             codigo, salida = self.correr(*argv)
@@ -472,13 +600,16 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertIn("secretos.env", salida["error"])
         self.assertFalse((self.base / "registro.sqlite").exists(), "no recibió el encargo")
 
+    def enlazados(self) -> list[Path]:
+        return [c.ruta for c in canario_lanzador.COMPARTIDOS if c.forma == "enlace duro"]
+
     def test_preparar_converge_a_los_mismos_enlaces(self):  # no-roja-en-base: la base ya enlazaba; la prueba ahora mira que sea el mismo archivo que el vivo y no la clase de enlace, que pasa a ser duro
         pedido = self.pedido()
         (self.base / "github.json").symlink_to(self.tmp / "otro-github.json")
         for _ in range(2):
             self.assertEqual(preparar(pedido)[0], "banco")
-            for nombre in canario_lanzador.ENLACES:
-                self.assertTrue(os.path.samefile(self.base / nombre, self.viva / nombre), nombre)
+            for ruta in self.enlazados():
+                self.assertTrue(os.path.samefile(self.base / ruta, self.viva / ruta), ruta)
         (self.base / "maquina.toml").unlink()
         (self.base / "maquina.toml").write_text('nombre="otra"\n', encoding="utf-8")
         with self.assertRaises(canario_lanzador.NoSePuede):
@@ -488,8 +619,45 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         sin_privilegio = OSError(errno.EPERM, "A required privilege is not held by the client")
         with mock.patch.object(os, "symlink", side_effect=sin_privilegio):
             self.assertEqual(preparar(self.pedido())[0], "banco")
-        for nombre in canario_lanzador.ENLACES:
-            self.assertTrue(os.path.samefile(self.base / nombre, self.viva / nombre), nombre)
+        for ruta in self.enlazados():
+            self.assertTrue(os.path.samefile(self.base / ruta, self.viva / ruta), ruta)
+
+    def test_flota_home_llega_como_copia_que_el_motor_puede_reescribir(self):
+        viva = self.viva / "flota-home.json"
+        antes = viva.read_bytes()
+        os.link(viva, self.base / "flota-home.json")
+        otra = self.tmp / "otra-flota"
+        (otra / "generaciones").mkdir(parents=True)
+
+        preparar(self.pedido())
+        self.assertEqual((self.base / "flota-home.json").read_bytes(), antes)
+        vincular_base(self.base, otra)
+
+        self.assertEqual(viva.read_bytes(), antes, "lo que el motor escribió en el canario cayó en la base viva")
+
+    def test_preparar_no_borra_la_politica_viva_por_una_carpeta_enlazada(self):
+        skill = self.viva / "politica" / "poteto" / "skills" / "poteto-mode" / "SKILL.md"
+        (self.base / "politica").symlink_to(self.viva / "politica")
+
+        with self.assertRaises(canario_lanzador.NoSePuede) as negado:
+            preparar(self.pedido())
+
+        self.assertEqual(negado.exception.paso, "preparar")
+        self.assertTrue(skill.is_file(), "borró la política de la base viva")
+
+    def test_limpiar_no_borra_fuera_de_su_base_por_una_carpeta_enlazada(self):
+        pedido = self.pedido()
+        preparar(pedido)
+        fuera = self.tmp / "fuera" / "enc_ab" / "x"
+        fuera.parent.mkdir(parents=True)
+        fuera.write_text("{}", encoding="utf-8")
+        (self.base / "espacio").symlink_to(self.tmp / "fuera")
+
+        with mock.patch.object(canario_lanzador, "_ramas", return_value=[]):
+            borrados = {b.resto: b for b in canario_lanzador.limpiar(pedido, "enc_ab")}
+
+        self.assertTrue(fuera.is_file(), "borró fuera de su base")
+        self.assertEqual(borrados["espacio/enc_ab"].resultado, "falló")
 
     def test_preparar_trae_la_politica_de_poteto_de_la_base_viva_y_la_quita_si_ya_no_esta(self):
         skill = Path("politica") / "poteto" / "skills" / "poteto-mode" / "SKILL.md"
@@ -684,7 +852,7 @@ class ElCodigoDeSalida(unittest.TestCase):
 
     def informe(
         self, *, resultado="pasa", estado="terminado", supervisor="ausente", vivos=(),
-        limpieza="borrado", fallo=None, medido=True,
+        limpieza="borrado", fallo=None, medido=True, recogida="borrado",
     ) -> Informe:
         from ops.canario_lanzador import Cierre
 
@@ -694,7 +862,7 @@ class ElCodigoDeSalida(unittest.TestCase):
             "banco", "a" * 40, hora, "clave", "enc_0", "terminado", "terminado", 1,
             Cierre(estado, "", supervisor, vivos),  # type: ignore[arg-type]
             (fila,) if medido else (), (Borrado("espacio/enc_0", limpieza),),  # type: ignore[arg-type]
-            fallo,
+            fallo, recogida=(Borrado("espacio/enc_1", recogida),),  # type: ignore[arg-type]
         )
 
     def test_cada_condicion_cuenta(self):
@@ -709,6 +877,7 @@ class ElCodigoDeSalida(unittest.TestCase):
         self.assertEqual(self.informe(medido=False).codigo, 1)
         self.assertEqual(self.informe(limpieza="falló").codigo, 1)
         self.assertEqual(self.informe(limpieza="no estaba").codigo, 0)
+        self.assertEqual(self.informe(recogida="falló").codigo, 1)
         self.assertEqual(self.informe(fallo=Fallo("medir", "no midió"), medido=False).codigo, 2)
 
 
