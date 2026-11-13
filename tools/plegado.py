@@ -17,14 +17,20 @@ los hallazgos y las demás listas de objetos. Separa dos clases de diferencia:
 - de forma: una clave que existe en un solo lado. Se lista una vez por
   registro, con su ruta, el lado donde existe y en cuántos encargos aparece.
 - de valor: una clave de los dos lados con valor distinto, o una lista que
-  cambió de largo. Se lista por encargo, con la ruta del campo.
+  cambió de largo. Se lista por encargo, con la ruta del campo. El tipo cuenta:
+  `0`, `false` y `0.0` son valores distintos, como en el JSON del estado.
 
-Sale con 1 si hay diferencias de valor; las de forma solas salen con 0, salvo
-con `--estricto`. El reductor de la base corre en otro proceso, sacado con
-`git archive`, para no mezclar dos versiones del mismo módulo.
+Un encargo que se rompe en los dos lados en el mismo evento y con la misma
+excepción no es diferencia, aunque cambie el mensaje: se lista aparte como que
+no pliega en ningún lado. Sale con 1 si hay diferencias de valor; las de forma
+solas salen con 0, salvo con `--estricto`. El reductor de la base corre en otro
+proceso, sacado con `git archive`, para no mezclar dos versiones del mismo módulo.
 
 `--json` cambia la salida en español por un documento para un guion. Si no
 puede leer un registro o sacar el reductor de la base, sale con 2.
+
+La salida trae errores del reductor que pueden citar datos del registro, como
+el texto de un encargo: no va a un log público.
 """
 
 from __future__ import annotations
@@ -54,11 +60,16 @@ Campos = dict[str, Any]
 
 @dataclass(frozen=True)
 class Fallo:
-    """El evento donde el plegado de un encargo se rompió."""
+    """El evento donde el plegado de un encargo se rompió.
+
+    Dos fallos son el mismo si se rompen en el mismo evento con la misma
+    excepción; el mensaje cambia entre versiones sin que cambie el plegado.
+    """
 
     evento: int
     tipo: str
-    error: str
+    excepcion: str
+    error: str = field(compare=False)
 
 
 @dataclass(frozen=True)
@@ -119,6 +130,7 @@ class Comparacion:
     encargos: int
     diferencias: tuple[Diferencia, ...]
     forma: tuple[DiferenciaDeForma, ...]
+    no_pliegan: tuple[tuple[str, Fallo], ...]
 
 
 @dataclass(frozen=True)
@@ -162,22 +174,33 @@ def _uri_solo_lectura(ruta: Path) -> str:
     return f"{ruta.resolve().as_uri()}?mode=ro"
 
 
+def _filas(db: sqlite3.Connection, ruta: Path, sql: str, *params: object) -> list[tuple]:
+    try:
+        return db.execute(sql, params).fetchall()
+    except sqlite3.Error as exc:
+        _no_pude(f"no puedo leer {ruta}: {exc}")
+
+
+def _datos(ruta: Path, evento: int, crudo: Any) -> object:
+    try:
+        return json.loads(crudo)
+    except (ValueError, TypeError) as exc:
+        _no_pude(f"no puedo leer el evento {evento} de {ruta}: {type(exc).__name__}: {exc}")
+
+
 def leer_encargos(ruta: Path) -> Iterator[tuple[str, list[Evento]]]:
     if not ruta.is_file():
         _no_pude(f"no existe el registro {ruta}")
     db = sqlite3.connect(_uri_solo_lectura(ruta), uri=True)
     try:
-        try:
-            ids = [r[0] for r in db.execute("SELECT DISTINCT encargo FROM events ORDER BY encargo")]
-        except sqlite3.DatabaseError as exc:
-            _no_pude(f"no puedo leer {ruta}: {exc}")
-        for encargo in ids:
-            filas = db.execute(
-                "SELECT id, ts, kind, data FROM events WHERE encargo = ? ORDER BY id",
-                (encargo,),
+        ids = _filas(db, ruta, "SELECT DISTINCT encargo FROM events ORDER BY encargo")
+        for (encargo,) in ids:
+            filas = _filas(
+                db, ruta, "SELECT id, ts, kind, data FROM events WHERE encargo = ? ORDER BY id",
+                encargo,
             )
             yield encargo, [
-                {"id": i, "ts": ts, "kind": kind, "data": json.loads(data)}
+                {"id": i, "ts": ts, "kind": kind, "data": _datos(ruta, i, data)}
                 for i, ts, kind, data in filas
             ]
     finally:
@@ -191,7 +214,8 @@ def trazar(reductor: Reductor, eventos: Sequence[Evento]) -> Traza:
         try:
             estado = reductor.aplicar(estado, evento)
         except Exception as exc:
-            traza.fallo = Fallo(evento["id"], evento["kind"], f"{type(exc).__name__}: {exc}")
+            nombre = type(exc).__name__
+            traza.fallo = Fallo(evento["id"], evento["kind"], nombre, f"{nombre}: {exc}")
             return traza
         traza.estados.append(estado)
     return traza
@@ -209,15 +233,49 @@ def campos_de(estado: Any) -> Campos:
     return json.loads(crudo)
 
 
+def _igual(a: Any, b: Any, vistos: set[tuple[int, int]] | None = None) -> bool:
+    """Igualdad que distingue el tipo: el `==` de Python da `0 == False`, `1 == True` y `1 == 1.0`.
+
+    `vistos` guarda los pares ya iguales por su id. Sirve mientras los dos lados
+    sigan vivos, como los estados de dos trazas: un id no se recicla y cada
+    prefijo comparte casi todo con el anterior.
+    """
+    if a is b:
+        return True
+    if type(a) is not type(b):
+        return False
+    vistos = set() if vistos is None else vistos
+    par = (id(a), id(b))
+    if par in vistos:
+        return True
+    if dataclasses.is_dataclass(a):
+        iguales = all(_igual(getattr(a, f.name), getattr(b, f.name), vistos)
+                      for f in dataclasses.fields(a))
+    elif isinstance(a, (list, tuple)):
+        iguales = len(a) == len(b) and all(_igual(x, y, vistos) for x, y in zip(a, b, strict=True))
+    elif isinstance(a, dict):
+        iguales = a.keys() == b.keys() and all(_igual(v, b[k], vistos) for k, v in a.items())
+    elif isinstance(a, (set, frozenset)):
+        iguales = {repr(x) for x in a} == {repr(y) for y in b}
+    else:
+        return a == b
+    if iguales:
+        vistos.add(par)
+    return iguales
+
+
 def campos_distintos(a: Campos, b: Campos) -> tuple[str, ...]:
-    return tuple(sorted(k for k in a.keys() | b.keys() if a.get(k, ...) != b.get(k, ...)))
+    return tuple(sorted(
+        k for k in a.keys() | b.keys() if k not in a or k not in b or not _igual(a[k], b[k])
+    ))
 
 
 def _primera_divergencia(
     eventos: Sequence[Evento], a: Traza, b: Traza
 ) -> tuple[Evento, str] | None:
+    vistos: set[tuple[int, int]] = set()
     for i, (x, y) in enumerate(zip(a.estados, b.estados, strict=False)):
-        if x != y:
+        if not _igual(x, y, vistos):
             difieren = campos_distintos(campos_de(x), campos_de(y))
             return eventos[i], "difieren " + ", ".join(difieren)
     if len(a.estados) != len(b.estados):
@@ -332,16 +390,15 @@ def _contrastar(
             valores = None
         for x, y in zip(a, b, strict=False):
             _contrastar(x, y, f"{ruta}[]", forma, valores)
-    elif a != b and valores is not None:
+    elif valores is not None and not _igual(a, b):
         valores.add(ruta)
 
 
-def diferencias(
-    base: Sequence[Plegado], arbol: Sequence[Plegado]
-) -> tuple[list[Diferencia], list[DiferenciaDeForma]]:
+def diferencias(ruta: str, base: Sequence[Plegado], arbol: Sequence[Plegado]) -> Comparacion:
     de_base = {p.encargo: p.final for p in base}
     salida: list[Diferencia] = []
     cuenta: Counter[tuple[str, Lado]] = Counter()
+    no_pliegan: list[tuple[str, Fallo]] = []
     for p in arbol:
         if p.encargo not in de_base:
             salida.append(Diferencia(p.encargo, ("plegado",), "la base no leyó este encargo"))
@@ -354,10 +411,13 @@ def diferencias(
             cuenta.update(forma)
             if valores:
                 salida.append(Diferencia(p.encargo, tuple(sorted(valores))))
-        elif a != b:
+        elif isinstance(b, Fallo) and a == b:
+            no_pliegan.append((p.encargo, b))
+        else:
             detalle = f"base: {_describe(a)}; árbol: {_describe(b)}"
             salida.append(Diferencia(p.encargo, ("plegado",), detalle))
-    return salida, [DiferenciaDeForma(r, lado, n) for (r, lado), n in sorted(cuenta.items())]
+    claves = [DiferenciaDeForma(r, lado, n) for (r, lado), n in sorted(cuenta.items())]
+    return Comparacion(ruta, len(arbol), tuple(salida), tuple(claves), tuple(no_pliegan))
 
 
 def _resolver_ref(ref: str) -> str:
@@ -405,12 +465,15 @@ def _plegado_de_json(p: dict) -> Plegado:
 def comparar(sha: str, rutas: Sequence[Path]) -> list[Comparacion]:
     base = _plegar_en_la_base(sha, rutas)
     reductor = cargar_reductor(RAIZ)
-    salida = []
-    for ruta in rutas:
-        arbol = plegar(reductor, ruta)
-        valor, forma = diferencias(base[str(ruta)], arbol)
-        salida.append(Comparacion(str(ruta), len(arbol), tuple(valor), tuple(forma)))
-    return salida
+    return [diferencias(str(r), base[str(r)], plegar(reductor, r)) for r in rutas]
+
+
+def _texto_fallos(fallos: Sequence[tuple[str, Fallo]]) -> list[str]:
+    return [f"    {encargo}: evento {f.evento} ({f.tipo}): {f.error}" for encargo, f in fallos]
+
+
+def _fallos_a_json(fallos: Sequence[tuple[str, Fallo]]) -> list[dict]:
+    return [{"encargo": encargo, **dataclasses.asdict(f)} for encargo, f in fallos]
 
 
 def _texto_comprobacion(c: Comprobacion) -> list[str]:
@@ -418,9 +481,7 @@ def _texto_comprobacion(c: Comprobacion) -> list[str]:
     lineas = [c.ruta, f"  Leí {total} encargos; pliegan {total - rotos}."]
     if rotos:
         lineas.append("  No pliegan:")
-        lineas.extend(
-            f"    {encargo}: evento {f.evento} ({f.tipo}): {f.error}" for encargo, f in c.fallos
-        )
+        lineas.extend(_texto_fallos(c.fallos))
     lineas.append("  Invariantes, revisadas en cada prefijo (no cambian la salida):")
     for nombre, _ in INVARIANTES:
         suyas = [v for v in c.violaciones if v.invariante == nombre]
@@ -439,9 +500,14 @@ _LADOS: dict[Lado, str] = {"base": "la base", "arbol": "el árbol"}
 
 def _texto_comparacion(c: Comparacion, ref: str, sha: str, estricto: bool) -> list[str]:
     cabeza = f"  Comparé {c.encargos} encargos con el reductor de {ref} ({sha[:12]})"
-    if not c.diferencias and not c.forma:
-        return [c.ruta, cabeza + ": sin diferencias."]
-    lineas = [c.ruta, cabeza + "."]
+    limpia = not c.diferencias and not c.forma
+    lineas = [c.ruta, cabeza + (": sin diferencias." if limpia else ".")]
+    if c.no_pliegan:
+        lineas.append(f"  No pliegan en ningún lado (no cuentan como diferencia): "
+                      f"{len(c.no_pliegan)} encargos.")
+        lineas.extend(_texto_fallos(c.no_pliegan))
+    if limpia:
+        return lineas
     if c.forma:
         efecto = "cuentan como fallo por --estricto" if estricto else "no cambian la salida"
         lineas.append(f"  Forma, claves que existen en un solo lado ({efecto}):")
@@ -462,11 +528,22 @@ def _imprimir(documento: object) -> None:
     print(json.dumps(documento, ensure_ascii=False, indent=2, default=_a_json))
 
 
+_PRIVACIDAD = ("La salida puede traer datos del registro, como el texto de un encargo;"
+               " no la mandes a un log público.")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Pliega registros de encargos con el reductor.")
+    parser = argparse.ArgumentParser(
+        description="Pliega registros de encargos con el reductor.", epilog=_PRIVACIDAD)
     ordenes = parser.add_subparsers(dest="orden", required=True)
-    p_comprobar = ordenes.add_parser("comprobar", help="pliega y revisa invariantes")
-    p_comparar = ordenes.add_parser("comparar", help="compara con el reductor de otra ref")
+    p_comprobar = ordenes.add_parser(
+        "comprobar", help="pliega y revisa invariantes", epilog=_PRIVACIDAD)
+    p_comparar = ordenes.add_parser(
+        "comparar", help="compara con el reductor de otra ref", epilog=_PRIVACIDAD,
+        description="Un campo renombrado sale como dos claves de forma y uno nuevo es solo"
+                    " forma, sin comparar su valor; las dos salen con 0. Lee la lista de"
+                    " forma, no solo el código de salida, o usa --estricto.",
+    )
     p_comparar.add_argument("--base", required=True)
     p_comparar.add_argument("--estricto", action="store_true",
                             help="las diferencias de forma también salen con 1")
@@ -492,7 +569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _imprimir({"ok": not rotos, "registros": [
                 {"ruta": c.ruta, "encargos": len(c.plegados),
                  "pliegan": len(c.plegados) - len(c.fallos),
-                 "fallos": [{"encargo": encargo, **dataclasses.asdict(f)} for encargo, f in c.fallos],
+                 "fallos": _fallos_a_json(c.fallos),
                  "violaciones": [dataclasses.asdict(v) for v in c.violaciones]}
                 for c in hechas]})
         else:
@@ -507,7 +584,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                    "estricto": args.estricto, "registros": [
             {"ruta": c.ruta, "encargos": c.encargos,
              "diferencias": [dataclasses.asdict(d) for d in c.diferencias],
-             "forma": [dataclasses.asdict(f) for f in c.forma]}
+             "forma": [dataclasses.asdict(f) for f in c.forma],
+             "no_pliegan": _fallos_a_json(c.no_pliegan)}
             for c in hechas]})
     else:
         print("\n".join(linea for c in hechas
