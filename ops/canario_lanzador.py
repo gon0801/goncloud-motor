@@ -606,18 +606,20 @@ def _cerrados(base: Path) -> list[str]:
         reg.close()
 
 
-def _ramas_remotas(repo: str) -> frozenset[str]:
-    """Las ramas encargo/* del repo del canario; vacío si no se pudieron leer."""
+def _ramas_remotas(repo: str) -> frozenset[str] | None:
+    """Las ramas encargo/* del repo del canario; None si no se pudieron leer."""
     try:
         remoto = resolver_repositorio(repo).remoto
     except (OSError, ValueError, subprocess.SubprocessError):
-        return frozenset()
+        return None
     salida = canario._git(
         "ls-remote", "--heads", "--", remoto, "refs/heads/encargo/*", espera=2 * canario.ESPERA_GIT_S,
     )
+    if salida is None:
+        return None
     return frozenset(
         linea.split("\t", 1)[1].removeprefix("refs/heads/")
-        for linea in (salida or "").splitlines() if "\t" in linea
+        for linea in salida.splitlines() if "\t" in linea
     )
 
 
@@ -638,11 +640,15 @@ def recoger(p: Pedido, salvo: str = "") -> tuple[Borrado, ...]:
         ),)
     remotas, flota = _ramas_remotas(p.repo), _flota(p.base)
     borrados: list[Borrado] = []
+    if remotas is None and cerrados:
+        borrados.append(Borrado(
+            "las ramas remotas de las corridas anteriores", "falló", "no pude leerlas del repo del canario",
+        ))
     for encargo in cerrados:
         locales = [p.base / "espacio" / encargo, p.base / "ejecucion" / encargo]
         if flota:
             locales.append(flota / "trabajos" / f"{encargo}.json")
-        if f"encargo/{encargo}" not in remotas and not any(os.path.lexists(r) for r in locales):
+        if f"encargo/{encargo}" not in (remotas or ()) and not any(os.path.lexists(r) for r in locales):
             continue
         if vivos := _vivos(p.base, encargo):
             borrados.append(Borrado(f"los restos de {encargo}", "falló", f"siguen {', '.join(vivos)}"))
@@ -753,10 +759,16 @@ def _guardar(p: Pedido, salida: dict) -> None:
     if not _aparte(p.base, p.base_viva) or not p.base.is_dir():
         return
     destino = p.base / INFORME
-    temporal = destino.with_name(f"{INFORME}.tmp")
     try:
-        escribir_texto(temporal, json.dumps(salida, ensure_ascii=False, indent=1))
-        os.replace(temporal, destino)
+        # Un nombre nuevo y exclusivo: uno fijo podría ser ya un enlace a la base viva.
+        fd, nombre = tempfile.mkstemp(prefix=f"{INFORME}.", dir=p.base)
+        os.close(fd)
+        temporal = Path(nombre)
+        try:
+            escribir_texto(temporal, json.dumps(salida, ensure_ascii=False, indent=1))
+            os.replace(temporal, destino)
+        finally:
+            temporal.unlink(missing_ok=True)
     except OSError as exc:
         _avance(None, f"no pude dejar el informe en {destino}: {exc}")
 
