@@ -149,8 +149,11 @@ en una base distinta de la pedida.
 Se agrega un hecho final, `limpio`. Cada recurso que el motor crea tiene una
 regla en la tabla de limpieza: unos se borran y otros se conservan. Un encargo
 `terminado` o `cancelado` queda `limpio` cuando cada recurso cumplió su regla.
-Lo que la regla conserva no cuenta como resto. Son dos cosas: el recibo del
-despliegue, que es el comprobante, y la copia de trabajo durante sus 7 días.
+Lo que la regla conserva no cuenta como resto: el recibo del despliegue, que es
+el comprobante, y lo que tiene plazo mientras ese plazo no venza. Tienen plazo
+la copia de trabajo y `ejecucion/<id>`. Al vencer, el motor los borra y lo
+comprueba. Dicho de otro modo, `limpio` significa que no queda nada vencido sin
+borrar.
 
 ### Qué significa cada palabra del reporte
 
@@ -158,17 +161,25 @@ El motor usa estas palabras y ninguna otra para decir cómo quedó un encargo.
 
 | El motor dice | Solo cuando |
 |---|---|
-| entregado | El nivel pedido es `desplegado`. Todas las fases están mergeadas en la base pedida, cada una tiene el recibo del despliegue de su commit, y el encargo está `limpio` |
-| integrado | El nivel pedido es `integrado`, o es `pr` y David ya mergeó. Todas las fases están mergeadas en la base pedida y el encargo está `limpio`. No hubo despliegue porque no se pidió |
-| listo para tu merge | El nivel pedido es `pr`. El PR está abierto, listo, revisado y sin bloqueantes. Falta el merge de David |
-| respondido | El nivel pedido es `terminado`. El resultado llegó al director, no hay PR, y el encargo está `limpio` |
+| entregado | El nivel efectivo es `desplegado`. Todas las fases están mergeadas en la base pedida, cada una tiene el recibo del despliegue de su commit, y el encargo está `limpio` |
+| integrado | El nivel efectivo es `integrado`, o es `pr` y David ya mergeó. Todas las fases están mergeadas en la base pedida y el encargo está `limpio`. No hubo despliegue porque no se pidió |
+| listo para tu merge | El nivel efectivo es `pr`. El PR está abierto, listo, revisado y sin bloqueantes. Falta el merge de David |
+| respondido | El nivel efectivo es `terminado`. El resultado llegó al director, no hay PR, y el encargo está `limpio` |
+| sin cambios | El trabajo no produjo ningún cambio que entregar. No se abrió PR y el encargo está `limpio` |
 | entrega parcial | Alguna fase quedó bloqueada, sin trabajar o cancelada por David al cerrar su PR. El reporte nombra cada fase y su causa |
 | detenido | El encargo está `detenido`. El reporte dice cuál de las cuatro causas y qué lo reanuda |
 | cancelado | David ordenó cancelar el encargo, o cerró sin mergear los PR de todas sus fases. Los PR quedaron cerrados y las ramas borradas |
 | falta limpiar | El trabajo terminó y algún recurso no cumplió su regla de limpieza. El reporte nombra lo que queda |
 
-El motor comprueba cada condición contra GitHub y contra el recibo, no contra su
-propio registro.
+La palabra sale del nivel efectivo, no del pedido. El motor baja el nivel por su
+cuenta en dos casos: cuando la máquina no puede desplegar, y cuando la fase
+declara que no necesita despliegue. En esos casos el reporte usa la palabra del
+nivel efectivo y dice la causa, por ejemplo "integrado; no se desplegó porque la
+fase no lo requiere".
+
+Las condiciones de entrega, que son el merge y el despliegue, se comprueban
+contra GitHub y contra el recibo, no contra el registro del motor. La limpieza
+se comprueba contra el disco y contra GitHub.
 
 ### Estados del PR y qué hace el motor en cada uno
 
@@ -266,7 +277,7 @@ documento lo dice.
 - El formato del registro. Sigue siendo SQLite que solo agrega.
 - Los nombres de los estados que leen los directores.
 - Las reglas de David que ya están en `motor/encargos/politica.py`. La única que
-  cambia es `medium_mismo_pr`, por la decisión 6.
+  cambia es `medium_mismo_pr`, que la decisión 6 suspende en dos archivos.
 
 ## Decisiones de David
 
@@ -292,10 +303,13 @@ David aprobó las siete el 2026-11-12. Cada una entra a
    `dominio.py`. La regla `medium_mismo_pr` de `motor/encargos/politica.py`
    queda suspendida para esos dos archivos: sus hallazgos Medium de DeepSeek van
    a una lista en vez de a otro parche. Mientras dura la suspensión, un Medium
-   anclado en uno de esos archivos queda fuera de alcance, y por eso
-   `deepseek_bloquea` no lo cuenta. El paso 1 cambia `politica.py`, la tabla
-   generada de `AGENTS.md` y `CLAUDE.md`, y sus pruebas. La suspensión termina
-   con la reconstrucción.
+   anclado en uno de esos archivos queda fuera de alcance en la lectura de
+   DeepSeek, que decide `hallazgo_fuera_de_alcance_por_restriccion` en
+   `motor/encargos/comprobacion.py`, y por eso no bloquea. Para decidirlo con
+   el dato y no con el texto, la severidad se guarda con cada hallazgo. El paso
+   1 cambia `politica.py`, `comprobacion.py`, el modelo del hallazgo en
+   `dominio.py`, la tabla generada de `AGENTS.md` y `CLAUDE.md`, y sus pruebas.
+   La suspensión termina con la reconstrucción.
 7. **Quién reconstruye.** Sesiones directas, con revisión del flujo completo en
    cada paso. El motor no se reconstruye a sí mismo.
 
