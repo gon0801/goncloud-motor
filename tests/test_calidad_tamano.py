@@ -460,6 +460,13 @@ class EnlacesYSubmodulosEnElArbol(unittest.TestCase):
         self.assertIn("motor/vendor/propio.py: archivo de 1001 líneas", corrida.stderr)
         self.assertNotIn("submódulo", corrida.stderr)
 
+    def test_un_submodulo_sin_carpeta_en_el_disco_falla_nombrandolo(self):  # no-roja-en-base: guarda que leer el disco no deje pasar un gitlink cuyo camino no existe
+        vendor = self._submodulo_en_el_indice()
+        self.assertFalse(vendor.exists())
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/vendor es un submódulo", corrida.stderr)
+
     def test_un_submodulo_iniciado_bajo_motor_falla_nombrandolo(self):  # no-roja-en-base: guarda que leer el disco no deje pasar un submódulo con su propio .git
         vendor = self._submodulo_en_el_indice()
         self.repo.escribir("motor/vendor/ajeno.py", _relleno(10))
@@ -725,6 +732,20 @@ class JobDeLaBase(unittest.TestCase):
         self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
         self.assertIn(f"contra {punta}", corrida.stdout)
 
+    def test_al_repetirse_juzga_con_el_calidad_de_la_punta_de_la_base(self):
+        cabeza = self._pr({"motor/nuevo.py": _numerado(0, 950)})
+        self.assertEqual(self._job(cabeza).returncode, 0)
+        herramienta = (self.origen.raiz / "tools" / "calidad.py").read_text(encoding="utf-8")
+        limite = 'LIMITES_DE_TAMANO = {"archivo": 1000,'
+        self.assertIn(limite, herramienta)
+        self._avanzar_la_base(
+            "tools/calidad.py", herramienta.replace(limite, limite.replace("1000", "900"), 1)
+        )
+        corrida = self._corrida_repetida(cabeza)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
+        self.assertIn("motor/nuevo.py: archivo de 950 líneas", corrida.stderr)
+        self.assertIn("el límite es 900", corrida.stderr)
+
     def test_un_pr_que_choca_con_la_base_falla_y_pide_actualizar_la_rama(self):
         cabeza = self._pr({"README": "pr\n"})
         self._avanzar_la_base("README", "main\n")
@@ -772,28 +793,98 @@ class JobDeLaBase(unittest.TestCase):
 
 FLUJO_AL_AVANZAR = RAIZ / ".github" / "workflows" / "tamano-al-avanzar-la-base.yml"
 
-# Un `gh` falso que contesta como la API de GitHub y anota cada llamada.
+# Un `gh` falso que contesta con la forma de la API de GitHub, aplica `--jq` con
+# `jq` como `gh` (página por página) y anota cada llamada.
 GH_FALSO = """
-import json, os, re, sys
+import json, os, re, subprocess, sys, urllib.parse
 escenario_ruta = os.environ["ESCENARIO"]
 escenario = json.load(open(escenario_ruta))
 args = sys.argv[1:]
 with open(os.environ["LLAMADAS"], "a") as log:
     log.write(json.dumps(args) + "\\n")
 url = next(a for a in args if a.startswith("repos/"))
-if "/pulls?" in url:
-    print("\\n".join(escenario["prs"]))
-elif m := re.search(r"/workflows/tamano-desde-la-base.yml/runs\\?.*head_sha=(\\w+)", url):
-    print(escenario["corridas"].get(m.group(1), ""))
-elif m := re.fullmatch(r"repos/[^/]+/[^/]+/actions/runs/(\\d+)/rerun", url):
-    sys.exit(0 if m.group(1) not in escenario["no_se_repiten"] else 1)
-elif m := re.fullmatch(r"repos/[^/]+/[^/]+/actions/runs/(\\d+)", url):
-    estados = escenario["estados"].setdefault(m.group(1), [])
-    print(estados.pop(0) if estados else "completed")
+camino, _, consulta = url.partition("?")
+parametros = dict(urllib.parse.parse_qsl(consulta))
+jq = args[args.index("--jq") + 1] if "--jq" in args else None
+
+
+def contestar(paginas):
+    for pagina in paginas:
+        if jq is None:
+            print(json.dumps(pagina))
+        else:
+            sys.stdout.flush()
+            subprocess.run(["jq", "-r", jq], input=json.dumps(pagina), text=True, check=True)
+
+
+if camino in escenario["fallan"]:
+    sys.exit(f"gh: Server Error (HTTP 502) en {camino}")
+if camino.endswith("/pulls"):
+    prs = [p for p in escenario["prs"] if parametros.get("base", p["base"]["ref"]) == p["base"]["ref"]]
+    tope = min(int(parametros.get("per_page", 30)), escenario["tope_por_pagina"])
+    paginas = [prs[i : i + tope] for i in range(0, len(prs), tope)] or [[]]
+    contestar(paginas if "--paginate" in args else paginas[:1])
+elif m := re.fullmatch(r"repos/[^/]+/[^/]+/commits/(\\w+)/check-runs", camino):
+    checks = [
+        c for c in escenario["checks"].get(m.group(1), [])
+        if parametros.get("check_name", c["name"]) == c["name"]
+    ]
+    contestar([{"total_count": len(checks), "check_runs": checks}])
+elif m := re.fullmatch(r"repos/[^/]+/[^/]+/actions/runs/(\\d+)/rerun", camino):
+    if m.group(1) in escenario["no_se_repiten"]:
+        sys.exit("gh: Forbidden (HTTP 403)")
+elif m := re.fullmatch(r"repos/[^/]+/[^/]+/actions/runs/(\\d+)", camino):
+    estados = escenario["estados"].setdefault(m.group(1), ["completed"])
+    estado = estados.pop(0) if len(estados) > 1 else estados[0]
     json.dump(escenario, open(escenario_ruta, "w"))
+    contestar([{"id": int(m.group(1)), "status": estado}])
 else:
     sys.exit(f"gh falso: no conozco {args}")
 """
+
+
+def _pr_abierto(cabeza: str, base: str = "main") -> dict:
+    return {"head": {"sha": cabeza}, "base": {"ref": base}}
+
+
+def _check_de_tamano(cabeza: str, corrida: str) -> dict:
+    """Un check run como lo devuelve `GET /commits/<sha>/check-runs` (forma vista en la API real)."""
+    url = f"https://github.com/duena/repo/actions/runs/{corrida}/job/9{corrida}"
+    return {
+        "id": int(f"9{corrida}"),
+        "name": "tamano-desde-la-base",
+        "head_sha": cabeza,
+        "status": "completed",
+        "conclusion": "success",
+        "details_url": url,
+        "html_url": url,
+        "app": {"slug": "github-actions"},
+        "check_suite": {"id": 1},
+        "pull_requests": [],
+    }
+
+
+def _escenario(
+    prs: list[dict],
+    corridas: dict[str, str],
+    estados: dict[str, list[str]] | None = None,
+    no_se_repiten: tuple[str, ...] = (),
+    fallan: tuple[str, ...] = (),
+    tope_por_pagina: int = 100,
+) -> dict:
+    return {
+        "prs": prs,
+        "checks": {
+            cabeza: [_check_de_tamano(cabeza, corrida)] for cabeza, corrida in corridas.items()
+        },
+        "estados": estados or {},
+        "no_se_repiten": list(no_se_repiten),
+        "fallan": list(fallan),
+        "tope_por_pagina": tope_por_pagina,
+    }
+
+
+A, B = "a" * 40, "b" * 40
 
 
 class ReevaluacionAlAvanzarLaBase(unittest.TestCase):
@@ -825,12 +916,13 @@ class ReevaluacionAlAvanzarLaBase(unittest.TestCase):
             GITHUB_REF_NAME="main",
         )
         corrida = subprocess.run(
-            ["bash", "-e", "-c", guion],
+            ["bash", "-e", "-o", "pipefail", "-c", guion],
             cwd=self.dir,
             env=entorno,
             capture_output=True,
             text=True,
             check=False,
+            timeout=60,
         )
         llamadas = (self.dir / "llamadas").read_text(encoding="utf-8").splitlines()
         return corrida, [json.loads(linea) for linea in llamadas]
@@ -846,12 +938,11 @@ class ReevaluacionAlAvanzarLaBase(unittest.TestCase):
 
     def test_repite_la_ultima_corrida_de_cada_pr_abierto_despues_de_que_termina(self):
         corrida, llamadas = self._job(
-            {
-                "prs": ["a" * 40, "b" * 40],
-                "corridas": {"a" * 40: "11", "b" * 40: "22"},
-                "estados": {"11": ["in_progress", "queued"]},
-                "no_se_repiten": [],
-            }
+            _escenario(
+                [_pr_abierto(A), _pr_abierto(B)],
+                {A: "11", B: "22"},
+                estados={"11": ["in_progress", "queued", "completed"]},
+            )
         )
         self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
         self.assertEqual(self._repetidas(llamadas), ["11", "22"])
@@ -864,33 +955,91 @@ class ReevaluacionAlAvanzarLaBase(unittest.TestCase):
         self.assertEqual(len(consultas_de_11), 3, "espera a que la corrida en curso termine")
         self.assertLess(max(consultas_de_11), repeticion_de_11)
 
-    def test_un_pr_sin_corrida_se_avisa_y_no_frena_a_los_demas(self):
+    def test_la_corrida_sale_del_check_publicado_en_la_cabeza_del_pr(self):
+        escenario = _escenario([_pr_abierto(A)], {A: "11"})
+        escenario["checks"][A].append({**_check_de_tamano(A, "77"), "name": "gate"})
+        corrida, llamadas = self._job(escenario)
+        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+        self.assertEqual(self._repetidas(llamadas), ["11"])
+
+    def test_un_pr_sin_check_de_tamano_se_avisa_y_no_frena_a_los_demas(self):
         corrida, llamadas = self._job(
-            {
-                "prs": ["a" * 40, "b" * 40],
-                "corridas": {"b" * 40: "22"},
-                "estados": {},
-                "no_se_repiten": [],
-            }
+            _escenario([_pr_abierto(A), _pr_abierto(B)], {B: "22"})
         )
         self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
         self.assertEqual(self._repetidas(llamadas), ["22"])
         self.assertIn("::notice::", corrida.stdout)
-        self.assertIn("a" * 40, corrida.stdout)
+        self.assertIn(A, corrida.stdout)
+
+    def test_si_la_api_de_checks_falla_el_job_queda_en_rojo_y_sigue_con_los_demas(self):
+        corrida, llamadas = self._job(
+            _escenario(
+                [_pr_abierto(A), _pr_abierto(B)],
+                {A: "11", B: "22"},
+                fallan=(f"repos/duena/repo/commits/{A}/check-runs",),
+            )
+        )
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
+        self.assertEqual(self._repetidas(llamadas), ["22"])
+        self.assertIn("::error::tamano: no se pudo leer el check", corrida.stderr)
+        self.assertIn(A, corrida.stderr)
+
+    def test_una_corrida_que_nunca_termina_se_marca_y_sigue_con_los_demas(self):
+        corrida, llamadas = self._job(
+            _escenario(
+                [_pr_abierto(A), _pr_abierto(B)],
+                {A: "11", B: "22"},
+                estados={"11": ["in_progress"]},
+            )
+        )
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
+        self.assertEqual(self._repetidas(llamadas), ["22"])
+        self.assertIn("::error::", corrida.stderr)
+        self.assertIn(A, corrida.stderr)
+        self.assertIn("no terminó", corrida.stderr)
+
+    def test_si_la_api_de_la_corrida_falla_se_marca_y_sigue_con_los_demas(self):
+        corrida, llamadas = self._job(
+            _escenario(
+                [_pr_abierto(A), _pr_abierto(B)],
+                {A: "11", B: "22"},
+                fallan=("repos/duena/repo/actions/runs/11",),
+            )
+        )
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
+        self.assertEqual(self._repetidas(llamadas), ["22"])
+        self.assertIn("::error::", corrida.stderr)
+        self.assertIn(A, corrida.stderr)
+        self.assertIn("no se pudo leer el estado", corrida.stderr)
 
     def test_una_corrida_que_no_se_puede_repetir_tumba_el_job_despues_de_intentar_todas(self):
         corrida, llamadas = self._job(
-            {
-                "prs": ["a" * 40, "b" * 40],
-                "corridas": {"a" * 40: "11", "b" * 40: "22"},
-                "estados": {},
-                "no_se_repiten": ["11"],
-            }
+            _escenario(
+                [_pr_abierto(A), _pr_abierto(B)], {A: "11", B: "22"}, no_se_repiten=("11",)
+            )
         )
         self.assertEqual(corrida.returncode, 1)
         self.assertEqual(self._repetidas(llamadas), ["11", "22"])
         self.assertIn("::error::", corrida.stderr)
-        self.assertIn("a" * 40, corrida.stderr)
+        self.assertIn(A, corrida.stderr)
+
+    def test_solo_repite_los_pr_cuya_base_es_la_rama_que_avanzo(self):
+        corrida, llamadas = self._job(
+            _escenario(
+                [_pr_abierto(A), _pr_abierto(B, base="otra")], {A: "11", B: "22"}
+            )
+        )
+        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+        self.assertEqual(self._repetidas(llamadas), ["11"])
+
+    def test_repite_los_pr_de_todas_las_paginas(self):
+        corrida, llamadas = self._job(
+            _escenario(
+                [_pr_abierto(A), _pr_abierto(B)], {A: "11", B: "22"}, tope_por_pagina=1
+            )
+        )
+        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+        self.assertEqual(self._repetidas(llamadas), ["11", "22"])
 
     def test_corre_en_el_push_a_main_con_el_permiso_mas_chico_y_sin_codigo(self):
         texto = FLUJO_AL_AVANZAR.read_text(encoding="utf-8")
@@ -901,6 +1050,12 @@ class ReevaluacionAlAvanzarLaBase(unittest.TestCase):
         self.assertEqual(
             lineas[permisos + 1 : permisos + 4], ["  actions: write", "  pull-requests: read", ""]
         )
+        concurrencia = lineas.index("concurrency:")
+        self.assertEqual(
+            lineas[concurrencia + 1 : concurrencia + 4],
+            ["  group: tamano-al-avanzar-la-base", "  cancel-in-progress: true", ""],
+            "un push nuevo cancela al anterior: dos jobs no repiten la misma corrida a la vez",
+        )
         self.assertNotIn("uses:", texto, "no hace checkout ni corre acciones de terceros")
         self.assertNotIn("secrets.", texto)
         previo, guion = _bloque_run(lineas)
@@ -909,7 +1064,7 @@ class ReevaluacionAlAvanzarLaBase(unittest.TestCase):
             [linea.strip() for linea in previo if "${{" in linea],
             ["GH_TOKEN: ${{ github.token }}"],
         )
-        self.assertIn("tamano-desde-la-base.yml", guion)
+        self.assertIn("tamano-desde-la-base", guion)
         self.assertTrue(FLUJO_DE_LA_BASE.is_file())
 
 
