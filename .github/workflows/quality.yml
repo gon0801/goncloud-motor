@@ -24,6 +24,8 @@ jobs:
         run: python tools/calidad.py lint
       - name: Lectura y escritura de texto, solo lo nuevo
         run: python tools/calidad.py io
+      - name: Ningún archivo ni función de motor/ crece por encima de su límite
+        run: python tools/calidad.py tamano
       - name: Marcadores que deciden, anotados como eventos
         run: python tools/calidad.py marcadores
       - name: La tabla de decisiones se genera desde su fuente única
