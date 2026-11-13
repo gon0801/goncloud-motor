@@ -1,0 +1,19 @@
+{
+ "filas": {
+  "termina": "pasa",
+  "entregado": "pasa",
+  "limpio": "falla",
+  "no pierde": "no medido",
+  "no repite": "no medido",
+  "cuesta poco": "pasa",
+  "se detiene": "no medido",
+  "versión": "pasa",
+  "legible": "pasa"
+ },
+ "topes": {
+  "minutos_termina": 90,
+  "minutos": 45,
+  "turnos_por_rol": 2,
+  "rondas": 1
+ }
+}
