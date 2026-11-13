@@ -162,7 +162,7 @@ El motor usa estas palabras y ninguna otra para decir cómo quedó un encargo.
 | El motor dice | Solo cuando |
 |---|---|
 | entregado | El nivel efectivo es `desplegado`. Todas las fases están mergeadas en la base pedida, cada una tiene el recibo del despliegue de su commit, y el encargo está `limpio` |
-| integrado | El nivel efectivo es `integrado`, o es `pr` y David ya mergeó. Todas las fases están mergeadas en la base pedida y el encargo está `limpio`. No hubo despliegue porque no se pidió |
+| integrado | El nivel efectivo es `integrado`, o es `pr` y David ya mergeó. Todas las fases están mergeadas en la base pedida y el encargo está `limpio`. No hubo despliegue, y el reporte dice por qué |
 | listo para tu merge | El nivel efectivo es `pr`. El PR está abierto, listo, revisado y sin bloqueantes. Falta el merge de David |
 | respondido | El nivel efectivo es `terminado`. El resultado llegó al director, no hay PR, y el encargo está `limpio` |
 | sin cambios | El trabajo no produjo ningún cambio que entregar. No se abrió PR y el encargo está `limpio` |
@@ -171,11 +171,18 @@ El motor usa estas palabras y ninguna otra para decir cómo quedó un encargo.
 | cancelado | David ordenó cancelar el encargo, o cerró sin mergear los PR de todas sus fases. Los PR quedaron cerrados y las ramas borradas |
 | falta limpiar | El trabajo terminó y algún recurso no cumplió su regla de limpieza. El reporte nombra lo que queda |
 
-La palabra sale del nivel efectivo, no del pedido. El motor baja el nivel por su
-cuenta en dos casos: cuando la máquina no puede desplegar, y cuando la fase
-declara que no necesita despliegue. En esos casos el reporte usa la palabra del
-nivel efectivo y dice la causa, por ejemplo "integrado; no se desplegó porque la
-fase no lo requiere".
+La palabra sale del nivel efectivo, no del pedido, con una excepción: un PR de
+nivel `pr` que David mergea se reporta "integrado". El motor baja el nivel por su
+cuenta en tres casos, que hoy decide la mirada de capacidad de
+`motor/encargos/ciclo.py`:
+
+- la máquina no puede desplegar, y el nivel queda en `integrado`;
+- la fase declara que no necesita despliegue, y el nivel queda en `integrado`;
+- el remoto prohíbe integrar, y el nivel queda en `pr`.
+
+En esos casos el reporte usa la palabra del nivel efectivo y dice la causa, por
+ejemplo "integrado; no se desplegó porque la fase no lo requiere". La
+reconstrucción conserva los tres.
 
 Las condiciones de entrega, que son el merge y el despliegue, se comprueban
 contra GitHub y contra el recibo, no contra el registro del motor. La limpieza
