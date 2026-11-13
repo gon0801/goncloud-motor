@@ -1,0 +1,51 @@
+name: Tamaño reevaluado al avanzar la base
+
+# `tamano-desde-la-base` mide la unión del PR con la base de cuando corrió. Si
+# la base avanza, dos PR que solos caben pueden pasar juntos del límite. Este
+# job repite ese check en cada PR abierto; mientras corre, el PR no está en
+# verde. No trae código: solo habla con la API de GitHub.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: tamano-al-avanzar-la-base
+  cancel-in-progress: true
+
+jobs:
+  reevaluar-tamano:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Cada PR abierto vuelve a medir su tamaño contra la base nueva
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="repos/${GITHUB_REPOSITORY}"
+          fallas=0
+          cabezas=$(gh api --paginate "${repo}/pulls?state=open&per_page=100" --jq '.[].head.sha')
+          for cabeza in $cabezas; do
+            corrida=$(gh api \
+              "${repo}/actions/workflows/tamano-desde-la-base.yml/runs?event=pull_request_target&head_sha=${cabeza}&per_page=1" \
+              --jq '.workflow_runs[0].id // empty')
+            if [[ -z "$corrida" ]]; then
+              echo "::notice::tamano: ${cabeza} no tiene corrida de tamano-desde-la-base que repetir"
+              continue
+            fi
+            # GitHub no repite una corrida que no terminó, y la que está en
+            # curso pudo leer la base de antes de este push.
+            until [[ "$(gh api "${repo}/actions/runs/${corrida}" --jq .status)" == completed ]]; do
+              sleep 10
+            done
+            if gh api -X POST "${repo}/actions/runs/${corrida}/rerun" > /dev/null; then
+              echo "tamano: ${cabeza} se vuelve a medir en la corrida ${corrida}"
+            else
+              echo "::error::tamano: no se pudo repetir la corrida ${corrida} de ${cabeza} (GitHub no repite corridas de más de 30 días ni de 50 intentos); un push al PR lo vuelve a medir" >&2
+              fallas=1
+            fi
+          done
+          exit "$fallas"

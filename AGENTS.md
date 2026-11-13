@@ -38,7 +38,8 @@ Los mismos comandos corren en local y en el job `gate` de `.github/workflows/qua
   líneas en blanco no deja espacio. Los tamaños se leen de git; no hay línea base que editar.
   Se arregla sacando código de ahí. En un PR también lo juzga el job `tamano-desde-la-base`
   (`pull_request_target`), que corre el `calidad.py` de la base con `--cabeza` sobre la unión
-  del PR con la base, leída de git: editar la herramienta o el workflow en el PR no lo apaga.
+  del PR con la punta de la base, leída de git: editar la herramienta o el workflow en el PR no
+  lo apaga. Cada push a `main` lo repite en los PR abiertos (`tamano-al-avanzar-la-base.yml`).
 - `python3 tools/pruebas_nuevas.py --base origin/main` falla si una prueba nueva o cambiada
   pasa con el código de la base, salvo que lleve `# no-roja-en-base: <razón>`.
 

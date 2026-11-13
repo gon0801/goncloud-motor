@@ -422,11 +422,19 @@ def _fuentes_del_arbol() -> Lectura:
     motor = RAIZ / "motor"
     caminos = sorted([motor, *motor.rglob("*")])
     # El submódulo sale del índice: sin iniciarlo, como lo deja el checkout del
-    # CI, en el disco es una carpeta vacía.
-    submodulos = [
-        (entrada.split(b"\t", 1)[1].decode(), AJENOS_DE_MOTOR[b"160000"])
+    # CI, en el disco es una carpeta vacía. Si el disco ya tiene otra cosa sin
+    # `.git` propio, eso es lo que el árbol mide.
+    gitlinks = [
+        RAIZ / entrada.split(b"\t", 1)[1].decode()
         for entrada in _git("ls-files", "--stage", "-z", "--", "motor").split(b"\0")
         if entrada.startswith(b"160000 ")
+    ]
+    submodulos = [
+        (carpeta.relative_to(RAIZ).as_posix(), AJENOS_DE_MOTOR[b"160000"])
+        for carpeta in gitlinks
+        if carpeta.is_dir()
+        and not carpeta.is_symlink()
+        and ((carpeta / ".git").exists() or not any(carpeta.iterdir()))
     ]
     enlaces = [
         (camino.relative_to(RAIZ).as_posix(), AJENOS_DE_MOTOR[b"120000"])
