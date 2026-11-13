@@ -34,6 +34,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from motor import plataforma
+from motor.encargos import ciclo, despliegue
 from motor.encargos.agentes import (
     _bash_de_ensayo,
     _disponible,
@@ -46,7 +47,7 @@ from motor.encargos.cli import lanzar_de_ruta, marcar_ruta
 from motor.encargos.dominio import vista
 from motor.encargos.registro import Registro
 from motor.encargos.rutas import elegir
-from motor.github import FakeGitHub
+from motor.github import ChecksVerdict, FakeGitHub, PoliticaBloquea
 from ops.agente_ensayo import Comprobacion, Escenario, _escribir
 from tests import git_env_limpio
 from tests.entorno import deja_breakaway, requiere_windows
@@ -198,6 +199,52 @@ class _DeepSeekAprueba(FakeGitHub):
 
     def comentarios_deepseek(self, repo, numero, sha=""):
         return [{"texto": "DeepSeek: APPROVED", "autor": "DeepSeek", "sha": sha}]
+
+
+class _OtraPersonaIntegraDuranteLaCI(_DeepSeekAprueba):
+    """La CI requerida sigue en marcha cuando el motor intenta integrar y, en
+    esa espera, otra persona integra el PR desde GitHub."""
+
+    def __init__(self, d):
+        super().__init__(d)
+        self.en_espera: set[int] = set()
+        self.integro_otra_persona = False
+
+    def merge(self, repo, numero, sha, metodo, mensaje):
+        if numero not in self.en_espera:
+            self.en_espera.add(numero)
+            raise PoliticaBloquea("checks requeridos no están en verde: ['ci']")
+        return super().merge(repo, numero, sha, metodo, mensaje)
+
+    def checks_requeridos(self, repo, numero, sha):
+        return ChecksVerdict(sha, False, False, ("ci",), (), en_marcha=("ci",))
+
+    def ver(self, repo, numero):
+        vista = super().ver(repo, numero)
+        if numero in self.en_espera and vista.estado == "abierto":
+            self.merge(repo, numero, vista.head, "squash", "otra persona")
+            self.integro_otra_persona = True
+            vista = super().ver(repo, numero)
+        return vista
+
+
+class _LaBaseYaTieneLaFaseDos(_DeepSeekAprueba):
+    """Antes de abrir el PR de la fase dos, otra persona integra su rama en la
+    base del remoto y GitHub responde "No commits between"."""
+
+    def abrir_pr(self, repo, rama, base, titulo, cuerpo):
+        if rama.endswith("-dos"):
+            with tempfile.TemporaryDirectory() as t:
+                copia = Path(t) / "copia"
+                _git(Path(t), "clone", "-q", "-b", base, repo, str(copia))
+                _git(copia, "fetch", "-q", "origin", rama)
+                _git(
+                    copia, "-c", "user.name=o", "-c", "user.email=o@local",
+                    "merge", "-q", "--no-edit", "FETCH_HEAD",
+                )
+                _git(copia, "push", "-q", "origin", base)
+            raise RuntimeError(f"pull request create failed: No commits between {base} and {rama}")
+        return super().abrir_pr(repo, rama, base, titulo, cuerpo)
 
 
 # --------------------------------------------------------------------------- agente de ensayo
@@ -483,6 +530,17 @@ class CompuertaReal(unittest.TestCase):
             "commit", "-q", "-m", "receta",
         )
         _git(semilla, "push", "-q", str(self.tmp / "repo.git"), "main")
+
+    def _plazos_en_hora_logica(self, banco: Banco) -> None:
+        # Los plazos de `_reanuda_en` salen del reloj de pared, que el banco no
+        # controla: con la hora lógica adelantada, una espera de cinco minutos
+        # ya nacería vencida y no se vería.
+        parche = mock.patch.object(
+            ciclo, "_reanuda_en",
+            side_effect=lambda s: _iso(banco.hora + timedelta(seconds=s)),
+        )
+        parche.start()
+        self.addCleanup(parche.stop)
 
     def _prs(self, banco: Banco) -> dict:
         return json.loads(
@@ -776,3 +834,141 @@ class LasVariantesDeLaCompuerta(CompuertaReal):
         self.assertTrue(
             any("sin revisión de DeepSeek" in n.get("texto", "") for n in notas)
         )
+
+
+class ElPlazoTrasLaReceta(CompuertaReal):
+    """La receta que termina se concilia en el plazo corto que dejó al
+    lanzarse, no cinco minutos después."""
+
+    def _hasta_que_termina_la_receta(self, receta_falla: bool) -> tuple[Banco, datetime]:
+        escenario = {
+            "fases": [{"id": "uno", "resultado": "saludo.txt con hola",
+                       "requiere_despliegue": True}],
+            "producto": {"uno": {"saludo.txt": "hola\\n"}},
+        }
+        banco = self.banco(escenario, gh_cls=_DeepSeekAprueba)
+        self._semilla_receta()
+        if receta_falla:
+            semilla = self.tmp / "semilla"
+            (semilla / "d.sh").write_text("exit 1\n", encoding="utf-8", newline="\n")
+            _git(semilla, "add", "-A")
+            _git(
+                semilla, "-c", "user.name=t", "-c", "user.email=t@local",
+                "commit", "-q", "-m", "receta que falla",
+            )
+            _git(semilla, "push", "-q", str(self.tmp / "repo.git"), "main")
+        self._plazos_en_hora_logica(banco)
+        banco.correr(lambda: bool(banco.pasos_entrega("integrado")))
+        integrado = banco.hora
+        fin = time.monotonic() + 60
+        while (
+            not any(r.get("estado") in ("aplicado", "fallido")
+                    for r in banco.recibos_despliegue())
+            or despliegue.observacion(banco.reg, banco.fold()) == "vivo"
+        ):
+            if time.monotonic() > fin:
+                self.fail("la receta no terminó: " + json.dumps(banco.recibos_despliegue()))
+            time.sleep(0.05)
+        return banco, integrado
+
+    def test_la_receta_aplicada_llega_a_desplegado_en_el_siguiente_plazo_corto(self):
+        banco, integrado = self._hasta_que_termina_la_receta(receta_falla=False)
+        banco.paso()
+        self.assertTrue(
+            banco.pasos_entrega("desplegado"),
+            "la receta aplicada no se concilió en el barrido siguiente",
+        )
+        self.assertLess(
+            banco.hora - integrado, timedelta(minutes=1),
+            "el motor esperó de más tras la receta aplicada",
+        )
+        self.assertEqual(banco.fold().estado, "terminado")
+        revisores = [
+            e for e in banco.eventos("intento_abierto") if e["data"].get("rol") == "revisor"
+        ]
+        self.assertEqual(len(revisores), 1, "se relanzó al revisor de una aprobación vigente")
+
+    def test_la_receta_fallida_entrega_la_fase_con_pendientes_sin_espera_larga(self):
+        banco, integrado = self._hasta_que_termina_la_receta(receta_falla=True)
+        banco.correr(lambda: bool(banco.eventos("bloqueo_fase")), tope_pasos=10)
+        self.assertLess(
+            banco.hora - integrado, timedelta(minutes=3),
+            "la fase con la receta fallida esperó de más para entregarse con pendientes",
+        )
+        self.assertEqual(banco.pasos_entrega("desplegado"), [])
+
+
+def _segundos(desde: str, hasta: str) -> float:
+    return (
+        datetime.fromisoformat(hasta.replace("Z", "+00:00"))
+        - datetime.fromisoformat(desde.replace("Z", "+00:00"))
+    ).total_seconds()
+
+
+class ElPasoTrasIntegrarDiceSuResultado(CompuertaReal):
+    """Tras integrar, el paso de entrega dice su resultado y su plazo; el
+    barrido no los adivina con la espera de cinco minutos."""
+
+    def test_la_fase_sin_declarar_su_despliegue_espera_con_el_plazo_largo(self):
+        escenario = {
+            "fases": [{"id": "uno", "resultado": "saludo.txt con hola"}],
+            "producto": {"uno": {"saludo.txt": "hola\\n"}},
+        }
+        banco = self.banco(escenario, gh_cls=_DeepSeekAprueba)
+        self._plazos_en_hora_logica(banco)
+        banco.correr(lambda: bool(banco.pasos_entrega("integrado")))
+        inicio, previos = banco.hora, len(banco.reg.eventos(banco.ident))
+        intentos = len(banco.eventos("intento_abierto"))
+        while banco.hora - inicio < timedelta(hours=1):
+            banco.paso()
+        nuevos = banco.reg.eventos(banco.ident)[previos:]
+        esperas = [e["data"] for e in nuevos if e["kind"] == "espera"]
+        self.assertTrue(esperas, "la fase sin declarar no quedó en espera")
+        for espera in esperas:
+            self.assertIn("falta declarar", espera["motivo"])
+            self.assertGreaterEqual(
+                _segundos(espera["hora"], espera["reanuda_en"]), 300,
+                "la espera que nadie resuelve sola se vuelve a mirar cada 30 s",
+            )
+        self.assertLessEqual(len(nuevos), 24, "el registro creció de más en una hora")
+        self.assertEqual(len(banco.eventos("intento_abierto")), intentos)
+
+    def test_la_receta_arranca_en_el_barrido_siguiente_al_merge_de_otra_persona(self):
+        escenario = {
+            "fases": [{"id": "uno", "resultado": "saludo.txt con hola",
+                       "requiere_despliegue": True}],
+            "producto": {"uno": {"saludo.txt": "hola\\n"}},
+        }
+        banco = self.banco(escenario, gh_cls=_OtraPersonaIntegraDuranteLaCI)
+        self._semilla_receta()
+        self._plazos_en_hora_logica(banco)
+        banco.correr(lambda: bool(banco.pasos_entrega("integrado")))
+        self.assertTrue(banco.gh.integro_otra_persona)
+        integrado = banco.hora
+        banco.correr(lambda: bool(banco.recibos_despliegue()), tope_pasos=10)
+        self.assertLess(
+            banco.hora - integrado, timedelta(minutes=2),
+            "la receta esperó cinco minutos tras el merge de otra persona",
+        )
+
+    def test_la_fase_que_la_base_ya_contiene_se_cierra_en_el_mismo_paso(self):  # no-roja-en-base: la corrida del banco muestra que la base y 00ceec2 ya cierran la fase aquí; la prueba fija ese resultado ante el hallazgo de DeepSeek
+        banco = self.banco(
+            _escenario_tres_fases(False, self.tmp / "destino"),
+            nivel="integrado", gh_cls=_LaBaseYaTieneLaFaseDos,
+        )
+        self._plazos_en_hora_logica(banco)
+        banco.correr(
+            lambda: any(f.id == "dos" and f.estado == "preparada" for f in banco.fold().fases)
+        )
+        integrado, = [p for p in banco.pasos_entrega("integrado") if p["fase"] == "dos"]
+        self.assertIn("ya contenida", integrado["evidencia"])
+        self.assertEqual(
+            integrado["hora"], _iso(banco.hora),
+            "la fase integrada con otra todavía pendiente no se cerró en su paso",
+        )
+        self.assertEqual(
+            [e["data"].get("fase") for e in banco.eventos("intento_abierto")
+             if e["data"].get("rol") == "revisor"],
+            ["uno", "dos"],
+        )
+        self.assertEqual(banco.fold().fases[2].estado, "pendiente")

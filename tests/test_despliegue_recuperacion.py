@@ -17,6 +17,7 @@ from unittest import mock
 from motor import plataforma
 from motor.encargos import ciclo, despliegue as ejecutor, politica_despliegue
 from motor.encargos.comprobacion import version_producto
+from motor.encargos.resultado import Avanzo, Espera
 from tests import test_encargos_despliegue_real as base
 
 
@@ -271,17 +272,20 @@ class RecuperacionDespliegue(unittest.TestCase):
                     next((reg.base / "despliegues").rglob("ocupado.json"), None), hora,
                 )
             # La séptima pasada toca el tope de la ventana: impedimento en llano.
-            ciclo._paso_despliegue(reg, reg.fold(ident), espacio, "2026-11-05T19:50:00+00:00")
-            final = reg.fold(ident)
+            final, resultado = ciclo._paso_despliegue(
+                reg, reg.fold(ident), espacio, "2026-11-05T19:50:00+00:00"
+            )
+            self.assertEqual(resultado, Avanzo())
             causa = final.impedimentos[-1].causa if final.impedimentos else ""
             self.assertIn("ocupado 6 veces", causa)
             # La ventana agotada pide intervención: continuar la reabre una vez.
             ciclo.ordenar(reg, ident, "continuar", "otra-ventana", horas[-1])
-            final = ciclo._paso_despliegue(
+            final, resultado = ciclo._paso_despliegue(
                 reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
             )
+            self.assertEqual(resultado, Espera(final.reanuda_en, final.motivo))
             for _ in range(10):
-                final = ciclo._paso_despliegue(
+                final, _ = ciclo._paso_despliegue(
                     reg, reg.fold(ident), espacio, "2026-11-05T20:05:00+00:00"
                 )
                 if final.nivel_alcanzado == "desplegado":
@@ -324,7 +328,7 @@ class RecuperacionDespliegue(unittest.TestCase):
             ciclo.ordenar(reg, ident, "continuar", "otra-ventana", "2026-11-05T19:46:00+00:00")
             final = reg.fold(ident)
             for _ in range(10):
-                final = ciclo._paso_despliegue(
+                final, _ = ciclo._paso_despliegue(
                     reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
                 )
                 if final.nivel_alcanzado == "desplegado":
@@ -615,7 +619,7 @@ class RecuperacionDespliegue(unittest.TestCase):
             propio.write_text(json.dumps(contenido))
             final = reg.fold(ident)
             for _ in range(10):
-                final = ciclo._paso_despliegue(
+                final, _ = ciclo._paso_despliegue(
                     reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
                 )
                 if final.fase_activa == "O" and final.nivel_alcanzado == "desplegado":
