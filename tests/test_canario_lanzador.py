@@ -244,6 +244,14 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         with self.assertRaises(canario_lanzador.NoSePuede):
             preparar(pedido)
 
+    def test_una_base_donde_no_se_puede_enlazar_se_niega_en_preparar(self):
+        if os.geteuid() == 0:
+            self.skipTest("root enlaza aunque la carpeta sea de solo lectura")
+        self.base.chmod(0o555)
+        self.addCleanup(self.base.chmod, 0o755)
+        codigo, salida = self.correr()
+        self.assertEqual((codigo, salida["paso"]), (2, "preparar"), salida)
+
 
 class ElCodigoDeSalida(unittest.TestCase):
     """0 solo si la tabla coincide, el supervisor no dejó a nadie y la limpieza terminó."""
