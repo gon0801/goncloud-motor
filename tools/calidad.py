@@ -398,10 +398,18 @@ def _commit_de_la_base(ref: str) -> str:
     try:
         return _git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").decode().strip()
     except subprocess.CalledProcessError:
-        traer = f"git fetch origin {ref.removeprefix('origin/')}"
         raise SystemExit(
-            f"tamano: la base {ref} no existe en este clon; tráela con `{traer}`"
+            f"tamano: la base {ref} no existe en este clon; {_como_traer(ref)}"
         ) from None
+
+
+def _como_traer(ref: str) -> str:
+    if ref.startswith("origin/"):
+        rama = ref.removeprefix("origin/")
+        return f"tráela con `git fetch origin +refs/heads/{rama}:refs/remotes/{ref}`"
+    if _git("rev-parse", "--is-shallow-repository").strip() == b"true":
+        return "el clon es superficial; trae la historia con `git fetch --unshallow origin`"
+    return "no es una rama de origin ni está en la historia del clon; revisa el nombre"
 
 
 def _fuentes_de_la_base(commit: str, ref: str):
