@@ -41,9 +41,15 @@ def _plegar(eventos: list[dict]) -> Encargo:
     return estado
 
 
-def _con_intento_y_orden(accion: str) -> list[dict]:
+def _entrega(**extra) -> dict:
+    return _ev(
+        "entrega", id="enc_x", clave="k", huella="h", texto="haz algo", hora="t0", **extra
+    )
+
+
+def _con_intento_y_orden(accion: str, **entrega) -> list[dict]:
     return [
-        _ev("entrega", id="enc_x", clave="k", huella="h", texto="haz algo", hora="t0"),
+        _entrega(**entrega),
         _ev("reserva", host="hostA", rol="responsable", hora="t"),
         _ev("intento_abierto", id="A", pid=1, inicio="x", host="hostA", rol="responsable"),
         _ev("orden", accion=accion),
@@ -75,6 +81,20 @@ class CancelarEsDefinitivo(unittest.TestCase):
         e = _plegar(_con_intento_y_orden("cancelar"))
         with self.assertRaises(TransicionIlegal):
             reducir(e, _ev("orden", accion="parar"))
+
+    def test_un_resultado_directo_no_termina_lo_que_se_esta_cancelando(self):
+        e = _plegar(
+            _con_intento_y_orden("cancelar", via="directa") + [_ev("intento_cerrado")]
+        )
+        with self.assertRaises(TransicionIlegal):
+            reducir(e, _ev("resultado_directo", evidencia="hecho"))
+
+    def test_un_resultado_directo_termina_un_encargo_sin_cancelar(self):  # no-roja-en-base: control; la via directa ya cerraba con su resultado
+        e = reducir(
+            _plegar([_entrega(via="directa")]),
+            _ev("resultado_directo", evidencia="hecho"),
+        )
+        self.assertEqual(e.estado, "terminado")
 
     def test_una_correccion_no_entra_a_un_encargo_que_se_esta_cancelando(self):
         for nombre, intercalados in _INTERCALADOS.items():
