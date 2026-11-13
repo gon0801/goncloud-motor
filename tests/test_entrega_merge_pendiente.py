@@ -184,15 +184,15 @@ class BaseModificadaAlMergear(unittest.TestCase):
         self.assertEqual(vuelta.gh.intentos, [e.pr_sha, e.pr_sha])
         self.assertEqual(r.eventos("pregunta"), [])
 
-    def test_la_base_que_sigue_modificada_se_detiene_al_tercer_intento_con_la_causa(self):
+    def test_la_base_que_sigue_modificada_se_detiene_al_quinto_intento_con_la_causa(self):
         vuelta, r = self.preparar(veces=99)
         e = _hasta_dejar_de_esperar(vuelta, r, vuelta("hola"))
         self.assertNotEqual(e.estado, "esperando_reintento")
-        self.assertEqual(len(vuelta.gh.intentos), 3)
+        self.assertEqual(len(vuelta.gh.intentos), 5)
 
         barrer(r.reg, ahora_iso(), time.time(), None, gh=vuelta.gh)
         e = r.fold()
-        self.assertEqual(len(vuelta.gh.intentos), 3)
+        self.assertEqual(len(vuelta.gh.intentos), 5)
         self.assertNotEqual(e.estado, "esperando_reintento")
         self.assertEqual(e.nivel_alcanzado, "pr")
         causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
@@ -226,16 +226,16 @@ class OtrasRespuestasPasajerasAlMergear(unittest.TestCase):
                 self.assertEqual(vuelta.gh.intentos, [e.pr_sha, e.pr_sha])
                 self.assertEqual(r.eventos("pregunta"), [])
 
-    def test_cada_respuesta_que_sigue_se_detiene_al_tercer_intento_con_la_causa(self):
+    def test_cada_respuesta_que_sigue_se_detiene_al_quinto_intento_con_la_causa(self):
         for nombre, (cli, marca) in _PASAJERAS.items():
             with self.subTest(nombre):
                 vuelta, r = self.preparar(cli, veces=99)
                 e = _hasta_dejar_de_esperar(vuelta, r, vuelta("hola"))
-                self.assertEqual(len(vuelta.gh.intentos), 3)
+                self.assertEqual(len(vuelta.gh.intentos), 5)
 
                 barrer(r.reg, ahora_iso(), time.time(), None, gh=vuelta.gh)
                 e = r.fold()
-                self.assertEqual(len(vuelta.gh.intentos), 3)
+                self.assertEqual(len(vuelta.gh.intentos), 5)
                 self.assertNotEqual(e.estado, "esperando_reintento")
                 self.assertEqual(e.nivel_alcanzado, "pr")
                 causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
@@ -284,8 +284,9 @@ def _sin_leer_checks(fabrica):
     return fabrica_sin_checks
 
 
-class CadaRespuestaConSuSerie(unittest.TestCase):
-    """Las esperas de un tipo no gastan los intentos de otro tipo."""
+class TodosLosTropiezosEnUnaSerie(unittest.TestCase):
+    """Cualquier mezcla de respuestas pasajeras y checks sin leer se detiene al
+    quinto tropiezo seguido del merge, con la causa del último."""
 
     def recorrer(self, fabrica):
         tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
@@ -305,14 +306,20 @@ class CadaRespuestaConSuSerie(unittest.TestCase):
         self.assertEqual(merges, 2 + 3)
         self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
 
-    def test_dos_bases_movidas_dejan_al_5xx_sus_tres_intentos(self):
+    def test_base_movida_y_5xx_alternados_se_detienen_al_quinto_tropiezo_con_la_causa(self):
         error_502, _ = _PASAJERAS["5xx"]
         merges, causas = self.recorrer(_github_contesta(
-            _en_orden(RuntimeError(_BASE_MODIFICADA), RuntimeError(_BASE_MODIFICADA), error_502),
-            veces=99,
+            _en_orden(*[RuntimeError(_BASE_MODIFICADA), error_502] * 6), veces=99,
         ))
-        self.assertEqual(merges, 2 + 3)
-        self.assertTrue(any("HTTP 502" in c for c in causas), causas)
+        self.assertEqual(merges, 5)
+        self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
+
+    def test_los_checks_que_nunca_se_leen_se_detienen_al_quinto_tropiezo_con_la_causa(self):
+        merges, causas = self.recorrer(_sin_leer_checks(_github_contesta(_POLITICA, veces=99)))
+        self.assertEqual(merges, 5)
+        self.assertTrue(
+            any("no se pudieron leer los checks requeridos" in c for c in causas), causas
+        )
 
 
 class EntregaMergePendiente(unittest.TestCase):
