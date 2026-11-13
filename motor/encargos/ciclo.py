@@ -5523,7 +5523,19 @@ def _preparar_indice(espacio: Path) -> str:
     luego se saca lo interno con `rm --cached --ignore-unmatch`. Las caches
     vuelven al estado de `HEAD` igual que antes: ni sus altas ni sus cambios ni
     sus borrados entran al commit.
+
+    Una ruta sin fusionar frena todo: `git add -A` la daría por resuelta con
+    los marcadores de conflicto dentro, y git ya no impediría el commit.
     """
+    r = _git(espacio, "diff", "--name-only", "--diff-filter=U")
+    if r.returncode != 0:
+        return f"git diff de rutas sin fusionar fallo: {r.stderr.strip()[-300:]}"
+    sin_resolver = r.stdout.splitlines()
+    if sin_resolver:
+        return (
+            "hay una mezcla sin resolver en " + ", ".join(sin_resolver)
+            + "; resuélvela, 'git add' y 'git commit' antes de publicar"
+        )
     r = _git(espacio, "add", "-A", "--", ".")
     if r.returncode != 0:
         return f"git add fallo: {r.stderr.strip()[-300:]}"
