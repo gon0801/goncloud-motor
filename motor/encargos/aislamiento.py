@@ -30,6 +30,7 @@ class ComandoAislado:
 
 MECANISMO_DIRECTO = "directo"
 ENTORNO_DEL_AGENTE = "MOTOR_ENTORNO_AGENTE"
+GUARDIA_GH = Path(__file__).resolve().parent.parent / "shims" / "gh_guard.py"
 
 
 def delta_de_entorno(comando: ComandoAislado) -> dict[str, str]:
@@ -80,6 +81,29 @@ def path_con_interprete(path: str, runtime: Path) -> str:
     return os.pathsep.join(partes)
 
 
+def carpeta_de_guardia(runtime: Path) -> Path:
+    """El `gh` del agente: la guardia que niega integrar y sus lanzadores con el intérprete del
+    supervisor, `gh` para sh y el bash de Git, `gh.cmd` para cmd. La guardia va copiada junto a
+    ellos porque busca el `gh` real quitando su propia carpeta del PATH."""
+    carpeta = runtime / "guardia"
+    carpeta.mkdir(parents=True, exist_ok=True)
+    python = Path(sys.executable)
+    archivos = {
+        "gh_guard.py": GUARDIA_GH.read_bytes(),
+        "gh": (
+            f'#!/bin/sh\nexec {shlex.quote(python.as_posix())} '
+            '"$(dirname "$0")/gh_guard.py" "$@"\n'
+        ).encode(),
+        "gh.cmd": f'@echo off\r\n"{python}" "%~dp0gh_guard.py" %*\r\n'.encode(),
+    }
+    for nombre, contenido in archivos.items():
+        temporal = carpeta / f".{nombre}.tmp"
+        temporal.write_bytes(contenido)
+        os.chmod(temporal, 0o755)
+        os.replace(temporal, carpeta / nombre)
+    return carpeta
+
+
 def temporal_de(runtime: Path) -> Path:
     """Temporal propio de una corrida: vacío, dentro de su runtime."""
     temporal = runtime / "tmp"
@@ -113,6 +137,9 @@ def _entorno(
             + os.pathsep
             + env.get("PATH", "")
         )
+    # Solo el motor integra, y después de la revisión independiente.
+    guardia = carpeta_de_guardia(runtime)
+    env["PATH"] = str(guardia) + os.pathsep + env.get("PATH", "")
     temporal = temporal_de(runtime)
     env.update(
         TMPDIR=str(temporal),
