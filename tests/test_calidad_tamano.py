@@ -411,5 +411,166 @@ class ArchivoQueNoEsUtf8(unittest.TestCase):
         self.assertNotIn("Traceback", corrida.stderr)
 
 
+class CabezaLeidaDeGit(unittest.TestCase):
+    """Con `--cabeza`, los dos lados salen de git y el árbol de trabajo no cuenta."""
+
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/grande.py", _relleno(1200))
+        self.base = self.repo.commit()
+
+    def _cabeza(self, ruta: str, texto: str) -> str:
+        self.repo.escribir(ruta, texto)
+        cabeza = self.repo.commit()
+        self.repo.git("checkout", "-q", self.base)
+        return cabeza
+
+    def test_la_cabeza_que_crece_falla_aunque_el_arbol_no_crezca(self):
+        cabeza = self._cabeza("motor/grande.py", _relleno(1201))
+        corrida = self.repo.tamano("--base", self.base, "--cabeza", cabeza)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/grande.py: archivo de 1201 líneas", corrida.stderr)
+        self.assertIn(f"en {self.base} mide 1200", corrida.stderr)
+
+    def test_la_cabeza_que_no_crece_pasa_aunque_el_arbol_crezca(self):
+        cabeza = self._cabeza("README", "no toca motor/\n")
+        self.repo.escribir("motor/grande.py", _relleno(1300))
+        corrida = self.repo.tamano("--base", self.base, "--cabeza", cabeza)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn(f"en {cabeza} contra {self.base}", corrida.stdout)
+
+    def test_un_archivo_nuevo_sobre_el_limite_en_la_cabeza_falla(self):
+        cabeza = self._cabeza("motor/encargos/nuevo.py", _relleno(1001))
+        corrida = self.repo.tamano("--base", self.base, "--cabeza", cabeza)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/encargos/nuevo.py: archivo de 1001 líneas", corrida.stderr)
+        self.assertIn("no existe", corrida.stderr)
+
+    def test_una_cabeza_que_no_esta_en_el_clon_falla_y_el_consejo_la_trae(self):
+        self.repo.git("branch", "pr", self._cabeza("README", "otro\n"))
+        clon = self.repo.clonar()
+        clon.git("update-ref", "-d", "refs/remotes/origin/pr")
+        corrida = clon.tamano("--base", self.base, "--cabeza", "origin/pr")
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("la cabeza origin/pr no existe", corrida.stderr)
+        self.assertNotIn("Traceback", corrida.stderr)
+
+        clon.correr_consejo(corrida.stderr)
+        corrida = clon.tamano("--base", self.base, "--cabeza", "origin/pr")
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+
+
+def _numerado(desde: int, hasta: int) -> str:
+    return "".join(f"x{n} = {n}\n" for n in range(desde, hasta))
+
+
+FLUJO_DE_LA_BASE = RAIZ / ".github" / "workflows" / "tamano-desde-la-base.yml"
+
+
+def _bloque_run(lineas: list[str]) -> tuple[list[str], str]:
+    corre = lineas.index("        run: |")
+    return lineas[:corre], textwrap.dedent("\n".join(lineas[corre + 1 :]))
+
+
+class JobDeLaBase(unittest.TestCase):
+    """El job de `pull_request_target` mide el PR con el `calidad.py` de la base."""
+
+    def setUp(self):
+        self.origen = _repo(self)
+        self.origen.escribir("motor/grande.py", _numerado(0, 1200))
+        self.origen.escribir("README", "base\n")
+        self.base = self.origen.commit()
+
+    def _pr(self, cambios: dict[str, str]) -> str:
+        self.origen.git("checkout", "-q", "-b", "pr", self.base)
+        for ruta, texto in cambios.items():
+            self.origen.escribir(ruta, texto)
+        cabeza = self.origen.commit()
+        self.origen.git("checkout", "-q", "main")
+        return cabeza
+
+    def _avanzar_la_base(self, ruta: str, texto: str) -> None:
+        self.origen.escribir(ruta, texto)
+        self.origen.commit()
+
+    def _job(self, cabeza: str) -> subprocess.CompletedProcess:
+        checkout = Repo(self.origen.raiz.parent / "clon")
+        if not checkout.raiz.exists():
+            checkout = self.origen.clonar()
+        _, guion = _bloque_run(FLUJO_DE_LA_BASE.read_text(encoding="utf-8").splitlines())
+        binarios = checkout.raiz.parent / "bin"
+        binarios.mkdir(exist_ok=True)
+        python = binarios / "python3"
+        python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        python.chmod(0o755)
+        entorno = dict(os.environ, CABEZA_DEL_PR=cabeza)
+        entorno["PATH"] = f"{binarios}{os.pathsep}{entorno['PATH']}"
+        return subprocess.run(
+            ["bash", "-e", "-c", guion],
+            cwd=checkout.raiz,
+            env=entorno,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_un_pr_que_crece_y_apaga_su_propio_calidad_falla(self):
+        cabeza = self._pr(
+            {"motor/grande.py": _numerado(0, 1201), "tools/calidad.py": "raise SystemExit(0)\n"}
+        )
+        corrida = self._job(cabeza)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
+        self.assertIn("motor/grande.py: archivo de 1201 líneas", corrida.stderr)
+        self.assertIn(f"en {self.base} mide 1200", corrida.stderr)
+
+    def test_un_pr_atrasado_que_no_toca_motor_pasa_aunque_la_base_se_encogio(self):
+        cabeza = self._pr({"README": "pr\n"})
+        self._avanzar_la_base("motor/grande.py", _numerado(100, 1200))
+        corrida = self._job(cabeza)
+        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+        self.assertIn("nada crece", corrida.stdout)
+
+    def test_un_pr_atrasado_que_crece_falla_contra_lo_que_mide_la_base_hoy(self):
+        cabeza = self._pr({"motor/grande.py": _numerado(0, 1200) + "y = 2\n"})
+        self._avanzar_la_base("motor/grande.py", _numerado(100, 1200))
+        corrida = self._job(cabeza)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
+        self.assertIn("motor/grande.py: archivo de 1101 líneas", corrida.stderr)
+        self.assertIn("mide 1100", corrida.stderr)
+
+    def test_un_pr_que_choca_con_la_base_falla_y_pide_actualizar_la_rama(self):
+        cabeza = self._pr({"README": "pr\n"})
+        self._avanzar_la_base("README", "main\n")
+        corrida = self._job(cabeza)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("actualiza la rama", corrida.stderr)
+
+    def test_una_cabeza_que_no_es_un_sha_no_llega_a_git(self):
+        for cabeza in ("main", "$(touch pwn)", "a" * 39):
+            with self.subTest(cabeza=cabeza):
+                corrida = self._job(cabeza)
+                self.assertEqual(corrida.returncode, 1)
+                self.assertIn("no es un SHA válido", corrida.stderr)
+
+    def test_el_job_no_recibe_secretos_ni_trae_el_codigo_del_pr(self):
+        texto = FLUJO_DE_LA_BASE.read_text(encoding="utf-8")
+        lineas = texto.splitlines()
+        disparo = lineas.index("on:")
+        self.assertEqual(lineas[disparo + 1], "  pull_request_target:")
+        self.assertFalse(lineas[disparo + 2].startswith("  "), "un solo disparador")
+        permisos = lineas.index("permissions:")
+        self.assertEqual(lineas[permisos + 1 : permisos + 3], ["  contents: read", ""])
+        self.assertNotIn("secrets.", texto)
+        self.assertNotIn("github.token", texto)
+        self.assertIn("          persist-credentials: false", lineas)
+        self.assertNotIn("ref:", texto, "el checkout es el de la base, nunca el del PR")
+        previo, guion = _bloque_run(lineas)
+        self.assertNotIn("${{", guion, "lo que viene del evento entra por env, validado")
+        expresiones = [linea.strip() for linea in previo if "${{" in linea]
+        self.assertEqual(
+            expresiones, ["CABEZA_DEL_PR: ${{ github.event.pull_request.head.sha }}"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
