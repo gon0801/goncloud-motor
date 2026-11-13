@@ -1,0 +1,415 @@
+"""`calidad.py tamano` frena que un archivo o una función de `motor/` crezca.
+
+Cada prueba arma un repo de git temporal con su propio `motor/`, guarda una base
+en un commit y corre la herramienta como la corre el CI, contra esa base.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+RAIZ = Path(__file__).resolve().parents[1]
+HERRAMIENTA = RAIZ / "tools" / "calidad.py"
+FLUJO = RAIZ / ".github" / "workflows" / "quality.yml"
+PASO_DE_TAMANO = "      - name: Ningún archivo ni función de motor/ crece por encima de su límite"
+
+
+def _funcion(nombre: str, lineas: int, sangria: str = "") -> str:
+    cuerpo = f"{sangria}    x = 1\n" * (lineas - 1)
+    return f"{sangria}def {nombre}():\n{cuerpo}"
+
+
+def _relleno(lineas: int) -> str:
+    return "x = 1\n" * lineas
+
+
+class Repo:
+    def __init__(self, raiz: Path):
+        self.raiz = raiz
+
+    @classmethod
+    def nuevo(cls, raiz: Path) -> Repo:
+        (raiz / "tools").mkdir(parents=True)
+        repo = cls(raiz)
+        repo.git("init", "-q", "-b", "main")
+        shutil.copy(HERRAMIENTA, raiz / "tools" / "calidad.py")
+        return repo
+
+    def clonar(self, *opciones: str) -> Repo:
+        destino = self.raiz.parent / "clon"
+        subprocess.run(
+            ["git", "clone", "-q", *opciones, self.raiz.as_uri(), str(destino)],
+            capture_output=True,
+            check=True,
+        )
+        return Repo(destino)
+
+    def correr_consejo(self, mensaje: str) -> None:
+        consejo = re.search(r"`(git [^`]+)`", mensaje)
+        if consejo is None:
+            raise AssertionError(f"el mensaje no trae un comando de git: {mensaje}")
+        subprocess.run(shlex.split(consejo.group(1)), cwd=self.raiz, check=True)
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(
+            [
+                "git",
+                "-c", "user.name=prueba",
+                "-c", "user.email=prueba@example.invalid",
+                "-c", "commit.gpgsign=false",
+                *args,
+            ],
+            cwd=self.raiz,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def escribir(self, ruta: str, texto: str) -> None:
+        destino = self.raiz / ruta
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_text(texto, encoding="utf-8")
+
+    def commit(self) -> str:
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base")
+        return self.git("rev-parse", "HEAD")
+
+    def tamano(self, *extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(self.raiz / "tools" / "calidad.py"), "tamano", *extra],
+            cwd=self.raiz,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
+def _repo(prueba: unittest.TestCase) -> Repo:
+    directorio = tempfile.TemporaryDirectory()
+    prueba.addCleanup(directorio.cleanup)
+    return Repo.nuevo(Path(directorio.name) / "origen")
+
+
+class LimiteDeArchivo(unittest.TestCase):
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/grande.py", _relleno(1200))
+        self.base = self.repo.commit()
+
+    def test_sin_cambios_pasa_y_dice_contra_que_comparo_y_cuantos_pasan(self):
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn(self.base, corrida.stdout)
+        self.assertIn("1 archivo(s)", corrida.stdout)
+        self.assertIn("0 función(es)", corrida.stdout)
+
+    def test_un_archivo_que_ya_pasaba_y_crece_una_linea_falla(self):
+        self.repo.escribir("motor/grande.py", _relleno(1201))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/grande.py: archivo de 1201 líneas", corrida.stderr)
+        self.assertIn("mide 1200", corrida.stderr)
+        self.assertIn("Saca código", corrida.stderr)
+
+    def test_un_archivo_nuevo_de_1001_lineas_falla(self):
+        self.repo.escribir("motor/encargos/nuevo.py", _relleno(1001))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/encargos/nuevo.py: archivo de 1001 líneas", corrida.stderr)
+        self.assertIn("no existe", corrida.stderr)
+
+    def test_un_archivo_nuevo_de_1000_lineas_cabe(self):
+        self.repo.escribir("motor/nuevo.py", _relleno(1000))
+        self.assertEqual(self.repo.tamano("--base", self.base).returncode, 0)
+
+    def test_un_archivo_que_cabia_en_la_base_no_puede_pasar_del_limite(self):
+        self.repo.escribir("motor/chico.py", _relleno(900))
+        base = self.repo.commit()
+        self.repo.escribir("motor/chico.py", _relleno(1001))
+        corrida = self.repo.tamano("--base", base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/chico.py: archivo de 1001 líneas", corrida.stderr)
+        self.assertIn("mide 900", corrida.stderr)
+
+    def test_renombrar_el_archivo_no_hereda_su_tamano_en_la_base(self):
+        (self.repo.raiz / "motor" / "grande.py").rename(
+            self.repo.raiz / "motor" / "otro.py"
+        )
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/otro.py: archivo de 1200 líneas", corrida.stderr)
+
+    def test_lo_que_se_encoge_no_deja_holgura_para_volver_a_crecer(self):
+        self.repo.escribir("motor/grande.py", _relleno(1100))
+        self.assertEqual(self.repo.tamano("--base", self.base).returncode, 0)
+        nueva_base = self.repo.commit()
+
+        self.repo.escribir("motor/grande.py", _relleno(1200))
+        corrida = self.repo.tamano("--base", nueva_base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/grande.py: archivo de 1200 líneas", corrida.stderr)
+        self.assertIn("mide 1100", corrida.stderr)
+
+    def test_por_omision_compara_contra_origin_main(self):
+        self.repo.git("update-ref", "refs/remotes/origin/main", self.base)
+        self.repo.escribir("motor/grande.py", _relleno(1201))
+        corrida = self.repo.tamano()
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("en origin/main mide 1200", corrida.stderr)
+
+    def test_sin_la_rama_del_remoto_el_consejo_la_trae(self):
+        clon = self.repo.clonar()
+        clon.git("update-ref", "-d", "refs/remotes/origin/main")
+        corrida = clon.tamano("--base", "origin/main")
+        self.assertEqual(corrida.returncode, 1)
+
+        clon.correr_consejo(corrida.stderr)
+        corrida = clon.tamano("--base", "origin/main")
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+
+    def test_en_un_clon_superficial_el_consejo_trae_el_primer_padre(self):
+        self.repo.escribir("README", "otro commit\n")
+        self.repo.commit()
+        clon = self.repo.clonar("--depth", "1")
+        corrida = clon.tamano("--base", "HEAD^1")
+        self.assertEqual(corrida.returncode, 1)
+        self.assertNotIn("git fetch origin HEAD^1", corrida.stderr)
+
+        clon.correr_consejo(corrida.stderr)
+        corrida = clon.tamano("--base", "HEAD^1")
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+
+    def test_una_referencia_que_no_existe_no_sugiere_traerla_del_remoto(self):
+        corrida = self.repo.tamano("--base", "HEAD^1")
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("HEAD^1", corrida.stderr)
+        self.assertNotIn("git fetch", corrida.stderr)
+        self.assertNotIn("Traceback", corrida.stderr)
+
+
+class BaseDelWorkflow(unittest.TestCase):
+    """El paso del job `gate` elige la base según el evento de GitHub."""
+
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/grande.py", _relleno(1200))
+        self.antes = self.repo.commit()
+        self.repo.escribir("motor/grande.py", _relleno(1201))
+        self.repo.commit()
+        self.repo.escribir("README", "no toca motor/\n")
+        self.repo.commit()
+
+    def _paso(self, contexto: dict[str, str]) -> subprocess.CompletedProcess:
+        lineas = FLUJO.read_text(encoding="utf-8").splitlines()
+        inicio = lineas.index(PASO_DE_TAMANO)
+        fin = next(i for i in range(inicio + 1, len(lineas)) if lineas[i].startswith("      - "))
+        paso = lineas[inicio + 1 : fin]
+        entorno = dict(os.environ)
+        for linea in paso:
+            variable = re.fullmatch(r"\s*(\w+): \$\{\{ ([\w.]+) \}\}", linea)
+            if variable:
+                entorno[variable.group(1)] = contexto.get(variable.group(2), "")
+        corre = paso.index("        run: |")
+        guion = textwrap.dedent("\n".join(paso[corre + 1 :]))
+
+        binarios = self.repo.raiz.parent / "bin"
+        binarios.mkdir(exist_ok=True)
+        python = binarios / "python"
+        python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        python.chmod(0o755)
+        entorno["PATH"] = f"{binarios}{os.pathsep}{entorno['PATH']}"
+        return subprocess.run(
+            ["bash", "-e", "-c", guion],
+            cwd=self.repo.raiz,
+            env=entorno,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_un_push_de_dos_commits_compara_contra_donde_estaba_la_rama(self):
+        corrida = self._paso({"github.base_ref": "", "github.event.before": self.antes})
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/grande.py: archivo de 1201 líneas", corrida.stderr)
+        self.assertIn(f"en {self.antes} mide 1200", corrida.stderr)
+
+    def test_un_push_sin_commit_previo_compara_el_ultimo_y_lo_avisa(self):
+        for antes in ("0" * 40, "", "f" * 40):
+            with self.subTest(antes=antes):
+                corrida = self._paso({"github.base_ref": "", "github.event.before": antes})
+                self.assertEqual(corrida.returncode, 0, corrida.stderr)
+                self.assertIn("::warning", corrida.stdout)
+                self.assertIn("HEAD^1", corrida.stdout)
+
+    def test_un_pr_compara_contra_su_rama_base(self):
+        self.repo.git("update-ref", "refs/remotes/origin/main", self.antes)
+        corrida = self._paso({"github.base_ref": "main", "github.event.before": ""})
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("en origin/main mide 1200", corrida.stderr)
+
+    def test_no_hay_linea_base_que_actualizar(self):
+        corrida = self.repo.tamano("--actualizar")
+        self.assertEqual(corrida.returncode, 2)
+        self.assertIn("--base", corrida.stderr)
+        self.assertFalse((self.repo.raiz / ".github").exists())
+
+
+class LimiteDeFuncion(unittest.TestCase):
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir(
+            "motor/m.py", _funcion("chica", 10) + _funcion("larga", 150)
+        )
+        self.base = self.repo.commit()
+
+    def test_la_funcion_que_ya_pasaba_y_no_crece_pasa(self):
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn("1 función(es)", corrida.stdout)
+
+    def test_la_funcion_que_ya_pasaba_y_crece_falla(self):
+        self.repo.escribir("motor/m.py", _funcion("chica", 10) + _funcion("larga", 151))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/m.py::larga: función de 151 líneas", corrida.stderr)
+        self.assertIn("mide 150", corrida.stderr)
+
+    def test_un_metodo_nuevo_de_101_lineas_falla(self):
+        self.repo.escribir(
+            "motor/m.py",
+            _funcion("chica", 10)
+            + _funcion("larga", 150)
+            + "class Caja:\n"
+            + _funcion("metodo", 101, sangria="    "),
+        )
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/m.py::Caja.metodo: función de 101 líneas", corrida.stderr)
+
+    def test_mover_la_funcion_dentro_del_archivo_conserva_su_tamano_en_la_base(self):
+        self.repo.escribir("motor/m.py", _funcion("larga", 150) + _funcion("chica", 10))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn("nada crece", corrida.stdout)
+
+    def test_renombrar_la_funcion_no_hereda_su_tamano_en_la_base(self):
+        self.repo.escribir("motor/m.py", _funcion("chica", 10) + _funcion("otra", 150))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/m.py::otra: función de 150 líneas", corrida.stderr)
+
+    def test_una_segunda_definicion_con_el_mismo_nombre_no_se_cuela(self):
+        self.repo.escribir(
+            "motor/m.py",
+            _funcion("chica", 10) + _funcion("larga", 150) + _funcion("larga", 20),
+        )
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/m.py::larga: función de 170 líneas", corrida.stderr)
+
+
+GRANDE = (
+    _relleno(1100)
+    + "\n"
+    + "# nota que explica algo\n"
+    + _funcion("chica", 5)
+    + _relleno(100)
+)
+
+
+class CantidadDeCodigo(unittest.TestCase):
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/grande.py", GRANDE)
+        self.base = self.repo.commit()
+
+    def _sin_crecer_en_lineas_falla_por_tokens(self, texto: str) -> None:
+        self.assertEqual(texto.count("\n"), GRANDE.count("\n"))
+        self.repo.escribir("motor/grande.py", texto)
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/grande.py: archivo de", corrida.stderr)
+        self.assertIn("tokens de código; en " + self.base + " mide", corrida.stderr)
+        self.assertNotIn("líneas; en", corrida.stderr)
+        self.assertIn("Saca código", corrida.stderr)
+
+    def test_cambiar_una_linea_en_blanco_por_codigo_falla(self):
+        self._sin_crecer_en_lineas_falla_por_tokens(
+            GRANDE.replace("\n\n# nota", "\ny = 2\n# nota", 1)
+        )
+
+    def test_cambiar_un_comentario_por_codigo_falla(self):
+        self._sin_crecer_en_lineas_falla_por_tokens(
+            GRANDE.replace("# nota que explica algo\n", "y = 2\n", 1)
+        )
+
+    def test_una_lista_larga_en_una_sola_linea_falla(self):
+        datos = "datos = [" + ", ".join(str(n) for n in range(5000)) + "]\n"
+        self._sin_crecer_en_lineas_falla_por_tokens(GRANDE.replace("x = 1\n", datos, 1))
+
+    def test_sacar_una_funcion_pasa_y_dice_contra_que_compara_cada_medida(self):
+        self.repo.escribir("motor/grande.py", GRANDE.replace(_funcion("chica", 5), ""))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn(f"líneas: ninguno supera lo que mide en {self.base}", corrida.stdout)
+        self.assertIn(
+            f"tokens de código: ninguno supera lo que mide en {self.base}", corrida.stdout
+        )
+
+    def test_entra_tanto_codigo_como_sale_y_ni_un_token_mas(self):
+        self.repo.escribir("motor/grande.py", GRANDE.replace("def chica():", "def otra():"))
+        self.assertEqual(self.repo.tamano("--base", self.base).returncode, 0)
+
+        self.repo.escribir("motor/grande.py", GRANDE.replace("def chica():", "def otra(a):"))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("tokens de código", corrida.stderr)
+
+    def test_una_funcion_que_pasa_del_limite_tampoco_crece_en_tokens(self):
+        larga = "def larga():\n" + "    x = 1\n" * 100 + "\n" + "    x = 1\n" * 49
+        self.repo.escribir("motor/m.py", larga)
+        base = self.repo.commit()
+        self.repo.escribir("motor/m.py", larga.replace("\n\n", "\n    y = 2\n", 1))
+        corrida = self.repo.tamano("--base", base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/m.py::larga: función de", corrida.stderr)
+        self.assertIn("tokens de código", corrida.stderr)
+
+
+class ArchivoQueNoEsUtf8(unittest.TestCase):
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/m.py", _relleno(10))
+        self.latin = "nombre = 'Peña'\n".encode("latin-1")
+
+    def test_en_el_arbol_falla_nombrando_el_archivo(self):
+        base = self.repo.commit()
+        (self.repo.raiz / "motor" / "latin.py").write_bytes(self.latin)
+        corrida = self.repo.tamano("--base", base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/latin.py", corrida.stderr)
+        self.assertIn("UTF-8", corrida.stderr)
+        self.assertNotIn("Traceback", corrida.stderr)
+
+    def test_en_la_base_falla_nombrando_el_archivo_y_la_base(self):
+        (self.repo.raiz / "motor" / "latin.py").write_bytes(self.latin)
+        base = self.repo.commit()
+        (self.repo.raiz / "motor" / "latin.py").unlink()
+        corrida = self.repo.tamano("--base", base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn(f"motor/latin.py en {base}", corrida.stderr)
+        self.assertNotIn("Traceback", corrida.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

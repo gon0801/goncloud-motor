@@ -5,12 +5,18 @@ Uso, igual en local y en CI:
     python3 tools/calidad.py tipos
     python3 tools/calidad.py lint
     python3 tools/calidad.py io
+    python3 tools/calidad.py tamano --base origin/main
 
 `tipos` y `lint` comparan contra `.github/calidad/baseline.json` y fallan solo
 si el cambio agrega un error. `io` es estricto: cualquier uso fuera de
 `motor/io.py` falla salvo los archivos exentos por una prohibición expresa.
 `--actualizar` regenera `tipos` y `lint` (se hace desde la rama base, no desde el
 PR que se está revisando).
+
+`tamano` mide `motor/` contra la rama base, leída de git: un archivo de más de
+1,000 líneas o una función de más de 100 no puede medir más que en la base, ni en
+líneas ni en tokens de código, y lo que en la base no existe o cabe no puede
+pasar del límite. No guarda nada.
 """
 
 from __future__ import annotations
@@ -18,10 +24,13 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+import io
+import itertools
 import json
 import shutil
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -92,6 +101,26 @@ MIGRACION = {"_migrar_un_marcador", "migrar_marcadores"}
 # marcador que decida.
 JSON_EXCEPCIONES = {("_texto_inspeccion_resuelta", ".json")}
 MENSAJE_MARCADORES = "anótalo como evento y derívalo en dominio"
+LIMITES_DE_TAMANO = {"archivo": 1000, "funcion": 100}
+# Lo que pasa del límite de líneas no puede superar a la base en ninguna de estas
+# medidas. Las líneas solas dejan cambiar un comentario o una línea en blanco por
+# código; los tokens no cambian al borrar un comentario y sí suben con una lista
+# larga escrita en una sola línea.
+MEDIDAS_DE_TAMANO = ("líneas", "tokens de código")
+NO_ES_CODIGO = frozenset(
+    {
+        tokenize.COMMENT,
+        tokenize.NL,
+        tokenize.NEWLINE,
+        tokenize.INDENT,
+        tokenize.DEDENT,
+        tokenize.ENDMARKER,
+    }
+)
+MENSAJE_TAMANO = (
+    "Saca código de ahí a un módulo propio: nada de motor/ pasa del límite ni "
+    "crece por encima de lo que mide en la base."
+)
 
 
 VERSIONES = {"pyright": "1.1.414", "ruff": "0.17.4"}
@@ -293,6 +322,172 @@ def marcadores_nuevos() -> collections.Counter:
     return nuevos
 
 
+def _funciones(nodo: ast.AST, prefijo: str = ""):
+    """Cada función o método con su nombre calificado dentro del archivo.
+
+    El nombre (`Clase.metodo`, `externa.interna`) y no la línea es la identidad:
+    mover la función dentro del archivo no cambia su tamaño en la base, y
+    renombrarla o llevarla a otro archivo la vuelve nueva.
+    """
+    for hijo in ast.iter_child_nodes(nodo):
+        if isinstance(hijo, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            nombre = prefijo + hijo.name
+            if not isinstance(hijo, ast.ClassDef):
+                yield nombre, hijo.lineno, hijo.end_lineno or hijo.lineno
+            yield from _funciones(hijo, nombre + ".")
+        else:
+            yield from _funciones(hijo, prefijo)
+
+
+def _acumulado_por_linea(texto: str) -> dict[str, list[int]]:
+    """Por medida, lo que suman las líneas físicas desde la primera hasta cada una."""
+    tokens = [0] * (len(texto.splitlines()) + 1)
+    for token in tokenize.generate_tokens(io.StringIO(texto).readline):
+        if token.type not in NO_ES_CODIGO:
+            tokens[token.start[0]] += 1
+    lineas = [0] + [1] * (len(tokens) - 1)
+    return {
+        medida: list(itertools.accumulate(por_linea))
+        for medida, por_linea in zip(MEDIDAS_DE_TAMANO, (lineas, tokens), strict=True)
+    }
+
+
+def tamanos(fuentes) -> dict[tuple, collections.Counter]:
+    """Cada medida por `("archivo", ruta)` y por `("funcion", ruta, nombre)`."""
+    cuenta: dict[tuple, collections.Counter] = collections.defaultdict(collections.Counter)
+    for ruta, texto in fuentes:
+        try:
+            arbol = ast.parse(texto)
+            acumulado = _acumulado_por_linea(texto)
+        except (SyntaxError, tokenize.TokenError) as exc:
+            raise SystemExit(f"no se puede leer {ruta}: {exc}") from exc
+        cuenta[("archivo", ruta)].update(_tramo(acumulado, 1, len(acumulado["líneas"]) - 1))
+        for nombre, inicio, fin in _funciones(arbol):
+            # Dos definiciones con el mismo nombre suman: una segunda no puede
+            # colarse bajo el tamaño de la primera.
+            cuenta[("funcion", ruta, nombre)].update(_tramo(acumulado, inicio, fin))
+    return cuenta
+
+
+def _tramo(acumulado: dict[str, list[int]], inicio: int, fin: int) -> dict[str, int]:
+    return {medida: suma[fin] - suma[inicio - 1] for medida, suma in acumulado.items()}
+
+
+def _utf8(ruta: str, contenido: bytes) -> str:
+    try:
+        return contenido.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(
+            f"tamano: {ruta} no es UTF-8 (byte {exc.start}: {exc.reason}); guárdalo en UTF-8"
+        ) from None
+
+
+def _fuentes_del_arbol():
+    for archivo in sorted((RAIZ / "motor").rglob("*.py")):
+        ruta = archivo.relative_to(RAIZ).as_posix()
+        yield ruta, _utf8(ruta, archivo.read_bytes())
+
+
+def _git(*args: str, entrada: bytes | None = None) -> bytes:
+    return subprocess.run(
+        ["git", *args], cwd=RAIZ, input=entrada, capture_output=True, check=True
+    ).stdout
+
+
+def _commit_de_la_base(ref: str) -> str:
+    try:
+        return _git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").decode().strip()
+    except subprocess.CalledProcessError:
+        raise SystemExit(
+            f"tamano: la base {ref} no existe en este clon; {_como_traer(ref)}"
+        ) from None
+
+
+def _como_traer(ref: str) -> str:
+    if ref.startswith("origin/"):
+        rama = ref.removeprefix("origin/")
+        return f"tráela con `git fetch origin +refs/heads/{rama}:refs/remotes/{ref}`"
+    if _git("rev-parse", "--is-shallow-repository").strip() == b"true":
+        return "el clon es superficial; trae la historia con `git fetch --unshallow origin`"
+    return "no es una rama de origin ni está en la historia del clon; revisa el nombre"
+
+
+def _fuentes_de_la_base(commit: str, ref: str):
+    """Los `.py` de `motor/` tal como están en `commit`, sin tocar el árbol."""
+    blobs = []
+    for entrada in _git("ls-tree", "-r", "-z", commit, "--", "motor/").split(b"\0"):
+        if not entrada:
+            continue
+        meta, ruta = entrada.split(b"\t", 1)
+        modo, tipo, sha = meta.split()
+        if tipo == b"blob" and modo != b"120000" and ruta.endswith(b".py"):
+            blobs.append((ruta.decode(), sha))
+    lote = _git("cat-file", "--batch", entrada=b"".join(sha + b"\n" for _, sha in blobs))
+    pos = 0
+    for ruta, _ in blobs:
+        fin_cabecera = lote.index(b"\n", pos)
+        tamano = int(lote[pos:fin_cabecera].split()[2])
+        inicio = fin_cabecera + 1
+        yield ruta, _utf8(f"{ruta} en {ref}", lote[inicio : inicio + tamano])
+        pos = inicio + tamano + 1
+
+
+def _nombre_de_tamano(clave: tuple) -> str:
+    return clave[1] if clave[0] == "archivo" else f"{clave[1]}::{clave[2]}"
+
+
+def _excesos_de_tamano(
+    hoy: dict[tuple, collections.Counter], base: dict[tuple, collections.Counter], ref: str
+) -> list[str]:
+    excesos = []
+    for clave, medidas in sorted(hoy.items()):
+        limite = LIMITES_DE_TAMANO[clave[0]]
+        lineas = medidas["líneas"]
+        if lineas <= limite:
+            continue
+        nombre = _nombre_de_tamano(clave)
+        tipo = "archivo" if clave[0] == "archivo" else "función"
+        antes = base.get(clave)
+        if antes is None or antes["líneas"] <= limite:
+            en_base = (
+                f"no existe en {ref}" if antes is None else f"en {ref} mide {antes['líneas']}"
+            )
+            excesos.append(
+                f"  {nombre}: {tipo} de {lineas} líneas; {en_base} y el límite es {limite}"
+            )
+            continue
+        excesos.extend(
+            f"  {nombre}: {tipo} de {medidas[medida]} {medida}; en {ref} mide {antes[medida]}"
+            for medida in MEDIDAS_DE_TAMANO
+            if medidas[medida] > antes[medida]
+        )
+    return excesos
+
+
+def _comparar_tamano(ref: str) -> int:
+    commit = _commit_de_la_base(ref)
+    hoy = tamanos(_fuentes_del_arbol())
+    excesos = _excesos_de_tamano(hoy, tamanos(_fuentes_de_la_base(commit, ref)), ref)
+    if excesos:
+        print(f"tamano: {len(excesos)} límite(s) superado(s) contra {ref}", file=sys.stderr)
+        print("\n".join(excesos), file=sys.stderr)
+        print(MENSAJE_TAMANO, file=sys.stderr)
+        return 1
+    grandes = collections.Counter(
+        clave[0] for clave, medidas in hoy.items()
+        if medidas["líneas"] > LIMITES_DE_TAMANO[clave[0]]
+    )
+    print(
+        f"tamano: nada crece contra {ref} ({commit[:12]}). Pasan del límite hoy "
+        f"{grandes['archivo']} archivo(s) de más de {LIMITES_DE_TAMANO['archivo']} "
+        f"líneas y {grandes['funcion']} función(es) de más de "
+        f"{LIMITES_DE_TAMANO['funcion']}; en ellos:"
+    )
+    for medida in MEDIDAS_DE_TAMANO:
+        print(f"  {medida}: ninguno supera lo que mide en {ref}")
+    return 0
+
+
 def _cargar() -> dict:
     if not BASE.is_file():
         return {}
@@ -404,10 +599,17 @@ def _actualizar(linea_base: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="calidad")
     ap.add_argument(
-        "modo", choices=("tipos", "lint", "io", "marcadores", "politica")
+        "modo", choices=("tipos", "lint", "io", "marcadores", "politica", "tamano")
     )
     ap.add_argument("--actualizar", action="store_true")
+    ap.add_argument(
+        "--base", default="origin/main", help="solo tamano: la referencia de git a comparar"
+    )
     args = ap.parse_args(argv)
+    if args.modo == "tamano":
+        if args.actualizar:
+            ap.error("tamano no guarda nada que actualizar: compara contra --base")
+        return _comparar_tamano(args.base)
     if args.modo == "politica":
         if args.actualizar:
             _regenerar_politica()

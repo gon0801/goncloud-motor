@@ -27,3 +27,9 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: calidad-tamano
+        name: tamaño de archivos y funciones de motor/ contra origin/main
+        entry: python3 tools/calidad.py tamano --base origin/main
+        language: system
+        pass_filenames: false
+        always_run: true
