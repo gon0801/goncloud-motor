@@ -12,6 +12,7 @@ import re
 import socket
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Literal
 
 from .catalogo_agentes import identidad_modelo
 
@@ -27,6 +28,8 @@ ESTADOS = (
 )
 
 _CERRADOS = ("deteniendo", "detenido", "cancelado", "terminado")
+
+OrdenParada = Literal["", "parar", "cancelar"]
 
 # Los marcadores son observaciones del motor, no hechos del encargo: no cortan
 # las series de reintentos ni cuentan como movimiento del encargo.
@@ -746,6 +749,7 @@ class Encargo:
     ultimo_hecho: str = ""
     hora: str = ""
     motivo: str = ""
+    orden_parada: OrdenParada = ""
     siguiente: str = ""
     preguntas: tuple[str, ...] = ()
     pendientes: tuple[str, ...] = ()
@@ -1887,9 +1891,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 "aplicar la corrección en la misma rama y el mismo PR",
                 hora,
             )
-        if e.estado == "cancelado" or (
-            e.estado == "deteniendo" and e.motivo == "cancelado"
-        ):
+        if e.orden_parada == "cancelar":
             raise TransicionIlegal("el encargo está cancelado; no admite correcciones")
         # Un ajuste trae información nueva del operador. Sólo levanta las causas
         # que el host no puede comprobar: las demás siguen hasta verificarse.
@@ -3598,11 +3600,14 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
             siguiente="detenido hasta continuar", hora=hora or e.hora,
         )
     if accion == "parar":
-        if e.estado in ("cancelado", "terminado"):
-            raise TransicionIlegal(f"no se para un encargo {e.estado}")
+        if e.orden_parada == "cancelar":
+            raise TransicionIlegal("no se para un encargo cancelado")
+        if e.estado == "terminado":
+            raise TransicionIlegal("no se para un encargo terminado")
         return replace(
             e,
             estado="deteniendo",
+            orden_parada="parar",
             intento_interrumpido=e.intento_interrumpido or e.proc is not None or e.reserva,
             escrituras=False,
             intentos_nuevos=False,
@@ -3617,6 +3622,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
         return replace(
             e,
             estado="deteniendo",
+            orden_parada="cancelar",
             escrituras=False,
             intentos_nuevos=False,
             motivo="cancelado",
@@ -3646,7 +3652,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
         return replace(
             e,
             proc=None, herramienta="", conductor="", intento="",
-            motivo="", causa="", reanuda_en="",
+            motivo="", causa="", reanuda_en="", orden_parada="",
         )
     raise TransicionIlegal(f"orden desconocida: {accion}")
 
@@ -3829,7 +3835,7 @@ def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
 def _arbol(e: Encargo, d: dict, hora: str) -> Encargo:
     if d.get("observacion") != "ausente" or e.estado != "deteniendo" or e.reserva:
         return e
-    estado = "cancelado" if e.motivo == "cancelado" else "detenido"
+    estado = "cancelado" if e.orden_parada == "cancelar" else "detenido"
     return replace(
         e,
         estado=estado,
