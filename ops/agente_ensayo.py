@@ -17,18 +17,45 @@ el intérprete del servicio sin instalar nada.
 import json
 import re
 import sys
+import types
 from pathlib import Path
-from typing import NotRequired, TypedDict, cast
+from typing import (
+    Literal,
+    NotRequired,
+    TypedDict,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+    is_typeddict,
+)
 
 Archivos = dict[str, str]
 """Ruta relativa al espacio y su contenido completo."""
 
 
+class Dependencia(TypedDict):
+    fase: str
+    version: NotRequired[str]
+
+
+class Receta(TypedDict, total=False):
+    desplegar: str
+    checklist: str
+    rollback: str
+
+
 class Fase(TypedDict):
+    """Las claves que el motor acepta en una fase de `.interno/fases.json`
+    (`_adoptar_fases` y `datos_despliegue` en `motor/encargos/dominio.py`)."""
+
     id: str
     resultado: str
-    requiere: NotRequired[list[str]]
-    requiere_despliegue: NotRequired[bool]
+    requiere: NotRequired[list[str | Dependencia]]
+    requiere_despliegue: NotRequired[bool | None]
+    lane: NotRequired[Literal["fast", "gate", "release"]]
+    despliegue: NotRequired[Receta]
 
 
 class Comprobacion(TypedDict):
@@ -53,16 +80,66 @@ class Escenario(TypedDict):
     titulo_bloqueo: NotRequired[str]
 
 
+class FormaInvalida(ValueError):
+    pass
+
+
+def _validar(valor: object, tipo: object, donde: str) -> None:
+    """Comprueba `valor` contra `tipo`. Los TypedDict de arriba son la única
+    descripción de la forma: una clave nueva se declara ahí y queda validada."""
+    origen = get_origin(tipo)
+    if is_typeddict(tipo):
+        if not isinstance(valor, dict):
+            raise FormaInvalida(f"{donde}: se esperaba un objeto")
+        claves = vars(tipo)
+        requeridas, opcionales = claves["__required_keys__"], claves["__optional_keys__"]
+        faltan = requeridas - valor.keys()
+        sobran = valor.keys() - requeridas - opcionales
+        if faltan or sobran:
+            raise FormaInvalida(f"{donde}: faltan={sorted(faltan)} sobran={sorted(sobran)}")
+        campos = get_type_hints(tipo)
+        for clave, sub in valor.items():
+            _validar(sub, campos[clave], f"{donde}.{clave}")
+    elif origen is list:
+        if not isinstance(valor, list):
+            raise FormaInvalida(f"{donde}: se esperaba una lista")
+        for i, sub in enumerate(valor):
+            _validar(sub, get_args(tipo)[0], f"{donde}[{i}]")
+    elif origen is dict:
+        if not isinstance(valor, dict):
+            raise FormaInvalida(f"{donde}: se esperaba un objeto")
+        for clave, sub in valor.items():
+            _validar(sub, get_args(tipo)[1], f"{donde}.{clave}")
+    elif origen is Literal:
+        if valor not in get_args(tipo):
+            raise FormaInvalida(f"{donde}: {valor!r} no es uno de {list(get_args(tipo))}")
+    elif origen in (Union, types.UnionType):
+        for opcion in get_args(tipo):
+            try:
+                _validar(valor, opcion, donde)
+                return
+            except FormaInvalida:
+                continue
+        raise FormaInvalida(f"{donde}: {valor!r} no tiene ninguna forma de {tipo}")
+    elif tipo is type(None):
+        if valor is not None:
+            raise FormaInvalida(f"{donde}: se esperaba null")
+    elif tipo in (str, bool, int):
+        # `type is`: en JSON true no es un número, aunque en Python bool herede de int.
+        if type(valor) is not tipo:
+            raise FormaInvalida(f"{donde}: se esperaba {tipo.__name__}, llegó {valor!r}")
+    else:
+        raise TypeError(f"{donde}: forma sin validar {tipo}")
+
+
 def leer_escenario(ruta: Path) -> Escenario:
     datos = json.loads(ruta.read_text(encoding="utf-8"))
-    if not isinstance(datos, dict):
-        raise ValueError(f"{ruta}: el escenario no es un objeto JSON")
-    faltan = Escenario.__required_keys__ - datos.keys()
-    sobran = datos.keys() - Escenario.__required_keys__ - Escenario.__optional_keys__
-    if faltan or sobran:
-        raise ValueError(
-            f"{ruta}: claves del escenario faltan={sorted(faltan)} sobran={sorted(sobran)}"
-        )
+    try:
+        _validar(datos, Escenario, "escenario")
+        if not datos["fases"]:
+            raise FormaInvalida("escenario.fases: el agente toma la primera fase y no hay")
+    except FormaInvalida as e:
+        raise ValueError(f"{ruta}: {e}") from None
     return cast(Escenario, datos)
 
 
