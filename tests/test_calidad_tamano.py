@@ -407,14 +407,13 @@ class ArchivoQueNoEsUtf8(unittest.TestCase):
         self.assertIn("UTF-8", corrida.stderr)
         self.assertNotIn("Traceback", corrida.stderr)
 
-    def test_en_la_base_falla_nombrando_el_archivo_y_la_base(self):
+    def test_en_la_base_no_traba_el_pr_que_lo_quita(self):
         (self.repo.raiz / "motor" / "latin.py").write_bytes(self.latin)
         base = self.repo.commit()
         (self.repo.raiz / "motor" / "latin.py").unlink()
         corrida = self.repo.tamano("--base", base)
-        self.assertEqual(corrida.returncode, 1)
-        self.assertIn(f"motor/latin.py en {base}", corrida.stderr)
-        self.assertNotIn("Traceback", corrida.stderr)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn(f"motor/latin.py en {base} no es UTF-8", corrida.stderr)
 
 
 class EnlacesYSubmodulosEnElArbol(unittest.TestCase):
@@ -433,12 +432,67 @@ class EnlacesYSubmodulosEnElArbol(unittest.TestCase):
         self.assertIn("motor/encargos es un enlace simbólico", corrida.stderr)
         self.assertNotIn("Traceback", corrida.stderr)
 
-    def test_un_submodulo_bajo_motor_falla_nombrandolo(self):
-        self.repo.escribir("motor/vendor/.git", "gitdir: ../../.git/modules/vendor\n")
-        self.repo.escribir("motor/vendor/chico.py", _relleno(10))
-        corrida = self.repo.tamano("--base", self.base)
+    def test_un_submodulo_sin_iniciar_bajo_motor_falla_nombrandolo(self):
+        self.repo.git("update-index", "--add", "--cacheinfo", f"160000,{self.base},motor/vendor")
+        self.repo.git("commit", "-q", "-m", "submódulo")
+        checkout = self.repo.clonar()
+        vendor = checkout.raiz / "motor" / "vendor"
+        self.assertEqual(list(vendor.iterdir()), [], "así deja el checkout del CI un submódulo")
+        corrida = checkout.tamano("--base", self.base)
         self.assertEqual(corrida.returncode, 1, corrida.stdout)
         self.assertIn("motor/vendor es un submódulo", corrida.stderr)
+
+
+class LoQueLaBaseNoPuedeMedir(unittest.TestCase):
+    """La base solo pone el techo: lo que ella no puede medir no traba al PR que lo arregla."""
+
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/grande.py", _relleno(1200))
+        self.inicio = self.repo.commit()
+
+    def _juzgar(self, base: str) -> subprocess.CompletedProcess:
+        return self.repo.tamano("--base", base, "--cabeza", self.repo.git("rev-parse", "HEAD"))
+
+    def test_un_enlace_en_la_base_no_traba_el_pr_que_lo_quita(self):
+        self.repo.enlazar("motor/enlace.py", "grande.py")
+        base = self.repo.commit()
+        (self.repo.raiz / "motor" / "enlace.py").unlink()
+        self.repo.commit()
+        corrida = self._juzgar(base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn(f"motor/enlace.py en {base} es un enlace simbólico", corrida.stderr)
+
+    def test_un_submodulo_en_la_base_no_traba_el_pr_que_lo_quita(self):
+        self.repo.git("update-index", "--add", "--cacheinfo", f"160000,{self.inicio},motor/sub")
+        self.repo.git("commit", "-q", "-m", "submódulo")
+        base = self.repo.git("rev-parse", "HEAD")
+        self.repo.git("rm", "-q", "--cached", "motor/sub")
+        self.repo.git("commit", "-q", "-m", "sin submódulo")
+        corrida = self._juzgar(base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn(f"motor/sub en {base} es un submódulo", corrida.stderr)
+
+    def test_un_archivo_que_python_no_analiza_en_la_base_no_traba_el_pr_que_lo_arregla(self):
+        self.repo.escribir("motor/roto.py", "def roto(:\n")
+        base = self.repo.commit()
+        self.repo.escribir("motor/roto.py", _funcion("roto", 3))
+        self.repo.commit()
+        corrida = self._juzgar(base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn(f"motor/roto.py en {base} no se puede analizar", corrida.stderr)
+
+    def test_lo_que_la_base_no_mide_se_juzga_como_si_no_existiera(self):
+        self.repo.enlazar("motor/enlace.py", "grande.py")
+        base = self.repo.commit()
+        (self.repo.raiz / "motor" / "enlace.py").unlink()
+        self.repo.escribir("motor/enlace.py", _relleno(1001))
+        self.repo.commit()
+        corrida = self._juzgar(base)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn(
+            f"motor/enlace.py: archivo de 1001 líneas; no existe en {base}", corrida.stderr
+        )
 
 
 class CabezaLeidaDeGit(unittest.TestCase):
