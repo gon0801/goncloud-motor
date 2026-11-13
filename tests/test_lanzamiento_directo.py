@@ -191,6 +191,85 @@ class ElPrePushDelEspacio(_EspacioConRemoto):
         self.assertEqual(self.refs_del_remoto(), [])
 
 
+NADA = [sys.executable, "-c", "pass"]
+
+
+class ElPrePushDelProducto(_EspacioConRemoto):
+    """El pre-push que ya tenía el espacio, como el de Git LFS, sigue corriendo detrás del del
+    motor y decide con su código. El del motor va donde git busca los hooks, nunca dentro del
+    producto ni en una carpeta de hooks de otros repos."""
+
+    def producto(self, ganchos: Path) -> Path:
+        """Un pre-push del producto que anota su remoto y lo que lee, y sale con el código que
+        diga el archivo `codigo`."""
+        visto, codigo = self.base / "visto", self.base / "codigo"
+        codigo.write_text("7", encoding="utf-8")
+        ganchos.mkdir(parents=True, exist_ok=True)
+        (ganchos / "pre-push").write_text(
+            f'#!/bin/sh\n{{ echo "$1"; cat; }} >> {shlex.quote(visto.as_posix())}\n'
+            f'exit "$(cat {shlex.quote(codigo.as_posix())})"\n',
+            encoding="utf-8", newline="\n",
+        )
+        (ganchos / "pre-push").chmod(0o755)
+        return codigo
+
+    def comprobar_cadena(self, codigo: Path) -> None:
+        self.assertEqual(self.empuja("refs/heads/main"), 1)
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x"), 1)
+        codigo.write_text("0", encoding="utf-8")
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x"), 0)
+        self.assertEqual(self.refs_del_remoto(), ["refs/heads/encargo/enc_x"])
+        visto = (self.base / "visto").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(visto[::2], ["origin", "origin"], visto)
+        for linea in visto[1::2]:
+            self.assertRegex(linea, r"^\S+ [0-9a-f]+ refs/heads/encargo/enc_x [0-9a-f]+$")
+
+    def test_el_del_producto_corre_detras_del_motor_en_cada_turno(self):
+        codigo = self.producto(self.espacio / ".git" / "hooks")
+        self.lanzar(NADA)
+        self.lanzar(NADA)
+        self.comprobar_cadena(codigo)
+
+    def test_el_que_el_producto_pone_entre_turnos_queda_detras_del_motor(self):
+        self.lanzar(NADA)
+        codigo = self.producto(self.espacio / ".git" / "hooks")
+        self.lanzar(NADA)
+        self.comprobar_cadena(codigo)
+
+    def test_con_git_como_archivo_va_a_los_hooks_del_directorio_real(self):
+        (self.espacio / ".git").rename(self.base / "git-real")
+        (self.espacio / ".git").write_text(
+            f"gitdir: {(self.base / 'git-real').as_posix()}\n", encoding="utf-8"
+        )
+        self.lanzar(NADA)
+        self.assertEqual(self.empuja("refs/heads/main"), 1)
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x"), 0)
+
+    def test_va_al_core_hooks_path_del_repo_y_no_al_global_ni_dentro_del_producto(self):
+        global_, config = self.base / "hooks-de-todos", self.base / "gitconfig"
+        config.write_text(f"[core]\n\thooksPath = {global_.as_posix()}\n", encoding="utf-8")
+        entorno = {"GIT_CONFIG_GLOBAL": str(config)}
+        self.lanzar(NADA, entorno)
+        self.assertFalse(global_.exists(), "el motor escribió en los hooks de todos los repos")
+
+        del_repo = self.base / "hooks-del-repo"
+        self.git("-C", str(self.espacio), "config", "core.hooksPath", del_repo.as_posix())
+        self.lanzar(NADA, entorno)
+        self.assertEqual(self.empuja("refs/heads/main", entorno), 1)
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x", entorno), 0)
+
+        husky = self.espacio / ".husky"
+        husky.mkdir()
+        (husky / "pre-push").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+        self.git("-C", str(self.espacio), "add", ".husky")
+        self.git("-C", str(self.espacio), "-c", "user.name=t", "-c", "user.email=t@local",
+                 "commit", "-q", "-m", "husky")
+        self.git("-C", str(self.espacio), "config", "core.hooksPath", ".husky")
+        self.lanzar(NADA, entorno)
+        estado = self.git("-C", str(self.espacio), "status", "--porcelain", "--ignored")
+        self.assertEqual(estado.stdout, "", "el hook del motor no entra en el commit del producto")
+
+
 @unittest.skipUnless(ES_POSIX, "el entorno del usuario es de la rama POSIX")
 class EntornoDelUsuario(unittest.TestCase):
     def test_home_real_y_una_variable_cualquiera_del_supervisor(self):
