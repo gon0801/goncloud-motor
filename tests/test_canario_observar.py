@@ -172,6 +172,13 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         fila = entregado()
         self.assertEqual(fila.resultado, "falla", fila.observado)
 
+    def test_un_remoto_que_no_se_puede_resolver_deja_la_rama_sin_medir(self):
+        repo = self.tmp / "repo.git"
+        _git(repo, "config", "remote.origin.url", str(repo))
+        ramas = _restos(self.mirar(), "rama")
+        self.assertTrue(ramas)
+        self.assertEqual(set(ramas.values()), {None})
+
     def test_un_remoto_que_no_responde_deja_la_rama_sin_medir(self):
         shutil.move(self.tmp / "repo.git", self.tmp / "repo-movido.git")
         obs = self.mirar()
