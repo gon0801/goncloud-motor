@@ -683,6 +683,26 @@ class DespliegueReal(unittest.TestCase):
         causas = [ev["data"]["causa"] for ev in reg.eventos(ident) if ev["kind"] == "impedimento"]
         assert any("no es un objeto" in c for c in causas), causas
 
+    def test_un_archivo_del_trabajador_sin_forma_de_objeto_no_tumba_la_observacion(self):
+        from motor.encargos.despliegue import observacion
+        reg, ident, _, _, integrar = self.despliegue
+        integrar()
+        paso(self.despliegue)
+        recibo_final(reg)
+        limite = time.monotonic() + 30
+        while observacion(reg, reg.fold(ident)) != "ausente":
+            assert time.monotonic() < limite, "el trabajador de despliegue no terminó"
+            time.sleep(0.05)
+        (directorio,) = {r.parent for r in (reg.base / "despliegues").rglob("recibo.json")}
+        for nombre in ("recibo.json", "proceso.json", "comando.json"):
+            ruta = directorio / nombre
+            bueno = ruta.read_text()
+            for malo in ([], "texto"):
+                with self.subTest(archivo=nombre, contenido=malo):
+                    ruta.write_text(json.dumps(malo))
+                    self.assertEqual(observacion(reg, reg.fold(ident)), "incierto")
+            ruta.write_text(bueno)
+
     def test_una_violacion_transitoria_al_publicar_recibo_no_aborta_la_receta(self):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue

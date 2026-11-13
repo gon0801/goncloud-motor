@@ -28,7 +28,7 @@ from unittest import mock
 from motor import plataforma
 from motor.encargos.registro import Registro
 from motor.github import FakeGitHub
-from ops import canario_lanzador
+from ops import canario_encargos, canario_lanzador
 from ops.canario_encargos import Fila
 from ops.canario_lanzador import Borrado, Informe, Pedido, main, preparar
 from tests.test_compuerta_e2e import _git
@@ -493,6 +493,134 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.addCleanup(self.base.chmod, 0o755)
         codigo, salida = self.correr()
         self.assertEqual((codigo, salida["paso"]), (2, "preparar"), salida)
+
+    def pedido(self) -> Pedido:
+        return Pedido(
+            repo=str(self.repo), base=self.base, base_viva=self.viva,
+            despliegue=self.destino, corrida="prueba", maquina="", tope_s=None,
+            intervalo_s=1.0, esperado=RAIZ / "ops" / "canario_encargos.esperado.json",
+            tope_cierre_s=1.0,
+        )
+
+    def test_no_escribe_en_un_registro_enlazado(self):
+        pedido = self.pedido()
+        Registro(self.viva).close()
+        vivo, otro = self.viva / "registro.sqlite", self.tmp / "otro.sqlite"
+        otro.write_bytes(b"")
+        registro = self.base / "registro.sqlite"
+        for nombre, enlazar in (
+            ("enlace al registro vivo", registro.symlink_to),
+            ("enlace a otro archivo", lambda _: registro.symlink_to(otro)),
+            ("enlace duro al registro vivo", lambda fuente: os.link(fuente, registro)),
+        ):
+            with self.subTest(nombre):
+                enlazar(vivo)
+                try:
+                    with self.assertRaises(canario_lanzador.NoSePuede) as negado:
+                        preparar(pedido)
+                    self.assertEqual(negado.exception.paso, "preparar")
+                finally:
+                    registro.unlink()
+        Registro(self.base).close()
+        self.assertEqual(preparar(pedido)[0], "banco")
+
+    def test_limpiar_no_borra_nada_con_lo_que_no_es_un_id(self):
+        pedido = self.pedido()
+        preparar(pedido)
+        for carpeta in (self.base / "espacio", self.base / "ejecucion", self.flota / "trabajos"):
+            carpeta.mkdir(parents=True, exist_ok=True)
+        victimas = [self.tmp / "victima" / "x", self.tmp / "victima.json"]
+        for ruta in victimas:
+            ruta.parent.mkdir(parents=True, exist_ok=True)
+            ruta.write_text("{}", encoding="utf-8")
+
+        with mock.patch.object(canario_lanzador, "_ramas", return_value=[]):
+            borrados = canario_lanzador.limpiar(pedido, "../../victima")
+
+        for ruta in victimas:
+            self.assertTrue(ruta.is_file(), f"borró {ruta}")
+        self.assertEqual({b.resultado for b in borrados}, {"falló"}, borrados)
+
+    def test_limpiar_solo_borra_la_rama_que_el_motor_nombra_para_su_encargo(self):
+        pedido = self.pedido()
+        preparar(pedido)
+        ajenas = ["encargo/enc_abc", "otro-repo/enc_ab"]
+        suya = "encargo/enc_ab"
+        _git(self.tmp / "semilla", "push", "-q", str(self.repo), *(f"main:{r}" for r in [*ajenas, suya]))
+
+        with mock.patch.object(canario_lanzador, "_ramas", return_value=[*ajenas, suya]):
+            borrados = {b.resto: b.resultado for b in canario_lanzador.limpiar(pedido, "enc_ab")}
+
+        for rama in ajenas:
+            self.assertIn(rama, _git(self.repo, "branch", "--list", rama), f"borró {rama}")
+            self.assertEqual(borrados[f"la rama remota {rama}"], "falló")
+        self.assertEqual(_git(self.repo, "branch", "--list", suya), "")
+        self.assertEqual(borrados[f"la rama remota {suya}"], "borrado")
+
+    def test_una_comprobacion_que_no_responde_tras_borrar_la_rama_no_tumba_la_limpieza(self):
+        pedido = self.pedido()
+        preparar(pedido)
+        _git(self.tmp / "semilla", "push", "-q", str(self.repo), "main:encargo/enc_ab")
+        resolver = canario_encargos.resolver_repositorio
+        vistas: list[str] = []
+
+        def sin_respuesta_al_volver(repo):
+            vistas.append(repo)
+            if len(vistas) > 1:
+                raise subprocess.TimeoutExpired(["git", "config"], 30)
+            return resolver(repo)
+
+        with mock.patch.object(canario_lanzador, "_ramas", return_value=["encargo/enc_ab"]), \
+                mock.patch.object(canario_encargos, "resolver_repositorio", sin_respuesta_al_volver):
+            borrados = {b.resto: b for b in canario_lanzador.limpiar(pedido, "enc_ab")}
+
+        rama = borrados["la rama remota encargo/enc_ab"]
+        self.assertEqual(rama.resultado, "falló", rama)
+        self.assertIn("espacio/enc_ab", borrados)
+
+    def test_un_detener_que_falla_no_deja_el_encargo_vivo(self):
+        detener = canario_lanzador.detener
+
+        def detener_falla(supervisor):
+            detener(supervisor)
+            raise OSError("ps no respondió")
+
+        with mock.patch.object(canario_lanzador, "detener", detener_falla):
+            codigo, informe = self.correr("--tope-min", "0.05", modo=("--quieto",))
+
+        self.assertEqual((codigo, informe["paso"]), (2, "cerrar"), informe)
+        self.assertTrue(any("OSError" in f for f in informe["cierre"]["fallas"]), informe["cierre"])
+        self.assertEqual(
+            (informe["filas"], informe["limpieza"]), ([], []),
+            "midió o borró sin saber cómo quedó su supervisor",
+        )
+        self.queda_cerrado()
+
+    def test_un_segundo_ctrl_c_dentro_del_cierre_no_deja_el_encargo_vivo(self):
+        detener = canario_lanzador.detener
+
+        def detener_cortado(supervisor):
+            detener(supervisor)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(canario_lanzador, "esperar", side_effect=KeyboardInterrupt), \
+                mock.patch.object(canario_lanzador, "detener", detener_cortado):
+            with self.assertRaises(KeyboardInterrupt):
+                self.correr()
+
+        self.queda_cerrado()
+
+
+class DetenerAlSupervisor(unittest.TestCase):
+    def test_un_grupo_incierto_mientras_se_cierra_se_sigue_mirando(self):
+        supervisor = {"pid": 424242, "inicio": "100", "job": "Local\\canario"}
+        with mock.patch.object(plataforma, "matar_proc"), mock.patch.object(plataforma, "cerrar_huerfanos"):
+            vistas = iter(["incierto", "incierto", "ausente"])
+            with mock.patch.object(plataforma, "presencia_grupo", lambda *a: next(vistas)):
+                self.assertEqual(canario_lanzador.detener(supervisor), "ausente")
+            with mock.patch.object(plataforma, "presencia_grupo", lambda *a: "incierto"), \
+                    mock.patch.object(canario_lanzador, "ESPERA_GRUPO_S", 0.3):
+                self.assertEqual(canario_lanzador.detener(supervisor), "incierto")
 
 
 class ElCodigoDeSalida(unittest.TestCase):
