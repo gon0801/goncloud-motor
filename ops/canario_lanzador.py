@@ -98,6 +98,8 @@ copia no deja que lo que escriba el canario caiga en la base viva."""
 PROHIBIDOS = ("secretos.env", "canal.json")
 """secretos.env trae la URL de Kuma y canal.json el canal: con ellos el supervisor
 del canario hablaría en nombre del servicio vivo."""
+REGISTRO = ("registro.sqlite", "registro.sqlite-wal", "registro.sqlite-shm")
+"""Lo que SQLite escribe del registro: si uno fuera el de la base viva, el canario escribiría en ella."""
 TEXTO = "Canario: escribe el id de esta corrida en corridas/<máquina>.txt."
 ID = re.compile(r"enc_[0-9a-f]+")
 CORRIDA = re.compile(r"[A-Za-z0-9._-]+")
@@ -261,9 +263,10 @@ def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
     sobran = [n for n in PROHIBIDOS if os.path.lexists(base / n)]
     if sobran:
         raise NoSePuede("preparar", f"{p.base} trae {', '.join(sobran)}")
-    registro, vivo = base / "registro.sqlite", viva / "registro.sqlite"
-    if registro.is_symlink() or (registro.exists() and vivo.exists() and registro.samefile(vivo)):
-        raise NoSePuede("preparar", f"{registro} es un enlace o el registro de la base viva")
+    for nombre in REGISTRO:
+        propio, vivo = base / nombre, viva / nombre
+        if propio.is_symlink() or (propio.exists() and vivo.exists() and propio.samefile(vivo)):
+            raise NoSePuede("preparar", f"{propio} es un enlace o el de la base viva")
     base.mkdir(parents=True, exist_ok=True)
     for nombre in ENLACES:
         fuente, enlace = viva / nombre, base / nombre
@@ -504,11 +507,19 @@ def limpiar(p: Pedido, encargo: str) -> tuple[Borrado, ...]:
     else:
         # El nombre con que el motor crea la rama de un encargo que no pide otra.
         suya = f"encargo/{encargo}"
-        borrados = [
-            _borrar_rama(p.repo, rama) if rama == suya
-            else Borrado(f"la rama remota {rama}", "falló", f"no es {suya}: no la borro")
-            for rama in _ramas(p.base, encargo)
-        ]
+        try:
+            ramas = _ramas(p.base, encargo)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            borrados = [Borrado(
+                "las ramas remotas del encargo", "falló",
+                f"no pude leerlas del registro ({type(exc).__name__}: {exc})",
+            )]
+        else:
+            borrados = [
+                _borrar_rama(p.repo, rama) if rama == suya
+                else Borrado(f"la rama remota {rama}", "falló", f"no es {suya}: no la borro")
+                for rama in ramas
+            ]
         borrados += [_borrar_ruta(p.base / d / encargo, f"{d}/{encargo}") for d in ("espacio", "ejecucion")]
         flota = str(canario._json_o_vacio(p.base / "flota-home.json").get("home") or "")
         trabajo = f"trabajos/{encargo}.json de la flota"
