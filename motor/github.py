@@ -1411,21 +1411,16 @@ class FakeGitHub:
             )
         with tempfile.TemporaryDirectory() as t:
             w = Path(t) / "w"
-            git("clone", "-q", "-b", pr["base"], repo, str(w))
+            # La identidad va en la copia: sin ella, en una máquina que no la
+            # tiene, el merge de una base que avanzó falla como si chocara.
+            git(
+                "clone", "-q", "-c", "user.name=github", "-c", "user.email=gh@local",
+                "-b", pr["base"], repo, str(w),
+            )
             r = git("merge", "--squash", sha, cwd=w)
             if r.returncode != 0:
                 raise Conflicto("conflicto con la rama base")
-            git(
-                "-c",
-                "user.name=github",
-                "-c",
-                "user.email=gh@local",
-                "commit",
-                "-q",
-                "-m",
-                mensaje,
-                cwd=w,
-            )
+            git("commit", "-q", "-m", mensaje, cwd=w)
             if git("push", "-q", "origin", pr["base"], cwd=w).returncode != 0:
                 raise BaseMovida("la rama base se movió; reintenta")
             commit = git("rev-parse", "HEAD", cwd=w).stdout.strip()
