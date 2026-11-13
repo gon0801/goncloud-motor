@@ -115,41 +115,80 @@ class LaGuardiaDeGhEnElPath(unittest.TestCase):
             self.assertEqual(llamadas.read_text(encoding="utf-8").split(), ["pr", "view", "5"])
 
 
-class ElPrePushDelEspacio(unittest.TestCase):
-    """Lo que el motor lanza para el agente empuja solo las ramas de su encargo;
-    el motor, sin la guardia en su entorno, empuja lo que su entrega necesita."""
+RAMAS = ("encargo/enc_x",)
 
-    def test_el_agente_empuja_su_rama_y_sus_fases_y_nada_mas(self):
-        def git(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
-            return subprocess.run(
-                ["git", *args], env=env or git_env_limpio(), capture_output=True,
-                text=True, timeout=60,
-            )
 
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            base = Path(tmp).resolve()
-            remoto = base / "remoto.git"
-            espacio, runtime = _coincidencia(base)
-            git("init", "-q", "--bare", "-b", "main", str(remoto))
-            git("clone", "-q", str(remoto), str(espacio))
-            git("-C", str(espacio), "-c", "user.name=t", "-c", "user.email=t@local",
-                "commit", "-q", "--allow-empty", "-m", "producto")
+class _EspacioConRemoto(unittest.TestCase):
+    """El clon del espacio con su remoto desnudo y un commit sin publicar."""
 
-            def empuja(destino: str) -> int:
-                with mock.patch.dict(os.environ, git_env_limpio(), clear=True):
-                    comando = aislar(
-                        ["git", "push", "-q", "origin", f"HEAD:refs/heads/{destino}"],
-                        espacio, runtime, ramas=("encargo/enc_x",),
-                    )
-                return subprocess.run(
-                    comando.argv, cwd=espacio, env=comando.entorno, capture_output=True,
-                    timeout=60,
-                ).returncode
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name).resolve()
+        self.remoto = self.base / "remoto.git"
+        self.espacio, self.runtime = _coincidencia(self.base)
+        self.git("init", "-q", "--bare", "-b", "main", str(self.remoto))
+        self.git("clone", "-q", str(self.remoto), str(self.espacio))
+        self.git("-C", str(self.espacio), "-c", "user.name=t", "-c", "user.email=t@local",
+                 "commit", "-q", "--allow-empty", "-m", "producto")
 
-            esperado = {"encargo/enc_x": 0, "encargo/enc_x-dos": 0, "encargo/enc_xy": 1, "main": 1}
-            self.assertEqual({d: empuja(d) for d in esperado}, esperado)
-            motor = git("-C", str(espacio), "push", "-q", "origin", "HEAD:refs/heads/main")
-            self.assertEqual(motor.returncode, 0, motor.stderr)
+    def git(self, *args: str, entorno: dict | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args], env={**git_env_limpio(), **(entorno or {})}, capture_output=True,
+            text=True, timeout=60,
+        )
+
+    def lanzar(self, argv: list[str], entorno: dict | None = None) -> subprocess.CompletedProcess:
+        """`argv` como el motor lo lanza para el agente, desde un supervisor con `entorno`."""
+        with mock.patch.dict(os.environ, {**git_env_limpio(), **(entorno or {})}, clear=True):
+            comando = aislar(argv, self.espacio, self.runtime, ramas=RAMAS)
+        return subprocess.run(
+            comando.argv, cwd=self.espacio, env=comando.entorno, capture_output=True,
+            text=True, timeout=60,
+        )
+
+    def empuja(self, destino: str, entorno: dict | None = None) -> int:
+        """Un push desde el espacio que no lanzó el motor para el agente: el del motor o una
+        receta de despliegue."""
+        return self.git(
+            "-C", str(self.espacio), "push", "-q", "origin", f"HEAD:{destino}", entorno=entorno
+        ).returncode
+
+    def refs_del_remoto(self) -> list[str]:
+        return self.git(
+            "-C", str(self.remoto), "for-each-ref", "--format=%(refname)"
+        ).stdout.split()
+
+
+class ElPrePushDelEspacio(_EspacioConRemoto):
+    """Desde el espacio solo salen las ramas del encargo, con cualquier entorno: el motor no empuja
+    otra cosa y la receta de despliegue, que sí, trae su propia salida."""
+
+    def test_salen_las_ramas_del_encargo_y_solo_la_receta_empuja_otra_cosa(self):
+        def empuja_el_agente(destino: str) -> int:
+            argv = ["git", "push", "-q", "origin", f"HEAD:refs/heads/{destino}"]
+            return self.lanzar(argv).returncode
+
+        esperado = {"encargo/enc_x": 0, "encargo/enc_x-dos": 0, "encargo/enc_xy": 1, "main": 1}
+        self.assertEqual({d: empuja_el_agente(d) for d in esperado}, esperado)
+        self.assertEqual(self.empuja("refs/heads/main"), 1)
+        self.assertEqual(self.empuja("refs/tags/v1"), 1)
+        self.assertEqual(self.empuja("refs/tags/v1", {aislamiento.EMPUJE_DE_RECETA: "1"}), 0)
+        self.assertNotIn("refs/heads/main", self.refs_del_remoto())
+
+    @unittest.skipUnless(ES_POSIX, "el guion del agente es de sh")
+    def test_el_agente_no_desarma_el_hook_ni_hereda_la_salida_de_la_receta(self):
+        guion = (
+            'git push -q origin HEAD:refs/heads/main; echo "base=$?"; '
+            'MOTOR_GUARDIA= git push -q origin HEAD:refs/heads/main; echo "vacia=$?"; '
+            'env -u MOTOR_GUARDIA git push -q origin HEAD:refs/heads/main; echo "sin=$?"; '
+            'git push -q origin HEAD:refs/tags/v1; echo "etiqueta=$?"'
+        )
+        hecho = self.lanzar(["/bin/sh", "-c", guion], {aislamiento.EMPUJE_DE_RECETA: "1"})
+        self.assertEqual(
+            hecho.stdout.split(), ["base=1", "vacia=1", "sin=1", "etiqueta=1"], hecho.stderr
+        )
+        self.assertEqual(self.refs_del_remoto(), [])
 
 
 @unittest.skipUnless(ES_POSIX, "el entorno del usuario es de la rama POSIX")

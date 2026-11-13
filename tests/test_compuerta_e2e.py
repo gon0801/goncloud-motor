@@ -1003,6 +1003,8 @@ gh pr view 5; echo "view=$?"
 _INTENTOS_PUSH = """if [ ! -e "@INTENTOS@" ]; then {
 git -c user.name=a -c user.email=a@local commit -q --allow-empty -m intento
 git push -q origin HEAD:refs/heads/main; echo "base=$?"
+MOTOR_GUARDIA= git push -q origin HEAD:refs/heads/main; echo "vacia=$?"
+env -u MOTOR_GUARDIA git push -q origin HEAD:refs/heads/main; echo "sin=$?"
 git push -q origin HEAD:refs/heads/otra; echo "otra=$?"
 git push -q origin HEAD; echo "propia=$?"
 } > "@INTENTOS@" 2>&1; fi
@@ -1044,9 +1046,8 @@ class ElAgenteNoIntegra(CompuertaReal):
     def test_el_agente_empuja_su_rama_y_no_la_base_ni_otra(self):
         salida, banco = self._primer_turno(_INTENTOS_PUSH)
         lineas = salida.splitlines()
-        self.assertIn("propia=0", lineas, salida)
-        self.assertIn("base=1", lineas, salida)
-        self.assertIn("otra=1", lineas, salida)
+        for intento in ("propia=0", "base=1", "vacia=1", "sin=1", "otra=1"):
+            self.assertIn(intento, lineas, salida)
         self.assertIn("la integra el motor", salida)
         remoto = self.tmp / "repo.git"
         self.assertEqual(
