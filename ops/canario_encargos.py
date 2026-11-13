@@ -740,6 +740,8 @@ def _recibo(e: Encargo, fase: str) -> Recibo:
         datos = comprobar_recibo(replace(e, fase_activa=fase))
     except ValueError as exc:
         return Recibo(fase, str(exc), "")
+    except AttributeError as exc:  # comprobar_recibo no valida que el recibo y sus pasos sean objetos
+        return Recibo(fase, f"no se puede verificar el recibo de despliegue: {exc}", "")
     return Recibo(fase, "aplicado", str(datos.get("sha") or ""))
 
 
