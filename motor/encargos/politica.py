@@ -8,6 +8,7 @@ otro sitio vuelve a tener dos dueños.
 
 from __future__ import annotations
 
+import fnmatch
 from dataclasses import dataclass
 
 # Valores de la política. Los lee el motor; no se repiten como constantes en
@@ -41,6 +42,32 @@ class Fila:
     valor: str
     decision: str
     comportamiento: str
+
+
+@dataclass(frozen=True)
+class Congelamiento:
+    """Rutas en las que `medium_mismo_pr` queda suspendida: su Medium va a la lista."""
+
+    rutas: tuple[str, ...]
+    decision: str
+
+    def fila(self) -> Fila:
+        return Fila(
+            id="medium_congelado",
+            regla="Mientras se reconstruye el centro, un Medium de DeepSeek en estas rutas va a la lista de fuera de alcance, no a otro parche; Critical y High no cambian.",
+            valor=", ".join(self.rutas),
+            decision=self.decision,
+            comportamiento="un Medium anclado en una ruta congelada queda en «Hallazgos fuera de alcance» con su razón; uno en otra ruta, o un High en la congelada, vuelve al responsable",
+        )
+
+
+# Decisión 6 de David. Se borra el día que termina la reconstrucción.
+CONGELAMIENTOS: tuple[Congelamiento, ...] = (
+    Congelamiento(
+        rutas=("motor/encargos/ciclo.py", "motor/encargos/dominio.py"),
+        decision="David, 12-nov",
+    ),
+)
 
 
 FILAS: tuple[Fila, ...] = (
@@ -135,7 +162,7 @@ FILAS: tuple[Fila, ...] = (
         decision="David, sin fecha registrada en el pedido",
         comportamiento="la tabla de política y la de AGENTS.md se generan de una sola fuente",
     ),
-)
+) + tuple(c.fila() for c in CONGELAMIENTOS)
 
 
 def valor(fila_id: str) -> Fila:
@@ -174,6 +201,19 @@ def tabla_de_agents(texto: str) -> str:
 
 def deepseek_bloquea(gravedad: str, en_alcance: bool) -> bool:
     return en_alcance and str(gravedad or "").lower() in DEEPSEEK_BLOQUEANTES
+
+
+def medium_congelado(severidad: str, ruta: str) -> str:
+    """Razón por la que un Medium anclado en `ruta` va a la lista y no reabre la fase."""
+    if str(severidad or "").lower() != "medium":
+        return ""
+    for c in CONGELAMIENTOS:
+        if any(fnmatch.fnmatch(ruta, r) for r in c.rutas):
+            return (
+                f"{ruta} está congelado mientras se reconstruye el centro "
+                f"({c.decision}): su Medium va a la lista, no a otro parche"
+            )
+    return ""
 
 
 def relevo_de_sesion(rol: str, modelo: str) -> str:

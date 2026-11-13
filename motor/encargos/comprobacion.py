@@ -29,7 +29,7 @@ from pathlib import Path
 
 from .aislamiento import aislar, limpiar_temporal
 from .dominio import CRITERIOS, AlcanceRevision, Hallazgo, VersionProducto, id_hallazgo
-from .politica import DEEPSEEK_BLOQUEANTES
+from .politica import DEEPSEEK_BLOQUEANTES, medium_congelado
 
 INTERNO = ".interno"
 _EXCLUIDAS = (".git", "__pycache__", ".runtime", INTERNO)
@@ -1235,6 +1235,13 @@ class DefectoJuicio(ValueError):
         self.condicion = condicion
 
 
+@dataclass(frozen=True)
+class HallazgoDeepSeek(Hallazgo):
+    """El hallazgo leído del bloque estructurado, con la severidad que DeepSeek le dio."""
+
+    severidad: str = ""
+
+
 def _ruta_de(ancla: str) -> str:
     return ancla.split(":")[0].strip()
 
@@ -1327,11 +1334,16 @@ def hallazgo_fuera_de_alcance_por_restriccion(
     prohibición y lista blanca: «salvo», «excepto», «fuera de», «ajenos a»,
     «que no sea», «distinto», «sino» y una cláusula con «no tocar» y «solo» se
     dejan al revisor independiente. Una frase sin rutas no autoriza a descartar
-    nada.
+    nada. Un Medium de DeepSeek anclado en una ruta de
+    `politica.CONGELAMIENTOS` también queda fuera, por decisión del propietario.
     """
     ruta = _ruta_de(hallazgo.ancla)
     if not ruta:
         return ""
+    if isinstance(hallazgo, HallazgoDeepSeek):
+        congelado = medium_congelado(hallazgo.severidad, ruta)
+        if congelado:
+            return congelado
     for glob in prohibiciones:
         if fnmatch.fnmatch(ruta, glob):
             return (
@@ -1820,7 +1832,7 @@ def _hallazgos_estructurados(texto: str, sha: str) -> list[Hallazgo] | None:
         ancla = f"{archivo}:{linea}" if archivo and str(linea) else archivo
         fid = str(entrada.get("id") or "").strip()
         salida.append(
-            Hallazgo(
+            HallazgoDeepSeek(
                 id=fid or id_hallazgo("deepseek", ancla, titulo),
                 gravedad="bloqueante" if bloqueante else "observacion",
                 criterio=_criterio_deepseek(titulo) if bloqueante else "",
@@ -1833,6 +1845,7 @@ def _hallazgos_estructurados(texto: str, sha: str) -> list[Hallazgo] | None:
                 ),
                 ancla=ancla,
                 origen="deepseek",
+                severidad=severidad,
             )
         )
     return salida

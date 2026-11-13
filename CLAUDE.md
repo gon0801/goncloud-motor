@@ -20,6 +20,7 @@ falla si los dos archivos difieren.
 | Las pruebas corren con el HOME en un temporal. | HOME temporal | David, sin fecha registrada en el pedido | la guarda de HOME del banco de pruebas |
 | Repo público, sin secretos ni runners propios. | público y sin secretos | David, 31-oct | gitleaks en el job de calidad |
 | Un dato, un dueño: derivar en vez de guardar copias. | derivar | David, sin fecha registrada en el pedido | la tabla de política y la de AGENTS.md se generan de una sola fuente |
+| Mientras se reconstruye el centro, un Medium de DeepSeek en estas rutas va a la lista de fuera de alcance, no a otro parche; Critical y High no cambian. | motor/encargos/ciclo.py, motor/encargos/dominio.py | David, 12-nov | un Medium anclado en una ruta congelada queda en «Hallazgos fuera de alcance» con su razón; uno en otra ruta, o un High en la congelada, vuelve al responsable |
 
 ## Calidad
 
