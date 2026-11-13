@@ -289,8 +289,8 @@ class Comparar(_RepoFalso):
             encargo=f"    {encargo}" if encargo else "",
             hallazgo=f"    {hallazgo}" if hallazgo else ""))
 
-    def _base(self, encargo: str = "", rompe: str = "pass") -> None:
-        self._dominio(encargo=encargo, rompe=rompe)
+    def _base(self, encargo: str = "", rompe: str = "pass", final: str = "recibido") -> None:
+        self._dominio(encargo=encargo, rompe=rompe, final=final)
         self._git("add", ".")
         self._git("commit", "-q", "--allow-empty", "-m", "base")
 
@@ -401,6 +401,25 @@ class Comparar(_RepoFalso):
         self.assertEqual([(d["encargo"], d["campos"]) for d in reg["diferencias"]],
                          [("enc_a", ["plegado"])])
         self.assertEqual(reg["no_pliegan"], [])
+
+    def test_un_evento_que_llega_entre_los_dos_plegados_no_es_diferencia(self):
+        """Como un encargo activo que escribe mientras la compuerta compara.
+
+        El reductor de la base corre en su proceso y, al plegar el cierre, agrega un
+        evento al registro: llega después de que leyó la base y antes de que lea el árbol.
+        """
+        insertar = ("INSERT INTO events (ts, encargo, kind, data)"
+                    " VALUES ('t', 'enc_a', 'entrega', '{}')")
+        escribe = (f'if evento["kind"] == "cierre": __import__("sqlite3").connect('
+                   f'{str(self.registro)!r}, isolation_level=None).execute({insertar!r})')
+        self._base(final="terminado", rompe=escribe)
+        self._dominio(final="terminado")
+        codigo, salida = self._comparar()
+        db = sqlite3.connect(self.registro)
+        self.addCleanup(db.close)
+        (escritos,) = db.execute("SELECT count(*) FROM events WHERE encargo = 'enc_a'").fetchone()
+        self.assertEqual(escritos, 3, "el evento llegó al registro durante la comparación")
+        self.assertEqual((codigo, salida["registros"][0]["diferencias"]), (0, []))
 
     def test_una_fila_con_json_invalido_sale_con_dos(self):
         _armar(self.dir / "roto.sqlite", {"enc_a": [("entrega", "{no es json")]})
