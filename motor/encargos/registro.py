@@ -2,21 +2,125 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
+import re
 import sqlite3
+import sys
 import threading
+import time
 from collections import OrderedDict
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 from .dominio import Encargo, TransicionIlegal, reducir
 
 _VIVO = Path.home() / ".motor"
 
+Resultado = Literal["nuevo", "igual"]
+
 
 class BaseProhibida(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class Evento:
+    kind: str
+    data: Mapping[str, object]
+    ukey: str
+
+
+class Rechazo(Exception):
+    """El registro no aceptó el lote y no escribió ninguno de sus eventos."""
+
+
+class EventoIlegal(Rechazo):
+    def __init__(self, indice: int, kind: str, motivo: str) -> None:
+        super().__init__(f"el evento {indice} del lote ({kind}) es ilegal: {motivo}")
+        self.indice = indice
+        self.kind = kind
+        self.motivo = motivo
+
+
+class ClaveOcupada(Rechazo):
+    def __init__(self, indice: int, ukey: str) -> None:
+        super().__init__(f"la ukey del evento {indice} del lote ya guarda otro hecho")
+        self.indice = indice
+        self.ukey = ukey
+
+
+# Solo palabras con guiones y con tope: un id de encargo (`enc_` y hexadecimal)
+# o un hash nunca casan, así que la línea del conteo no puede llevar datos del
+# encargo. El nombre real más largo mide 34.
+_TOPE_DEL_NOMBRE = 64
+_CLASE_DE_UKEY = re.compile(r"[a-z]+(?:-[a-z]+)*")
+_TIPO = re.compile(r"[a-z]+(?:_[a-z]+)*")
+
+# Un rechazo de cada vuelta del supervisor (20 s) deja 144 líneas al día en vez de 4320.
+_INTERVALO_DEL_CONTEO_S = 600.0
+
+_Clave = tuple[str, str, str]
+
+
+def _visible(nombre: str, forma: re.Pattern[str]) -> str:
+    return nombre if len(nombre) <= _TOPE_DEL_NOMBRE and forma.fullmatch(nombre) else "?"
+
+
+def _escribir_linea(clave: _Clave, veces: int) -> None:
+    rechazo, kind, ukey = clave
+    try:
+        sys.stderr.write(f"registro: rechazo={rechazo} kind={kind} ukey={ukey} veces={veces}\n")
+        sys.stderr.flush()
+    except Exception:
+        # De mejor esfuerzo: un stderr cerrado o roto no cambia lo que responde `append`.
+        pass
+
+
+class _Conteo:
+    """Una línea por clave e intervalo, con las veces que ocurrió desde la anterior.
+
+    La primera vez sale enseguida. Las siguientes dentro del intervalo se suman y
+    salen con la primera que llega pasado el intervalo, o al terminar el proceso:
+    la suma de `veces` es el total, salvo lo pendiente de un proceso que muere
+    sin terminar."""
+
+    def __init__(self, reloj: Callable[[], float] = time.monotonic) -> None:
+        self._reloj = reloj
+        self._candado = threading.Lock()
+        self._ultima: dict[_Clave, float] = {}
+        self._pendientes: dict[_Clave, int] = {}
+
+    def contar(self, clave: _Clave) -> None:
+        with self._candado:
+            ahora = self._reloj()
+            veces = self._pendientes.pop(clave, 0) + 1
+            ultima = self._ultima.get(clave)
+            if ultima is not None and ahora - ultima < _INTERVALO_DEL_CONTEO_S:
+                self._pendientes[clave] = veces
+                return
+            self._ultima[clave] = ahora
+        _escribir_linea(clave, veces)
+
+    def vaciar(self) -> None:
+        with self._candado:
+            pendientes, self._pendientes = self._pendientes, {}
+        for clave, veces in pendientes.items():
+            _escribir_linea(clave, veces)
+
+
+_CONTEO = _Conteo()
+atexit.register(_CONTEO.vaciar)
+
+
+def _contar_rechazo(rechazo: Literal["ajena", "ilegal"], kind: str, ukey: str) -> None:
+    clase, separador, _resto = ukey.partition(":")
+    clase_visible = _visible(clase, _CLASE_DE_UKEY)
+    ukey_visible = f"{clase_visible}:*" if separador and clase_visible != "?" else "?"
+    _CONTEO.contar((rechazo, _visible(kind, _TIPO), ukey_visible))
 
 
 @dataclass(frozen=True)
@@ -26,7 +130,7 @@ class _Plegado:
     conteo: int
 
 
-def _estable(data: dict) -> dict:
+def _estable(data: Mapping[str, object]) -> dict:
     return {k: v for k, v in data.items() if k != "hora"}
 
 
@@ -153,36 +257,131 @@ class Registro:
         self.db.close()
 
     def append(self, encargo: str, kind: str, data: dict, ukey: str, ts: str) -> str:
-        """La decisión y el insert van en la misma transacción. `igual` solo si es el mismo hecho."""
-        payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        """Un lote de un evento que devuelve el rechazo como `ajena` o `ilegal`
+        en vez de lanzarlo. Cada rechazo deja una línea por stderr para medir
+        cuántos se callan hoy."""
+        try:
+            (resultado,) = self._escribir(encargo, [(Evento(kind, data, ukey), ts)])
+        except ClaveOcupada:
+            _contar_rechazo("ajena", kind, ukey)
+            return "ajena"
+        except EventoIlegal:
+            _contar_rechazo("ilegal", kind, ukey)
+            return "ilegal"
+        return resultado
+
+    def append_many(self, encargo: str, eventos: Sequence[Evento]) -> tuple[Resultado, ...]:
+        """Escribe el lote entero o nada, en una sola transacción.
+
+        Un evento cuya ukey ya guarda el mismo hecho (sin mirar `hora`) da
+        `igual` y no se reescribe; los demás se validan sobre el estado guardado
+        y se insertan en orden, y el estado que queda es el que da `proyectar`.
+        Una ukey que guarda otro hecho lanza `ClaveOcupada`; un evento que el
+        reductor rechaza lanza `EventoIlegal`. Una ukey repetida dentro del lote
+        es `ValueError`."""
+        return self._escribir(
+            encargo, [(evento, str(evento.data.get("hora") or "")) for evento in eventos]
+        )
+
+    def proyectar(self, encargo: str, eventos: Sequence[Evento]) -> Encargo:
+        """El estado que deja `append_many(encargo, eventos)` si se llama ahora, sin escribir.
+
+        Es la misma cuenta que hace la escritura: un evento cuya ukey ya guarda
+        el mismo hecho está en lo guardado y no se vuelve a aplicar. Lanza lo
+        mismo que lanzaría `append_many`. El paso decide con este estado, así
+        que lo que decide es lo que queda guardado."""
+        if not eventos:
+            raise ValueError("un lote vacío no proyecta ningún estado")
+        # Una sola lectura: otro proceso que escribe entre el cotejo y el plegado
+        # no cambia la cuenta a la mitad.
+        self.db.execute("BEGIN")
+        try:
+            resultados = self._cotejar_lote(encargo, eventos)
+            estado, _conteo = self._aplicar_ausentes(encargo, eventos, resultados)
+        finally:
+            self._deshacer()
+        return cast(Encargo, estado)
+
+    def _escribir(
+        self, encargo: str, filas: Sequence[tuple[Evento, str]]
+    ) -> tuple[Resultado, ...]:
+        if not filas:
+            return ()
+        eventos = [evento for evento, _ts in filas]
+        payloads = [
+            json.dumps(dict(evento.data), ensure_ascii=False, sort_keys=True)
+            for evento in eventos
+        ]
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            row = self.db.execute(
-                "SELECT encargo, kind, data FROM events WHERE ukey = ?", (ukey,)
-            ).fetchone()
-            if row:
+            resultados = self._cotejar_lote(encargo, eventos)
+            if "nuevo" not in resultados:
                 self.db.execute("ROLLBACK")
-                guardado = json.loads(row[2])
-                if row[0] == encargo and row[1] == kind and _estable(guardado) == _estable(data):
-                    return "igual"
-                return "ajena"
-            estado, _ultimo, conteo = self._estado_vigente(encargo)
-            try:
-                aplicado = reducir(estado, {"kind": kind, "data": data}, nuevo=True)
-            except TransicionIlegal:
-                self.db.execute("ROLLBACK")
-                return "ilegal"
-            cursor = self.db.execute(
-                "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
-                (ts, encargo, kind, payload, ukey),
-            )
-            nuevo_id = int(cursor.lastrowid or 0)
+                return resultados
+            estado, conteo = self._aplicar_ausentes(encargo, eventos, resultados)
+            ultimo = 0
+            for (evento, ts), payload, resultado in zip(filas, payloads, resultados, strict=True):
+                if resultado == "igual":
+                    continue
+                cursor = self.db.execute(
+                    "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
+                    (ts, encargo, evento.kind, payload, evento.ukey),
+                )
+                ultimo = int(cursor.lastrowid or 0)
             self.db.execute("COMMIT")
-        except Exception:
-            self.db.execute("ROLLBACK")
+        except BaseException:
+            self._deshacer()
             raise
-        self._recordar_plegado(encargo, aplicado, nuevo_id, conteo + 1)
-        return "nuevo"
+        self._recordar_plegado(
+            encargo, cast(Encargo, estado), ultimo, conteo + resultados.count("nuevo")
+        )
+        return resultados
+
+    def _deshacer(self) -> None:
+        # Tras un disco lleno o un error de E/S SQLite ya deshizo la transacción:
+        # un ROLLBACK de más lanzaría y taparía el error real.
+        if self.db.in_transaction:
+            self.db.execute("ROLLBACK")
+
+    def _cotejar_lote(self, encargo: str, eventos: Sequence[Evento]) -> tuple[Resultado, ...]:
+        ukeys = [evento.ukey for evento in eventos]
+        if len(set(ukeys)) != len(ukeys):
+            raise ValueError("el lote repite una ukey")
+        return tuple(
+            self._cotejar(encargo, indice, evento) for indice, evento in enumerate(eventos)
+        )
+
+    def _aplicar_ausentes(
+        self, encargo: str, eventos: Sequence[Evento], resultados: Sequence[Resultado]
+    ) -> tuple[Encargo | None, int]:
+        """El estado guardado con los eventos `nuevo` del lote aplicados en orden.
+
+        `append_many` y `proyectar` lo calculan aquí. Un evento `igual` ya está
+        en lo guardado: aplicarlo otra vez contaría dos veces, por ejemplo, una
+        nota de `procedimiento`."""
+        estado, _ultimo, conteo = self._estado_vigente(encargo)
+        for indice, (evento, resultado) in enumerate(zip(eventos, resultados, strict=True)):
+            if resultado == "igual":
+                continue
+            try:
+                estado = reducir(estado, {"kind": evento.kind, "data": evento.data}, nuevo=True)
+            except TransicionIlegal as exc:
+                raise EventoIlegal(indice, evento.kind, str(exc)) from exc
+        return estado, conteo
+
+    def _cotejar(self, encargo: str, indice: int, evento: Evento) -> Resultado:
+        fila = self.db.execute(
+            "SELECT encargo, kind, data FROM events WHERE ukey = ?", (evento.ukey,)
+        ).fetchone()
+        if fila is None:
+            return "nuevo"
+        if (
+            fila[0] == encargo
+            and fila[1] == evento.kind
+            and _estable(json.loads(fila[2])) == _estable(evento.data)
+        ):
+            return "igual"
+        raise ClaveOcupada(indice, evento.ukey)
 
     def por_ukey(self, ukey: str) -> dict | None:
         row = self.db.execute(
