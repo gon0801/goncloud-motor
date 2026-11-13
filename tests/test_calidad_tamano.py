@@ -6,14 +6,21 @@ en un commit y corre la herramienta como la corre el CI, contra esa base.
 
 from __future__ import annotations
 
+import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
-HERRAMIENTA = Path(__file__).resolve().parents[1] / "tools" / "calidad.py"
+RAIZ = Path(__file__).resolve().parents[1]
+HERRAMIENTA = RAIZ / "tools" / "calidad.py"
+FLUJO = RAIZ / ".github" / "workflows" / "quality.yml"
+PASO_DE_TAMANO = "      - name: Ningún archivo ni función de motor/ crece por encima de su límite"
 
 
 def _funcion(nombre: str, lineas: int, sangria: str = "") -> str:
@@ -28,9 +35,29 @@ def _relleno(lineas: int) -> str:
 class Repo:
     def __init__(self, raiz: Path):
         self.raiz = raiz
-        self.git("init", "-q", "-b", "main")
-        (raiz / "tools").mkdir()
+
+    @classmethod
+    def nuevo(cls, raiz: Path) -> Repo:
+        (raiz / "tools").mkdir(parents=True)
+        repo = cls(raiz)
+        repo.git("init", "-q", "-b", "main")
         shutil.copy(HERRAMIENTA, raiz / "tools" / "calidad.py")
+        return repo
+
+    def clonar(self, *opciones: str) -> Repo:
+        destino = self.raiz.parent / "clon"
+        subprocess.run(
+            ["git", "clone", "-q", *opciones, self.raiz.as_uri(), str(destino)],
+            capture_output=True,
+            check=True,
+        )
+        return Repo(destino)
+
+    def correr_consejo(self, mensaje: str) -> None:
+        consejo = re.search(r"`(git [^`]+)`", mensaje)
+        if consejo is None:
+            raise AssertionError(f"el mensaje no trae un comando de git: {mensaje}")
+        subprocess.run(shlex.split(consejo.group(1)), cwd=self.raiz, check=True)
 
     def git(self, *args: str) -> str:
         return subprocess.run(
@@ -70,7 +97,7 @@ class Repo:
 def _repo(prueba: unittest.TestCase) -> Repo:
     directorio = tempfile.TemporaryDirectory()
     prueba.addCleanup(directorio.cleanup)
-    return Repo(Path(directorio.name))
+    return Repo.nuevo(Path(directorio.name) / "origen")
 
 
 class LimiteDeArchivo(unittest.TestCase):
@@ -140,10 +167,95 @@ class LimiteDeArchivo(unittest.TestCase):
         self.assertEqual(corrida.returncode, 1)
         self.assertIn("en origin/main mide 1200", corrida.stderr)
 
-    def test_sin_la_referencia_de_la_base_dice_como_traerla(self):
-        corrida = self.repo.tamano("--base", "origin/main")
+    def test_sin_la_rama_del_remoto_el_consejo_la_trae(self):
+        clon = self.repo.clonar()
+        clon.git("update-ref", "-d", "refs/remotes/origin/main")
+        corrida = clon.tamano("--base", "origin/main")
         self.assertEqual(corrida.returncode, 1)
-        self.assertIn("git fetch origin main", corrida.stderr)
+
+        clon.correr_consejo(corrida.stderr)
+        corrida = clon.tamano("--base", "origin/main")
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+
+    def test_en_un_clon_superficial_el_consejo_trae_el_primer_padre(self):
+        self.repo.escribir("README", "otro commit\n")
+        self.repo.commit()
+        clon = self.repo.clonar("--depth", "1")
+        corrida = clon.tamano("--base", "HEAD^1")
+        self.assertEqual(corrida.returncode, 1)
+        self.assertNotIn("git fetch origin HEAD^1", corrida.stderr)
+
+        clon.correr_consejo(corrida.stderr)
+        corrida = clon.tamano("--base", "HEAD^1")
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+
+    def test_una_referencia_que_no_existe_no_sugiere_traerla_del_remoto(self):
+        corrida = self.repo.tamano("--base", "HEAD^1")
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("HEAD^1", corrida.stderr)
+        self.assertNotIn("git fetch", corrida.stderr)
+        self.assertNotIn("Traceback", corrida.stderr)
+
+
+class BaseDelWorkflow(unittest.TestCase):
+    """El paso del job `gate` elige la base según el evento de GitHub."""
+
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/grande.py", _relleno(1200))
+        self.antes = self.repo.commit()
+        self.repo.escribir("motor/grande.py", _relleno(1201))
+        self.repo.commit()
+        self.repo.escribir("README", "no toca motor/\n")
+        self.repo.commit()
+
+    def _paso(self, contexto: dict[str, str]) -> subprocess.CompletedProcess:
+        lineas = FLUJO.read_text(encoding="utf-8").splitlines()
+        inicio = lineas.index(PASO_DE_TAMANO)
+        fin = next(i for i in range(inicio + 1, len(lineas)) if lineas[i].startswith("      - "))
+        paso = lineas[inicio + 1 : fin]
+        entorno = dict(os.environ)
+        for linea in paso:
+            variable = re.fullmatch(r"\s*(\w+): \$\{\{ ([\w.]+) \}\}", linea)
+            if variable:
+                entorno[variable.group(1)] = contexto.get(variable.group(2), "")
+        corre = paso.index("        run: |")
+        guion = textwrap.dedent("\n".join(paso[corre + 1 :]))
+
+        binarios = self.repo.raiz.parent / "bin"
+        binarios.mkdir(exist_ok=True)
+        python = binarios / "python"
+        python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        python.chmod(0o755)
+        entorno["PATH"] = f"{binarios}{os.pathsep}{entorno['PATH']}"
+        return subprocess.run(
+            ["bash", "-e", "-c", guion],
+            cwd=self.repo.raiz,
+            env=entorno,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_un_push_de_dos_commits_compara_contra_donde_estaba_la_rama(self):
+        corrida = self._paso({"github.base_ref": "", "github.event.before": self.antes})
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/grande.py: archivo de 1201 líneas", corrida.stderr)
+        self.assertIn(f"en {self.antes} mide 1200", corrida.stderr)
+
+    def test_un_push_sin_commit_previo_compara_el_ultimo_y_lo_avisa(self):
+        for antes in ("0" * 40, "", "f" * 40):
+            with self.subTest(antes=antes):
+                corrida = self._paso({"github.base_ref": "", "github.event.before": antes})
+                self.assertEqual(corrida.returncode, 0, corrida.stderr)
+                self.assertIn("::warning", corrida.stdout)
+                self.assertIn("HEAD^1", corrida.stdout)
+
+    def test_un_pr_compara_contra_su_rama_base(self):
+        self.repo.git("update-ref", "refs/remotes/origin/main", self.antes)
+        corrida = self._paso({"github.base_ref": "main", "github.event.before": ""})
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("en origin/main mide 1200", corrida.stderr)
 
     def test_no_hay_linea_base_que_actualizar(self):
         corrida = self.repo.tamano("--actualizar")
