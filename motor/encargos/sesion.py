@@ -3,6 +3,7 @@
 from __future__ import annotations
 from motor.io import escribir_texto, leer_json, leer_texto
 
+import contextlib
 import json
 import os
 import socket
@@ -20,10 +21,12 @@ class Marca:
         self.proc = proc or {}
 
 
-def observar(directorio: Path, proc: dict | None) -> str:
-    comprobador = comprobador_actual(directorio)
+def observar(directorio: Path, proc: dict | None, *, escribir: bool = True) -> str:
+    """Con `escribir=False` no toma el turno ni guarda el proceso del comprobador que
+    encuentre: es para quien solo mira y no lanza después."""
+    comprobador = comprobador_actual(directorio, escribir=escribir)
     if comprobador:
-        estado = observar(comprobador[0], comprobador[1])
+        estado = observar(comprobador[0], comprobador[1], escribir=escribir)
         if estado != "ausente":
             return estado
     if not proc:
@@ -288,7 +291,7 @@ def crecer_log(directorio: Path, texto: str) -> None:
         f.write(texto)
 
 
-def recuperar_arranque(directorio: Path) -> tuple[str, dict | None]:
+def recuperar_arranque(directorio: Path, *, escribir: bool = True) -> tuple[str, dict | None]:
     """Con el turno tomado no queda un lanzador concurrente entre la consulta y spawn."""
     from .frontera import turno
 
@@ -297,14 +300,14 @@ def recuperar_arranque(directorio: Path) -> tuple[str, dict | None]:
         spec = leer_json(spec_path)
     except (OSError, ValueError):
         return "incierto", None
-    with turno(Path(spec["base"])):
+    with turno(Path(spec["base"])) if escribir else contextlib.nullcontext():
         for nombre in ("proc.json", "wrapper.json"):
             try:
                 proc = leer_json((directorio / nombre))
             except (OSError, ValueError):
                 continue
             if proc.get("token") == spec["token"]:
-                return observar(directorio, proc), proc
+                return observar(directorio, proc, escribir=escribir), proc
         import subprocess
 
         if os.name == "nt":
@@ -365,7 +368,8 @@ def recuperar_arranque(directorio: Path) -> tuple[str, dict | None]:
                         "host": socket.gethostname(),
                         "token": spec["token"],
                     }
-                    _persistir_proc(directorio, proc)
+                    if escribir:
+                        _persistir_proc(directorio, proc)
                     return "vivo", proc
                 return "incierto", None
         return "ausente", None
@@ -429,7 +433,9 @@ def guardar_descendientes(directorio: Path, raiz: int) -> list[dict] | None:
     return actuales
 
 
-def comprobador_actual(directorio: Path) -> tuple[Path, dict | None] | None:
+def comprobador_actual(
+    directorio: Path, *, escribir: bool = True
+) -> tuple[Path, dict | None] | None:
     path = directorio / "comprobador-actual"
     if not path.is_file():
         return None
@@ -437,7 +443,7 @@ def comprobador_actual(directorio: Path) -> tuple[Path, dict | None] | None:
     if not nombre.startswith("comprobador-") or "/" in nombre or "\\" in nombre:
         return None
     cd = directorio / nombre
-    estado, proc = recuperar_arranque(cd)
+    estado, proc = recuperar_arranque(cd, escribir=escribir)
     if proc is None and estado == "incierto":
         return cd, {"pid": 0, "inicio": "", "boot_id": ""}
     return cd, proc
