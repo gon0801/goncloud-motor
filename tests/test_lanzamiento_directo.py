@@ -24,6 +24,7 @@ from unittest import mock
 from motor.encargos import aislamiento
 from motor.encargos.aislamiento import aislar
 from motor.encargos.suscripciones import CuentaNoDisponible
+from tests import git_env_limpio
 
 SANDBOX = "/usr/bin/sandbox-exec"
 ES_POSIX = os.name != "nt"
@@ -110,6 +111,43 @@ class LaGuardiaDeGhEnElPath(unittest.TestCase):
             )
             self.assertEqual(hecho.stdout.split(), ["merge=3", "api=3", "view=0"], hecho.stderr)
             self.assertEqual(llamadas.read_text(encoding="utf-8").split(), ["pr", "view", "5"])
+
+
+class ElPrePushDelEspacio(unittest.TestCase):
+    """Lo que el motor lanza para el agente empuja solo las ramas de su encargo;
+    el motor, sin la guardia en su entorno, empuja lo que su entrega necesita."""
+
+    def test_el_agente_empuja_su_rama_y_sus_fases_y_nada_mas(self):
+        def git(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", *args], env=env or git_env_limpio(), capture_output=True,
+                text=True, timeout=60,
+            )
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            remoto = base / "remoto.git"
+            espacio, runtime = _coincidencia(base)
+            git("init", "-q", "--bare", "-b", "main", str(remoto))
+            git("clone", "-q", str(remoto), str(espacio))
+            git("-C", str(espacio), "-c", "user.name=t", "-c", "user.email=t@local",
+                "commit", "-q", "--allow-empty", "-m", "producto")
+
+            def empuja(destino: str) -> int:
+                with mock.patch.dict(os.environ, git_env_limpio(), clear=True):
+                    comando = aislar(
+                        ["git", "push", "-q", "origin", f"HEAD:refs/heads/{destino}"],
+                        espacio, runtime, ramas=("encargo/enc_x",),
+                    )
+                return subprocess.run(
+                    comando.argv, cwd=espacio, env=comando.entorno, capture_output=True,
+                    timeout=60,
+                ).returncode
+
+            esperado = {"encargo/enc_x": 0, "encargo/enc_x-dos": 0, "encargo/enc_xy": 1, "main": 1}
+            self.assertEqual({d: empuja(d) for d in esperado}, esperado)
+            motor = git("-C", str(espacio), "push", "-q", "origin", "HEAD:refs/heads/main")
+            self.assertEqual(motor.returncode, 0, motor.stderr)
 
 
 @unittest.skipUnless(ES_POSIX, "el entorno del usuario es de la rama POSIX")

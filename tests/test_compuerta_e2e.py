@@ -1000,13 +1000,21 @@ gh pr view 5; echo "view=$?"
 } > "@INTENTOS@" 2>&1; fi
 """
 
+_INTENTOS_PUSH = """if [ ! -e "@INTENTOS@" ]; then {
+git -c user.name=a -c user.email=a@local commit -q --allow-empty -m intento
+git push -q origin HEAD:refs/heads/main; echo "base=$?"
+git push -q origin HEAD:refs/heads/otra; echo "otra=$?"
+git push -q origin HEAD; echo "propia=$?"
+} > "@INTENTOS@" 2>&1; fi
+"""
+
 
 class ElAgenteNoIntegra(CompuertaReal):
-    """El agente que lanza el motor no integra por su cuenta. En el incidente
-    de la PC el implementador mergeó su PR con `gh pr merge` antes de que
-    empezara el revisor."""
+    """El agente que lanza el motor no integra por su cuenta: ni por gh ni
+    empujando a la rama base. En el incidente de la PC el implementador mergeó
+    su PR con `gh pr merge` antes de que empezara el revisor."""
 
-    def _primer_turno(self, intentos: str) -> str:
+    def _primer_turno(self, intentos: str) -> tuple[str, Banco]:
         """Los intentos corren solo en el primer turno: el del revisor arranca
         en el mismo barrido que cierra al responsable."""
         registro = self.tmp / "intentos.txt"
@@ -1015,14 +1023,14 @@ class ElAgenteNoIntegra(CompuertaReal):
             previo=intentos.replace("@INTENTOS@", registro.as_posix()),
         )
         banco.correr(lambda: bool(banco.eventos("intento_cerrado")))
-        return registro.read_text(encoding="utf-8", errors="replace")
+        return registro.read_text(encoding="utf-8", errors="replace"), banco
 
     def test_el_gh_del_agente_niega_el_merge_y_el_pr_y_lo_demas_llega_al_gh_real(self):
         llamadas = self.tmp / "gh-llamadas.txt"
         _gh_de_la_maquina(self.tmp / "gh-real", llamadas)
         path = os.pathsep.join([str(self.tmp / "gh-real"), os.environ.get("PATH", "")])
         with mock.patch.dict(os.environ, {"PATH": path}):
-            salida = self._primer_turno(_INTENTOS_GH)
+            salida, _ = self._primer_turno(_INTENTOS_GH)
         for intento in ("merge=3", "api=3", "create=3", "view=0"):
             self.assertIn(intento, salida.splitlines(), salida)
         self.assertIn("gh pr merge", salida)
@@ -1031,4 +1039,20 @@ class ElAgenteNoIntegra(CompuertaReal):
         self.assertEqual(
             [linea.split() for linea in llamadas.read_text(encoding="utf-8").splitlines()],
             [["pr", "view", "5"]],
+        )
+
+    def test_el_agente_empuja_su_rama_y_no_la_base_ni_otra(self):
+        salida, banco = self._primer_turno(_INTENTOS_PUSH)
+        lineas = salida.splitlines()
+        self.assertIn("propia=0", lineas, salida)
+        self.assertIn("base=1", lineas, salida)
+        self.assertIn("otra=1", lineas, salida)
+        self.assertIn("la integra el motor", salida)
+        remoto = self.tmp / "repo.git"
+        self.assertEqual(
+            _git(remoto, "rev-parse", "main"), _git(self.tmp / "semilla", "rev-parse", "HEAD")
+        )
+        self.assertEqual(
+            _git(remoto, "for-each-ref", "--format=%(refname:short)", "refs/heads").split(),
+            sorted(["main", banco.fold().entrega.rama]),
         )
