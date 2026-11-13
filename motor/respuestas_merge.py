@@ -46,6 +46,11 @@ class MergeSinRespuesta(RuntimeError):
     mergeó, así que quien reintenta vuelve a mirar el PR antes."""
 
 
+class PrSinLeer(RuntimeError):
+    """`gh pr merge` salió bien, pero el PR no se pudo leer para confirmarlo. Como
+    `MergeSinRespuesta`, no es un rechazo: no se sabe si GitHub mergeó."""
+
+
 # Las que repetir el mismo merge puede arreglar, cada una con la etiqueta que su
 # espera lleva después del primer ": ".
 ETIQUETAS: dict[type[BaseException], str] = {
@@ -54,6 +59,7 @@ ETIQUETAS: dict[type[BaseException], str] = {
     MergeSinConfirmar: "merge sin confirmar",
     PrSinAsentar: "PR sin asentar",
     MergeSinRespuesta: "merge sin respuesta",
+    PrSinLeer: "PR sin leer",
 }
 PASAJERAS = tuple(ETIQUETAS)
 # La política no dejó mergear y no se supo si por los checks.
@@ -85,15 +91,20 @@ def clasificar_merge(error: BaseException) -> MergeRechazado:
     return PoliticaBloquea(texto)
 
 
-def repetir_el_merge(
-    error: BaseException, lectura: BaseException | None, seguidos: int
-) -> bool:
-    """Si toca esperar y repetir el mismo merge: el rechazo es un tropiezo (una
-    respuesta pasajera, o `lectura`, el error al leer los checks requeridos tras
-    un rechazo de la política) y con él la serie no llega al tope. `seguidos`
-    son los tropiezos seguidos antes de este."""
-    tropiezo = lectura is not None or isinstance(error, PASAJERAS)
-    return tropiezo and seguidos + 1 < TOPE_TROPIEZOS_MERGE
+def tras_el_rechazo(
+    error: BaseException, lectura: BaseException | None, causa: str, seguidos: int
+) -> tuple[str, str]:
+    """La espera con la que se repite el mismo merge ("" si no se repite) y la
+    causa con la que queda el rechazo. Se repite un tropiezo (una respuesta
+    pasajera, o `lectura`, el error al leer los checks requeridos tras un rechazo
+    de la política) mientras la serie no llega al tope. `seguidos` son los
+    tropiezos seguidos antes de este; el que llega al tope dice cuántos hubo."""
+    if lectura is None and not isinstance(error, PASAJERAS):
+        return "", causa
+    if seguidos + 1 < TOPE_TROPIEZOS_MERGE:
+        return causa, causa
+    operacion, detalle = causa.split(": ", 1)
+    return "", f"{operacion} tras {seguidos + 1} tropiezos seguidos: {detalle}"
 
 
 def motivo_del_merge(

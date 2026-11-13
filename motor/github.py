@@ -35,6 +35,7 @@ from .respuestas_merge import (
     MergeSinRespuesta,
     PoliticaBloquea,
     PrSinAsentar,
+    PrSinLeer,
     PuntaMovida,
     clasificar_merge,
 )
@@ -857,7 +858,12 @@ class GhGitHub:
             raise MergeSinRespuesta(
                 f"gh pr merge {numero}: GitHub no contestó en {e.timeout:g} s"
             ) from None
-        v = self._vista(repo, numero)
+        try:
+            v = self._vista(repo, numero)
+        except Exception as e:  # noqa: BLE001  el merge pudo entrar; el reintento lo lee antes
+            raise PrSinLeer(
+                f"gh pr merge salió bien, pero el PR no se pudo leer: {_causa_corta(e)}"
+            ) from None
         if v.estado != "mergeado":
             raise MergeSinConfirmar("GitHub no lo marcó como mergeado")
         return v
@@ -1467,6 +1473,7 @@ __all__ = [
     "MergeSinRespuesta",
     "PoliticaBloquea",
     "PrSinAsentar",
+    "PrSinLeer",
     "PrView",
     "PuntaMovida",
     "asdict",

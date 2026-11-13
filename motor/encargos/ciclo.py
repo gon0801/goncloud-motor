@@ -18,7 +18,7 @@ from pathlib import Path
 
 from motor.fallas import es_sesion_local
 from motor.github import Conflicto, MergeRechazado, PoliticaBloquea
-from motor.respuestas_merge import motivo_del_merge, repetir_el_merge
+from motor.respuestas_merge import motivo_del_merge, tras_el_rechazo
 
 from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .comprobacion import (
@@ -10335,9 +10335,9 @@ def _paso_entrega_paso(
                     causa = motivo_del_merge(enc.pr_numero, exc, lectura)
             # Ni una respuesta pasajera de GitHub ni unos checks sin leer o en
             # marcha son un rechazo de la política: se reintenta sin preguntar.
-            espera = ""
-            if repetir_el_merge(exc, lectura, _fallos_de_repo_seguidos(enc, causa)):
-                espera = causa
+            espera, causa = tras_el_rechazo(
+                exc, lectura, causa, _fallos_de_repo_seguidos(enc, causa)
+            )
             if checks is not None and (
                 checks.en_marcha
                 and not checks.fallas
