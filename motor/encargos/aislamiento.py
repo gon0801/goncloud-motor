@@ -105,7 +105,7 @@ def carpeta_de_guardia(runtime: Path) -> Path:
     return carpeta
 
 
-MARCA_PRE_PUSH = "# pre-push del motor de encargos"
+_MARCA_PRE_PUSH = "# pre-push del motor de encargos"
 
 
 def _pre_push(ramas: tuple[str, ...]) -> str:
@@ -120,7 +120,7 @@ def _pre_push(ramas: tuple[str, ...]) -> str:
         "después de la revisión independiente"
     )
     return f"""#!/bin/sh
-{MARCA_PRE_PUSH}
+{_MARCA_PRE_PUSH}
 refs=$(cat)
 if [ "${{{EMPUJE_DE_RECETA}:-}}" != 1 ]; then
   while read -r _ _ destino _; do
@@ -141,8 +141,9 @@ previo="$(dirname "$0")/pre-push.previo"
 def _carpeta_de_ganchos(espacio: Path) -> Path | None:
     """Donde git busca los hooks del espacio: el `core.hooksPath` del propio repo o, sin él, el
     directorio git común, también cuando `.git` es un archivo. Un `core.hooksPath` global es de
-    todos los repos del usuario y no cuenta. None si no es un repo o si la carpeta cae dentro del
-    producto, como la de husky: el hook del motor entraría en el commit del encargo."""
+    todos los repos del usuario y no cuenta. None si el espacio no es un clon, aunque esté dentro
+    de otro repo, o si la carpeta cae dentro del producto, como la de husky: el hook del motor
+    entraría en el commit del encargo."""
 
     def git(*args: str) -> str:
         r = subprocess.run(
@@ -151,15 +152,15 @@ def _carpeta_de_ganchos(espacio: Path) -> Path | None:
         )
         return r.stdout.strip() if r.returncode == 0 else ""
 
-    comun = git("rev-parse", "--git-common-dir")
-    if not comun:
+    salida = git("rev-parse", "--git-common-dir") if (espacio / ".git").exists() else ""
+    if not salida:
         return None
-    comun_ = (espacio / comun).resolve()
-    propia = git("config", "--local", "--get", "core.hooksPath")
-    ganchos = (espacio / git("rev-parse", "--git-path", "hooks")).resolve() if propia else (
-        comun_ / "hooks"
-    )
-    if ganchos.is_relative_to(espacio) and not ganchos.is_relative_to(comun_):
+    comun = (espacio / salida).resolve()
+    if git("config", "--local", "--get", "core.hooksPath"):
+        ganchos = (espacio / git("rev-parse", "--git-path", "hooks")).resolve()
+    else:
+        ganchos = comun / "hooks"
+    if ganchos.is_relative_to(espacio) and not ganchos.is_relative_to(comun):
         return None
     return ganchos
 
@@ -176,7 +177,7 @@ def instalar_pre_push(espacio: Path, ramas: tuple[str, ...]) -> None:
         return
     ganchos.mkdir(parents=True, exist_ok=True)
     gancho = ganchos / "pre-push"
-    if gancho.is_file() and MARCA_PRE_PUSH.encode() not in gancho.read_bytes():
+    if gancho.is_file() and _MARCA_PRE_PUSH.encode() not in gancho.read_bytes():
         os.replace(gancho, ganchos / "pre-push.previo")
     temporal = ganchos / ".pre-push.tmp"
     escribir_texto(temporal, _pre_push(ramas))
