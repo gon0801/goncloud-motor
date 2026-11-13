@@ -25,7 +25,11 @@ jobs:
       - name: Lectura y escritura de texto, solo lo nuevo
         run: python tools/calidad.py io
       - name: Ningún archivo ni función de motor/ crece por encima de su límite
-        run: python tools/calidad.py tamano
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -n "$BASE_REF" ]; then base="origin/$BASE_REF"; else base="HEAD^1"; fi
+          python tools/calidad.py tamano --base "$base"
       - name: Marcadores que deciden, anotados como eventos
         run: python tools/calidad.py marcadores
       - name: La tabla de decisiones se genera desde su fuente única
