@@ -15,8 +15,9 @@ se corre la orden.
 
 Una corrida da estos pasos, en este orden (`Paso`):
 
-1. preparar: deja la base aparte con enlaces a los archivos de la máquina en la
-   base viva (`ENLACES`) y sin `PROHIBIDOS`.
+1. preparar: deja la base aparte con enlaces duros a los archivos de la máquina
+   en la base viva (`ENLACES`), una copia de lo que el motor lee de sus carpetas
+   (`COPIAS`) y sin `PROHIBIDOS`.
 2. encargar: recibe un encargo de nivel desplegado contra el repo del canario,
    con la clave canario-<versión>-<máquina>-<corrida>. La misma corrida retoma
    el mismo encargo.
@@ -75,6 +76,7 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 from motor import plataforma  # noqa: E402
+from motor.encargos.copiar import _quitar as quitar  # noqa: E402
 from motor.encargos.registro import Registro  # noqa: E402
 from motor.github import GhGitHub  # noqa: E402
 from motor.io import leer_texto  # noqa: E402
@@ -88,6 +90,11 @@ Presencia = Literal["ausente", "vivo", "incierto"]
 """Lo que queda del grupo del supervisor, con las palabras de `plataforma.presencia_grupo`."""
 
 ENLACES = ("maquina.toml", "github.json", "capacidades.json", "flota-home.json")
+"""Enlaces duros: Windows pide un privilegio para crear un enlace simbólico y no para
+uno duro, y el canario lee el mismo archivo que la base viva, no una copia."""
+COPIAS = (Path("politica") / "poteto",)
+"""Carpetas de la base viva que el motor lee. Una carpeta no admite enlace duro, y una
+copia no deja que lo que escriba el canario caiga en la base viva."""
 PROHIBIDOS = ("secretos.env", "canal.json")
 """secretos.env trae la URL de Kuma y canal.json el canal: con ellos el supervisor
 del canario hablaría en nombre del servicio vivo."""
@@ -262,15 +269,27 @@ def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
         fuente, enlace = viva / nombre, base / nombre
         if not fuente.is_file():
             raise NoSePuede("preparar", f"falta {fuente}")
-        if enlace.is_symlink() and os.readlink(enlace) == str(fuente):
+        if enlace.exists() and enlace.samefile(fuente):
             continue
         if os.path.lexists(enlace) and not enlace.is_symlink():
-            raise NoSePuede("preparar", f"{enlace} existe y no es un enlace a {fuente}")
+            raise NoSePuede(
+                "preparar",
+                f"{enlace} existe y no es el archivo de {fuente}; si es un enlace viejo, bórralo",
+            )
         try:
             enlace.unlink(missing_ok=True)
-            enlace.symlink_to(fuente)
+            os.link(fuente, enlace)
         except OSError as exc:
             raise NoSePuede("preparar", f"no pude enlazar {enlace}: {exc}") from exc
+    for relativa in COPIAS:
+        fuente, copia = viva / relativa, base / relativa
+        try:
+            if os.path.lexists(copia):
+                quitar(copia)
+            if fuente.is_dir():
+                shutil.copytree(fuente, copia)
+        except OSError as exc:
+            raise NoSePuede("preparar", f"no pude copiar {fuente}: {exc}") from exc
     try:
         nombre = str(tomllib.loads(leer_texto(base / "maquina.toml")).get("nombre") or "")
         esperado = canario.leer_esperado(p.esperado)
@@ -464,10 +483,7 @@ def _borrar_ruta(ruta: Path, nombre: str) -> Borrado:
     if not os.path.lexists(ruta):
         return Borrado(nombre, "no estaba")
     try:
-        if ruta.is_dir() and not ruta.is_symlink():
-            shutil.rmtree(ruta)
-        else:
-            ruta.unlink()
+        quitar(ruta)
     except OSError as exc:
         return Borrado(nombre, "falló", str(exc))
     return Borrado(nombre, "borrado")
