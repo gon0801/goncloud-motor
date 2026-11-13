@@ -515,7 +515,9 @@ def _limpiar_temporal_de(spec: dict) -> None:
 
 
 def ejecutar(spec_path: Path) -> int:
-    spec = leer_json(spec_path)
+    from motor.encargos.aislamiento import ENTORNO_DEL_AGENTE
+
+    spec = {**leer_json(spec_path), "env": json.loads(os.environ.pop(ENTORNO_DEL_AGENTE))}
     d = spec_path.parent
     candado = plataforma.candado(d / "arranque.lock")
     if candado is None:

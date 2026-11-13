@@ -14,9 +14,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from motor.encargos import arranque
-from motor.encargos.aislamiento import aislar, limpiar_temporal, temporal_de
+from motor.encargos.aislamiento import (
+    ENTORNO_DEL_AGENTE,
+    aislar,
+    limpiar_temporal,
+    temporal_de,
+)
 
 RAIZ = Path(__file__).resolve().parents[1]
 
@@ -77,7 +83,6 @@ class ElCierreDelWrapperBorraElTemporal(unittest.TestCase):
                 "sesion": "",
                 "rol": "responsable",
                 "agente": "python3",
-                "env": {"TMPDIR": str(temporal), "CLAUDE_CODE_TMPDIR": str(temporal)},
                 "cmd": ["true"],
             }
             intento = raiz / "intento"
@@ -85,7 +90,9 @@ class ElCierreDelWrapperBorraElTemporal(unittest.TestCase):
             (intento / "arranque.json").write_text(
                 json.dumps(spec), encoding="utf-8"
             )
-            rc = arranque.ejecutar(intento / "arranque.json")
+            delta = {"TMPDIR": str(temporal), "CLAUDE_CODE_TMPDIR": str(temporal)}
+            with mock.patch.dict(os.environ, {ENTORNO_DEL_AGENTE: json.dumps(delta)}):
+                rc = arranque.ejecutar(intento / "arranque.json")
             self.assertEqual(rc, 0)
             self.assertFalse((runtime / "tmp").exists())
 

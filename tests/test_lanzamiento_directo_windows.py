@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from motor.encargos import agentes, aislamiento
-from motor.encargos.aislamiento import ComandoAislado, aislar, entorno_persistente
+from motor.encargos.aislamiento import ComandoAislado, aislar, delta_de_entorno
 from tests import entorno
 
 FUTURO = "2999-01-01T00:00:00+00:00"
@@ -226,7 +226,7 @@ class ArranqueGuardaDelta(unittest.TestCase):
                 },
                 "directo",
             )
-            delta = entorno_persistente(comando)
+            delta = delta_de_entorno(comando)
         self.assertEqual(delta["MOTOR_DELTA"], "cambiada")
         self.assertEqual(delta["MOTOR_NUEVA"], "1")
         self.assertNotIn("MOTOR_IGUAL", delta)

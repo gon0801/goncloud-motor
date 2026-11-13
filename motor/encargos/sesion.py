@@ -139,10 +139,11 @@ def preparar_administrado(
     modelo: str = "",
     sesion_modo: str = "",
     poteto_digest: str = "",
-) -> None:
+) -> dict[str, str]:
+    """Deja `arranque.json` y devuelve el entorno que `lanzar_administrado` le pasa al wrapper."""
     from motor.runwrap import _publica
 
-    from .aislamiento import aislar, entorno_persistente
+    from .aislamiento import aislar, delta_de_entorno
     from .catalogo_agentes import cliente_para
 
     generacion = (entorno_extra or {}).get("MOTOR_GENERACION_RUTA")
@@ -159,7 +160,6 @@ def preparar_administrado(
     spec = {
         "cmd": comando.argv,
         "cwd": str(cwd),
-        "env": entorno_persistente(comando),
         "aislamiento": comando.mecanismo,
         "ejecutable": comando.ejecutable,
         "base": str(_base_de(cwd)),
@@ -178,9 +178,12 @@ def preparar_administrado(
     spec_path = directorio / "arranque.json"
     _publica(spec_path, json.dumps(spec))
     plataforma.sincroniza_directorio(directorio)
+    return delta_de_entorno(comando)
 
 
-def lanzar_administrado(directorio: Path, token: str) -> dict:
+def lanzar_administrado(directorio: Path, token: str, entorno: dict[str, str]) -> dict:
+    from .aislamiento import ENTORNO_DEL_AGENTE
+
     spec_path = directorio / "arranque.json"
     argv = [
         sys.executable,
@@ -189,7 +192,10 @@ def lanzar_administrado(directorio: Path, token: str) -> dict:
         str(spec_path),
     ]
     proc = plataforma.lanzar_separado(
-        argv, directorio, os.environ.copy(), directorio / "wrapper.log"
+        argv,
+        directorio,
+        {**os.environ, ENTORNO_DEL_AGENTE: json.dumps(entorno)},
+        directorio / "wrapper.log",
     )
     spec = leer_json(spec_path)
     proc.update(

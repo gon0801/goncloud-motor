@@ -29,14 +29,13 @@ class ComandoAislado:
 
 
 MECANISMO_DIRECTO = "directo"
+ENTORNO_DEL_AGENTE = "MOTOR_ENTORNO_AGENTE"
 
 
-def entorno_persistente(comando: ComandoAislado) -> dict[str, str]:
-    """Lo que `arranque.json` guarda del entorno. En lanzamiento directo el
-    agente hereda el entorno del supervisor del wrapper que lo lanza, así que
-    en disco solo queda la parte que el motor añade o cambia (el temporal del
-    intento, la suscripción, el intérprete en el PATH): el entorno completo
-    del usuario llega igual al agente sin escribirse entero en el intento."""
+def delta_de_entorno(comando: ComandoAislado) -> dict[str, str]:
+    """La parte del entorno que el motor añade o cambia (el temporal del intento, la suscripción,
+    el intérprete en el PATH). Viaja al wrapper en `ENTORNO_DEL_AGENTE`, nunca por disco: trae las
+    llaves de las suscripciones. El resto lo hereda el agente del supervisor."""
     if comando.mecanismo != MECANISMO_DIRECTO:
         return dict(comando.entorno)
     return {
@@ -342,6 +341,7 @@ def aislar(
     if espacio.parent.name != "espacio" or runtime.is_relative_to(espacio):
         raise RuntimeError("el lanzamiento necesita espacio concedido y runtime separado")
     runtime.mkdir(parents=True, exist_ok=True)
+    runtime.chmod(0o700)
     nombre = agente or Path(cmd[0]).stem.lower()
     env = _entorno(runtime, suscripcion, cmd, agente=agente)
     if nombre in ("antigravity", "agy"):
