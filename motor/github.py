@@ -26,7 +26,6 @@ from typing import Callable, Protocol
 
 from .repositorios import resolver_repositorio
 from .respuestas_merge import (
-    PASAJERAS,
     BaseMovida,
     Borrador,
     Conflicto,
@@ -38,7 +37,6 @@ from .respuestas_merge import (
     PrSinAsentar,
     PuntaMovida,
     clasificar_merge,
-    motivo_del_merge,
 )
 from .workspace import git
 
@@ -1472,13 +1470,11 @@ __all__ = [
     "MergeRechazado",
     "MergeSinConfirmar",
     "MergeSinRespuesta",
-    "PASAJERAS",
     "PoliticaBloquea",
     "PrSinAsentar",
     "PrView",
     "PuntaMovida",
     "asdict",
     "clasificar_merge",
-    "motivo_del_merge",
     "para",
 ]

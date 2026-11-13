@@ -17,7 +17,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from motor.fallas import es_sesion_local
-from motor.github import PASAJERAS, Conflicto, MergeRechazado, PoliticaBloquea, motivo_del_merge
+from motor.github import Conflicto, MergeRechazado, PoliticaBloquea
+from motor.respuestas_merge import motivo_del_merge, repetir_el_merge
 
 from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .comprobacion import (
@@ -10321,14 +10322,7 @@ def _paso_entrega_paso(
                 # base se movió en medio): el mismo camino que un choque leído.
                 return _traer_la_base_al_pr(registro, enc, gh, hora)
             causa = motivo_del_merge(enc.pr_numero, exc)
-            checks = None
-            # Ni una respuesta pasajera de GitHub ni unos checks sin leer o en
-            # marcha son un rechazo de la política: se reintenta sin preguntar.
-            espera = ""
-            if isinstance(exc, PASAJERAS) and (
-                _fallos_de_repo_seguidos(enc, causa) + 1 < TOPE_FALLOS_REPO
-            ):
-                espera = causa
+            checks = lectura = None
             if isinstance(exc, PoliticaBloquea):
                 try:
                     checks = gh.checks_requeridos(
@@ -10336,8 +10330,14 @@ def _paso_entrega_paso(
                     )
                 except MergeRechazado as rechazo:
                     causa += f"; {rechazo}"
-                except Exception as lectura:
-                    espera = motivo_del_merge(enc.pr_numero, exc, lectura)
+                except Exception as error:
+                    lectura = error
+                    causa = motivo_del_merge(enc.pr_numero, exc, lectura)
+            # Ni una respuesta pasajera de GitHub ni unos checks sin leer o en
+            # marcha son un rechazo de la política: se reintenta sin preguntar.
+            espera = ""
+            if repetir_el_merge(exc, lectura, _fallos_de_repo_seguidos(enc, causa)):
+                espera = causa
             if checks is not None and (
                 checks.en_marcha
                 and not checks.fallas

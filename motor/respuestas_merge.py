@@ -47,8 +47,7 @@ class MergeSinRespuesta(RuntimeError):
 
 
 # Las que repetir el mismo merge puede arreglar, cada una con la etiqueta que su
-# espera lleva antes del primer ": ". El motor cuenta los reintentos seguidos por
-# ese prefijo: con su etiqueta, una respuesta no gasta los intentos de otra.
+# espera lleva después del primer ": ".
 ETIQUETAS: dict[type[BaseException], str] = {
     BaseMovida: "base movida",
     ErrorDeGitHub: "error de GitHub",
@@ -59,6 +58,12 @@ ETIQUETAS: dict[type[BaseException], str] = {
 PASAJERAS = tuple(ETIQUETAS)
 # La política no dejó mergear y no se supo si por los checks.
 CHECKS_SIN_LEER = "checks sin leer"
+# Los tropiezos de un merge (las PASAJERAS y los checks sin leer) comparten una
+# serie: el motor cuenta las esperas seguidas por lo que va antes del primer
+# ": ", y todas empiezan igual. Con una serie por tipo, dos tipos que se alternan
+# no llegan nunca al tope. Con cinco, dos lecturas fallidas todavía dejan tres
+# intentos a una base movida.
+TOPE_TROPIEZOS_MERGE = 5
 
 _RECHAZOS_DE_MERGE = (
     (Borrador, ("draft", "borrador")),
@@ -80,14 +85,25 @@ def clasificar_merge(error: BaseException) -> MergeRechazado:
     return PoliticaBloquea(texto)
 
 
+def repetir_el_merge(
+    error: BaseException, lectura: BaseException | None, seguidos: int
+) -> bool:
+    """Si toca esperar y repetir el mismo merge: el rechazo es un tropiezo (una
+    respuesta pasajera, o `lectura`, el error al leer los checks requeridos tras
+    un rechazo de la política) y con él la serie no llega al tope. `seguidos`
+    son los tropiezos seguidos antes de este."""
+    tropiezo = lectura is not None or isinstance(error, PASAJERAS)
+    return tropiezo and seguidos + 1 < TOPE_TROPIEZOS_MERGE
+
+
 def motivo_del_merge(
     numero: int, error: BaseException, lectura: BaseException | None = None
 ) -> str:
     """Por qué no se integró el PR. `lectura` es el error al leer los checks
     requeridos tras un rechazo de la política."""
     etiqueta = CHECKS_SIN_LEER if lectura is not None else ETIQUETAS.get(type(error))
-    serie = f" ({etiqueta})" if etiqueta else ""
-    motivo = f"no se pudo integrar el PR #{numero}{serie}: {error}"
+    tipo = f"{etiqueta}: " if etiqueta else ""
+    motivo = f"no se pudo integrar el PR #{numero}: {tipo}{error}"
     if lectura is not None:
         motivo += f"; no se pudieron leer los checks requeridos: {lectura}"
     return motivo
