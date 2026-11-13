@@ -11,6 +11,7 @@ barre como el banco de `tests/test_compuerta_e2e.py`, y GitHub es el falso.
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -99,7 +100,8 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.fake, self.repo = self.tmp / "fake", self.tmp / "repo.git"
         self._viva()
         self._repo()
-        poteto = self.base / "politica" / "poteto" / "skills" / "poteto-mode"
+        self.base.mkdir()
+        poteto = self.viva / "politica" / "poteto" / "skills" / "poteto-mode"
         poteto.mkdir(parents=True)
         (poteto / "SKILL.md").write_text("# poteto-mode (banco)\n", encoding="utf-8")
 
@@ -469,22 +471,34 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertIn("secretos.env", salida["error"])
         self.assertFalse((self.base / "registro.sqlite").exists(), "no recibió el encargo")
 
-    def test_preparar_converge_a_los_mismos_enlaces(self):
-        pedido = Pedido(
-            repo=str(self.repo), base=self.base, base_viva=self.viva,
-            despliegue=self.destino, corrida="prueba", maquina="", tope_s=None,
-            intervalo_s=1.0, esperado=RAIZ / "ops" / "canario_encargos.esperado.json",
-            tope_cierre_s=1.0,
-        )
+    def test_preparar_converge_a_los_mismos_enlaces(self):  # no-roja-en-base: la base ya enlazaba; la prueba ahora mira que sea el mismo archivo que el vivo y no la clase de enlace, que pasa a ser duro
+        pedido = self.pedido()
         (self.base / "github.json").symlink_to(self.tmp / "otro-github.json")
         for _ in range(2):
             self.assertEqual(preparar(pedido)[0], "banco")
             for nombre in canario_lanzador.ENLACES:
-                self.assertEqual(os.readlink(self.base / nombre), str(self.viva.resolve() / nombre))
+                self.assertTrue(os.path.samefile(self.base / nombre, self.viva / nombre), nombre)
         (self.base / "maquina.toml").unlink()
         (self.base / "maquina.toml").write_text('nombre="otra"\n', encoding="utf-8")
         with self.assertRaises(canario_lanzador.NoSePuede):
             preparar(pedido)
+
+    def test_preparar_enlaza_en_un_host_que_no_deja_crear_enlaces_simbolicos(self):
+        sin_privilegio = OSError(errno.EPERM, "A required privilege is not held by the client")
+        with mock.patch.object(os, "symlink", side_effect=sin_privilegio):
+            self.assertEqual(preparar(self.pedido())[0], "banco")
+        for nombre in canario_lanzador.ENLACES:
+            self.assertTrue(os.path.samefile(self.base / nombre, self.viva / nombre), nombre)
+
+    def test_preparar_trae_la_politica_de_poteto_de_la_base_viva_y_la_quita_si_ya_no_esta(self):
+        skill = Path("politica") / "poteto" / "skills" / "poteto-mode" / "SKILL.md"
+        preparar(self.pedido())
+        self.assertEqual((self.base / skill).read_bytes(), (self.viva / skill).read_bytes())
+        self.assertFalse(os.path.samefile(self.base / skill, self.viva / skill), "enlazó la política viva")
+
+        shutil.rmtree(self.viva / "politica")
+        preparar(self.pedido())
+        self.assertFalse((self.base / "politica" / "poteto").exists())
 
     def test_una_base_donde_no_se_puede_enlazar_se_niega_en_preparar(self):
         if os.geteuid() == 0:
@@ -523,6 +537,27 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
                     registro.unlink()
         Registro(self.base).close()
         self.assertEqual(preparar(pedido)[0], "banco")
+
+    def test_limpiar_borra_un_espacio_con_archivos_de_solo_lectura(self):
+        """Git deja sus objetos de solo lectura; en Windows eso basta para que rmtree no
+        los borre. Aquí lo provoca una carpeta sin permiso de escritura."""
+        if os.geteuid() == 0:
+            self.skipTest("root borra aunque la carpeta sea de solo lectura")
+        pedido = self.pedido()
+        preparar(pedido)
+        pack = self.base / "espacio" / "enc_ab" / ".git" / "objects" / "pack"
+        pack.mkdir(parents=True)
+        (pack / "pack-1.idx").write_bytes(b"idx")
+        (pack / "pack-1.idx").chmod(0o444)
+        pack.chmod(0o555)
+        self.addCleanup(lambda: pack.is_dir() and pack.chmod(0o755))
+
+        with mock.patch.object(canario_lanzador, "_ramas", return_value=[]):
+            borrados = {b.resto: b for b in canario_lanzador.limpiar(pedido, "enc_ab")}
+
+        espacio = borrados["espacio/enc_ab"]
+        self.assertEqual(espacio.resultado, "borrado", espacio.causa)
+        self.assertFalse((self.base / "espacio" / "enc_ab").exists())
 
     def test_limpiar_no_borra_nada_con_lo_que_no_es_un_id(self):
         pedido = self.pedido()
