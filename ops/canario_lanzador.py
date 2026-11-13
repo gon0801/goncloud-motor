@@ -28,14 +28,17 @@ Una corrida da estos pasos, en este orden (`Paso`):
 5. cerrar: mata el grupo de su supervisor, para el encargo si no cerró y espera,
    hasta `--tope-cierre-s`, a que no quede vivo ningún proceso de sus turnos ni
    de sus trabajadores de despliegue, que el motor lanza en sesión propia. Pasa
-   siempre que el encargo se recibió, aunque un paso anterior falle.
+   siempre que el encargo se recibió, aunque un paso anterior falle, y cada uno
+   de sus pasos se intenta aunque otro falle o lo corte un Ctrl-C. Lo que falló
+   queda en `Cierre.fallas`; un Ctrl-C se vuelve a lanzar al terminar el cierre.
 6. medir: `canario_encargos.observar` y `juzgar`.
-7. limpiar: borra su rama remota, espacio/<id>, ejecucion/<id> y
-   trabajos/<id>.json de la flota. Nada que no lleve su id.
+7. limpiar: borra su rama remota encargo/<id>, espacio/<id>, ejecucion/<id> y
+   trabajos/<id>.json de la flota. Con algo que no es un id no borra nada.
 
 Solo se mide y se borra con el cierre listo (`Cierre.listo`): el encargo cerrado,
-el grupo del supervisor ausente y ningún proceso del encargo vivo o sin poder
-mirarse. Si no, la orden no borra nada y nombra lo que quedó.
+el grupo del supervisor ausente, ningún proceso del encargo vivo o sin poder
+mirarse y ningún paso del cierre caído. Si no, la orden no borra nada y nombra lo
+que quedó.
 
 Por stderr van los avances y la tabla. Por stdout, un solo objeto JSON: el
 `Informe` una vez recibido el encargo, o `{"paso", "error", "codigo": 2}` si no se
@@ -61,11 +64,11 @@ import tempfile
 import time
 import tomllib
 import traceback
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 
 RAIZ = Path(__file__).resolve().parents[1]
 if str(RAIZ) not in sys.path:
@@ -91,6 +94,8 @@ del canario hablaría en nombre del servicio vivo."""
 TEXTO = "Canario: escribe el id de esta corrida en corridas/<máquina>.txt."
 ID = re.compile(r"enc_[0-9a-f]+")
 CORRIDA = re.compile(r"[A-Za-z0-9._-]+")
+ESPERA_GRUPO_S = 10.0
+T = TypeVar("T")
 
 
 class NoSePuede(Exception):
@@ -138,10 +143,15 @@ class Cierre:
     supervisor: Presencia
     vivos: tuple[str, ...]
     """Los procesos del encargo que al vencer el tope seguían vivos o no se pudieron mirar."""
+    fallas: tuple[str, ...] = ()
+    """Los pasos del cierre que se cayeron, con su causa."""
 
     @property
     def listo(self) -> bool:
-        return self.estado in CERRADOS and self.supervisor == "ausente" and not self.vivos
+        return (
+            self.estado in CERRADOS and self.supervisor == "ausente" and not self.vivos
+            and not self.fallas
+        )
 
 
 @dataclass(frozen=True)
@@ -244,6 +254,9 @@ def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
     sobran = [n for n in PROHIBIDOS if os.path.lexists(base / n)]
     if sobran:
         raise NoSePuede("preparar", f"{p.base} trae {', '.join(sobran)}")
+    registro, vivo = base / "registro.sqlite", viva / "registro.sqlite"
+    if registro.is_symlink() or (registro.exists() and vivo.exists() and registro.samefile(vivo)):
+        raise NoSePuede("preparar", f"{registro} es un enlace o el registro de la base viva")
     base.mkdir(parents=True, exist_ok=True)
     for nombre in ENLACES:
         fuente, enlace = viva / nombre, base / nombre
@@ -319,8 +332,9 @@ def detener(supervisor: dict) -> Presencia:
     job = str(supervisor.get("job") or "")
     plataforma.matar_proc(pid, inicio)
     plataforma.cerrar_huerfanos(pid, inicio, job)
-    vence = time.monotonic() + 10
-    while (presencia := plataforma.presencia_grupo(pid, inicio, job)) == "vivo":
+    vence = time.monotonic() + ESPERA_GRUPO_S
+    # En Windows el Job responde «incierto» mientras se cierra.
+    while (presencia := plataforma.presencia_grupo(pid, inicio, job)) != "ausente":
         if time.monotonic() >= vence:
             break
         time.sleep(0.1)
@@ -356,23 +370,45 @@ def _esperar_procesos(p: Pedido, encargo: str) -> tuple[str, ...]:
 
 
 def cerrar(p: Pedido, encargo: str, supervisor: dict | None) -> Cierre:
-    presencia: Presencia = detener(supervisor) if supervisor else "ausente"
+    fallas: list[str] = []
+    cortes: list[BaseException] = []
+
+    def intentar(que: str, hacer: Callable[[], T], si_falla: T) -> T:
+        try:
+            return hacer()
+        except BaseException as exc:  # también un Ctrl-C: el encargo no puede quedar vivo
+            fallas.append(f"{que}: {type(exc).__name__}: {exc}")
+            if not isinstance(exc, Exception):
+                cortes.append(exc)
+            return si_falla
+
+    def estado_actual() -> str:
+        return intentar("leer el encargo", lambda: _estado(p, encargo, "cerrar"), "")
+
+    presencia: Presencia = (
+        intentar("detener el supervisor", lambda: detener(supervisor), "incierto") if supervisor
+        else "ausente"
+    )
     parada = ""
-    if _estado(p, encargo, "cerrar") not in CERRADOS:
-        parada = _parar(p, encargo)
-    vivos = _esperar_procesos(p, encargo)
-    estado = _estado(p, encargo, "cerrar")
+    if estado_actual() not in CERRADOS:
+        parada = intentar("parar el encargo", lambda: _parar(p, encargo), "")
+    sin_mirar = ("los procesos del encargo, que no pude esperar",)
+    vivos = intentar("esperar sus procesos", lambda: _esperar_procesos(p, encargo), sin_mirar)
+    estado = estado_actual()
     if estado not in CERRADOS and not vivos:
         # Una parada no cierra mientras viva el trabajador de despliegue, y cuando él
         # termina ya no queda supervisor que barra: otra parada es ese barrido.
-        parada = _parar(p, encargo)
-        estado = _estado(p, encargo, "cerrar")
-    cierre = Cierre(estado, parada, presencia, vivos)
+        parada = intentar("parar el encargo", lambda: _parar(p, encargo), parada)
+        estado = estado_actual()
+    cierre = Cierre(estado, parada, presencia, vivos, tuple(fallas))
     _avance("cerrar", (
         f"el encargo quedó {estado or 'sin leer'}; el grupo del supervisor, {presencia}"
         + (f"; siguen {', '.join(vivos)}" if vivos else "")
+        + (f"; fallaron {'; '.join(fallas)}" if fallas else "")
         + ("" if cierre.listo else ": no mido ni borro nada")
     ))
+    if cortes:
+        raise cortes[0]
     return cierre
 
 
@@ -414,9 +450,12 @@ def _borrar_rama(repo: str, rama: str) -> Borrado:
                 )
                 if hecho.returncode:
                     return Borrado(nombre, "falló", hecho.stderr.strip()[-300:])
+        queda = canario._rama_existe(repo, rama)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return Borrado(nombre, "falló", f"{type(exc).__name__}: {exc}")
-    if canario._rama_existe(repo, rama) is not False:
+    if queda is None:
+        return Borrado(nombre, "falló", "git push --delete salió bien y no pude confirmar que ya no está")
+    if queda:
         return Borrado(nombre, "falló", "git push --delete salió bien y la rama sigue")
     return Borrado(nombre, "borrado")
 
@@ -444,18 +483,23 @@ def _ramas(base: Path, encargo: str) -> list[str]:
 
 
 def limpiar(p: Pedido, encargo: str) -> tuple[Borrado, ...]:
-    borrados = [
-        _borrar_rama(p.repo, rama) if encargo in rama
-        else Borrado(f"la rama remota {rama}", "falló", "no lleva el id del encargo: no la borro")
-        for rama in _ramas(p.base, encargo)
-    ]
-    borrados += [_borrar_ruta(p.base / d / encargo, f"{d}/{encargo}") for d in ("espacio", "ejecucion")]
-    flota = str(canario._json_o_vacio(p.base / "flota-home.json").get("home") or "")
-    trabajo = f"trabajos/{encargo}.json de la flota"
-    borrados.append(
-        _borrar_ruta(Path(flota) / "trabajos" / f"{encargo}.json", trabajo) if flota
-        else Borrado(trabajo, "falló", "flota-home.json no dice dónde está la flota")
-    )
+    if not ID.fullmatch(encargo):
+        borrados = [Borrado(f"los restos de {encargo!r}", "falló", "no es un id de encargo: no borro nada")]
+    else:
+        # El nombre con que el motor crea la rama de un encargo que no pide otra.
+        suya = f"encargo/{encargo}"
+        borrados = [
+            _borrar_rama(p.repo, rama) if rama == suya
+            else Borrado(f"la rama remota {rama}", "falló", f"no es {suya}: no la borro")
+            for rama in _ramas(p.base, encargo)
+        ]
+        borrados += [_borrar_ruta(p.base / d / encargo, f"{d}/{encargo}") for d in ("espacio", "ejecucion")]
+        flota = str(canario._json_o_vacio(p.base / "flota-home.json").get("home") or "")
+        trabajo = f"trabajos/{encargo}.json de la flota"
+        borrados.append(
+            _borrar_ruta(Path(flota) / "trabajos" / f"{encargo}.json", trabajo) if flota
+            else Borrado(trabajo, "falló", "flota-home.json no dice dónde está la flota")
+        )
     for b in borrados:
         _avance("limpiar", f"{b.resto}: {b.resultado}" + (f" ({b.causa})" if b.causa else ""))
     return tuple(borrados)
@@ -498,6 +542,8 @@ def correr(p: Pedido, gh: canario.LectorPR, supervisor: Sequence[str] | None = N
     finally:
         segundos = int(time.monotonic() - inicio)
         cierre = cerrar(p, encargo, proceso)
+    if fallo is None and cierre.fallas:
+        fallo = Fallo("cerrar", "; ".join(cierre.fallas))
     filas: tuple[canario.Fila, ...] = ()
     limpieza: tuple[Borrado, ...] = ()
     if cierre.listo:

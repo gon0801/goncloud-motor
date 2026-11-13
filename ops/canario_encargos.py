@@ -644,7 +644,7 @@ def _git(*argv: str, espera: float) -> str | None:
 def _rama_existe(repo: str, rama: str) -> bool | None:
     try:
         remoto = resolver_repositorio(repo).remoto
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
     salida = _git("ls-remote", "--", remoto, f"refs/heads/{rama}", espera=2 * ESPERA_GIT_S)
     return None if salida is None else bool(salida)

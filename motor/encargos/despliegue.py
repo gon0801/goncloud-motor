@@ -452,10 +452,15 @@ def _rutas(receta: dict) -> None:
             raise ValueError(f"falta receta real: {paso} debe ser una ruta relativa dentro del repo")
 
 
-def _leer(path: Path, identidad: dict) -> dict:
+def _objeto(path: Path) -> dict:
     datos = leer_json(path)
     if not isinstance(datos, dict):
-        raise ValueError("el recibo de despliegue no es un objeto")
+        raise ValueError(f"{path.name} de despliegue no es un objeto")
+    return datos
+
+
+def _leer(path: Path, identidad: dict) -> dict:
+    datos = _objeto(path)
     if any(datos.get(k) != v for k, v in identidad.items()):
         raise ValueError("el recibo de despliegue no corresponde a esta fase, SHA y receta")
     if datos.get("estado") == "aplicado":
@@ -513,8 +518,8 @@ def observacion(registro, enc, fase=None) -> str:
 
 def _observacion_en(registro, enc, directorio: Path) -> str:
     try:
-        datos = leer_json((directorio / "recibo.json"))
-        proceso = leer_json((directorio / "proceso.json"))
+        datos = _objeto(directorio / "recibo.json")
+        proceso = _objeto(directorio / "proceso.json")
         if datos.get("encargo") != enc.id:
             return "incierto"
         if plataforma.estado_proc(proceso) == "vivo":
@@ -522,7 +527,7 @@ def _observacion_en(registro, enc, directorio: Path) -> str:
         comando_path = directorio / "comando.json"
         if not comando_path.exists():
             return "ausente"
-        comando = leer_json(comando_path)
+        comando = _objeto(comando_path)
         if comando.get("estado") == "no_enviado":
             return "ausente"
         if not comando.get("inicio") or not comando.get("pid"):
