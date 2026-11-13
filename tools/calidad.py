@@ -6,6 +6,7 @@ Uso, igual en local y en CI:
     python3 tools/calidad.py lint
     python3 tools/calidad.py io
     python3 tools/calidad.py tamano --base origin/main
+    python3 tools/calidad.py tamano --base <commit> --cabeza <commit>
 
 `tipos` y `lint` comparan contra `.github/calidad/baseline.json` y fallan solo
 si el cambio agrega un error. `io` es estricto: cualquier uso fuera de
@@ -16,7 +17,9 @@ PR que se está revisando).
 `tamano` mide `motor/` contra la rama base, leída de git: un archivo de más de
 1,000 líneas o una función de más de 100 no puede medir más que en la base, ni en
 líneas ni en tokens de código, y lo que en la base no existe o cabe no puede
-pasar del límite. No guarda nada.
+pasar del límite. No guarda nada. Sin `--cabeza` mide el árbol de trabajo; con
+`--cabeza` mide ese commit, leído de git igual que la base, y el árbol no cuenta:
+así juzga un PR quien no ejecuta nada suyo.
 """
 
 from __future__ import annotations
@@ -120,6 +123,13 @@ NO_ES_CODIGO = frozenset(
 MENSAJE_TAMANO = (
     "Saca código de ahí a un módulo propio: nada de motor/ pasa del límite ni "
     "crece por encima de lo que mide en la base."
+)
+# Modos de git que sacan código de la medida: el enlace apunta fuera y el
+# submódulo vive en otro repo, pero Python importa los dos igual.
+AJENOS_DE_MOTOR = {b"120000": "es un enlace simbólico", b"160000": "es un submódulo"}
+MENSAJE_SIN_MEDIR = (
+    "Bajo motor/ solo van archivos propios del repo, en UTF-8 y que Python analice; "
+    "lo demás no se puede medir."
 )
 
 
@@ -352,40 +362,83 @@ def _acumulado_por_linea(texto: str) -> dict[str, list[int]]:
     }
 
 
-def tamanos(fuentes) -> dict[tuple, collections.Counter]:
-    """Cada medida por `("archivo", ruta)` y por `("funcion", ruta, nombre)`."""
+# Lo leído de `motor/`: el contenido de cada `.py` y, con su motivo, lo que no
+# se puede medir.
+Lectura = tuple[list[tuple[str, bytes]], list[tuple[str, str]]]
+
+
+def _medir(lectura: Lectura) -> tuple[dict[tuple, collections.Counter], list[tuple[str, str]]]:
+    """Cada medida por `("archivo", ruta)` y `("funcion", ruta, nombre)`, y lo que no se mide."""
+    fuentes, sin_medir = lectura
+    sin_medir = list(sin_medir)
     cuenta: dict[tuple, collections.Counter] = collections.defaultdict(collections.Counter)
-    for ruta, texto in fuentes:
+    for ruta, contenido in fuentes:
+        try:
+            texto = contenido.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            sin_medir.append((ruta, f"no es UTF-8 (byte {exc.start}: {exc.reason})"))
+            continue
         try:
             arbol = ast.parse(texto)
             acumulado = _acumulado_por_linea(texto)
         except (SyntaxError, tokenize.TokenError) as exc:
-            raise SystemExit(f"no se puede leer {ruta}: {exc}") from exc
+            sin_medir.append((ruta, f"no se puede analizar: {exc}"))
+            continue
         cuenta[("archivo", ruta)].update(_tramo(acumulado, 1, len(acumulado["líneas"]) - 1))
         for nombre, inicio, fin in _funciones(arbol):
             # Dos definiciones con el mismo nombre suman: una segunda no puede
             # colarse bajo el tamaño de la primera.
             cuenta[("funcion", ruta, nombre)].update(_tramo(acumulado, inicio, fin))
-    return cuenta
+    return cuenta, sin_medir
 
 
 def _tramo(acumulado: dict[str, list[int]], inicio: int, fin: int) -> dict[str, int]:
     return {medida: suma[fin] - suma[inicio - 1] for medida, suma in acumulado.items()}
 
 
-def _utf8(ruta: str, contenido: bytes) -> str:
-    try:
-        return contenido.decode("utf-8")
-    except UnicodeDecodeError as exc:
+def _medir_lo_juzgado(lectura: Lectura, donde: str) -> dict[tuple, collections.Counter]:
+    medidas, sin_medir = _medir(lectura)
+    if sin_medir:
         raise SystemExit(
-            f"tamano: {ruta} no es UTF-8 (byte {exc.start}: {exc.reason}); guárdalo en UTF-8"
-        ) from None
+            "\n".join(f"tamano: {ruta}{donde} {motivo}" for ruta, motivo in sin_medir)
+            + f"\n{MENSAJE_SIN_MEDIR}"
+        )
+    return medidas
 
 
-def _fuentes_del_arbol():
-    for archivo in sorted((RAIZ / "motor").rglob("*.py")):
-        ruta = archivo.relative_to(RAIZ).as_posix()
-        yield ruta, _utf8(ruta, archivo.read_bytes())
+def _medir_la_base(lectura: Lectura, ref: str) -> dict[tuple, collections.Counter]:
+    """La base solo pone el techo: lo que no mide no tumba el check, que con su
+    propio `calidad.py` no podría arreglarlo ningún PR."""
+    medidas, sin_medir = _medir(lectura)
+    for ruta, motivo in sin_medir:
+        print(
+            f"tamano: {ruta} en {ref} {motivo}; no se mide ahí y se juzga como si no existiera",
+            file=sys.stderr,
+        )
+    return medidas
+
+
+def _fuentes_del_arbol() -> Lectura:
+    motor = RAIZ / "motor"
+    caminos = sorted([motor, *motor.rglob("*")])
+    # El submódulo sale del índice: sin iniciarlo, como lo deja el checkout del
+    # CI, en el disco es una carpeta vacía.
+    submodulos = [
+        (entrada.split(b"\t", 1)[1].decode(), AJENOS_DE_MOTOR[b"160000"])
+        for entrada in _git("ls-files", "--stage", "-z", "--", "motor").split(b"\0")
+        if entrada.startswith(b"160000 ")
+    ]
+    enlaces = [
+        (camino.relative_to(RAIZ).as_posix(), AJENOS_DE_MOTOR[b"120000"])
+        for camino in caminos
+        if camino.is_symlink()
+    ]
+    fuentes = [
+        (archivo.relative_to(RAIZ).as_posix(), archivo.read_bytes())
+        for archivo in caminos
+        if archivo.suffix == ".py" and archivo.is_file()
+    ]
+    return fuentes, sorted(enlaces + submodulos)
 
 
 def _git(*args: str, entrada: bytes | None = None) -> bytes:
@@ -394,12 +447,12 @@ def _git(*args: str, entrada: bytes | None = None) -> bytes:
     ).stdout
 
 
-def _commit_de_la_base(ref: str) -> str:
+def _commit(ref: str, papel: str) -> str:
     try:
         return _git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").decode().strip()
     except subprocess.CalledProcessError:
         raise SystemExit(
-            f"tamano: la base {ref} no existe en este clon; {_como_traer(ref)}"
+            f"tamano: la {papel} {ref} no existe en este clon; {_como_traer(ref)}"
         ) from None
 
 
@@ -412,24 +465,27 @@ def _como_traer(ref: str) -> str:
     return "no es una rama de origin ni está en la historia del clon; revisa el nombre"
 
 
-def _fuentes_de_la_base(commit: str, ref: str):
+def _fuentes_de_git(commit: str) -> Lectura:
     """Los `.py` de `motor/` tal como están en `commit`, sin tocar el árbol."""
-    blobs = []
-    for entrada in _git("ls-tree", "-r", "-z", commit, "--", "motor/").split(b"\0"):
+    blobs, ajenos = [], []
+    for entrada in _git("ls-tree", "-r", "-z", commit, "--", "motor").split(b"\0"):
         if not entrada:
             continue
         meta, ruta = entrada.split(b"\t", 1)
         modo, tipo, sha = meta.split()
-        if tipo == b"blob" and modo != b"120000" and ruta.endswith(b".py"):
+        if modo in AJENOS_DE_MOTOR:
+            ajenos.append((ruta.decode(), AJENOS_DE_MOTOR[modo]))
+        elif tipo == b"blob" and ruta.endswith(b".py"):
             blobs.append((ruta.decode(), sha))
     lote = _git("cat-file", "--batch", entrada=b"".join(sha + b"\n" for _, sha in blobs))
-    pos = 0
+    fuentes, pos = [], 0
     for ruta, _ in blobs:
         fin_cabecera = lote.index(b"\n", pos)
         tamano = int(lote[pos:fin_cabecera].split()[2])
         inicio = fin_cabecera + 1
-        yield ruta, _utf8(f"{ruta} en {ref}", lote[inicio : inicio + tamano])
+        fuentes.append((ruta, lote[inicio : inicio + tamano]))
         pos = inicio + tamano + 1
+    return fuentes, ajenos
 
 
 def _nombre_de_tamano(clave: tuple) -> str:
@@ -464,12 +520,18 @@ def _excesos_de_tamano(
     return excesos
 
 
-def _comparar_tamano(ref: str) -> int:
-    commit = _commit_de_la_base(ref)
-    hoy = tamanos(_fuentes_del_arbol())
-    excesos = _excesos_de_tamano(hoy, tamanos(_fuentes_de_la_base(commit, ref)), ref)
+def _comparar_tamano(ref: str, cabeza: str | None) -> int:
+    commit = _commit(ref, "base")
+    if cabeza is None:
+        medido, lectura = "", _fuentes_del_arbol()
+    else:
+        medido, lectura = f" en {cabeza}", _fuentes_de_git(_commit(cabeza, "cabeza"))
+    hoy = _medir_lo_juzgado(lectura, medido)
+    excesos = _excesos_de_tamano(hoy, _medir_la_base(_fuentes_de_git(commit), ref), ref)
     if excesos:
-        print(f"tamano: {len(excesos)} límite(s) superado(s) contra {ref}", file=sys.stderr)
+        print(
+            f"tamano: {len(excesos)} límite(s) superado(s){medido} contra {ref}", file=sys.stderr
+        )
         print("\n".join(excesos), file=sys.stderr)
         print(MENSAJE_TAMANO, file=sys.stderr)
         return 1
@@ -478,7 +540,7 @@ def _comparar_tamano(ref: str) -> int:
         if medidas["líneas"] > LIMITES_DE_TAMANO[clave[0]]
     )
     print(
-        f"tamano: nada crece contra {ref} ({commit[:12]}). Pasan del límite hoy "
+        f"tamano: nada crece{medido} contra {ref} ({commit[:12]}). Pasan del límite hoy "
         f"{grandes['archivo']} archivo(s) de más de {LIMITES_DE_TAMANO['archivo']} "
         f"líneas y {grandes['funcion']} función(es) de más de "
         f"{LIMITES_DE_TAMANO['funcion']}; en ellos:"
@@ -605,11 +667,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--base", default="origin/main", help="solo tamano: la referencia de git a comparar"
     )
+    ap.add_argument(
+        "--cabeza", help="solo tamano: el commit a medir en vez del árbol de trabajo"
+    )
     args = ap.parse_args(argv)
     if args.modo == "tamano":
         if args.actualizar:
             ap.error("tamano no guarda nada que actualizar: compara contra --base")
-        return _comparar_tamano(args.base)
+        return _comparar_tamano(args.base, args.cabeza)
     if args.modo == "politica":
         if args.actualizar:
             _regenerar_politica()

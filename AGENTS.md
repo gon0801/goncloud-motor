@@ -36,7 +36,9 @@ Los mismos comandos corren en local y en el job `gate` de `.github/workflows/qua
   de 1,000 líneas o una función de más de 100 mide más que en la base, en líneas o en tokens
   de código, o si uno que en la base no existe o cabe pasa del límite. Borrar comentarios o
   líneas en blanco no deja espacio. Los tamaños se leen de git; no hay línea base que editar.
-  Se arregla sacando código de ahí.
+  Se arregla sacando código de ahí. En un PR también lo juzga el job `tamano-desde-la-base`
+  (`pull_request_target`), que corre el `calidad.py` de la base con `--cabeza` sobre la unión
+  del PR con la base, leída de git: editar la herramienta o el workflow en el PR no lo apaga.
 - `python3 tools/pruebas_nuevas.py --base origin/main` falla si una prueba nueva o cambiada
   pasa con el código de la base, salvo que lleve `# no-roja-en-base: <razón>`.
 
