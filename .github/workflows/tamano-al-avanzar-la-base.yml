@@ -55,8 +55,10 @@ jobs:
               falla "no se pudo buscar la corrida de ${flujo} de ${cabeza}"
               continue
             fi
+            # `pull_request_target` corre al abrir el PR y en cada push: sin corrida,
+            # el tamaño de este PR nadie lo midió.
             if [[ -z "$corrida" ]]; then
-              echo "::notice::tamano: ${cabeza} no tiene corrida de ${flujo} que repetir"
+              falla "${cabeza} no tiene corrida de ${flujo} que repetir; un push al PR lo vuelve a medir"
               continue
             fi
             read -r id estado <<< "$corrida"

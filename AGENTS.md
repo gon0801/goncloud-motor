@@ -47,7 +47,8 @@ Los mismos comandos corren en local y en el job `gate` de `.github/workflows/qua
 La línea base de los errores de hoy está en `.github/calidad/baseline.json`. Solo frena los
 errores nuevos. Para regenerarla se corre `python3 tools/calidad.py tipos --actualizar` con el
 código de la rama base. Las herramientas se instalan con
-`python3 -m pip install pyright==1.1.414 ruff==0.17.4`.
+`python3 -m pip install pyright==1.1.414 ruff==0.17.4`. Las pruebas del job de reevaluación en
+`tests/test_calidad_tamano.py` necesitan `jq` en el PATH; las imágenes de GitHub Actions lo traen.
 
 ## Pruebas y revisiones
 
