@@ -29,7 +29,7 @@ from pathlib import Path
 
 from .aislamiento import aislar, limpiar_temporal
 from .dominio import CRITERIOS, AlcanceRevision, Hallazgo, VersionProducto, id_hallazgo
-from .politica import DEEPSEEK_BLOQUEANTES
+from .politica import DEEPSEEK_BLOQUEANTES, medium_congelado
 
 INTERNO = ".interno"
 _EXCLUIDAS = (".git", "__pycache__", ".runtime", INTERNO)
@@ -1327,11 +1327,15 @@ def hallazgo_fuera_de_alcance_por_restriccion(
     prohibición y lista blanca: «salvo», «excepto», «fuera de», «ajenos a»,
     «que no sea», «distinto», «sino» y una cláusula con «no tocar» y «solo» se
     dejan al revisor independiente. Una frase sin rutas no autoriza a descartar
-    nada.
+    nada. Un Medium de DeepSeek anclado en una ruta de
+    `politica.CONGELAMIENTOS` también queda fuera, por decisión del propietario.
     """
     ruta = _ruta_de(hallazgo.ancla)
     if not ruta:
         return ""
+    congelado = medium_congelado(hallazgo.severidad, ruta)
+    if congelado:
+        return congelado
     for glob in prohibiciones:
         if fnmatch.fnmatch(ruta, glob):
             return (
@@ -1833,6 +1837,7 @@ def _hallazgos_estructurados(texto: str, sha: str) -> list[Hallazgo] | None:
                 ),
                 ancla=ancla,
                 origen="deepseek",
+                severidad=severidad,
             )
         )
     return salida

@@ -247,6 +247,10 @@ class Hallazgo:
     # Evidencia con la que el propietario lo declaró cerrado. Un hallazgo con
     # esta marca no se reabre sin una reproducción nueva.
     cierre_evidencia: str = ""
+    # La severidad que dio DeepSeek; vacía en los eventos anteriores. Solo se
+    # escribe si existe: un hallazgo sin ella conserva el payload de siempre y
+    # `Registro.append` sigue reconociendo su ukey repetida como el mismo hecho.
+    severidad: str = ""
 
     def como_dict(self) -> dict:
         datos = {
@@ -261,6 +265,8 @@ class Hallazgo:
         }
         if self.cierre_evidencia:
             datos["cierre_evidencia"] = self.cierre_evidencia
+        if self.severidad:
+            datos["severidad"] = self.severidad
         return datos
 
     @classmethod
@@ -275,6 +281,7 @@ class Hallazgo:
             origen=str(d.get("origen") or "independiente"),
             estado=str(d.get("estado") or "abierto"),
             cierre_evidencia=str(d.get("cierre_evidencia") or ""),
+            severidad=str(d.get("severidad") or ""),
         )
 
 
