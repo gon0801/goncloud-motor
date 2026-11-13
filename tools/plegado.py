@@ -26,6 +26,11 @@ no pliega en ningún lado. Sale con 1 si hay diferencias de valor; las de forma
 solas salen con 0, salvo con `--estricto`. El reductor de la base corre en otro
 proceso, sacado con `git archive`, para no mezclar dos versiones del mismo módulo.
 
+Cada lectura se corta en el último evento guardado al empezar, y `comparar` lee
+ese corte antes de lanzar la base y lo da a los dos lados: pliegan los mismos
+eventos aunque un encargo activo escriba mientras compara. Alcanza con el id
+porque el motor no edita ni borra eventos y sus ids solo crecen.
+
 `--json` cambia la salida en español por un documento para un guion. Si no
 puede leer un registro o sacar el reductor de la base, sale con 2. Escribe en
 UTF-8 en cualquier sistema, también por la salida de errores.
@@ -176,6 +181,8 @@ def _uri_solo_lectura(ruta: Path) -> str:
 
 
 def _abrir(ruta: Path) -> sqlite3.Connection:
+    if not ruta.is_file():
+        _no_pude(f"no existe el registro {ruta}")
     try:
         return sqlite3.connect(_uri_solo_lectura(ruta), uri=True)
     except sqlite3.Error as exc:
@@ -196,16 +203,26 @@ def _datos(ruta: Path, evento: int, crudo: Any) -> object:
         _no_pude(f"no puedo leer el evento {evento} de {ruta}: {type(exc).__name__}: {exc}")
 
 
-def leer_encargos(ruta: Path) -> Iterator[tuple[str, list[Evento]]]:
-    if not ruta.is_file():
-        _no_pude(f"no existe el registro {ruta}")
+def ultimo_evento(ruta: Path) -> int:
     db = _abrir(ruta)
     try:
-        ids = _filas(db, ruta, "SELECT DISTINCT encargo FROM events ORDER BY encargo")
+        ((hasta,),) = _filas(db, ruta, "SELECT COALESCE(MAX(id), 0) FROM events")
+    finally:
+        db.close()
+    return hasta
+
+
+def leer_encargos(ruta: Path, hasta: int) -> Iterator[tuple[str, list[Evento]]]:
+    db = _abrir(ruta)
+    try:
+        ids = _filas(
+            db, ruta, "SELECT DISTINCT encargo FROM events WHERE id <= ? ORDER BY encargo", hasta,
+        )
         for (encargo,) in ids:
             filas = _filas(
-                db, ruta, "SELECT id, ts, kind, data FROM events WHERE encargo = ? ORDER BY id",
-                encargo,
+                db, ruta,
+                "SELECT id, ts, kind, data FROM events WHERE encargo = ? AND id <= ? ORDER BY id",
+                encargo, hasta,
             )
             yield encargo, [
                 {"id": i, "ts": ts, "kind": kind, "data": _datos(ruta, i, data)}
@@ -348,7 +365,7 @@ def _plegado(encargo: str, eventos: Sequence[Evento], traza: Traza) -> Plegado:
 def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
     plegados: list[Plegado] = []
     violaciones: list[Violacion] = []
-    for encargo, eventos in leer_encargos(ruta):
+    for encargo, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
         traza = trazar(reductor, eventos)
         plegados.append(_plegado(encargo, eventos, traza))
         for nombre, invariante in INVARIANTES:
@@ -361,10 +378,10 @@ def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
     return Comprobacion(str(ruta), tuple(plegados), tuple(violaciones))
 
 
-def plegar(reductor: Reductor, ruta: Path) -> list[Plegado]:
+def plegar(reductor: Reductor, ruta: Path, hasta: int) -> list[Plegado]:
     return [
         _plegado(encargo, eventos, trazar(reductor, eventos))
-        for encargo, eventos in leer_encargos(ruta)
+        for encargo, eventos in leer_encargos(ruta, hasta)
     ]
 
 
@@ -438,7 +455,7 @@ def _resolver_ref(ref: str) -> str:
     return hecho.stdout.strip()
 
 
-def _plegar_en_la_base(sha: str, rutas: Sequence[Path]) -> dict[str, list[Plegado]]:
+def _plegar_en_la_base(sha: str, cortes: Sequence[tuple[Path, int]]) -> dict[str, list[Plegado]]:
     archivo = subprocess.run(
         ["git", "-C", str(RAIZ), "archive", "--format=tar", sha, "motor"],
         capture_output=True, check=False,
@@ -449,8 +466,8 @@ def _plegar_en_la_base(sha: str, rutas: Sequence[Path]) -> dict[str, list[Plegad
         with tarfile.open(fileobj=io.BytesIO(archivo.stdout)) as tar:
             tar.extractall(tmp, filter="data")
         hecho = subprocess.run(
-            [sys.executable, "-I", str(Path(__file__).resolve()), "plegar",
-             "--raiz", tmp, *map(str, rutas)],
+            [sys.executable, "-I", str(Path(__file__).resolve()), "plegar", "--raiz", tmp,
+             *(f"--hasta={hasta}" for _, hasta in cortes), *(str(r) for r, _ in cortes)],
             capture_output=True, encoding="utf-8", errors="replace", check=False,
         )
     if hecho.returncode != 0:
@@ -471,9 +488,10 @@ def _plegado_de_json(p: dict) -> Plegado:
 
 
 def comparar(sha: str, rutas: Sequence[Path]) -> list[Comparacion]:
-    base = _plegar_en_la_base(sha, rutas)
+    cortes = [(r, ultimo_evento(r)) for r in rutas]
+    base = _plegar_en_la_base(sha, cortes)
     reductor = cargar_reductor(RAIZ)
-    return [diferencias(str(r), base[str(r)], plegar(reductor, r)) for r in rutas]
+    return [diferencias(str(r), base[str(r)], plegar(reductor, r, hasta)) for r, hasta in cortes]
 
 
 def _texto_fallos(fallos: Sequence[tuple[str, Fallo]]) -> list[str]:
@@ -565,6 +583,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             help="las diferencias de forma también salen con 1")
     p_plegar = ordenes.add_parser("plegar", help="estados finales en JSON (lo usa comparar)")
     p_plegar.add_argument("--raiz", type=Path, default=RAIZ)
+    p_plegar.add_argument("--hasta", type=int, action="append",
+                          help="último id que lee, una vez por registro y en su orden")
     for p in (p_comprobar, p_comparar):
         p.add_argument("--json", action="store_true")
     for p in (p_comprobar, p_comparar, p_plegar):
@@ -572,9 +592,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.orden == "plegar":
+        hastas = args.hasta or [ultimo_evento(r) for r in args.registros]
+        if len(hastas) != len(args.registros):
+            p_plegar.error("--hasta va una vez por registro")
         reductor = cargar_reductor(args.raiz)
-        _imprimir({str(r): [_plegado_a_json(p) for p in plegar(reductor, r)]
-                   for r in args.registros})
+        _imprimir({str(r): [_plegado_a_json(p) for p in plegar(reductor, r, hasta)]
+                   for r, hasta in zip(args.registros, hastas, strict=True)})
         return 0
 
     if args.orden == "comprobar":
