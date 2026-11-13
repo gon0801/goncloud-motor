@@ -34,6 +34,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from motor import plataforma
+from motor.encargos import ciclo, despliegue
 from motor.encargos.agentes import (
     _bash_de_ensayo,
     _disponible,
@@ -776,3 +777,73 @@ class LasVariantesDeLaCompuerta(CompuertaReal):
         self.assertTrue(
             any("sin revisión de DeepSeek" in n.get("texto", "") for n in notas)
         )
+
+
+class ElPlazoTrasLaReceta(CompuertaReal):
+    """La receta que termina se concilia en el plazo corto que dejó al
+    lanzarse, no cinco minutos después."""
+
+    def _hasta_que_termina_la_receta(self, receta_falla: bool) -> tuple[Banco, datetime]:
+        escenario = {
+            "fases": [{"id": "uno", "resultado": "saludo.txt con hola",
+                       "requiere_despliegue": True}],
+            "producto": {"uno": {"saludo.txt": "hola\\n"}},
+        }
+        banco = self.banco(escenario, gh_cls=_DeepSeekAprueba)
+        self._semilla_receta()
+        if receta_falla:
+            semilla = self.tmp / "semilla"
+            (semilla / "d.sh").write_text("exit 1\n", encoding="utf-8", newline="\n")
+            _git(semilla, "add", "-A")
+            _git(
+                semilla, "-c", "user.name=t", "-c", "user.email=t@local",
+                "commit", "-q", "-m", "receta que falla",
+            )
+            _git(semilla, "push", "-q", str(self.tmp / "repo.git"), "main")
+        # Los plazos de `_reanuda_en` salen del reloj de pared, que el banco no
+        # controla: con la hora lógica adelantada, una espera de cinco minutos
+        # ya nacería vencida y no se vería.
+        parche = mock.patch.object(
+            ciclo, "_reanuda_en",
+            side_effect=lambda s: _iso(banco.hora + timedelta(seconds=s)),
+        )
+        parche.start()
+        self.addCleanup(parche.stop)
+        banco.correr(lambda: bool(banco.pasos_entrega("integrado")))
+        integrado = banco.hora
+        fin = time.monotonic() + 60
+        while (
+            not any(r.get("estado") in ("aplicado", "fallido")
+                    for r in banco.recibos_despliegue())
+            or despliegue.observacion(banco.reg, banco.fold()) == "vivo"
+        ):
+            if time.monotonic() > fin:
+                self.fail("la receta no terminó: " + json.dumps(banco.recibos_despliegue()))
+            time.sleep(0.05)
+        return banco, integrado
+
+    def test_la_receta_aplicada_llega_a_desplegado_en_el_siguiente_plazo_corto(self):
+        banco, integrado = self._hasta_que_termina_la_receta(receta_falla=False)
+        banco.paso()
+        self.assertTrue(
+            banco.pasos_entrega("desplegado"),
+            "la receta aplicada no se concilió en el barrido siguiente",
+        )
+        self.assertLess(
+            banco.hora - integrado, timedelta(minutes=1),
+            "el motor esperó de más tras la receta aplicada",
+        )
+        self.assertEqual(banco.fold().estado, "terminado")
+        revisores = [
+            e for e in banco.eventos("intento_abierto") if e["data"].get("rol") == "revisor"
+        ]
+        self.assertEqual(len(revisores), 1, "se relanzó al revisor de una aprobación vigente")
+
+    def test_la_receta_fallida_entrega_la_fase_con_pendientes_sin_espera_larga(self):
+        banco, integrado = self._hasta_que_termina_la_receta(receta_falla=True)
+        banco.correr(lambda: bool(banco.eventos("bloqueo_fase")), tope_pasos=10)
+        self.assertLess(
+            banco.hora - integrado, timedelta(minutes=3),
+            "la fase con la receta fallida esperó de más para entregarse con pendientes",
+        )
+        self.assertEqual(banco.pasos_entrega("desplegado"), [])
