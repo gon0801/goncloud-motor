@@ -26,17 +26,23 @@ exec "$REAL_PY" "\$@"
 PY
 chmod +x "$S/bin-ssh/python3"
 
-# --- un origen con main en SHA, un anterior y un lado que no está en main.
+# --- un origen con main en SHA, un anterior, un SIN_PLEGADO posterior que ya no
+# trae la herramienta de plegado y un lado que no está en main.
 git init -q -b main "$S/fuente"
 printf 'uno\n' >"$S/fuente/README.md"
+cp -R "$RAIZ/motor" "$S/fuente/motor"
+mkdir -p "$S/fuente/tools"
+cp "$RAIZ/tools/plegado.py" "$S/fuente/tools/plegado.py"
 git -C "$S/fuente" add -A
 git -C "$S/fuente" -c user.name=t -c user.email=t@t commit -q -m uno
 ANTERIOR="$(git -C "$S/fuente" rev-parse HEAD)"
-cp -R "$RAIZ/motor" "$S/fuente/motor"
 printf 'dos\n' >>"$S/fuente/README.md"
 git -C "$S/fuente" add -A
 git -C "$S/fuente" -c user.name=t -c user.email=t@t commit -q -m dos
 SHA="$(git -C "$S/fuente" rev-parse HEAD)"
+git -C "$S/fuente" rm -q tools/plegado.py
+git -C "$S/fuente" -c user.name=t -c user.email=t@t commit -q -m tres
+SIN_PLEGADO="$(git -C "$S/fuente" rev-parse HEAD)"
 git -C "$S/fuente" checkout -q -b lado "$ANTERIOR"
 printf 'lado\n' >"$S/fuente/LADO.md"
 git -C "$S/fuente" add -A
@@ -372,6 +378,96 @@ espera "el reintento se niega por la Mac" '!0' bash "$SCRIPT" --sha "$SHA"
 contiene "nombra la Mac y el paso" "$S/salida" "FALLA mac en leer el árbol del supervisor"
 [ "$(campo_json "$S/mac/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
   || fallo "el fallo temprano borró el anterior que se quería conservar"
+
+registro() { # <home> <encargos...>: un registro como el del motor; un encargo roto_* no pliega
+  python3 - "$1/.motor-encargos/registro.sqlite" "${@:2}" <<'PY'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute(
+    "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
+    " encargo TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, ukey TEXT UNIQUE)"
+)
+for encargo in sys.argv[2:]:
+    entrega = {"id": encargo, "clave": "k-" + encargo, "huella": "h", "texto": "haz algo", "hora": "t0"}
+    kind, data = ("basura", {}) if encargo.startswith("roto_") else ("entrega", entrega)
+    db.execute("INSERT INTO events (ts, encargo, kind, data) VALUES ('t', ?, ?, ?)",
+               (encargo, kind, json.dumps(data)))
+db.commit()
+PY
+}
+
+sin_temporales() { # <nombre> <tmpdir de las máquinas>
+  local restos
+  restos="$(find "$2" -maxdepth 1 \( -name 'motor-compuerta-*' -o -name 'plegado-base-*' \) 2>/dev/null)"
+  [ -z "$restos" ] || fallo "$1: la compuerta dejó temporales: $restos"
+}
+
+nadie_se_movio() { # <nombre>
+  local m
+  for m in mac mini pc-home; do
+    [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$ANTERIOR" ] || fallo "$1: $m se movió"
+    [ ! -s "$S/$m/.ordenes" ] || fallo "$1: $m se reinició"
+    [ ! -e "$S/$m/.motor-encargos/instalacion.json" ] || fallo "$1: $m escribió recibo"
+    [ ! -e "$S/$m/.motor-encargos/instalacion-pendiente.json" ] || fallo "$1: $m escribió pendiente"
+  done
+}
+mkdir -p "$S/tmp-maquinas"
+
+echo "# el candidato pliega el registro de las tres: el despliegue sigue"
+reset_maquinas
+registro "$S/mac" enc_mac_uno enc_mac_dos
+registro "$S/mini" enc_mini_uno
+registro "$S/pc-home" enc_pc_uno enc_pc_dos enc_pc_tres
+espera "despliega tras plegar las tres" 0 env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$SHA"
+contiene "la Mac pliega" "$S/salida" "OK mac: el registro pliega entero con ${SHA:0:12} (2 encargos)"
+contiene "la Mini pliega" "$S/salida" "OK mini: el registro pliega entero con ${SHA:0:12} (1 encargos)"
+contiene "la PC pliega" "$S/salida" "OK pc: el registro pliega entero con ${SHA:0:12} (3 encargos)"
+contiene "resume la comparación sin frenar" "$S/salida" \
+  "pc, frente a la versión instalada: contra ${ANTERIOR:0:12} cambian de valor 0 de 3 encargos; claves que aparecen: ninguna; claves que desaparecen: ninguna"
+grep -qx "compuerta de plegado pasada en: mac mini pc con ${SHA:0:12}" "$S/salida" \
+  || fallo "la compuerta no dice en su propia línea que pasó"
+contiene "despliega" "$S/salida" "desplegado en:mac mini pc"
+no_contiene "no imprime identificadores" "$S/salida" "enc_"
+for m in mac mini pc-home; do
+  [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$SHA" ] || fallo "$m: el árbol no quedó en el SHA"
+done
+sin_temporales "tras desplegar" "$S/tmp-maquinas"
+
+echo "# el candidato no pliega el registro de la Mini: no se mueve ninguna"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno roto_mini
+registro "$S/pc-home" enc_pc_uno
+espera "se niega antes de mover" '!0' env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$SHA"
+contiene "nombra la Mini y cuántos fallan" "$S/salida" "FALLA mini: 1 de 2 encargos no pliegan con ${SHA:0:12}"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+no_contiene "no imprime identificadores" "$S/salida" "roto_mini"
+nadie_se_movio "registro que no pliega"
+sin_temporales "tras negarse" "$S/tmp-maquinas"
+
+echo "# el candidato no trae la herramienta de plegado: no se da por pasada"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno
+registro "$S/pc-home" enc_pc_uno
+espera "se niega sin herramienta" '!0' env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$SIN_PLEGADO"
+contiene "lo dice en la PC" "$S/salida" \
+  "FALLA pc: no pude comprobar el plegado con ${SIN_PLEGADO:0:12}: el commit candidato no trae tools/plegado.py"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+nadie_se_movio "sin herramienta"
+sin_temporales "sin herramienta" "$S/tmp-maquinas"
+
+echo "# el registro de la PC no se puede leer: no se da por pasada"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno
+printf 'esto no es sqlite\n' >"$S/pc-home/.motor-encargos/registro.sqlite"
+espera "se niega con el registro ilegible" '!0' env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$SHA"
+contiene "nombra la PC y la lectura" "$S/salida" \
+  "FALLA pc: no pude comprobar el plegado con ${SHA:0:12}: tools/plegado.py: no puedo leer"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+nadie_se_movio "registro ilegible"
+sin_temporales "registro ilegible" "$S/tmp-maquinas"
 
 echo "# el comprobador no cae al recibo del motor viejo"
 reset_maquinas
