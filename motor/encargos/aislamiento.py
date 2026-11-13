@@ -30,7 +30,7 @@ class ComandoAislado:
 
 MECANISMO_DIRECTO = "directo"
 ENTORNO_DEL_AGENTE = "MOTOR_ENTORNO_AGENTE"
-GUARDIA = "MOTOR_GUARDIA"
+EMPUJE_DE_RECETA = "MOTOR_EMPUJE_DE_RECETA"
 GUARDIA_GH = Path(__file__).resolve().parent.parent / "shims" / "gh_guard.py"
 
 
@@ -106,10 +106,11 @@ def carpeta_de_guardia(runtime: Path) -> Path:
 
 
 def instalar_pre_push(espacio: Path, ramas: tuple[str, ...]) -> None:
-    """Lo que el motor lanza para el agente empuja solo cada `rama` y `rama-<fase>`: la rama base
-    la integra el motor después de la revisión. El hook actúa con `MOTOR_GUARDIA` en el entorno,
-    así que no frena al motor ni a sus recetas de despliegue. Es la segunda red, detrás de la
-    guardia de gh: `--no-verify` lo salta."""
+    """Desde el espacio solo salen cada `rama` y `rama-<fase>`: la rama base la integra el motor
+    después de la revisión. El hook actúa con cualquier entorno, porque el del agente es suyo. El
+    motor solo empuja esas ramas; la receta de despliegue, que corre en un worktree del espacio y
+    comparte sus hooks, trae `EMPUJE_DE_RECETA` y el agente no la hereda. Es la segunda red,
+    detrás de la guardia de gh: `--no-verify` lo salta."""
     git = espacio / ".git"
     if not git.is_dir():
         return
@@ -126,7 +127,7 @@ def instalar_pre_push(espacio: Path, ramas: tuple[str, ...]) -> None:
     escribir_texto(
         ganchos / "pre-push",
         f"""#!/bin/sh
-[ -n "${{{GUARDIA}:-}}" ] || exit 0
+[ "${{{EMPUJE_DE_RECETA}:-}}" = 1 ] && exit 0
 while read -r _ _ destino _; do
   case "$destino" in
     {permitidas}) ;;
@@ -172,9 +173,8 @@ def _entorno(
             + env.get("PATH", "")
         )
     # Solo el motor integra, y después de la revisión independiente.
-    guardia = carpeta_de_guardia(runtime)
-    env["PATH"] = str(guardia) + os.pathsep + env.get("PATH", "")
-    env[GUARDIA] = str(guardia)
+    env["PATH"] = str(carpeta_de_guardia(runtime)) + os.pathsep + env.get("PATH", "")
+    env.pop(EMPUJE_DE_RECETA, None)
     temporal = temporal_de(runtime)
     env.update(
         TMPDIR=str(temporal),
