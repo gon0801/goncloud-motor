@@ -62,7 +62,10 @@ class LaLlaveNoQuedaAlAlcanceDeOtros(unittest.TestCase):
         self.addCleanup(os.umask, mascara)
 
     def _preparar(self, cmd: list[str], agente: str):
-        enc = SimpleNamespace(id="enc_x", rol="responsable", conductor="t", adjuntos=())
+        enc = SimpleNamespace(
+            id="enc_x", rol="responsable", conductor="t", adjuntos=(),
+            entrega=SimpleNamespace(rama=""), fases=(),
+        )
         return sesion.preparar_administrado(
             cmd,
             self.espacio,

@@ -157,6 +157,7 @@ def preparar_administrado(
         lecturas_extra=tuple(concesiones),
         agente=agente,
         interprete=True,
+        ramas=tuple(r for r in (enc.entrega.rama, *(f.rama for f in enc.fases)) if r),
     )
     if entorno_extra:
         comando.entorno.update(entorno_extra)

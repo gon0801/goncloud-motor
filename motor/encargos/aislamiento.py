@@ -30,6 +30,7 @@ class ComandoAislado:
 
 MECANISMO_DIRECTO = "directo"
 ENTORNO_DEL_AGENTE = "MOTOR_ENTORNO_AGENTE"
+GUARDIA = "MOTOR_GUARDIA"
 GUARDIA_GH = Path(__file__).resolve().parent.parent / "shims" / "gh_guard.py"
 
 
@@ -104,6 +105,39 @@ def carpeta_de_guardia(runtime: Path) -> Path:
     return carpeta
 
 
+def instalar_pre_push(espacio: Path, ramas: tuple[str, ...]) -> None:
+    """Lo que el motor lanza para el agente empuja solo cada `rama` y `rama-<fase>`: la rama base
+    la integra el motor después de la revisión. El hook actúa con `MOTOR_GUARDIA` en el entorno,
+    así que no frena al motor ni a sus recetas de despliegue. Es la segunda red, detrás de la
+    guardia de gh: `--no-verify` lo salta."""
+    git = espacio / ".git"
+    if not git.is_dir():
+        return
+    permitidas = " | ".join(
+        f"{shlex.quote('refs/heads/' + r)} | {shlex.quote('refs/heads/' + r + '-')}*"
+        for r in ramas
+    )
+    aviso = shlex.quote(
+        f"solo empujas {', '.join(ramas)} y sus fases; la rama base la integra el motor "
+        "después de la revisión independiente"
+    )
+    ganchos = git / "hooks"
+    ganchos.mkdir(exist_ok=True)
+    escribir_texto(
+        ganchos / "pre-push",
+        f"""#!/bin/sh
+[ -n "${{{GUARDIA}:-}}" ] || exit 0
+while read -r _ _ destino _; do
+  case "$destino" in
+    {permitidas}) ;;
+    *) printf '%s: %s\\n' "$destino" {aviso} >&2; exit 1 ;;
+  esac
+done
+""",
+    )
+    (ganchos / "pre-push").chmod(0o755)
+
+
 def temporal_de(runtime: Path) -> Path:
     """Temporal propio de una corrida: vacío, dentro de su runtime."""
     temporal = runtime / "tmp"
@@ -140,6 +174,7 @@ def _entorno(
     # Solo el motor integra, y después de la revisión independiente.
     guardia = carpeta_de_guardia(runtime)
     env["PATH"] = str(guardia) + os.pathsep + env.get("PATH", "")
+    env[GUARDIA] = str(guardia)
     temporal = temporal_de(runtime)
     env.update(
         TMPDIR=str(temporal),
@@ -372,12 +407,15 @@ def aislar(
     lecturas_extra: tuple[Path, ...] = (),
     agente: str | None = None,
     interprete: bool = False,
+    ramas: tuple[str, ...] = (),
 ) -> ComandoAislado:
     espacio, runtime = espacio.resolve(), runtime.resolve()
     if espacio.parent.name != "espacio" or runtime.is_relative_to(espacio):
         raise RuntimeError("el lanzamiento necesita espacio concedido y runtime separado")
     runtime.mkdir(parents=True, exist_ok=True)
     runtime.chmod(0o700)
+    if ramas:
+        instalar_pre_push(espacio, ramas)
     nombre = agente or Path(cmd[0]).stem.lower()
     env = _entorno(runtime, suscripcion, cmd, agente=agente)
     if nombre in ("antigravity", "agy"):
