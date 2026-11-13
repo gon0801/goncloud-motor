@@ -590,6 +590,30 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         for resto in restos:
             self.assertTrue(resto.is_file(), f"borró {resto} de un encargo abierto")
 
+    def test_recoger_falla_si_no_puede_leer_las_ramas_remotas(self):
+        pedido = self.pedido()
+        preparar(pedido)
+        cerrado = canario_lanzador.encargar(pedido, "canario-cerrado")
+        self.assertIn(canario_lanzador._parar(pedido, cerrado), CERRADOS)
+        ciclo = ValueError("los remotos locales del repositorio forman un ciclo")
+
+        with mock.patch.object(canario_lanzador, "resolver_repositorio", side_effect=ciclo):
+            recogida = canario_lanzador.recoger(pedido)
+
+        self.assertIn("falló", {b.resultado for b in recogida}, "dio por limpia una rama que no pudo mirar")
+
+    def test_el_informe_no_escribe_por_un_enlace_que_ya_estaba(self):
+        vivo = self.viva / "registro.sqlite"
+        vivo.write_bytes(b"registro vivo")
+        (self.base / f"{INFORME}.tmp").symlink_to(vivo)
+        (self.base / "secretos.env").write_text("", encoding="utf-8")
+
+        codigo, _ = self.correr()
+
+        self.assertEqual(vivo.read_bytes(), b"registro vivo", "el informe cayó en la base viva")
+        informe = json.loads((self.base / INFORME).read_text(encoding="utf-8"))
+        self.assertEqual((codigo, informe["codigo"], informe["paso"]), (2, 2, "preparar"))
+
     def test_no_corre_sobre_la_base_viva_ni_con_sus_secretos(self):
         for argv in (["--base", str(self.viva)], ["--base", str(self.viva / "sub")]):
             codigo, salida = self.correr(*argv)
