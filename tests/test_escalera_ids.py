@@ -23,6 +23,7 @@ from motor.encargos.dominio import (
     relevos_de,
 )
 from motor.encargos.registro import Registro
+from motor.encargos.resultado import Espera
 
 HORA = "2026-11-06T12:00:00+00:00"
 HORA_TARDE = "2026-11-06T12:05:00+00:00"
@@ -161,7 +162,8 @@ class ElDespliegueQuePierdeAutoridadQuedaEnEsperaExplicita(unittest.TestCase):
             return {"estado": "esperando", "motivo": "ejecutando receta"}
 
         with mock.patch.object(ejecutor, "iniciar", side_effect=iniciar_con_caida):
-            final, _ = _paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+            final, resultado = _paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        self.assertEqual(resultado, Espera(final.reanuda_en, final.motivo))
         self.assertEqual(final.estado, "esperando_reintento")
         self.assertIn("autoridad", final.motivo)
         self.assertTrue(final.reanuda_en)

@@ -13,6 +13,7 @@ from motor import plataforma
 from motor.encargos import ciclo
 from motor.encargos.dominio import relevos_de
 from motor.encargos.registro import Registro
+from motor.encargos.resultado import Espera
 from tests.entorno import deja_breakaway
 
 HORA = "2026-11-05T12:00:00+00:00"
@@ -373,7 +374,8 @@ class DespliegueReal(unittest.TestCase):
         datos = recibo_final(reg)
         assert datos["estado"] == "ocupado", datos
         assert [p["codigo"] for p in datos["pasos"]] == [75, 0]
-        enc, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        enc, resultado = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        assert resultado == Espera(enc.reanuda_en, enc.motivo), resultado
         assert enc.estado == "esperando_reintento", (enc.estado, enc.motivo)
         assert (
             "se reintenta solo a las 2026-11-05T12:15:00Z" in enc.motivo
