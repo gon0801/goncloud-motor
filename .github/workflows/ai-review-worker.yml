@@ -59,7 +59,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: gon0801/goncloud-pr-review
-          ref: 23d92bd4b579eec66bd4c4865ece2edc06c4677f
+          ref: 9d116a47a26df0e3c538373fd599fbff5933ccc5
           path: ai-review-code
           persist-credentials: false
       - name: validar entradas
@@ -118,10 +118,9 @@ jobs:
         with:
           path: ~/.cache/ai-review
           key: ai-review-install-${{ runner.os }}-py${{ steps.py.outputs.version }}-claude-2.1.282-litellm-1.102.1
-      - name: instalar Claude Code (y LiteLLM para opencode-go)
+      - name: instalar Claude Code y LiteLLM
         env:
           PROVIDER: opencode-go
-          FALLBACK_ENABLED: ${{ secrets.DEEPSEEK_API_KEY != '' }}
         run: python "$GITHUB_WORKSPACE/ai-review-code/review.py" install --work "${RUNNER_TEMP}/ai-review"
       - name: modelo
         working-directory: pr
