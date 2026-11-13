@@ -62,11 +62,20 @@ _SIN_PERMISOS_POSIX = unittest.skipIf(
     os.name == "nt" or os.geteuid() == 0, "necesita permisos de POSIX sin ser root")
 
 
-def _ejecutar(*args: str | Path, herramienta: Path = HERRAMIENTA) -> subprocess.CompletedProcess[str]:
+def _ejecutar(*args: str | Path, herramienta: Path = HERRAMIENTA,
+              env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(herramienta), *map(str, args)],
-        capture_output=True, encoding="utf-8", check=False,
+        capture_output=True, encoding="utf-8", check=False, env=env,
     )
+
+
+def _insertar_al_plegar(registro: Path, kind: str, encargo: str, nuevo: str) -> str:
+    """Una línea de `reducir` que, al plegar `kind`, agrega a `encargo` un evento `nuevo`."""
+    insertar = ("INSERT INTO events (ts, encargo, kind, data)"
+                f" VALUES ('t', '{encargo}', '{nuevo}', '{{}}')")
+    return (f'if evento["kind"] == {kind!r}: __import__("sqlite3").connect('
+            f'{str(registro)!r}, isolation_level=None).execute({insertar!r})')
 
 
 def _ejecutar_sin_utf8(*args: str | Path, herramienta: Path) -> subprocess.CompletedProcess[bytes]:
@@ -86,8 +95,9 @@ _FUERA_DE_CP1252 = "≤ ✅"
 _ROMPE_CON_EL_TEXTO = 'if evento["kind"] == "cierre": raise ValueError(evento["data"]["texto"])'
 
 
-def _correr(*args: str | Path, herramienta: Path = HERRAMIENTA) -> tuple[int, dict]:
-    hecho = _ejecutar(*args, herramienta=herramienta)
+def _correr(*args: str | Path, herramienta: Path = HERRAMIENTA,
+            env: dict[str, str] | None = None) -> tuple[int, dict]:
+    hecho = _ejecutar(*args, herramienta=herramienta, env=env)
     try:
         return hecho.returncode, json.loads(hecho.stdout)
     except json.JSONDecodeError:
@@ -246,6 +256,25 @@ class ComprobarConReductorFalso(_RepoFalso):
         self.assertEqual(self._violaciones((0, 0)), [])
         self.assertEqual(self._violaciones((0, False)),
                          [("mismo_estado_al_replegar", "enc_a", 1, "difieren escrituras")])
+
+    def test_un_evento_que_llega_mientras_comprueba_queda_para_la_siguiente(self):
+        """Como un encargo activo que escribe mientras se comprueba el registro.
+
+        Plegar el avance de `enc_a` agrega a `enc_b` un cierre que el reductor no
+        sabe plegar, antes de que se lean los eventos de `enc_b`.
+        """
+        _armar(self.registro, {"enc_a": [("entrega", {}), ("avance", {})],
+                               "enc_b": [("entrega", {})]})
+        self._escribir_dominio(_DOMINIO_FALSO.format(
+            final="fuera de ESTADOS", hallazgos=(), encargo='    orden_parada: str = ""', hallazgo="",
+            rompe=_insertar_al_plegar(self.registro, "avance", "enc_b", "cierre")))
+        codigo, salida = _correr("comprobar", "--json", self.registro, herramienta=self.herramienta)
+        db = sqlite3.connect(self.registro)
+        self.addCleanup(db.close)
+        (escritos,) = db.execute("SELECT count(*) FROM events WHERE encargo = 'enc_b'").fetchone()
+        self.assertGreater(escritos, 1, "el evento llegó al registro durante la comprobación")
+        (reg,) = salida["registros"]
+        self.assertEqual((codigo, reg["pliegan"], reg["fallos"]), (0, 2, []))
 
 
 _DOMINIO_FALSO = """
@@ -408,10 +437,7 @@ class Comparar(_RepoFalso):
         El reductor de la base corre en su proceso y, al plegar el cierre, agrega un
         evento al registro: llega después de que leyó la base y antes de que lea el árbol.
         """
-        insertar = ("INSERT INTO events (ts, encargo, kind, data)"
-                    " VALUES ('t', 'enc_a', 'entrega', '{}')")
-        escribe = (f'if evento["kind"] == "cierre": __import__("sqlite3").connect('
-                   f'{str(self.registro)!r}, isolation_level=None).execute({insertar!r})')
+        escribe = _insertar_al_plegar(self.registro, "cierre", "enc_a", "entrega")
         self._base(final="terminado", rompe=escribe)
         self._dominio(final="terminado")
         codigo, salida = self._comparar()
@@ -419,6 +445,39 @@ class Comparar(_RepoFalso):
         self.addCleanup(db.close)
         (escritos,) = db.execute("SELECT count(*) FROM events WHERE encargo = 'enc_a'").fetchone()
         self.assertEqual(escritos, 3, "el evento llegó al registro durante la comparación")
+        self.assertEqual((codigo, salida["registros"][0]["diferencias"]), (0, []))
+
+    @unittest.skipIf(os.name == "nt", "el git falso es un guion de shell")
+    def test_un_evento_que_llega_antes_de_que_lea_la_base_tampoco_es_diferencia(self):  # no-roja-en-base: la base no corta en ningún lado y los dos leen este evento; la prueba fija el corte que recibe el proceso de la base
+        """El evento llega después de leer el último id y antes de que el proceso de la base lea.
+
+        `comparar` saca el reductor de la base con `git archive`; un `git` falso
+        en el PATH agrega el cierre de `enc_b` justo antes de sacarlo.
+        """
+        self._base(final="terminado")
+        self._dominio(final="terminado")
+        inserta = self.dir / "inserta.py"
+        inserta.write_text(
+            "import sqlite3\n"
+            f"sqlite3.connect({str(self.registro)!r}, isolation_level=None).execute(\n"
+            "    \"INSERT INTO events (ts, encargo, kind, data) VALUES ('t', 'enc_b', 'cierre', '{}')\")\n")
+        falsos = self.dir / "bin"
+        falsos.mkdir()
+        git = falsos / "git"
+        git.write_text(
+            "#!/bin/sh\n"
+            'for arg in "$@"; do\n'
+            f'  [ "$arg" = archive ] && "{sys.executable}" "{inserta}"\n'
+            "done\n"
+            f'exec "{shutil.which("git")}" "$@"\n')
+        git.chmod(0o755)
+        entorno = {**os.environ, "PATH": f"{falsos}{os.pathsep}{os.environ['PATH']}"}
+        codigo, salida = _correr("comparar", "--base", "HEAD", "--json", self.registro,
+                                 herramienta=self.herramienta, env=entorno)
+        db = sqlite3.connect(self.registro)
+        self.addCleanup(db.close)
+        (escritos,) = db.execute("SELECT count(*) FROM events WHERE encargo = 'enc_b'").fetchone()
+        self.assertEqual(escritos, 2, "el evento llegó al registro durante la comparación")
         self.assertEqual((codigo, salida["registros"][0]["diferencias"]), (0, []))
 
     def test_una_fila_con_json_invalido_sale_con_dos(self):
