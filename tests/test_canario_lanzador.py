@@ -602,6 +602,32 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
 
         self.assertIn("falló", {b.resultado for b in recogida}, "dio por limpia una rama que no pudo mirar")
 
+    def test_recoger_no_borra_los_restos_de_un_encargo_cerrado_con_un_proceso_vivo(self):
+        pedido = self.pedido()
+        preparar(pedido)
+        cerrado = canario_lanzador.encargar(pedido, "canario-cerrado")
+        self.assertIn(canario_lanzador._parar(pedido, cerrado), CERRADOS)
+        turno = subprocess.Popen(
+            ["sleep", "600"], stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+        self.addCleanup(turno.wait)
+        self.addCleanup(turno.kill)
+        restos = [self.base / "espacio" / cerrado / "x", self.base / "ejecucion" / cerrado / "proc.json"]
+        for resto in restos:
+            resto.parent.mkdir(parents=True, exist_ok=True)
+        restos[0].write_text("{}", encoding="utf-8")
+        restos[1].write_text(json.dumps({
+            "pid": turno.pid, "boot_id": plataforma.boot_id(), "inicio": plataforma.hora_inicio(turno.pid),
+        }), encoding="utf-8")
+
+        recogida = canario_lanzador.recoger(pedido)
+
+        for resto in restos:
+            self.assertTrue(resto.is_file(), f"borró {resto} con un proceso del encargo vivo")
+        suyo = {b.resto: b for b in recogida}.get(f"los restos de {cerrado}")
+        self.assertEqual(suyo and suyo.resultado, "falló", recogida)
+        self.assertIn("(vivo)", suyo.causa if suyo else "", "no dijo que el proceso sigue vivo")
+
     def test_el_informe_no_escribe_por_un_enlace_que_ya_estaba(self):
         vivo = self.viva / "registro.sqlite"
         vivo.write_bytes(b"registro vivo")
