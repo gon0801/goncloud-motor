@@ -10,6 +10,7 @@ deja de falsearse.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -276,6 +277,22 @@ class ElPrePushDelProducto(_EspacioConRemoto):
         self.lanzar(NADA, entorno)
         estado = self.git("-C", str(self.espacio), "status", "--porcelain", "--ignored")
         self.assertEqual(estado.stdout, "", "el hook del motor no entra en el commit del producto")
+
+    @unittest.skipUnless(ES_POSIX and os.geteuid() != 0, "permisos y /dev/null de POSIX")
+    def test_una_carpeta_de_hooks_inutilizable_no_impide_arrancar(self):
+        archivo, cerrada = self.base / "un-archivo", self.base / "sin-permiso"
+        archivo.write_text("", encoding="utf-8")
+        cerrada.mkdir(mode=0o500)
+        self.addCleanup(cerrada.chmod, 0o700)
+        for ganchos in (Path("/dev/null"), archivo, cerrada):
+            with self.subTest(ganchos=ganchos):
+                self.git("-C", str(self.espacio), "config", "core.hooksPath", str(ganchos))
+                with mock.patch("sys.stderr", new_callable=io.StringIO) as bitacora:
+                    hecho = self.lanzar(NADA)
+                self.assertEqual(hecho.returncode, 0, hecho.stderr)
+                self.assertIn(str(ganchos), bitacora.getvalue())
+        self.assertEqual(archivo.read_text(encoding="utf-8"), "")
+        self.assertEqual(list(cerrada.iterdir()), [])
 
 
 @unittest.skipUnless(ES_POSIX, "el entorno del usuario es de la rama POSIX")

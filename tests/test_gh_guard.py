@@ -91,30 +91,61 @@ PERMITIDOS = (
 )
 
 
+CORTAS_CON_IGUAL = (
+    ["api", "-X=PUT", "repos/o/r/pulls/5/merge"],
+    ["api", "-X", "PATCH", "repos/o/r/pulls/5", "-f=state=closed"],
+    ["api", "graphql", "-F=query=@-"],
+)
+
+RAMAS_SIN_PR = (
+    ["api", "-X", "DELETE", "repos/o/r/git/refs/heads/main"],
+    ["api", "--method=DELETE", "/repos/{owner}/{repo}/git/refs/tags/v1"],
+    ["api", "graphql", "-f", 'query=mutation{deleteRef(input:{refId:"X"}){clientMutationId}}'],
+    ["api", "-X", "PUT", "repos/o/r/contents/src/a.py", "-f", "message=m", "-f", "content=eA=="],
+    ["api", "-X", "DELETE", "repos/o/r/contents/README.md", "-f", "message=m", "-f", "sha=abc"],
+)
+
+LECTURAS_DE_RAMAS = (
+    ["api", "repos/o/r/contents/README.md"],
+    ["api", "-X", "GET", "repos/o/r/contents/docs", "-f", "ref=main"],
+    ["api", "repos/o/r/git/refs/heads/main?x=1"],
+)
+
+
+def _fallos(bloqueados, permitidos) -> list[tuple[str, list[str]]]:
+    with tempfile.TemporaryDirectory() as tmp:
+        real = Path(tmp) / "gh"
+        real.write_text('#!/bin/sh\necho real "$@"\n', encoding="utf-8")
+        real.chmod(0o755)
+        env = {
+            **os.environ,
+            "PATH": os.pathsep.join([str(SHIM.parent), tmp, "/usr/bin", "/bin"]),
+        }
+
+        def corre(args: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([str(SHIM), *args], env=env, capture_output=True, text=True)
+
+        fallos = []
+        for args in bloqueados:
+            r = corre(args)
+            if (r.returncode, r.stdout) != (3, "") or "solo el motor mergea" not in r.stderr:
+                fallos.append(("pasó y debía bloquearse", args))
+        for args in permitidos:
+            r = corre(args)
+            if (r.returncode, r.stdout.strip()) != (0, " ".join(["real", *args])):
+                fallos.append(("se bloqueó y debía pasar", args))
+        return fallos
+
+
 class TestGhDeLosAgentes(unittest.TestCase):
     def test_integrar_abrir_o_revisar_se_bloquea_por_toda_forma_y_lo_demas_pasa(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            real = Path(tmp) / "gh"
-            real.write_text('#!/bin/sh\necho real "$@"\n', encoding="utf-8")
-            real.chmod(0o755)
-            env = {
-                **os.environ,
-                "PATH": os.pathsep.join([str(SHIM.parent), tmp, "/usr/bin", "/bin"]),
-            }
+        self.assertEqual(_fallos(BLOQUEADOS, PERMITIDOS), [])
 
-            def corre(args: list[str]) -> subprocess.CompletedProcess[str]:
-                return subprocess.run([str(SHIM), *args], env=env, capture_output=True, text=True)
+    def test_la_bandera_corta_con_igual_se_lee_como_la_separada(self):
+        self.assertEqual(_fallos(CORTAS_CON_IGUAL, ()), [])
 
-            fallos = []
-            for args in BLOQUEADOS:
-                r = corre(args)
-                if (r.returncode, r.stdout) != (3, "") or "solo el motor mergea" not in r.stderr:
-                    fallos.append(("pasó y debía bloquearse", args))
-            for args in PERMITIDOS:
-                r = corre(args)
-                if (r.returncode, r.stdout.strip()) != (0, " ".join(["real", *args])):
-                    fallos.append(("se bloqueó y debía pasar", args))
-            self.assertEqual(fallos, [])
+    def test_borrar_ramas_o_escribir_archivos_por_la_api_se_bloquea_y_leerlos_pasa(self):
+        self.assertEqual(_fallos(RAMAS_SIN_PR, LECTURAS_DE_RAMAS), [])
 
 
 if __name__ == "__main__":
