@@ -97,10 +97,6 @@ class CheckRequerido:
 class PoliticaConocida:
     requeridos: tuple
 
-@dataclass(frozen=True)
-class PoliticaDesconocida:
-    causa: str
-
 
 def _contextos(raw) -> list[str]:
     if isinstance(raw, list):
@@ -336,27 +332,27 @@ class Borrador(MergeRechazado):
     """El PR sigue en borrador."""
 
 
+class BaseMovida(MergeRechazado):
+    """La base cambió mientras GitHub mergeaba: el mismo merge se puede repetir."""
+
+
+_RECHAZOS_DE_MERGE = (
+    (Borrador, ("draft", "borrador")),
+    (PuntaMovida, ("head branch was modified", "does not match", "match-head",
+                   "expected head", "head commit")),
+    (BaseMovida, ("base branch was modified",)),
+    (Conflicto, ("cannot be cleanly created", "conflict", "conflicto")),
+)
+
+
 def clasificar_merge(error: BaseException) -> MergeRechazado:
     """El texto de GitHub se lee solo aquí, en la frontera: fuera solo viajan tipos."""
-    if isinstance(error, (PuntaMovida, Conflicto, PoliticaBloquea, Borrador)):
-        return error  # type: ignore[return-value]
+    if isinstance(error, MergeRechazado):
+        return error
     texto = str(error)
-    bajo = texto.lower()
-    if "draft" in bajo or "borrador" in bajo:
-        return Borrador(texto)
-    if any(
-        x in bajo
-        for x in (
-            "head branch was modified",
-            "does not match",
-            "match-head",
-            "expected head",
-            "head commit",
-        )
-    ):
-        return PuntaMovida(texto)
-    if any(x in bajo for x in ("cannot be cleanly created", "conflict", "conflicto")):
-        return Conflicto(texto)
+    for tipo, marcas in _RECHAZOS_DE_MERGE:
+        if any(marca in texto.lower() for marca in marcas):
+            return tipo(texto)
     return PoliticaBloquea(texto)
 
 
@@ -1406,7 +1402,7 @@ class FakeGitHub:
         if self.responde_merge is not None:
             return self.responde_merge(repo, numero, sha, metodo, mensaje)
         if self.fijo:
-            raise MergeRechazado(self.motivo)
+            raise clasificar_merge(RuntimeError(self.motivo))
         self.intentos.append(sha)
         if self.bloquea:
             raise PoliticaBloquea("the base branch policy prohibits the merge")
@@ -1449,7 +1445,7 @@ class FakeGitHub:
                 cwd=w,
             )
             if git("push", "-q", "origin", pr["base"], cwd=w).returncode != 0:
-                raise PuntaMovida("la rama base se movió; reintenta")
+                raise BaseMovida("la rama base se movió; reintenta")
             commit = git("rev-parse", "HEAD", cwd=w).stdout.strip()
         s = self._cargar()
         pr = self._pr(s, repo, numero)
@@ -1479,6 +1475,7 @@ def para(maquina_github: str, env: dict | None = None) -> GitHubPort:
 
 
 __all__ = [
+    "BaseMovida",
     "Borrador",
     "CapacidadRemota",
     "ChecksVerdict",

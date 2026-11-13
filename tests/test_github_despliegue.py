@@ -753,11 +753,16 @@ class MergeTest(unittest.TestCase):
             gh2.merge(self.repo, pr2.numero, self.sha, "squash", "m")
 
     def test_gh_clasifica_por_tipo(self):
+        from motor.github import BaseMovida
+
         casos = [
             ("Pull Request is still a draft", Borrador),
             ("Head branch was modified", PuntaMovida),
+            ("Base branch was modified. Review and try the merge again.", BaseMovida),
             ("the merge commit cannot be cleanly created", Conflicto),
             ("required status checks have not passed", PoliticaBloquea),
+            ("Pull request #7 is not mergeable: the base branch policy prohibits the merge.",
+             PoliticaBloquea),
         ]
         for texto, tipo in casos:
             with self.subTest(texto=texto):
