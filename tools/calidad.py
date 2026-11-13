@@ -124,6 +124,13 @@ MENSAJE_TAMANO = (
     "Saca código de ahí a un módulo propio: nada de motor/ pasa del límite ni "
     "crece por encima de lo que mide en la base."
 )
+# Modos de git que sacan código de la medida: el enlace apunta fuera y el
+# submódulo vive en otro repo, pero Python importa los dos igual.
+AJENOS_DE_MOTOR = {b"120000": "un enlace simbólico", b"160000": "un submódulo"}
+MENSAJE_AJENOS = (
+    "Bajo motor/ solo van archivos y carpetas propios del repo: pon el código "
+    "ahí en vez de enlazarlo."
+)
 
 
 VERSIONES = {"pyright": "1.1.414", "ruff": "0.17.4"}
@@ -385,10 +392,31 @@ def _utf8(ruta: str, contenido: bytes) -> str:
         ) from None
 
 
+def _rechazar_ajenos(ajenos: list[tuple[str, str]], donde: str) -> None:
+    if ajenos:
+        raise SystemExit(
+            "\n".join(f"tamano: {ruta}{donde} es {clase}" for ruta, clase in ajenos)
+            + f"\n{MENSAJE_AJENOS}"
+        )
+
+
 def _fuentes_del_arbol():
-    for archivo in sorted((RAIZ / "motor").rglob("*.py")):
-        ruta = archivo.relative_to(RAIZ).as_posix()
-        yield ruta, _utf8(ruta, archivo.read_bytes())
+    motor = RAIZ / "motor"
+    caminos = sorted([motor, *motor.rglob("*")])
+    _rechazar_ajenos(
+        [
+            (camino.relative_to(RAIZ).as_posix(), AJENOS_DE_MOTOR[b"120000"])
+            if camino.is_symlink()
+            else (camino.parent.relative_to(RAIZ).as_posix(), AJENOS_DE_MOTOR[b"160000"])
+            for camino in caminos
+            if camino.is_symlink() or camino.name == ".git"
+        ],
+        "",
+    )
+    for archivo in caminos:
+        if archivo.suffix == ".py" and archivo.is_file():
+            ruta = archivo.relative_to(RAIZ).as_posix()
+            yield ruta, _utf8(ruta, archivo.read_bytes())
 
 
 def _git(*args: str, entrada: bytes | None = None) -> bytes:
@@ -417,14 +445,17 @@ def _como_traer(ref: str) -> str:
 
 def _fuentes_de_git(commit: str, ref: str):
     """Los `.py` de `motor/` tal como están en `commit`, sin tocar el árbol."""
-    blobs = []
-    for entrada in _git("ls-tree", "-r", "-z", commit, "--", "motor/").split(b"\0"):
+    blobs, ajenos = [], []
+    for entrada in _git("ls-tree", "-r", "-z", commit, "--", "motor").split(b"\0"):
         if not entrada:
             continue
         meta, ruta = entrada.split(b"\t", 1)
         modo, tipo, sha = meta.split()
-        if tipo == b"blob" and modo != b"120000" and ruta.endswith(b".py"):
+        if modo in AJENOS_DE_MOTOR:
+            ajenos.append((ruta.decode(), AJENOS_DE_MOTOR[modo]))
+        elif tipo == b"blob" and ruta.endswith(b".py"):
             blobs.append((ruta.decode(), sha))
+    _rechazar_ajenos(ajenos, f" en {ref}")
     lote = _git("cat-file", "--batch", entrada=b"".join(sha + b"\n" for _, sha in blobs))
     pos = 0
     for ruta, _ in blobs:
