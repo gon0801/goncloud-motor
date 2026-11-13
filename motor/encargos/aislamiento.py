@@ -45,6 +45,15 @@ def delta_de_entorno(comando: ComandoAislado) -> dict[str, str]:
     }
 
 
+def entorno_recibido() -> dict[str, str]:
+    """El delta que `lanzar_administrado` dejó en el entorno del wrapper. Lo saca de ahí para que
+    el agente no lo herede."""
+    crudo = os.environ.pop(ENTORNO_DEL_AGENTE, None)
+    if crudo is None:
+        raise RuntimeError(f"falta {ENTORNO_DEL_AGENTE} en el entorno del wrapper")
+    return json.loads(crudo)
+
+
 def _es_carpeta_de_shims(ruta: str) -> bool:
     return os.path.isfile(os.path.join(ruta or ".", "llamada_guard.py"))
 
