@@ -149,6 +149,24 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         )
         self.assertIs(_turnos(self.mirar()), True)
 
+    def test_mirar_un_comprobador_vivo_no_escribe_en_la_base(self):  # no-roja-en-base: la base ya mira con escribir=False; la prueba falla si el canario deja de hacerlo
+        raiz = self.raiz()
+        comprobador = raiz / "comprobador-t"
+        comprobador.mkdir()
+        (raiz / "comprobador-actual").write_text(comprobador.name, encoding="utf-8")
+        spec = comprobador / "arranque.json"
+        spec.write_text(json.dumps({"base": str(self.banco.base), "token": "t"}), encoding="utf-8")
+        arranque = Path(sesion.__file__).with_name("arranque.py")
+        proceso = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)", str(spec), str(arranque)],
+        )
+        self.addCleanup(proceso.wait)
+        self.addCleanup(proceso.kill)
+        antes = sorted(self.banco.base.rglob("*"))
+
+        self.assertIs(_turnos(self.mirar()), True)
+        self.assertEqual(sorted(self.banco.base.rglob("*")), antes)
+
     def test_un_lanzador_en_wrapper_json_tambien_se_mira(self):
         (self.raiz() / "wrapper.json").write_text(json.dumps(self.huerfano()), encoding="utf-8")
         self.assertIs(_turnos(self.mirar()), True)
@@ -171,6 +189,19 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         ruta.write_text(json.dumps(recibo), encoding="utf-8")
         fila = entregado()
         self.assertEqual(fila.resultado, "falla", fila.observado)
+
+    def test_un_recibo_que_no_tiene_la_forma_de_un_objeto_es_un_rechazo_con_su_causa(self):
+        ruta = self.clave() / "recibo.json"
+        bueno = json.loads(ruta.read_text(encoding="utf-8"))
+        for contenido in ([], {**bueno, "pasos": ["desplegar", "checklist"]}):
+            with self.subTest(contenido=contenido):
+                ruta.write_text(json.dumps(contenido), encoding="utf-8")
+                obs = self.mirar()
+                (recibo,) = obs.recibos
+                self.assertNotEqual(recibo.estado, "aplicado")
+                fila = next(f for f in juzgar(obs, _esperado()) if f.nombre == "entregado")
+                self.assertEqual(fila.resultado, "falla", fila.observado)
+                self.assertIn(recibo.estado, fila.observado)
 
     def test_un_remoto_que_no_se_puede_resolver_deja_la_rama_sin_medir(self):
         repo = self.tmp / "repo.git"
