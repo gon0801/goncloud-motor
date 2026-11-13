@@ -7,6 +7,8 @@
 # lee maquina.toml y secretos.env de ~/.motor-encargos (python -m motor.encargos.retiro
 # migrar los trae). No crea etiquetas ni escribe en el remoto.
 # El SHA tiene que estar ya en origin/main. Es idempotente por máquina.
+# Antes de mover ningún árbol, el SHA pliega el registro de cada máquina
+# (ops/compuerta-plegado.sh); si en una no pliega, no se mueve ninguna.
 #
 # --sha SHA      SHA a desplegar (por omisión, origin/main).
 # --maquina M    Solo mac, mini o pc. Sin ella, las tres.
@@ -32,7 +34,7 @@ while [ $# -gt 0 ]; do
       esac
       shift 2 ;;
     -h|--help)
-      sed -n '2,15p' "$0"; exit 0 ;;
+      sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "opción desconocida: $1" >&2; exit 2 ;;
   esac
 done
@@ -43,8 +45,9 @@ fi
 # El remoto primero: si el SHA no está publicado, no se escribe ni un recibo.
 reintenta 3 git -C "$raiz" fetch -q --force origin \
   || { echo "no pude traer origin" >&2; exit 3; }
-sha="$(git -C "$raiz" rev-parse --verify "$sha^{commit}" 2>/dev/null)" \
-  || { echo "el SHA '${sha}' no existe en $raiz" >&2; exit 3; }
+commit="$(git -C "$raiz" rev-parse --verify "$sha^{commit}" 2>/dev/null)" \
+  || { echo "el SHA '$sha' no existe en $raiz" >&2; exit 3; }
+sha="$commit"
 if ! git -C "$raiz" merge-base --is-ancestor "$sha" "origin/$rama"; then
   echo "el SHA ${sha:0:12} no está en origin/$rama: no despliego nada" >&2
   exit 3
@@ -303,8 +306,8 @@ compensar_movidas() {
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/despliega.XXXXXX")" || exit 1
 trap 'rm -rf "$tmp"' EXIT
 
-# Primero comprobar: ssh, árbol del supervisor y recibo de todas. Si una falla
-# aquí no se mueve ninguna.
+# Primero comprobar: ssh, árbol del supervisor, recibo y que el SHA pliegue el
+# registro de todas. Si una falla aquí no se mueve ninguna.
 for m in $maquinas; do
   estado="$(lee_estado_encargos "$m" 2>/dev/null)" \
     || preflight_falla "$m" "no pude leer el estado del supervisor"
@@ -319,6 +322,11 @@ for m in $maquinas; do
   printf '%s\n' "$runtime" >"$tmp/$m.runtime"
   printf '%s\n' "$cabeza" >"$tmp/$m.cabeza"
 done
+
+if ! bash "$aqui/compuerta-plegado.sh" --sha "$sha" --maquina "$maquinas"; then
+  echo "No moví ninguna máquina: ${sha:0:12} no pasa la compuerta de plegado en todas." >&2
+  exit 1
+fi
 
 # La comprobación espera a que el supervisor viejo drene (hasta el tope), launchd
 # relance y el supervisor nuevo complete una pasada. Ese plazo es el tope más un

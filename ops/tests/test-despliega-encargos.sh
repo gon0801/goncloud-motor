@@ -26,17 +26,23 @@ exec "$REAL_PY" "\$@"
 PY
 chmod +x "$S/bin-ssh/python3"
 
-# --- un origen con main en SHA, un anterior y un lado que no está en main.
+# --- un origen con main en SHA, un anterior, un SIN_PLEGADO posterior que ya no
+# trae la herramienta de plegado y un lado que no está en main.
 git init -q -b main "$S/fuente"
 printf 'uno\n' >"$S/fuente/README.md"
+cp -R "$RAIZ/motor" "$S/fuente/motor"
+mkdir -p "$S/fuente/tools"
+cp "$RAIZ/tools/plegado.py" "$S/fuente/tools/plegado.py"
 git -C "$S/fuente" add -A
 git -C "$S/fuente" -c user.name=t -c user.email=t@t commit -q -m uno
 ANTERIOR="$(git -C "$S/fuente" rev-parse HEAD)"
-cp -R "$RAIZ/motor" "$S/fuente/motor"
 printf 'dos\n' >>"$S/fuente/README.md"
 git -C "$S/fuente" add -A
 git -C "$S/fuente" -c user.name=t -c user.email=t@t commit -q -m dos
 SHA="$(git -C "$S/fuente" rev-parse HEAD)"
+git -C "$S/fuente" rm -q tools/plegado.py
+git -C "$S/fuente" -c user.name=t -c user.email=t@t commit -q -m tres
+SIN_PLEGADO="$(git -C "$S/fuente" rev-parse HEAD)"
 git -C "$S/fuente" checkout -q -b lado "$ANTERIOR"
 printf 'lado\n' >"$S/fuente/LADO.md"
 git -C "$S/fuente" add -A
@@ -372,6 +378,186 @@ espera "el reintento se niega por la Mac" '!0' bash "$SCRIPT" --sha "$SHA"
 contiene "nombra la Mac y el paso" "$S/salida" "FALLA mac en leer el árbol del supervisor"
 [ "$(campo_json "$S/mac/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
   || fallo "el fallo temprano borró el anterior que se quería conservar"
+
+registro() { # <home> <encargos...>: un registro como el del motor; un encargo roto_* no pliega
+  python3 - "$1/.motor-encargos/registro.sqlite" "${@:2}" <<'PY'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute(
+    "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
+    " encargo TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, ukey TEXT UNIQUE)"
+)
+for encargo in sys.argv[2:]:
+    entrega = {"id": encargo, "clave": "k-" + encargo, "huella": "h", "texto": "haz algo", "hora": "t0"}
+    kind, data = ("basura", {}) if encargo.startswith("roto_") else ("entrega", entrega)
+    db.execute("INSERT INTO events (ts, encargo, kind, data) VALUES ('t', ?, ?, ?)",
+               (encargo, kind, json.dumps(data)))
+db.commit()
+PY
+}
+
+sin_temporales() { # <nombre> <tmpdir de las máquinas>
+  local restos
+  restos="$(find "$2" -maxdepth 1 \( -name 'motor-compuerta-*' -o -name 'plegado-base-*' \) 2>/dev/null)"
+  [ -z "$restos" ] || fallo "$1: la compuerta dejó temporales: $restos"
+}
+
+nadie_se_movio() { # <nombre>
+  local m
+  for m in mac mini pc-home; do
+    [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$ANTERIOR" ] || fallo "$1: $m se movió"
+    [ ! -s "$S/$m/.ordenes" ] || fallo "$1: $m se reinició"
+    [ ! -e "$S/$m/.motor-encargos/instalacion.json" ] || fallo "$1: $m escribió recibo"
+    [ ! -e "$S/$m/.motor-encargos/instalacion-pendiente.json" ] || fallo "$1: $m escribió pendiente"
+  done
+}
+mkdir -p "$S/tmp-maquinas"
+
+echo "# el candidato pliega el registro de las tres: el despliegue sigue"
+reset_maquinas
+registro "$S/mac" enc_mac_uno enc_mac_dos
+registro "$S/mini" enc_mini_uno
+registro "$S/pc-home" enc_pc_uno enc_pc_dos enc_pc_tres
+espera "despliega tras plegar las tres" 0 env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$SHA"
+contiene "la Mac pliega" "$S/salida" "OK mac: el registro pliega entero con ${SHA:0:12} (2 encargos)"
+contiene "la Mini pliega" "$S/salida" "OK mini: el registro pliega entero con ${SHA:0:12} (1 encargos)"
+contiene "la PC pliega" "$S/salida" "OK pc: el registro pliega entero con ${SHA:0:12} (3 encargos)"
+contiene "resume la comparación sin frenar" "$S/salida" \
+  "pc, frente a la versión instalada: contra ${ANTERIOR:0:12} cambian de valor 0 de 3 encargos; claves que aparecen: ninguna; claves que desaparecen: ninguna"
+grep -qx "compuerta de plegado pasada en: mac mini pc con ${SHA:0:12}" "$S/salida" \
+  || fallo "la compuerta no dice en su propia línea que pasó"
+contiene "despliega" "$S/salida" "desplegado en:mac mini pc"
+no_contiene "no imprime identificadores" "$S/salida" "enc_"
+for m in mac mini pc-home; do
+  [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$SHA" ] || fallo "$m: el árbol no quedó en el SHA"
+done
+sin_temporales "tras desplegar" "$S/tmp-maquinas"
+
+echo "# el candidato no pliega el registro de la Mini: no se mueve ninguna"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno roto_mini
+registro "$S/pc-home" enc_pc_uno
+espera "se niega antes de mover" '!0' env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$SHA"
+contiene "nombra la Mini y cuántos fallan" "$S/salida" "FALLA mini: 1 de 2 encargos no pliegan con ${SHA:0:12}"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+no_contiene "no imprime identificadores" "$S/salida" "roto_mini"
+nadie_se_movio "registro que no pliega"
+sin_temporales "tras negarse" "$S/tmp-maquinas"
+
+echo "# el candidato no trae la herramienta de plegado: no se da por pasada"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno
+registro "$S/pc-home" enc_pc_uno
+espera "se niega sin herramienta" '!0' env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$SIN_PLEGADO"
+contiene "lo dice en la PC" "$S/salida" \
+  "FALLA pc: no pude comprobar el plegado con ${SIN_PLEGADO:0:12}: el commit candidato no trae tools/plegado.py"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+nadie_se_movio "sin herramienta"
+sin_temporales "sin herramienta" "$S/tmp-maquinas"
+
+echo "# el registro de la PC no se puede leer: no se da por pasada"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno
+printf 'esto no es sqlite\n' >"$S/pc-home/.motor-encargos/registro.sqlite"
+espera "se niega con el registro ilegible" '!0' env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$SHA"
+contiene "nombra la PC y la lectura" "$S/salida" \
+  "FALLA pc: no pude comprobar el plegado con ${SHA:0:12}: tools/plegado.py: no puedo leer"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+nadie_se_movio "registro ilegible"
+sin_temporales "registro ilegible" "$S/tmp-maquinas"
+
+COMPUERTA="$RAIZ/ops/compuerta-plegado.sh"
+
+echo "# un SHA que no existe se nombra tal como se pidió"
+espera "la compuerta se niega" 2 bash "$COMPUERTA" --sha no-existe-este
+contiene "la compuerta lo nombra" "$S/salida" "el SHA 'no-existe-este' no existe"
+espera "el despliegue se niega" 3 bash "$SCRIPT" --sha no-existe-este
+contiene "el despliegue lo nombra" "$S/salida" "el SHA 'no-existe-este' no existe"
+
+echo "# la compuerta sin ninguna máquina es un error de uso"
+espera "se niega con la lista vacía" 2 bash "$COMPUERTA" --sha "$SHA" --maquina ""
+contiene "lo dice" "$S/salida" "--maquina necesita mac, mini o pc"
+espera "se niega con una lista de espacios" 2 bash "$COMPUERTA" --sha "$SHA" --maquina "  "
+
+commit_en_origen() { # <mensaje>: un commit nuevo en main que solo llega al origin
+  printf '%s\n' "$1" >>"$S/fuente/README.md"
+  git -C "$S/fuente" checkout -q "$SHA" -- tools/plegado.py
+  git -C "$S/fuente" add -A
+  git -C "$S/fuente" -c user.name=t -c user.email=t@t commit -q -m "$1"
+  git -C "$S/fuente" push -q "$S/origen.git" main
+  git -C "$S/fuente" rev-parse HEAD
+}
+
+echo "# el árbol de cada máquina no tiene el candidato: la compuerta lo trae del origin"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno
+registro "$S/pc-home" enc_pc_uno
+NUEVO="$(commit_en_origen cuatro)"
+for m in mac mini pc-home; do
+  git -C "$S/$m/motor-sucesor" cat-file -e "$NUEVO^{commit}" 2>/dev/null \
+    && fallo "$m: el árbol ya tenía el candidato; la prueba no pasa por el fetch"
+done
+espera "despliega un candidato que las máquinas no tenían" 0 \
+  env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$NUEVO"
+contiene "la Mac pliega" "$S/salida" "OK mac: el registro pliega entero con ${NUEVO:0:12} (1 encargos)"
+contiene "la Mini pliega" "$S/salida" "OK mini: el registro pliega entero con ${NUEVO:0:12} (1 encargos)"
+contiene "la PC pliega" "$S/salida" "OK pc: el registro pliega entero con ${NUEVO:0:12} (1 encargos)"
+contiene "despliega" "$S/salida" "desplegado en:mac mini pc"
+for m in mac mini pc-home; do
+  [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$NUEVO" ] || fallo "$m: el árbol no quedó en el candidato"
+done
+sin_temporales "candidato traído del origin" "$S/tmp-maquinas"
+
+echo "# el origin de la Mac no tiene el candidato: no se mueve ninguna"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno
+registro "$S/pc-home" enc_pc_uno
+git clone -q --bare "$S/origen.git" "$S/espejo-viejo.git"
+git -C "$S/mac/motor-sucesor" remote set-url origin "$S/espejo-viejo.git"
+OTRO="$(commit_en_origen cinco)"
+espera "se niega sin el candidato en el origin de la Mac" '!0' \
+  env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$OTRO"
+contiene "nombra la Mac y la causa" "$S/salida" \
+  "FALLA mac: no pude comprobar el plegado con ${OTRO:0:12}: el commit candidato no está en el origin del servicio"
+contiene "la Mini lo trae" "$S/salida" "OK mini: el registro pliega entero con ${OTRO:0:12} (1 encargos)"
+contiene "la PC lo trae" "$S/salida" "OK pc: el registro pliega entero con ${OTRO:0:12} (1 encargos)"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+nadie_se_movio "origin sin el candidato"
+sin_temporales "origin sin el candidato" "$S/tmp-maquinas"
+
+echo "# la compuerta pliega el registro de la base que el servicio de la Mac abre"
+reset_maquinas
+mkdir -p "$S/mac/otra/.motor-encargos"
+registro "$S/mac/otra" enc_mac_uno roto_mac
+sed -i.bak "s#<string>supervisor</string>#<string>supervisor</string><string>--base</string><string>$S/mac/otra/.motor-encargos</string>#" \
+  "$S/mac/Library/LaunchAgents/ai.goncloud.motor-encargos.plist"
+espera "se niega por el registro de la base del servicio" 1 \
+  env TMPDIR="$S/tmp-maquinas" bash "$COMPUERTA" --sha "$SHA" --maquina mac
+contiene "nombra la Mac y cuántos fallan" "$S/salida" "FALLA mac: 1 de 2 encargos no pliegan con ${SHA:0:12}"
+sin_temporales "base del servicio" "$S/tmp-maquinas"
+
+echo "# una base relativa del servicio se lee desde su WorkingDirectory, no desde el home de ssh"
+reset_maquinas
+mkdir -p "$S/mac/relativa/.motor-encargos"
+registro "$S/mac/relativa" enc_mac_uno roto_mac
+PLIST_MAC="$S/mac/Library/LaunchAgents/ai.goncloud.motor-encargos.plist"
+sed -i.bak "s#<string>supervisor</string>#<string>supervisor</string><string>--base</string><string>../relativa/.motor-encargos</string>#" \
+  "$PLIST_MAC"
+espera "se niega por el registro de la base relativa" 1 \
+  env TMPDIR="$S/tmp-maquinas" bash "$COMPUERTA" --sha "$SHA" --maquina mac
+contiene "nombra la Mac y cuántos fallan" "$S/salida" "FALLA mac: 1 de 2 encargos no pliegan con ${SHA:0:12}"
+# Sin WorkingDirectory el script ya se niega al buscar el árbol; el módulo tampoco adivina.
+sed -i.bak '/<key>WorkingDirectory<\/key>/d' "$PLIST_MAC"
+espera "sin WorkingDirectory el módulo termina" 0 \
+  env HOME="$S/mac" TMPDIR="$S/tmp-maquinas" python3 "$RAIZ/ops/compuerta_plegado.py" "$S/mac/motor-sucesor" "$SHA"
+contiene "no adivina la base" "$S/salida" \
+  "resultado no_pude el --base del LaunchAgent es relativo y el plist no trae WorkingDirectory"
+sin_temporales "base relativa" "$S/tmp-maquinas"
 
 echo "# el comprobador no cae al recibo del motor viejo"
 reset_maquinas
