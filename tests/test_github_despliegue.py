@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -693,6 +694,14 @@ class ChecksTest(unittest.TestCase):
 class MergeTest(unittest.TestCase):
     def setUp(self):
         self.t = Path(tempfile.mkdtemp(prefix="h-merge-"))
+        # Como en el runner del CI: git sin identidad configurada y sin deducirla
+        # del nombre del equipo, que en la Mac sí trae dominio.
+        sin_identidad = self.t / "gitconfig"
+        sin_identidad.write_text("[user]\n\tuseConfigOnly = true\n")
+        self.enterContext(mock.patch.dict(os.environ, {
+            "GIT_CONFIG_GLOBAL": str(sin_identidad), "GIT_CONFIG_NOSYSTEM": "1",
+        }))
+        os.environ.pop("EMAIL", None)
         self.repo, self.sha, self.w = _bare_con_rama(self.t)
         (self.t / "gh").mkdir()
 
