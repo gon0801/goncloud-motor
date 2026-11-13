@@ -14,7 +14,6 @@ from unittest import mock
 
 from motor.encargos.ciclo import ahora_iso, barrer
 from motor.github import FakeGitHub, GhGitHub, PoliticaBloquea, PuntaMovida
-from motor.respuestas_merge import CHECKS_SIN_LEER, ETIQUETAS
 from tests.test_flujo_revisiones import (
     _entrega_pr,
     sonda_sin_aislamiento_del_host,
@@ -370,6 +369,8 @@ class TodosLosTropiezosEnUnaSerie(unittest.TestCase):
         )
 
     def test_cada_tropiezo_tiene_una_etiqueta_distinta(self):
+        from motor.respuestas_merge import CHECKS_SIN_LEER, ETIQUETAS
+
         etiquetas = [*ETIQUETAS.values(), CHECKS_SIN_LEER]
         self.assertEqual(sorted(set(etiquetas)), sorted(etiquetas))
 
