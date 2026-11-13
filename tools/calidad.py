@@ -5,7 +5,7 @@ Uso, igual en local y en CI:
     python3 tools/calidad.py tipos
     python3 tools/calidad.py lint
     python3 tools/calidad.py io
-    python3 tools/calidad.py tamano
+    python3 tools/calidad.py tamano --base origin/main
 
 `tipos` y `lint` comparan contra `.github/calidad/baseline.json` y fallan solo
 si el cambio agrega un error. `io` es estricto: cualquier uso fuera de
@@ -13,10 +13,9 @@ si el cambio agrega un error. `io` es estricto: cualquier uso fuera de
 `--actualizar` regenera `tipos` y `lint` (se hace desde la rama base, no desde el
 PR que se está revisando).
 
-`tamano` falla si un archivo de `motor/` pasa de 1,000 líneas o una función de
-100, salvo los que ya pasaban y siguen en su tamaño guardado o por debajo.
-`tamano --actualizar` solo baja esa línea base: se niega a subir una entrada o a
-agregar una nueva.
+`tamano` mide `motor/` contra la rama base, leída de git: un archivo de más de
+1,000 líneas o una función de más de 100 no puede medir más que en la base, y lo
+que en la base no existe o cabe no puede pasar del límite. No guarda nada.
 """
 
 from __future__ import annotations
@@ -100,8 +99,8 @@ JSON_EXCEPCIONES = {("_texto_inspeccion_resuelta", ".json")}
 MENSAJE_MARCADORES = "anótalo como evento y derívalo en dominio"
 LIMITES_DE_TAMANO = {"archivo": 1000, "funcion": 100}
 MENSAJE_TAMANO = (
-    "Saca código de ese archivo o de esa función a un módulo propio hasta que vuelva "
-    "a su tamaño guardado. No se piden excepciones: la línea base solo baja."
+    "Saca código de ahí a un módulo propio: nada de motor/ pasa del límite ni "
+    "crece por encima de lo que mide en la base."
 )
 
 
@@ -308,8 +307,8 @@ def _funciones(nodo: ast.AST, prefijo: str = ""):
     """Cada función o método con su nombre calificado dentro del archivo.
 
     El nombre (`Clase.metodo`, `externa.interna`) y no la línea es la identidad:
-    mover la función dentro del archivo no cambia su entrada, y renombrarla o
-    llevarla a otro archivo la vuelve nueva, así que no hereda el tamaño guardado.
+    mover la función dentro del archivo no cambia su tamaño en la base, y
+    renombrarla o llevarla a otro archivo la vuelve nueva.
     """
     for hijo in ast.iter_child_nodes(nodo):
         if isinstance(hijo, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -321,21 +320,61 @@ def _funciones(nodo: ast.AST, prefijo: str = ""):
             yield from _funciones(hijo, prefijo)
 
 
-def tamanos() -> collections.Counter:
+def tamanos(fuentes) -> collections.Counter:
+    """Líneas por `("archivo", ruta)` y por `("funcion", ruta, nombre)`."""
     cuenta: collections.Counter = collections.Counter()
-    for archivo in sorted((RAIZ / "motor").rglob("*.py")):
-        ruta = str(archivo.relative_to(RAIZ))
-        texto = archivo.read_text(encoding="utf-8")
+    for ruta, texto in fuentes:
         try:
             arbol = ast.parse(texto)
         except SyntaxError as exc:
-            raise SystemExit(f"no se puede leer {archivo}: {exc}") from exc
+            raise SystemExit(f"no se puede leer {ruta}: {exc}") from exc
         cuenta[("archivo", ruta)] = len(texto.splitlines())
         for nombre, lineas in _funciones(arbol):
             # Dos definiciones con el mismo nombre suman: una segunda no puede
-            # colarse bajo el tamaño guardado de la primera.
+            # colarse bajo el tamaño de la primera.
             cuenta[("funcion", ruta, nombre)] += lineas
     return cuenta
+
+
+def _fuentes_del_arbol():
+    for archivo in sorted((RAIZ / "motor").rglob("*.py")):
+        yield archivo.relative_to(RAIZ).as_posix(), archivo.read_text(encoding="utf-8")
+
+
+def _git(*args: str, entrada: bytes | None = None) -> bytes:
+    return subprocess.run(
+        ["git", *args], cwd=RAIZ, input=entrada, capture_output=True, check=True
+    ).stdout
+
+
+def _commit_de_la_base(ref: str) -> str:
+    try:
+        return _git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").decode().strip()
+    except subprocess.CalledProcessError:
+        traer = f"git fetch origin {ref.removeprefix('origin/')}"
+        raise SystemExit(
+            f"tamano: la base {ref} no existe en este clon; tráela con `{traer}`"
+        ) from None
+
+
+def _fuentes_de_la_base(commit: str):
+    """Los `.py` de `motor/` tal como están en `commit`, sin tocar el árbol."""
+    blobs = []
+    for entrada in _git("ls-tree", "-r", "-z", commit, "--", "motor/").split(b"\0"):
+        if not entrada:
+            continue
+        meta, ruta = entrada.split(b"\t", 1)
+        modo, tipo, sha = meta.split()
+        if tipo == b"blob" and modo != b"120000" and ruta.endswith(b".py"):
+            blobs.append((ruta.decode(), sha))
+    lote = _git("cat-file", "--batch", entrada=b"".join(sha + b"\n" for _, sha in blobs))
+    pos = 0
+    for ruta, _ in blobs:
+        fin_cabecera = lote.index(b"\n", pos)
+        tamano = int(lote[pos:fin_cabecera].split()[2])
+        inicio = fin_cabecera + 1
+        yield ruta, lote[inicio : inicio + tamano].decode("utf-8")
+        pos = inicio + tamano + 1
 
 
 def _nombre_de_tamano(clave: tuple) -> str:
@@ -343,72 +382,43 @@ def _nombre_de_tamano(clave: tuple) -> str:
 
 
 def _excesos_de_tamano(
-    cuenta: collections.Counter, guardado: collections.Counter
+    hoy: collections.Counter, base: collections.Counter, ref: str
 ) -> list[str]:
     excesos = []
-    for clave, lineas in sorted(cuenta.items()):
+    for clave, lineas in sorted(hoy.items()):
         limite = LIMITES_DE_TAMANO[clave[0]]
-        if lineas <= max(limite, guardado.get(clave, 0)):
+        antes = base.get(clave)
+        if lineas <= max(limite, antes or 0):
             continue
-        tipo = "archivo" if clave[0] == "archivo" else "función"
-        if clave in guardado:
-            motivo = f"la línea base guarda {guardado[clave]}"
+        if antes is None:
+            en_base = f"no existe en {ref} y el límite es {limite}"
+        elif antes <= limite:
+            en_base = f"en {ref} mide {antes} y el límite es {limite}"
         else:
-            motivo = f"el límite es {limite} y no está en la línea base"
-        excesos.append(
-            f"  {_nombre_de_tamano(clave)}: {tipo} de {lineas} líneas; {motivo}"
-        )
+            en_base = f"en {ref} mide {antes}"
+        tipo = "archivo" if clave[0] == "archivo" else "función"
+        excesos.append(f"  {_nombre_de_tamano(clave)}: {tipo} de {lineas} líneas; {en_base}")
     return excesos
 
 
-def _sobre_el_limite(cuenta: collections.Counter) -> collections.Counter:
-    return collections.Counter(
-        {c: n for c, n in cuenta.items() if n > LIMITES_DE_TAMANO[c[0]]}
-    )
-
-
-def _comparar_tamano(cuenta: collections.Counter, linea_base: dict) -> int:
-    guardado = _cuenta(linea_base.get("tamano") or [])
-    excesos = _excesos_de_tamano(cuenta, guardado)
+def _comparar_tamano(ref: str) -> int:
+    commit = _commit_de_la_base(ref)
+    hoy = tamanos(_fuentes_del_arbol())
+    excesos = _excesos_de_tamano(hoy, tamanos(_fuentes_de_la_base(commit)), ref)
     if excesos:
-        print(f"tamano: {len(excesos)} límite(s) superado(s)", file=sys.stderr)
+        print(f"tamano: {len(excesos)} límite(s) superado(s) contra {ref}", file=sys.stderr)
         print("\n".join(excesos), file=sys.stderr)
         print(MENSAJE_TAMANO, file=sys.stderr)
         return 1
-    grandes = _sobre_el_limite(cuenta)
-    por_tipo = {
-        tipo: sorted(
-            ((n, c) for c, n in grandes.items() if c[0] == tipo), reverse=True
-        )
-        for tipo in LIMITES_DE_TAMANO
-    }
-    guardados = collections.Counter(c[0] for c in guardado)
+    grandes = collections.Counter(
+        clave[0] for clave, n in hoy.items() if n > LIMITES_DE_TAMANO[clave[0]]
+    )
     print(
-        f"tamano: nada crece (línea base: {guardados['archivo']} archivos sobre "
-        f"{LIMITES_DE_TAMANO['archivo']} líneas, {guardados['funcion']} funciones "
-        f"sobre {LIMITES_DE_TAMANO['funcion']})"
+        f"tamano: nada crece contra {ref} ({commit[:12]}). Pasan del límite hoy "
+        f"{grandes['archivo']} archivo(s) de más de {LIMITES_DE_TAMANO['archivo']} "
+        f"líneas y {grandes['funcion']} función(es) de más de "
+        f"{LIMITES_DE_TAMANO['funcion']}."
     )
-    for tipo, filas in por_tipo.items():
-        for lineas, clave in filas[:5]:
-            print(f"  {tipo}: {_nombre_de_tamano(clave)} {lineas}")
-    holgura = sum(1 for c, n in guardado.items() if cuenta.get(c, 0) < n)
-    if holgura:
-        print(f"  {holgura} entrada(s) pueden bajar con `tamano --actualizar`")
-    return 0
-
-
-def _bajar_tamano(cuenta: collections.Counter, linea_base: dict) -> int:
-    excesos = _excesos_de_tamano(cuenta, _cuenta(linea_base.get("tamano") or []))
-    if excesos:
-        print(
-            "tamano --actualizar solo baja la línea base; no sube ni agrega:",
-            file=sys.stderr,
-        )
-        print("\n".join(excesos), file=sys.stderr)
-        print(MENSAJE_TAMANO, file=sys.stderr)
-        return 1
-    linea_base["tamano"] = _lista(_sobre_el_limite(cuenta))
-    _escribir(linea_base)
     return 0
 
 
@@ -516,10 +526,6 @@ def _actualizar(linea_base: dict) -> None:
     linea_base["tipos"] = _lista(diagnosticos_tipos())
     linea_base["lint"] = _lista(diagnosticos_lint())
     linea_base.pop("io", None)
-    _escribir(linea_base)
-
-
-def _escribir(linea_base: dict) -> None:
     BASE.parent.mkdir(parents=True, exist_ok=True)
     BASE.write_text(json.dumps(linea_base, ensure_ascii=False, indent=1) + "\n")
 
@@ -530,7 +536,14 @@ def main(argv: list[str] | None = None) -> int:
         "modo", choices=("tipos", "lint", "io", "marcadores", "politica", "tamano")
     )
     ap.add_argument("--actualizar", action="store_true")
+    ap.add_argument(
+        "--base", default="origin/main", help="solo tamano: la referencia de git a comparar"
+    )
     args = ap.parse_args(argv)
+    if args.modo == "tamano":
+        if args.actualizar:
+            ap.error("tamano no guarda nada que actualizar: compara contra --base")
+        return _comparar_tamano(args.base)
     if args.modo == "politica":
         if args.actualizar:
             _regenerar_politica()
@@ -542,10 +555,6 @@ def main(argv: list[str] | None = None) -> int:
         print("politica: la tabla de AGENTS.md se genera desde politica.py")
         return 0
     linea_base = _cargar()
-    if args.modo == "tamano":
-        if args.actualizar:
-            return _bajar_tamano(tamanos(), linea_base)
-        return _comparar_tamano(tamanos(), linea_base)
     if args.actualizar:
         _actualizar(linea_base)
         return 0
