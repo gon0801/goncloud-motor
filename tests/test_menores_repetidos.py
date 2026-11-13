@@ -233,6 +233,25 @@ class CandadosDeSecretos(unittest.TestCase):
             )
             self.assertIn("falta el hook gitleaks", salida.stderr)
 
+    def test_quitar_el_hook_de_tamano_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".pre-commit-config.yaml"
+            texto = ruta.read_text(encoding="utf-8")
+            self.assertIn("      - id: calidad-tamano\n", texto)
+            ruta.write_text(
+                texto.replace("      - id: calidad-tamano\n", "", 1), encoding="utf-8"
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "quitar el hook que frena el tamaño de motor/ debe fallar el check",
+            )
+            self.assertIn("falta el hook calidad-tamano", salida.stderr)
+
     def test_un_hook_retirado_con_excepcion_anotada_pasa(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             raiz = _arbol_temporal(tmp)
