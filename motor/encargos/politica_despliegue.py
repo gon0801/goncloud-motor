@@ -51,8 +51,8 @@ def _huella(texto: str) -> str:
     return hashlib.sha256(texto.encode("utf-8")).hexdigest()
 
 
-def _revisiones(enc: Encargo) -> tuple[str, ...]:
-    fase = enc.fase_actual
+def _revisiones(enc: Encargo, fase=None) -> tuple[str, ...]:
+    fase = fase or enc.fase_actual
     if fase is None:
         return ()
     return tuple(dict.fromkeys(sha for sha in (
@@ -60,10 +60,12 @@ def _revisiones(enc: Encargo) -> tuple[str, ...]:
     ) if sha))
 
 
-def _leer(espacio: Path, archivo: Path, enc: Encargo) -> tuple[str, str] | None:
+def _leer(
+    espacio: Path, archivo: Path, enc: Encargo, fase=None
+) -> tuple[str, str] | None:
     """Los archivos del repo se leen del producto integrado cuando existe."""
     relativo = archivo.relative_to(espacio).as_posix() if archivo.is_relative_to(espacio) else ""
-    revisiones = _revisiones(enc) if relativo else ()
+    revisiones = _revisiones(enc, fase) if relativo else ()
     try:
         for revision in revisiones:
             resultado = subprocess.run(
@@ -192,10 +194,12 @@ def _politica_asociada(texto: str, fuente: str, fase_id: str,
     return PoliticaDespliegue()
 
 
-def _con_receta_repo(politica: PoliticaDespliegue, espacio: Path, enc: Encargo) -> PoliticaDespliegue:
+def _con_receta_repo(
+    politica: PoliticaDespliegue, espacio: Path, enc: Encargo, fase=None
+) -> PoliticaDespliegue:
     if politica.requiere_despliegue is not True or any(getattr(politica, k) for k in _RECETA):
         return politica
-    lectura = _leer(espacio, espacio / ".motor.toml", enc)
+    lectura = _leer(espacio, espacio / ".motor.toml", enc, fase)
     if lectura is None:
         return politica
     texto, fuente = lectura
@@ -210,17 +214,17 @@ def _con_receta_repo(politica: PoliticaDespliegue, espacio: Path, enc: Encargo) 
                    huella=_huella(politica.huella + texto))
 
 
-def resolver(espacio: Path, enc: Encargo) -> PoliticaDespliegue:
+def resolver(espacio: Path, enc: Encargo, fase=None) -> PoliticaDespliegue:
     """Desconocido conserva la exigencia global; nunca significa sin despliegue."""
     espacio = espacio.resolve()
-    fase = enc.fase_actual
+    fase = fase or enc.fase_actual
     if fase is not None and fase.despliegue_fuente and fase.requiere_despliegue is not None:
         politica = PoliticaDespliegue(
             fase.requiere_despliegue, fase.desplegar, fase.checklist, fase.rollback,
             fase.despliegue_fuente, fase.despliegue_huella,
             enc.despliegue_mapa, enc.despliegue_archivo,
         )
-        return _con_receta_repo(politica, espacio, enc)
+        return _con_receta_repo(politica, espacio, enc, fase)
     if fase is None or fase.id == FASE_IMPLICITA:
         politica = PoliticaDespliegue(enc.entrega.nivel == "desplegado", fuente="entrega del encargo",
                                      huella=_huella(enc.entrega.nivel))
@@ -228,7 +232,7 @@ def resolver(espacio: Path, enc: Encargo) -> PoliticaDespliegue:
         politicas = []
         lecturas = []
         for archivo in _fuentes(espacio, enc):
-            lectura = _leer(espacio, archivo, enc)
+            lectura = _leer(espacio, archivo, enc, fase)
             if lectura is not None:
                 lecturas.append((archivo, *lectura))
                 candidata = _del_plan(lectura[0], fase.id, lectura[1])
@@ -237,13 +241,13 @@ def resolver(espacio: Path, enc: Encargo) -> PoliticaDespliegue:
         if not politicas and enc.despliegue_mapa:
             if {f.id for f in enc.fases} != {ident for ident, _ in enc.despliegue_mapa}:
                 return PoliticaDespliegue()
-            lectura = _leer(espacio, Path(enc.despliegue_archivo), enc)
+            lectura = _leer(espacio, Path(enc.despliegue_archivo), enc, fase)
             if lectura is None:
                 return PoliticaDespliegue()
             politica = _politica_asociada(
                 *lectura, fase.id, enc.despliegue_mapa, enc.despliegue_archivo,
             )
-            return _con_receta_repo(politica, espacio, enc)
+            return _con_receta_repo(politica, espacio, enc, fase)
         if not politicas:
             posicionales = [
                 (archivo, texto, fuente, mapa) for archivo, texto, fuente in lecturas
@@ -268,17 +272,19 @@ def resolver(espacio: Path, enc: Encargo) -> PoliticaDespliegue:
     if enc.despliegue_mapa:
         politica = replace(politica, correspondencia=enc.despliegue_mapa,
                            archivo_plan=enc.despliegue_archivo)
-    return _con_receta_repo(politica, espacio, enc)
+    return _con_receta_repo(politica, espacio, enc, fase)
 
 
-def adoptar(registro: Registro, enc: Encargo, espacio: Path, hora: str) -> Encargo:
+def adoptar(
+    registro: Registro, enc: Encargo, espacio: Path, hora: str, fase=None
+) -> Encargo:
     """Persiste el contrato antes de que el nivel permita cerrar esta fase."""
     if enc.entrega.nivel != "desplegado":
         return enc
-    politica = resolver(espacio, enc)
+    fase = fase or enc.fase_actual
+    politica = resolver(espacio, enc, fase)
     if politica.requiere_despliegue is None:
         return enc
-    fase = enc.fase_actual
     if fase is not None and fase.estado == "preparada":
         return enc
     fase_id = fase.id if fase else FASE_IMPLICITA

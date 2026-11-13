@@ -37,6 +37,7 @@ _EVENTOS_DE_MARCADOR = (
     "deepseek_cerrado",
     "ci_sondeo",
     "excepcion",
+    "conciliacion_fase",
 )
 
 # Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
@@ -491,6 +492,27 @@ class Fase:
     inspeccion_pendiente: str = ""
     inspeccion_solicitud: str = ""
     inspeccion_entregada: str = ""
+    # Última consulta a GitHub para conciliar el PR de esta fase cuando ya no
+    # es la activa. Acota el sondeo: una fase no se consulta en cada pasada.
+    conciliado_en: str = ""
+    # Causa de un despliegue terminalmente fallido en una fase conciliada. La
+    # fase no se reintenta sola y el cierre no la espera para siempre.
+    despliegue_impedido: str = ""
+    # Hora a la que una receta conciliada que no arrancó vuelve a intentarse.
+    # Evita relanzarla en cada pasada y conserva la causa en el registro.
+    despliegue_espera_en: str = ""
+    # Intentos consumidos por esa espera; al tope la fase deja de retener el
+    # cierre y su causa queda como impedimento terminal.
+    despliegue_espera_intentos: int = 0
+    # Una receta conciliada lanzada y todavía sin recibo final. El cierre no
+    # puede retirar la autorización mientras el trabajador está entre pasos.
+    despliegue_en_curso: bool = False
+    # La espera agotó su tope: no se reintenta sin una orden nueva.
+    despliegue_espera_agotada: bool = False
+    # Última orden de continuar consumida por un reintento de esta fase.
+    despliegue_orden_consumida: int = 0
+    # Intentos de lanzamiento anotados; da identidad al `en_curso` de cada uno.
+    despliegue_intentos: int = 0
     inspecciones_consumidas: tuple[str, ...] = ()
     entrega_bloqueada_sha: str = ""
     # Resultado del CI real del PR, leído una sola vez después de entregar.
@@ -558,6 +580,7 @@ class Fase:
             "inspeccion_pendiente": self.inspeccion_pendiente,
             "inspeccion_solicitud": self.inspeccion_solicitud,
             "inspeccion_entregada": self.inspeccion_entregada,
+            "conciliado_en": self.conciliado_en,
             "inspecciones_consumidas": list(self.inspecciones_consumidas),
             "ci_pr": {
                 "sha": self.ci_pr_sha,
@@ -2097,8 +2120,14 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             hora=hora or e.hora,
         )
     if kind == "politica_despliegue":
-        e = _fase_de_evento(e, d)
-        fase = e.fase_actual
+        pedida = str(d.get("fase") or "")
+        if pedida and pedida != e.fase_activa:
+            fase = next((f for f in e.fases if f.id == pedida), None)
+            if fase is None:
+                raise TransicionIlegal("la política nombra una fase inexistente")
+        else:
+            e = _fase_de_evento(e, d)
+            fase = e.fase_actual
         if fase is None or fase.estado == "preparada":
             raise TransicionIlegal("no se cambia la política de una fase cerrada")
         fuente, huella = str(d.get("fuente") or ""), str(d.get("huella") or "")
@@ -2475,6 +2504,8 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         return _bloqueo_fase(e, d, hora)
     if kind == "fase_reactivada":
         return _fase_reactivada(e, d, hora)
+    if kind == "conciliacion_fase":
+        return _conciliacion_fase(e, d, hora)
     if kind == "fase_desplegada":
         return _fase_desplegada(e, d, hora)
     if kind == "arbol":
@@ -3107,6 +3138,32 @@ def queda_trabajo(fases: tuple[Fase, ...]) -> bool:
     return any(
         f.estado not in ("preparada", "bloqueada")
         and not dependencia_bloqueada(fases, f)
+        for f in fases
+    )
+
+
+def _espera_despliegue_pendiente(e: Encargo, fases: tuple[Fase, ...]) -> bool:
+    """Una fase integrada con su despliegue pendiente sigue siendo trabajo vivo.
+
+    Cerrar el encargo mientras su recibo existe o su receta corre abandonaría
+    un avance que la conciliación completa sin abrir otro turno. Una fase
+    bloqueada sin espera explícita la reconcilia el cierre de main desde su
+    recibo aplicado; una fase no bloqueada o en espera reintentable no tiene
+    ese camino y debe retener el cierre.
+    """
+    if nivel_objetivo(e) != "desplegado":
+        return False
+    return any(
+        f.estado != "preparada"
+        and nivel_de(f) == "integrado"
+        and not f.desplegado_recibo
+        and not f.despliegue_impedido
+        and f.requiere_despliegue is not False
+        and (
+            f.estado != "bloqueada"
+            or bool(f.despliegue_espera_en)
+            or f.despliegue_en_curso
+        )
         for f in fases
     )
 
@@ -3744,6 +3801,20 @@ def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
             rol="",
             siguiente="esperar a que una dependencia se prepare",
         )
+    if _espera_despliegue_pendiente(e, e.fases):
+        # El cierre con pendientes de una fase no abandona el despliegue ya
+        # aplicado de otra: la conciliación lo completa y da el turno a su
+        # dependiente, sin reabrir roles ni esperar a una persona.
+        return replace(
+            e,
+            estado="recibido",
+            rol="",
+            motivo="",
+            siguiente="esperar la conciliación del despliegue pendiente",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            devuelto_con=(),
+        )
     return replace(
         e,
         estado="terminado",
@@ -3799,6 +3870,248 @@ def _fase_reactivada(e: Encargo, d: dict, hora: str) -> Encargo:
             hora=hora or e.hora,
         )
     )
+
+
+def _fase_para_preparar(fase: Fase, evidencia: str = "") -> Fase:
+    if fase.estado == "preparada":
+        return fase
+    if not (fase.evidencia or fase.revision_vigente):
+        if not evidencia:
+            return fase
+        fase = replace(fase, evidencia=evidencia)
+    return replace(fase, estado="preparada")
+
+
+def _dejar_fase(e: Encargo, nueva: Fase, hora: str, hecho: str) -> Encargo:
+    if nueva.estado == "preparada":
+        firma = nueva.producto.firma if nueva.producto else ""
+        fases = _preparar_con_entrada(e.fases, nueva, firma)
+    else:
+        fases = tuple(nueva if f.id == nueva.id else f for f in e.fases)
+    resultado = replace(e, fases=fases, hora=hora or e.hora, ultimo_hecho=hecho)
+    if nueva.estado != "preparada" or resultado.estado not in (
+        "recibido", "ejecutando"
+    ):
+        return resultado
+    # La fase activa ya terminó o quedó bloqueada: el avance de una fase
+    # conciliada puede dar el turno a un dependiente. Si la activa sigue
+    # trabajando, su turno no se toca.
+    actual = next(
+        (f for f in fases if f.id == resultado.fase_activa), None
+    )
+    if actual is not None and actual.estado not in ("preparada", "bloqueada"):
+        return resultado
+    disponible = _fase_disponible(fases)
+    if disponible is None:
+        return resultado
+    return sesiones_de_fase_nueva(
+        replace(
+            resultado,
+            estado="recibido",
+            fase_activa=disponible.id,
+            rol="responsable",
+            estrategia="investigar",
+            motivo="",
+            reanuda_en="",
+            siguiente=f"trabajar la fase {disponible.id}",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            devuelto_con=(),
+        )
+    )
+
+
+def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
+    """Concilia el PR de una fase que ya no es la activa.
+
+    El merge lo decidió una persona: la fase queda aceptada con lo que tenía,
+    sin reabrir al responsable ni al revisor y sin tocar el turno de la fase
+    activa. Los hallazgos y pendientes que ya estaban registrados no se borran.
+    """
+    pedida = str(d.get("fase") or "")
+    fase = next((f for f in e.fases if f.id == pedida), None)
+    if fase is None:
+        raise TransicionIlegal(
+            f"la conciliación nombra una fase inexistente: {pedida or '?'}"
+        )
+    paso = str(d.get("paso") or "")
+    if paso == "consulta":
+        return replace(
+            con_fase(e, replace(fase, conciliado_en=hora or e.hora)),
+            hora=hora or e.hora,
+        )
+    if paso == "politica":
+        nueva = replace(fase, **datos_despliegue(d))
+        if str(d.get("fuente") or ""):
+            nueva = replace(nueva, despliegue_fuente=str(d["fuente"]))
+        if str(d.get("huella") or ""):
+            nueva = replace(nueva, despliegue_huella=str(d["huella"]))
+        return replace(
+            con_fase(e, nueva), **_correspondencia_despliegue(e, d)
+        )
+    if paso == "impedimento":
+        causa = str(d.get("causa") or "").strip()
+        if not causa:
+            raise TransicionIlegal("la conciliación impedida no trae causa")
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_impedido=causa[:500],
+                    despliegue_en_curso=False,
+                ),
+            ),
+            hora=hora or e.hora,
+        )
+    if paso == "en_curso":
+        # La receta se lanzó y el trabajador corre entre pasos: el cierre no
+        # puede retirar su autorización. Un intento nuevo limpia el terminal.
+        intentos = int(d.get("intentos") or (fase.despliegue_intentos + 1))
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_en_curso=True,
+                    despliegue_espera_en="",
+                    despliegue_impedido="",
+                    despliegue_espera_agotada=False,
+                    despliegue_intentos=intentos,
+                ),
+            ),
+            hora=hora or e.hora,
+        )
+    if paso == "espera_agotada":
+        causa = str(d.get("causa") or "").strip()
+        if not causa:
+            raise TransicionIlegal("la espera agotada no trae causa")
+        consumida = fase.despliegue_orden_consumida
+        if "ordenes" in d:
+            try:
+                consumida = int(d.get("ordenes") or 0)
+            except (TypeError, ValueError):
+                pass
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_impedido=causa[:500],
+                    despliegue_espera_en="",
+                    despliegue_en_curso=False,
+                    despliegue_espera_agotada=True,
+                    despliegue_orden_consumida=consumida,
+                ),
+            ),
+            hora=hora or e.hora,
+        )
+    if paso == "reintento":
+        # Una orden nueva reabre la espera agotada una vez y resetea el conteo.
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_impedido="",
+                    despliegue_espera_en="",
+                    despliegue_espera_intentos=0,
+                    despliegue_en_curso=False,
+                    despliegue_espera_agotada=False,
+                    despliegue_orden_consumida=int(d.get("ordenes") or 0),
+                ),
+            ),
+            hora=hora or e.hora,
+        )
+    if paso == "espera":
+        causa = str(d.get("causa") or "").strip()
+        reanuda_en = str(d.get("reanuda_en") or "").strip()
+        # Los eventos anteriores al tope no traían `intentos`: se pliegan como
+        # el primero, sin volver ilegible el registro ya escrito.
+        try:
+            intentos = int(d.get("intentos") or 1)
+        except (TypeError, ValueError):
+            intentos = 1
+        if intentos < 1:
+            intentos = 1
+        if not causa or not reanuda_en:
+            raise TransicionIlegal(
+                "la espera de conciliación necesita causa y reanudación"
+            )
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    despliegue_espera_en=reanuda_en,
+                    despliegue_espera_intentos=intentos,
+                    despliegue_en_curso=False,
+                ),
+            ),
+            hora=hora or e.hora,
+        )
+    if paso == "integrado":
+        recibo = str(d.get("recibo") or d.get("sha") or "")
+        if not recibo:
+            raise TransicionIlegal("la conciliación integrada no trae el merge commit")
+        datos = datos_despliegue(d)
+        nueva = replace(
+            fase,
+            ultimo_paso_entrega="integrado",
+            integrado_sha=recibo,
+            base=str(d.get("base") or fase.base),
+            pr_numero=int(d.get("numero") or fase.pr_numero or 0),
+            conciliado_en=hora or e.hora,
+            despliegue_impedido="",
+            despliegue_espera_en="",
+            despliegue_espera_intentos=0,
+            despliegue_en_curso=False,
+            despliegue_espera_agotada=False,
+            despliegue_orden_consumida=0,
+            **datos,
+        )
+        if str(d.get("fuente") or ""):
+            nueva = replace(nueva, despliegue_fuente=str(d["fuente"]))
+        if str(d.get("huella") or ""):
+            nueva = replace(nueva, despliegue_huella=str(d["huella"]))
+        if nivel_objetivo(e) != "desplegado" or nueva.requiere_despliegue is False:
+            nueva = _fase_para_preparar(nueva, f"merge {recibo} aceptado por el propietario")
+        return replace(
+            _dejar_fase(
+                e, nueva, hora, f"fase {fase.id} conciliada como integrada"
+            ),
+            **_correspondencia_despliegue(e, d),
+        )
+    if paso == "desplegado":
+        recibo = str(d.get("recibo") or d.get("sha") or "")
+        if not recibo:
+            raise TransicionIlegal("la conciliación desplegada no trae recibo")
+        nueva = _fase_para_preparar(
+            replace(
+                fase,
+                ultimo_paso_entrega="desplegado",
+                desplegado_recibo=recibo,
+                conciliado_en=hora or e.hora,
+                despliegue_impedido="",
+                despliegue_espera_en="",
+                despliegue_espera_intentos=0,
+                despliegue_en_curso=False,
+                despliegue_espera_agotada=False,
+                despliegue_orden_consumida=0,
+            ),
+            f"despliegue {recibo} verificado",
+        )
+        return _dejar_fase(
+            e, nueva, hora, f"fase {fase.id} conciliada como desplegada"
+        )
+    if paso == "preparada":
+        nueva = _fase_para_preparar(
+            fase, f"conciliada con {fase.integrado_sha or fase.pr_sha}"
+        )
+        if nueva.estado != "preparada":
+            return e
+        return _dejar_fase(e, nueva, hora, f"fase {fase.id} lista")
+    raise TransicionIlegal(f"paso de conciliación desconocido: {paso}")
 
 
 def _fase_desplegada(e: Encargo, d: dict, hora: str) -> Encargo:
@@ -4422,6 +4735,27 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 sesiones_de_fase_nueva(resultado)
                 if pendientes[0].id != fase.id
                 else resultado
+            )
+        if _espera_despliegue_pendiente(e, fases):
+            # El cierre confirmado no puede abandonar una fase integrada que
+            # espera su despliegue y que el cierre de main no va a reconciliar.
+            return replace(
+                e,
+                fases=fases,
+                estado="recibido",
+                rol="",
+                estrategia="investigar",
+                motivo="",
+                siguiente="esperar la conciliación del despliegue pendiente",
+                evidencia=evidencias,
+                intentos_nuevos=True,
+                escrituras=e.autoridad,
+                ultimo_hecho=(
+                    f"fase {fase.id} preparada; espera la conciliación del "
+                    "despliegue pendiente"
+                ),
+                devuelto_con=(),
+                hora=hora or e.hora,
             )
         # Quien cierra anota cuántas correcciones cubre (vistas o dichas en la
         # nota). Una que entró después no la atendió nadie: el registro rechaza

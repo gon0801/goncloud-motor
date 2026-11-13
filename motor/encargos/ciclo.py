@@ -76,6 +76,7 @@ from .dominio import (
     respuesta_consumida,
     revision_externa_pendiente,
     nivel_cumplido,
+    nivel_de,
     nivel_objetivo,
     limita_mas_que,
     sin_nada_en_curso,
@@ -120,6 +121,10 @@ from .resultado import Avanzo, Devolver, Espera, NecesitaAgente, Resultado, perm
 from .suscripciones import CuentaNoDisponible
 
 _UMBRAL_S = 30
+# Un PR de una fase que ya no es la activa se consulta como mucho una vez cada
+# dos minutos por encargo. El merge es una decisión humana: no hace falta
+# enterarse al segundo, y así una pasada nunca gasta una llamada por fase.
+_CONCILIACION_INTERVALO_MIN = 2.0
 
 # Quietud: un encargo abierto que no espera con hora ni tiene agente, lanzamiento
 # o paso externo en curso, y cuyo registro no se mueve. Toda espera con hora
@@ -2021,6 +2026,7 @@ def _barrer_encargos(
         # Reintentar o conciliar el despliegue pendiente de una fase bloqueada
         # no depende de que el encargo este despierto: la fase en curso puede
         # estar esperando por otra causa sin perder su turno.
+        reintentado = False
         if (
             enc is not None
             and not parada
@@ -2029,7 +2035,19 @@ def _barrer_encargos(
             and enc.proc is None
             and not enc.reserva
         ):
-            enc = _reintentar_despliegue_pendiente(registro, enc, hora, espacio)
+            enc, reintentado = _reintentar_despliegue_pendiente(
+                registro, enc, hora, espacio
+            )
+        if (
+            enc is not None
+            and not reintentado
+            and not parada
+            and enc.via != "directa"
+            and enc.estado
+            in ("recibido", "ejecutando", "esperando_reintento")
+            and enc.intentos_nuevos
+        ):
+            enc = _conciliar_fases(registro, enc, gh, hora)
         resultado_paso: Resultado = NecesitaAgente(
             str(getattr(enc, "rol", "") or "responsable")
         )
@@ -5208,6 +5226,9 @@ _TOPE_CAUSA_AVISO = 140
 # sexto intento ocupado seguido se rinde con un impedimento en llano.
 ESPERAS_OCUPADO_S = (900, 1800, 3600, 7200, 14400)
 TOPE_OCUPADO = len(ESPERAS_OCUPADO_S) + 1
+# Una receta conciliada que no arranca no puede reintentarse para siempre: al
+# tope deja su causa como impedimento terminal y el cierre deja de esperarla.
+TOPE_ESPERA = 5
 
 
 def _causa_con_aviso(
@@ -9243,6 +9264,331 @@ def _entregar_con_falla_permanente(
     return registro.fold(enc.id) or enc
 
 
+def _anotar_conciliacion(
+    registro: Registro, enc: Encargo, fase: Fase, paso: str, hora: str, **extra
+) -> Encargo:
+    datos = {"fase": fase.id, "paso": paso, "hora": hora, **extra}
+    marca = (
+        extra.get("recibo") or extra.get("sha") or extra.get("huella") or hora
+    )
+    registro.anotar(
+        enc.id,
+        {"kind": "conciliacion_fase", "data": datos},
+        f"conciliacion:{enc.id}:{fase.id}:{paso}:{marca}",
+    )
+    return registro.fold(enc.id) or enc
+
+
+def _anotar_impedimento_de_fase(
+    registro: Registro, enc: Encargo, fase: Fase, causa: str, hora: str,
+    intentos: int | None = None,
+) -> Encargo:
+    """Un despliegue terminal deja la causa visible y la fase deja de retener
+    el cierre. No marca una espera global ni relanza roles. `intentos` da
+    identidad al hecho de cada lanzamiento; sin él se conserva el dedupe."""
+    clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
+    _anotar_impedimento(
+        registro, enc, clase, causa,
+        "que el despliegue pueda completarse o se retire del pedido", hora,
+    )
+    huella = f"{clase}:{intentos}" if intentos is not None else clase
+    return _anotar_conciliacion(
+        registro, enc, fase, "impedimento", hora, causa=causa, huella=huella
+    )
+
+
+def _vuelve_a_lanzar(registro: Registro, enc: Encargo, fase: Fase, recibo) -> bool:
+    """Si `iniciar` va a lanzar o ya tiene un trabajador, frente a solo leer un
+    recibo terminal. Evita marcar `en_curso` en una relectura fallida."""
+    from . import despliegue
+
+    if recibo is None:
+        return True
+    estado = str(recibo.get("estado") or "")
+    if estado in ("ejecutando", "ocupado"):
+        return True
+    if estado == "aplicado":
+        return False
+    if estado in ("fallido", "esperando"):
+        ordenes = despliegue.continuaciones(registro, enc.id)
+        return ordenes > int(recibo.get("continuadas") or 0)
+    return True
+
+
+def _paso_despliegue_fase(
+    registro: Registro, enc: Encargo, fase: Fase, espacio: Path, hora: str
+) -> Encargo:
+    """Sigue el camino de despliegue de una fase conciliada sin hacerla activa."""
+    from . import despliegue, politica_despliegue
+
+    fase = next((f for f in enc.fases if f.id == fase.id), fase)
+    if (
+        nivel_objetivo(enc) != "desplegado"
+        or nivel_de(fase) != "integrado"
+        or fase.estado == "preparada"
+    ):
+        return enc
+    if fase.despliegue_espera_en and hora < fase.despliegue_espera_en:
+        # Una receta que no arrancó espera su ventana antes de reintentarse.
+        return enc
+    recibo = despliegue.recibo_de(registro, enc, fase)
+    if fase.despliegue_espera_agotada:
+        # Sin una orden nueva no se consulta el remoto ni se reintenta: el tope
+        # también detiene los fetch, no solo `iniciar`.
+        ordenes = despliegue.continuaciones(registro, enc.id)
+        if ordenes <= int(fase.despliegue_orden_consumida):
+            return enc
+        # Una orden nueva reabre la espera agotada una vez.
+        enc = _anotar_conciliacion(
+            registro, enc, fase, "reintento", hora,
+            huella=f"agotada:{ordenes}", ordenes=ordenes,
+        )
+        fase = next((f for f in enc.fases if f.id == fase.id), fase)
+    # Un fallo transitorio al traer el merge commit no debe dejar integrada una
+    # fase que no puede leer su receta: se reintenta al reanudar el despliegue.
+    _asegurar_commit_local(espacio, fase.integrado_sha, enc.entrega.base)
+    libro = despliegue.ocupado(registro, enc, fase)
+    estado_recibo = str((recibo or {}).get("estado") or "")
+    # El libro del tope solo manda si la receta sigue declarando el destino
+    # ocupado. Un recibo fallido o en curso tiene su propia causa y no puede
+    # quedar tapado por los intentos ocupados anteriores.
+    if libro and estado_recibo in ("", "ocupado"):
+        intentos = int(libro.get("intentos") or 0)
+        if intentos >= TOPE_OCUPADO:
+            proceso = str(libro.get("proceso") or "").strip()
+            causa = (
+                f"fase {fase.id}: el despliegue estuvo ocupado "
+                f"{intentos} veces desde {libro.get('desde') or hora} "
+                f"(última vez {libro.get('ultimo') or hora}); "
+                "la receta reporta: "
+                f"{proceso or 'el proceso que ocupa el destino'}. "
+                "Producción no cambió: cada reversa terminó sin cambios. "
+                "Una orden de continuar puede reintentar el mismo SHA."
+            )
+            return _anotar_impedimento_de_fase(
+                registro, enc, fase, causa, hora,
+                intentos=int(fase.despliegue_intentos),
+            )
+        reanuda = _reanuda_desde(
+            str(libro.get("ultimo") or hora), ESPERAS_OCUPADO_S[intentos - 1]
+        )
+        if _reanuda_desde(hora, 0) < reanuda:
+            # La espera es de esta fase: la fase activa conserva su turno y
+            # la receta ocupada no se relanza en cada pasada.
+            return enc
+    politica = politica_despliegue.resolver(espacio, enc, fase)
+    if politica.requiere_despliegue is None:
+        return enc
+    if politica.requiere_despliegue is False:
+        return _anotar_conciliacion(registro, enc, fase, "preparada", hora)
+    rutas = {k: getattr(politica, k) for k in ("desplegar", "checklist", "rollback")}
+    if any(rutas.values()) and any(
+        getattr(fase, k) != rutas[k] for k in rutas
+    ):
+        # La receta se resolvió después de recuperar el commit. Se persiste en
+        # la fase para que la identidad del recibo y del libro ocupado coincida
+        # con la que usa el ejecutor.
+        enc = _anotar_conciliacion(
+            registro, enc, fase, "politica", hora, **politica.datos()
+        )
+        fase = next((f for f in enc.fases if f.id == fase.id), fase)
+    if _vuelve_a_lanzar(registro, enc, fase, recibo):
+        intentos_lanzamiento = int(fase.despliegue_intentos) + 1
+        enc = _anotar_conciliacion(
+            registro, enc, fase, "en_curso", hora,
+            huella=f"{fase.integrado_sha}:{intentos_lanzamiento}",
+            intentos=intentos_lanzamiento,
+        )
+        fase = next((f for f in enc.fases if f.id == fase.id), fase)
+    resultado = despliegue.iniciar(registro, enc, espacio, politica, hora, fase)
+    estado = str(resultado.get("estado") or "")
+    if estado in ("fallido", "incierto"):
+        # Un despliegue terminal no puede quedar en silencio: se registra la
+        # causa y la fase deja de retener el cierre. Una orden de continuar
+        # todavía puede reintentar la misma receta.
+        causa = str(resultado.get("motivo") or "despliegue sin verificar")
+        if resultado.get("recibo"):
+            causa += "; recibo: " + str(resultado["recibo"])
+        causa = f"fase {fase.id}: {causa}"
+        return _anotar_impedimento_de_fase(
+            registro, enc, fase, causa, hora,
+            intentos=int(fase.despliegue_intentos),
+        )
+    if estado == "esperando":
+        # La receta no arrancó (falta la receta, el SHA o la autoridad). La
+        # causa queda visible y la fase espera antes de reintentarse, sin
+        # marcar una espera global que frene a la fase activa.
+        causa = str(resultado.get("motivo") or "la receta no arrancó")
+        if resultado.get("recibo"):
+            causa += "; recibo: " + str(resultado["recibo"])
+        intentos = int(fase.despliegue_espera_intentos) + 1
+        causa = f"fase {fase.id}: {causa}"
+        if intentos >= TOPE_ESPERA:
+            causa += f" (la receta no arrancó {intentos} veces)"
+            enc = _anotar_impedimento_de_fase(
+                registro, enc, fase, causa, hora,
+                intentos=int(fase.despliegue_intentos),
+            )
+            ordenes = despliegue.continuaciones(registro, enc.id)
+            return _anotar_conciliacion(
+                registro, enc, fase, "espera_agotada", hora,
+                causa=causa,
+                huella=f"agotada:{intentos}:{ordenes}",
+                ordenes=ordenes,
+            )
+        clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
+        _anotar_impedimento(
+            registro, enc, clase, causa,
+            "que el despliegue pueda completarse o se retire del pedido", hora,
+        )
+        reanuda = _reanuda_desde(hora, 30)
+        return _anotar_conciliacion(
+            registro, enc, fase, "espera", hora,
+            causa=causa, reanuda_en=reanuda,
+            huella=f"{reanuda}:{intentos}", intentos=intentos,
+        )
+    if estado != "aplicado":
+        # La receta sigue corriendo o quedó pendiente. No se marca una espera
+        # del encargo: la fase activa conserva su turno y la próxima pasada
+        # vuelve a leer el mismo recibo.
+        return registro.fold(enc.id) or enc
+    return _anotar_conciliacion(
+        registro, enc, fase, "desplegado", hora,
+        sha=fase.integrado_sha,
+        recibo=str(resultado.get("recibo") or fase.integrado_sha),
+    )
+
+
+def _asegurar_commit_local(espacio: Path, sha: str, base: str) -> None:
+    """Trae el merge commit antes de leer la política desde su árbol.
+
+    El worker del despliegue también lo busca, pero la política se resuelve
+    antes y un commit que solo vive en el remoto dejaría la receta vacía.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40,64}", sha or ""):
+        return
+    if _git(espacio, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0:
+        return
+    if _git(espacio, "fetch", "--quiet", "origin", sha).returncode == 0:
+        return
+    if base:
+        _git(espacio, "fetch", "--quiet", "origin", base)
+
+
+def _conciliar_fases(
+    registro: Registro, enc: Encargo, gh, hora: str
+) -> Encargo:
+    """Concilia los PR de fases que ya no son la activa.
+
+    El sondeo de GitHub está acotado a una consulta por pasada y como mucho
+    cada `_CONCILIACION_INTERVALO_MIN` por fase: un merge humano no cambia al
+    segundo y no puede costar una llamada por fase en cada vuelta. El merge se
+    anota en la fase que corresponde y, si toca desplegarla, la receta corre
+    con su merge commit sin relaunch del responsable y sin mover el turno de la
+    fase activa.
+    """
+    from . import despliegue, politica_despliegue
+
+    if not enc.fases or enc.entrega.nivel not in (
+        "pr", "integrado", "desplegado"
+    ):
+        return enc
+    espacio = _espacio(registro.base, enc.id)
+    activa = enc.fase_actual
+    # La fase activa tiene prioridad para su propio despliegue: no se lanza la
+    # receta de otra fase en la misma vuelta que la va a lanzar la activa. Una
+    # fase bloqueada no va a lanzar su receta: no puede impedir que se
+    # incorporen los recibos ya aplicados de otra fase.
+    activa_despliega = (
+        activa is not None
+        and nivel_objetivo(enc) == "desplegado"
+        and nivel_de(activa) == "integrado"
+        and activa.estado not in ("preparada", "bloqueada")
+    )
+    if enc.proc is None and not enc.reserva and not activa_despliega:
+        for fase in tuple(enc.fases):
+            if fase.id == enc.fase_activa:
+                continue
+            if fase.estado == "preparada" or nivel_de(fase) != "integrado":
+                continue
+            recibo = despliegue.recibo_de(registro, enc, fase)
+            if (
+                recibo is not None
+                and recibo.get("estado")
+                in ("aplicado", "fallido", "ocupado", "ejecutando")
+                and despliegue.orden_pendiente(
+                    registro, enc, fase,
+                    int(recibo.get("continuadas") or 0), espacio,
+                )
+            ):
+                # El reintento autorizado de esa fase conserva el turno y la
+                # conciliación del recibo llega en la pasada siguiente.
+                continue
+            enc = _paso_despliegue_fase(registro, enc, fase, espacio, hora)
+    if gh is None or gh is _PUERTO_DEL_REGISTRO:
+        return enc
+    candidatas = [
+        fase for fase in enc.fases
+        if fase.id != enc.fase_activa
+        and fase.pr_numero
+        and nivel_de(fase) == "pr"
+        and (
+            not fase.conciliado_en
+            or _minutos_desde(fase.conciliado_en, hora)
+            >= _CONCILIACION_INTERVALO_MIN
+        )
+    ]
+    if not candidatas:
+        return enc
+    candidata = min(candidatas, key=lambda fase: fase.conciliado_en)
+    try:
+        vista = gh.ver(enc.entrega.repo, candidata.pr_numero)
+    except Exception as exc:  # noqa: BLE001  una lectura caída no cambia la fase
+        return _anotar_conciliacion(
+            registro, enc, candidata, "consulta", hora,
+            resultado="error", causa=str(exc)[:300],
+        )
+    if vista.estado != "mergeado" or vista.base != enc.entrega.base:
+        return _anotar_conciliacion(
+            registro, enc, candidata, "consulta", hora,
+            resultado=vista.estado, base=str(vista.base),
+        )
+    if enc.entrega.nivel not in ("integrado", "desplegado"):
+        # La entrega no pide integrar: el PR mergeado se observa, pero la fase
+        # ya estaba en el nivel que el encargo autorizó y no se reescribe.
+        return _anotar_conciliacion(
+            registro, enc, candidata, "consulta", hora,
+            resultado="mergeado", base=str(vista.base),
+        )
+    recibo = vista.merge_commit or vista.head
+    _asegurar_commit_local(espacio, recibo, enc.entrega.base)
+    integrada = replace(
+        candidata, integrado_sha=recibo, ultimo_paso_entrega="integrado"
+    )
+    politica = politica_despliegue.resolver(espacio, enc, integrada)
+    extra = {
+        "sha": recibo,
+        "recibo": recibo,
+        "numero": candidata.pr_numero,
+        "base": vista.base,
+        "resultado": "mergeado",
+    }
+    if politica.requiere_despliegue is not None:
+        extra.update(politica.datos())
+    enc = _anotar_conciliacion(registro, enc, candidata, "integrado", hora, **extra)
+    fase = next((f for f in enc.fases if f.id == candidata.id), None)
+    if (
+        fase is not None
+        and enc.proc is None
+        and not enc.reserva
+        and not activa_despliega
+        and nivel_de(fase) == "integrado"
+        and fase.estado != "preparada"
+    ):
+        enc = _paso_despliegue_fase(registro, enc, fase, espacio, hora)
+    return enc
+
+
 def _paso_entrega_paso(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> tuple[Encargo, Resultado]:
@@ -9251,6 +9597,7 @@ def _paso_entrega_paso(
 
     from .politica_despliegue import adoptar as adoptar_politica_despliegue
 
+    enc = _conciliar_fases(registro, enc, gh, hora)
     enc = adoptar_politica_despliegue(
         registro, enc, _espacio(registro.base, enc.id), hora
     )
@@ -10232,27 +10579,28 @@ def _conciliar_despliegues_aplicados(
 
 def _reintentar_despliegue_pendiente(
     registro, enc: Encargo, hora: str, espacio: Path | None = None
-) -> Encargo:
+) -> tuple[Encargo, bool]:
     """Una orden de continuar sin consumir vuelve a correr la receta del mismo
     SHA de la fase bloqueada, sin reabrirla.
 
     El producto ya está aprobado e integrado: no se abren intentos del
     responsable ni del revisor y la fase en curso conserva su turno. Si la
     receta sale 0, la fase llega a desplegado; si falla, sigue bloqueada como
-    hoy y solo frena a ella y a sus dependientes.
+    hoy y solo frena a ella y a sus dependientes. El segundo valor dice si esta
+    pasada atendió el reintento, para no conciliar su recibo en la misma vuelta.
     """
     from . import despliegue
 
     if enc.estado not in ("recibido", "ejecutando", "esperando_reintento") or enc.proc is not None or enc.reserva:
-        return enc
+        return enc, False
     if not any(
         f.estado == "bloqueada" and f.requiere_despliegue
         and f.integrado_sha and not _fase_desplegada_vigente(registro, enc, f)
         for f in enc.fases
     ):
-        return enc
+        return enc, False
     if despliegue.continuaciones(registro, enc.id) <= 0:
-        return enc
+        return enc, False
     if espacio is None:
         espacio = _espacio(registro.base, enc.id)
     for fase in enc.fases:
@@ -10277,9 +10625,9 @@ def _reintentar_despliegue_pendiente(
         if resultado.get("estado") == "aplicado":
             return _registrar_fase_desplegada(
                 registro, enc, fase, resultado, hora
-            )
-        return registro.fold(enc.id) or enc
-    return enc
+            ), True
+        return registro.fold(enc.id) or enc, True
+    return enc, False
 
 
 def _despliegue_ocupado(
@@ -10358,7 +10706,9 @@ def _paso_despliegue(
     """El sello se obtiene de la receta ejecutada sobre el commit integrado."""
     from . import despliegue, politica_despliegue
 
-    enc = _reintentar_despliegue_pendiente(registro, enc, hora, espacio)
+    enc, _ = _reintentar_despliegue_pendiente(
+        registro, enc, hora, espacio
+    )
     if nivel_objetivo(enc) != "desplegado" or enc.nivel_alcanzado != "integrado":
         return enc
     enc = politica_despliegue.adoptar(registro, enc, espacio, hora)

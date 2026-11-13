@@ -291,11 +291,10 @@ def _directorio_de_fase(registro, enc, fase):
         return None
 
 
-def ocupado(registro, enc) -> dict:
-    """El libro de intentos ocupados del despliegue de la fase activa; vacío
-    si no hay. Es por identidad: el libro de otra fase del encargo no manda
-    aquí."""
-    directorio = _directorio_de_fase(registro, enc, enc.fase_actual)
+def ocupado(registro, enc, fase=None) -> dict:
+    """El libro de intentos ocupados del despliegue de una fase; vacío si no
+    hay. Es por identidad: el libro de otra fase del encargo no manda aquí."""
+    directorio = _directorio_de_fase(registro, enc, fase or enc.fase_actual)
     if directorio is None:
         return {}
     try:
