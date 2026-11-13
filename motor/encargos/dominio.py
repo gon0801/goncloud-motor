@@ -5372,12 +5372,12 @@ def prompt_responsable(e: Encargo) -> str:
             f"Última observación: {e.causa or e.motivo}\nSiguiente trabajo concreto: {e.siguiente}"
         )
     lineas.append(
-        "Comprueba el comportamiento pedido y deja la evidencia en .interno/evidencia.txt. "
-        "No declares el encargo terminado: el supervisor mira el destino. "
-        "Si el nivel de entrega autorizado incluye desplegado, declara ese efecto en "
-        ".interno/pedido-efecto.json y el supervisor lo despacha por el adaptador y "
-        "sella el nivel con su recibo; para todo lo demás trabajas directamente. "
-        "No repitas un efecto que ya tenga recibo."
+        "Comprueba el comportamiento pedido y deja la evidencia en .interno/evidencia.txt. No "
+        "declares el encargo terminado: el supervisor mira el destino. Si el nivel de entrega "
+        "autorizado incluye desplegado, declara ese efecto en .interno/pedido-efecto.json y el "
+        "supervisor lo despacha por el adaptador y sella el nivel con su recibo. No empujes a "
+        "la rama base ni abras o integres un PR: eso lo hace el motor después de la revisión; "
+        "para todo lo demás trabajas directamente. No repitas un efecto que ya tenga recibo."
     )
     return "\n\n".join(lineas)
 
