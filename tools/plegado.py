@@ -11,8 +11,16 @@ invariantes de `INVARIANTES` en cada prefijo y las reporta aparte, sin cambiar
 el código de salida.
 
 `comparar` pliega cada encargo con el reductor de `<ref-de-git>` y con el del
-árbol de trabajo y compara los estados finales campo por campo. Sale con 1 si
-hay diferencias. El reductor de la base corre en otro proceso, sacado con
+árbol de trabajo y compara los estados finales, también dentro de las fases,
+los hallazgos y las demás listas de objetos. Separa dos clases de diferencia:
+
+- de forma: una clave que existe en un solo lado. Se lista una vez por
+  registro, con su ruta, el lado donde existe y en cuántos encargos aparece.
+- de valor: una clave de los dos lados con valor distinto, o una lista que
+  cambió de largo. Se lista por encargo, con la ruta del campo.
+
+Sale con 1 si hay diferencias de valor; las de forma solas salen con 0, salvo
+con `--estricto`. El reductor de la base corre en otro proceso, sacado con
 `git archive`, para no mezclar dos versiones del mismo módulo.
 
 `--json` cambia la salida en español por un documento para un guion. Si no
@@ -31,11 +39,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 RAIZ = Path(__file__).resolve().parents[1]
 
@@ -72,13 +81,25 @@ class Violacion:
     detalle: str
 
 
+Lado = Literal["base", "arbol"]
+
+
 @dataclass(frozen=True)
 class Diferencia:
-    """Los campos en que la base y el árbol dejan distinto un encargo."""
+    """Las rutas que existen en los dos lados y quedan con distinto valor en un encargo."""
 
     encargo: str
     campos: tuple[str, ...]
     detalle: str = ""
+
+
+@dataclass(frozen=True)
+class DiferenciaDeForma:
+    """Una ruta que existe en un solo lado, contada sobre todo el registro."""
+
+    ruta: str
+    solo_en: Lado
+    encargos: int
 
 
 @dataclass(frozen=True)
@@ -97,6 +118,7 @@ class Comparacion:
     ruta: str
     encargos: int
     diferencias: tuple[Diferencia, ...]
+    forma: tuple[DiferenciaDeForma, ...]
 
 
 @dataclass(frozen=True)
@@ -286,19 +308,56 @@ def _describe(final: Campos | Fallo) -> str:
     return "pliega"
 
 
-def diferencias(base: Sequence[Plegado], arbol: Sequence[Plegado]) -> list[Diferencia]:
+def _contrastar(
+    a: object, b: object, ruta: str, forma: set[tuple[str, Lado]], valores: set[str] | None
+) -> None:
+    """Recorre los dos lados a la par; `valores` en None junta solo la forma.
+
+    Una lista de otro largo ya es diferencia de valor y sus elementos no se
+    pueden emparejar por posición, pero cada objeto de una lista sale del mismo
+    tipo, así que sus claves sí dicen la forma.
+    """
+    if isinstance(a, dict) and isinstance(b, dict):
+        for clave in sorted(a.keys() | b.keys()):
+            sub = f"{ruta}.{clave}" if ruta else clave
+            if clave not in b:
+                forma.add((sub, "base"))
+            elif clave not in a:
+                forma.add((sub, "arbol"))
+            else:
+                _contrastar(a[clave], b[clave], sub, forma, valores)
+    elif isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b) and valores is not None:
+            valores.add(ruta)
+            valores = None
+        for x, y in zip(a, b, strict=False):
+            _contrastar(x, y, f"{ruta}[]", forma, valores)
+    elif a != b and valores is not None:
+        valores.add(ruta)
+
+
+def diferencias(
+    base: Sequence[Plegado], arbol: Sequence[Plegado]
+) -> tuple[list[Diferencia], list[DiferenciaDeForma]]:
     de_base = {p.encargo: p.final for p in base}
     salida: list[Diferencia] = []
+    cuenta: Counter[tuple[str, Lado]] = Counter()
     for p in arbol:
-        a, b = de_base.get(p.encargo, {}), p.final
+        if p.encargo not in de_base:
+            salida.append(Diferencia(p.encargo, ("plegado",), "la base no leyó este encargo"))
+            continue
+        a, b = de_base[p.encargo], p.final
         if isinstance(a, dict) and isinstance(b, dict):
-            difieren = campos_distintos(a, b)
-            if difieren:
-                salida.append(Diferencia(p.encargo, difieren))
+            forma: set[tuple[str, Lado]] = set()
+            valores: set[str] = set()
+            _contrastar(a, b, "", forma, valores)
+            cuenta.update(forma)
+            if valores:
+                salida.append(Diferencia(p.encargo, tuple(sorted(valores))))
         elif a != b:
             detalle = f"base: {_describe(a)}; árbol: {_describe(b)}"
             salida.append(Diferencia(p.encargo, ("plegado",), detalle))
-    return salida
+    return salida, [DiferenciaDeForma(r, lado, n) for (r, lado), n in sorted(cuenta.items())]
 
 
 def _resolver_ref(ref: str) -> str:
@@ -349,7 +408,8 @@ def comparar(sha: str, rutas: Sequence[Path]) -> list[Comparacion]:
     salida = []
     for ruta in rutas:
         arbol = plegar(reductor, ruta)
-        salida.append(Comparacion(str(ruta), len(arbol), tuple(diferencias(base[str(ruta)], arbol))))
+        valor, forma = diferencias(base[str(ruta)], arbol)
+        salida.append(Comparacion(str(ruta), len(arbol), tuple(valor), tuple(forma)))
     return salida
 
 
@@ -374,11 +434,24 @@ def _texto_comprobacion(c: Comprobacion) -> list[str]:
     return lineas
 
 
-def _texto_comparacion(c: Comparacion, ref: str, sha: str) -> list[str]:
+_LADOS: dict[Lado, str] = {"base": "la base", "arbol": "el árbol"}
+
+
+def _texto_comparacion(c: Comparacion, ref: str, sha: str, estricto: bool) -> list[str]:
     cabeza = f"  Comparé {c.encargos} encargos con el reductor de {ref} ({sha[:12]})"
-    if not c.diferencias:
+    if not c.diferencias and not c.forma:
         return [c.ruta, cabeza + ": sin diferencias."]
-    lineas = [c.ruta, cabeza + f": {len(c.diferencias)} encargos difieren."]
+    lineas = [c.ruta, cabeza + "."]
+    if c.forma:
+        efecto = "cuentan como fallo por --estricto" if estricto else "no cambian la salida"
+        lineas.append(f"  Forma, claves que existen en un solo lado ({efecto}):")
+        lineas.extend(
+            f"    {f.ruta}: solo en {_LADOS[f.solo_en]}, en {f.encargos} encargos." for f in c.forma
+        )
+    if not c.diferencias:
+        lineas.append("  Valor: sin diferencias.")
+        return lineas
+    lineas.append(f"  Valor: {len(c.diferencias)} encargos difieren.")
     for d in c.diferencias:
         linea = f"    {d.encargo}: difieren {', '.join(d.campos)}"
         lineas.append(linea + (f". {d.detalle}" if d.detalle else ""))
@@ -395,6 +468,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_comprobar = ordenes.add_parser("comprobar", help="pliega y revisa invariantes")
     p_comparar = ordenes.add_parser("comparar", help="compara con el reductor de otra ref")
     p_comparar.add_argument("--base", required=True)
+    p_comparar.add_argument("--estricto", action="store_true",
+                            help="las diferencias de forma también salen con 1")
     p_plegar = ordenes.add_parser("plegar", help="estados finales en JSON (lo usa comparar)")
     p_plegar.add_argument("--raiz", type=Path, default=RAIZ)
     for p in (p_comprobar, p_comparar):
@@ -426,14 +501,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     sha = _resolver_ref(args.base)
     hechas = comparar(sha, args.registros)
-    distintos = any(c.diferencias for c in hechas)
+    distintos = any(c.diferencias or (args.estricto and c.forma) for c in hechas)
     if args.json:
-        _imprimir({"ok": not distintos, "base": args.base, "sha": sha, "registros": [
+        _imprimir({"ok": not distintos, "base": args.base, "sha": sha,
+                   "estricto": args.estricto, "registros": [
             {"ruta": c.ruta, "encargos": c.encargos,
-             "diferencias": [dataclasses.asdict(d) for d in c.diferencias]}
+             "diferencias": [dataclasses.asdict(d) for d in c.diferencias],
+             "forma": [dataclasses.asdict(f) for f in c.forma]}
             for c in hechas]})
     else:
-        print("\n".join(linea for c in hechas for linea in _texto_comparacion(c, args.base, sha)))
+        print("\n".join(linea for c in hechas
+                        for linea in _texto_comparacion(c, args.base, sha, args.estricto)))
     return 1 if distintos else 0
 
 
