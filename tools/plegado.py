@@ -174,6 +174,13 @@ def _uri_solo_lectura(ruta: Path) -> str:
     return f"{ruta.resolve().as_uri()}?mode=ro"
 
 
+def _abrir(ruta: Path) -> sqlite3.Connection:
+    try:
+        return sqlite3.connect(_uri_solo_lectura(ruta), uri=True)
+    except sqlite3.Error as exc:
+        _no_pude(f"no puedo abrir {ruta}: {exc}")
+
+
 def _filas(db: sqlite3.Connection, ruta: Path, sql: str, *params: object) -> list[tuple]:
     try:
         return db.execute(sql, params).fetchall()
@@ -184,14 +191,14 @@ def _filas(db: sqlite3.Connection, ruta: Path, sql: str, *params: object) -> lis
 def _datos(ruta: Path, evento: int, crudo: Any) -> object:
     try:
         return json.loads(crudo)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, RecursionError) as exc:
         _no_pude(f"no puedo leer el evento {evento} de {ruta}: {type(exc).__name__}: {exc}")
 
 
 def leer_encargos(ruta: Path) -> Iterator[tuple[str, list[Evento]]]:
     if not ruta.is_file():
         _no_pude(f"no existe el registro {ruta}")
-    db = sqlite3.connect(_uri_solo_lectura(ruta), uri=True)
+    db = _abrir(ruta)
     try:
         ids = _filas(db, ruta, "SELECT DISTINCT encargo FROM events ORDER BY encargo")
         for (encargo,) in ids:
