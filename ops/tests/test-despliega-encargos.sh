@@ -469,6 +469,78 @@ contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
 nadie_se_movio "registro ilegible"
 sin_temporales "registro ilegible" "$S/tmp-maquinas"
 
+COMPUERTA="$RAIZ/ops/compuerta-plegado.sh"
+
+echo "# un SHA que no existe se nombra tal como se pidió"
+espera "la compuerta se niega" 2 bash "$COMPUERTA" --sha no-existe-este
+contiene "la compuerta lo nombra" "$S/salida" "el SHA 'no-existe-este' no existe"
+espera "el despliegue se niega" 3 bash "$SCRIPT" --sha no-existe-este
+contiene "el despliegue lo nombra" "$S/salida" "el SHA 'no-existe-este' no existe"
+
+echo "# la compuerta sin ninguna máquina es un error de uso"
+espera "se niega con la lista vacía" 2 bash "$COMPUERTA" --sha "$SHA" --maquina ""
+contiene "lo dice" "$S/salida" "--maquina necesita mac, mini o pc"
+espera "se niega con una lista de espacios" 2 bash "$COMPUERTA" --sha "$SHA" --maquina "  "
+
+commit_en_origen() { # <mensaje>: un commit nuevo en main que solo llega al origin
+  printf '%s\n' "$1" >>"$S/fuente/README.md"
+  git -C "$S/fuente" checkout -q "$SHA" -- tools/plegado.py
+  git -C "$S/fuente" add -A
+  git -C "$S/fuente" -c user.name=t -c user.email=t@t commit -q -m "$1"
+  git -C "$S/fuente" push -q "$S/origen.git" main
+  git -C "$S/fuente" rev-parse HEAD
+}
+
+echo "# el árbol de cada máquina no tiene el candidato: la compuerta lo trae del origin"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno
+registro "$S/pc-home" enc_pc_uno
+NUEVO="$(commit_en_origen cuatro)"
+for m in mac mini pc-home; do
+  git -C "$S/$m/motor-sucesor" cat-file -e "$NUEVO^{commit}" 2>/dev/null \
+    && fallo "$m: el árbol ya tenía el candidato; la prueba no pasa por el fetch"
+done
+espera "despliega un candidato que las máquinas no tenían" 0 \
+  env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$NUEVO"
+contiene "la Mac pliega" "$S/salida" "OK mac: el registro pliega entero con ${NUEVO:0:12} (1 encargos)"
+contiene "la Mini pliega" "$S/salida" "OK mini: el registro pliega entero con ${NUEVO:0:12} (1 encargos)"
+contiene "la PC pliega" "$S/salida" "OK pc: el registro pliega entero con ${NUEVO:0:12} (1 encargos)"
+contiene "despliega" "$S/salida" "desplegado en:mac mini pc"
+for m in mac mini pc-home; do
+  [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$NUEVO" ] || fallo "$m: el árbol no quedó en el candidato"
+done
+sin_temporales "candidato traído del origin" "$S/tmp-maquinas"
+
+echo "# el origin de la Mac no tiene el candidato: no se mueve ninguna"
+reset_maquinas
+registro "$S/mac" enc_mac_uno
+registro "$S/mini" enc_mini_uno
+registro "$S/pc-home" enc_pc_uno
+git clone -q --bare "$S/origen.git" "$S/espejo-viejo.git"
+git -C "$S/mac/motor-sucesor" remote set-url origin "$S/espejo-viejo.git"
+OTRO="$(commit_en_origen cinco)"
+espera "se niega sin el candidato en el origin de la Mac" '!0' \
+  env TMPDIR="$S/tmp-maquinas" bash "$SCRIPT" --sha "$OTRO"
+contiene "nombra la Mac y la causa" "$S/salida" \
+  "FALLA mac: no pude comprobar el plegado con ${OTRO:0:12}: el commit candidato no está en el origin del servicio"
+contiene "la Mini lo trae" "$S/salida" "OK mini: el registro pliega entero con ${OTRO:0:12} (1 encargos)"
+contiene "la PC lo trae" "$S/salida" "OK pc: el registro pliega entero con ${OTRO:0:12} (1 encargos)"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+nadie_se_movio "origin sin el candidato"
+sin_temporales "origin sin el candidato" "$S/tmp-maquinas"
+
+echo "# la compuerta pliega el registro de la base que el servicio de la Mac abre"
+reset_maquinas
+mkdir -p "$S/mac/otra/.motor-encargos"
+registro "$S/mac/otra" enc_mac_uno roto_mac
+sed -i.bak "s#<string>supervisor</string>#<string>supervisor</string><string>--base</string><string>$S/mac/otra/.motor-encargos</string>#" \
+  "$S/mac/Library/LaunchAgents/ai.goncloud.motor-encargos.plist"
+espera "se niega por el registro de la base del servicio" 1 \
+  env TMPDIR="$S/tmp-maquinas" bash "$COMPUERTA" --sha "$SHA" --maquina mac
+contiene "nombra la Mac y cuántos fallan" "$S/salida" "FALLA mac: 1 de 2 encargos no pliegan con ${SHA:0:12}"
+sin_temporales "base del servicio" "$S/tmp-maquinas"
+
 echo "# el comprobador no cae al recibo del motor viejo"
 reset_maquinas
 git -C "$S/mac/motor-sucesor" checkout -q --detach "$SHA"
