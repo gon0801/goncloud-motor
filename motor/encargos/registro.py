@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import re
 import sqlite3
 import sys
 import threading
+import time
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -51,36 +53,74 @@ class ClaveOcupada(Rechazo):
         self.ukey = ukey
 
 
-def proyectar(estado: Encargo | None, eventos: Sequence[Evento]) -> Encargo:
-    """El estado tras aplicar el lote en orden con las reglas de escritura.
-
-    El paso que decide y el registro que guarda llaman a esta misma función:
-    lo que el paso decidió es lo que queda guardado."""
-    if not eventos:
-        raise ValueError("un lote vacío no proyecta ningún estado")
-    for indice, evento in enumerate(eventos):
-        try:
-            estado = reducir(estado, {"kind": evento.kind, "data": evento.data}, nuevo=True)
-        except TransicionIlegal as exc:
-            raise EventoIlegal(indice, evento.kind, str(exc)) from exc
-    return cast(Encargo, estado)
-
-
-# Solo palabras con guiones: un id de encargo (`enc_` y hexadecimal) o un hash
-# nunca casan, así que la línea del conteo no puede llevar datos del encargo.
+# Solo palabras con guiones y con tope: un id de encargo (`enc_` y hexadecimal)
+# o un hash nunca casan, así que la línea del conteo no puede llevar datos del
+# encargo. El nombre real más largo mide 34.
+_TOPE_DEL_NOMBRE = 64
 _CLASE_DE_UKEY = re.compile(r"[a-z]+(?:-[a-z]+)*")
 _TIPO = re.compile(r"[a-z]+(?:_[a-z]+)*")
+
+# Un rechazo de cada vuelta del supervisor (20 s) deja 144 líneas al día en vez de 4320.
+_INTERVALO_DEL_CONTEO_S = 600.0
+
+_Clave = tuple[str, str, str]
+
+
+def _visible(nombre: str, forma: re.Pattern[str]) -> str:
+    return nombre if len(nombre) <= _TOPE_DEL_NOMBRE and forma.fullmatch(nombre) else "?"
+
+
+def _escribir_linea(clave: _Clave, veces: int) -> None:
+    rechazo, kind, ukey = clave
+    try:
+        sys.stderr.write(f"registro: rechazo={rechazo} kind={kind} ukey={ukey} veces={veces}\n")
+        sys.stderr.flush()
+    except Exception:
+        # De mejor esfuerzo: un stderr cerrado o roto no cambia lo que responde `append`.
+        pass
+
+
+class _Conteo:
+    """Una línea por clave e intervalo, con las veces que ocurrió desde la anterior.
+
+    La primera vez sale enseguida. Las siguientes dentro del intervalo se suman y
+    salen con la primera que llega pasado el intervalo, o al terminar el proceso:
+    la suma de `veces` es el total, salvo lo pendiente de un proceso que muere
+    sin terminar."""
+
+    def __init__(self, reloj: Callable[[], float] = time.monotonic) -> None:
+        self._reloj = reloj
+        self._candado = threading.Lock()
+        self._ultima: dict[_Clave, float] = {}
+        self._pendientes: dict[_Clave, int] = {}
+
+    def contar(self, clave: _Clave) -> None:
+        with self._candado:
+            ahora = self._reloj()
+            veces = self._pendientes.pop(clave, 0) + 1
+            ultima = self._ultima.get(clave)
+            if ultima is not None and ahora - ultima < _INTERVALO_DEL_CONTEO_S:
+                self._pendientes[clave] = veces
+                return
+            self._ultima[clave] = ahora
+        _escribir_linea(clave, veces)
+
+    def vaciar(self) -> None:
+        with self._candado:
+            pendientes, self._pendientes = self._pendientes, {}
+        for clave, veces in pendientes.items():
+            _escribir_linea(clave, veces)
+
+
+_CONTEO = _Conteo()
+atexit.register(_CONTEO.vaciar)
 
 
 def _contar_rechazo(rechazo: Literal["ajena", "ilegal"], kind: str, ukey: str) -> None:
     clase, separador, _resto = ukey.partition(":")
-    ukey_visible = f"{clase}:*" if separador and _CLASE_DE_UKEY.fullmatch(clase) else "?"
-    kind_visible = kind if _TIPO.fullmatch(kind) else "?"
-    print(
-        f"registro: rechazo={rechazo} kind={kind_visible} ukey={ukey_visible}",
-        file=sys.stderr,
-        flush=True,
-    )
+    clase_visible = _visible(clase, _CLASE_DE_UKEY)
+    ukey_visible = f"{clase_visible}:*" if separador and clase_visible != "?" else "?"
+    _CONTEO.contar((rechazo, _visible(kind, _TIPO), ukey_visible))
 
 
 @dataclass(frozen=True)
@@ -234,55 +274,100 @@ class Registro:
         """Escribe el lote entero o nada, en una sola transacción.
 
         Un evento cuya ukey ya guarda el mismo hecho (sin mirar `hora`) da
-        `igual` y no se reescribe; los demás se validan con `proyectar` sobre
-        el estado guardado y se insertan en orden. Una ukey que guarda otro
-        hecho lanza `ClaveOcupada`; un evento que el reductor rechaza lanza
-        `EventoIlegal`. Una ukey repetida dentro del lote es `ValueError`."""
+        `igual` y no se reescribe; los demás se validan sobre el estado guardado
+        y se insertan en orden, y el estado que queda es el que da `proyectar`.
+        Una ukey que guarda otro hecho lanza `ClaveOcupada`; un evento que el
+        reductor rechaza lanza `EventoIlegal`. Una ukey repetida dentro del lote
+        es `ValueError`."""
         return self._escribir(
             encargo, [(evento, str(evento.data.get("hora") or "")) for evento in eventos]
         )
 
+    def proyectar(self, encargo: str, eventos: Sequence[Evento]) -> Encargo:
+        """El estado que deja `append_many(encargo, eventos)` si se llama ahora, sin escribir.
+
+        Es la misma cuenta que hace la escritura: un evento cuya ukey ya guarda
+        el mismo hecho está en lo guardado y no se vuelve a aplicar. Lanza lo
+        mismo que lanzaría `append_many`. El paso decide con este estado, así
+        que lo que decide es lo que queda guardado."""
+        if not eventos:
+            raise ValueError("un lote vacío no proyecta ningún estado")
+        # Una sola lectura: otro proceso que escribe entre el cotejo y el plegado
+        # no cambia la cuenta a la mitad.
+        self.db.execute("BEGIN")
+        try:
+            resultados = self._cotejar_lote(encargo, eventos)
+            estado, _conteo = self._aplicar_ausentes(encargo, eventos, resultados)
+        finally:
+            self._deshacer()
+        return cast(Encargo, estado)
+
     def _escribir(
         self, encargo: str, filas: Sequence[tuple[Evento, str]]
     ) -> tuple[Resultado, ...]:
-        ukeys = [evento.ukey for evento, _ts in filas]
-        if len(set(ukeys)) != len(ukeys):
-            raise ValueError("el lote repite una ukey")
         if not filas:
             return ()
+        eventos = [evento for evento, _ts in filas]
         payloads = [
             json.dumps(dict(evento.data), ensure_ascii=False, sort_keys=True)
-            for evento, _ts in filas
+            for evento in eventos
         ]
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            resultados: tuple[Resultado, ...] = tuple(
-                self._cotejar(encargo, indice, evento)
-                for indice, (evento, _ts) in enumerate(filas)
-            )
-            ausentes = [i for i, resultado in enumerate(resultados) if resultado == "nuevo"]
-            if not ausentes:
+            resultados = self._cotejar_lote(encargo, eventos)
+            if "nuevo" not in resultados:
                 self.db.execute("ROLLBACK")
                 return resultados
-            estado, _ultimo, conteo = self._estado_vigente(encargo)
-            try:
-                aplicado = proyectar(estado, [filas[i][0] for i in ausentes])
-            except EventoIlegal as exc:
-                raise EventoIlegal(ausentes[exc.indice], exc.kind, exc.motivo) from exc
+            estado, conteo = self._aplicar_ausentes(encargo, eventos, resultados)
             ultimo = 0
-            for i in ausentes:
-                evento, ts = filas[i]
+            for (evento, ts), payload, resultado in zip(filas, payloads, resultados, strict=True):
+                if resultado == "igual":
+                    continue
                 cursor = self.db.execute(
                     "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
-                    (ts, encargo, evento.kind, payloads[i], evento.ukey),
+                    (ts, encargo, evento.kind, payload, evento.ukey),
                 )
                 ultimo = int(cursor.lastrowid or 0)
             self.db.execute("COMMIT")
         except BaseException:
-            self.db.execute("ROLLBACK")
+            self._deshacer()
             raise
-        self._recordar_plegado(encargo, aplicado, ultimo, conteo + len(ausentes))
+        self._recordar_plegado(
+            encargo, cast(Encargo, estado), ultimo, conteo + resultados.count("nuevo")
+        )
         return resultados
+
+    def _deshacer(self) -> None:
+        # Tras un disco lleno o un error de E/S SQLite ya deshizo la transacción:
+        # un ROLLBACK de más lanzaría y taparía el error real.
+        if self.db.in_transaction:
+            self.db.execute("ROLLBACK")
+
+    def _cotejar_lote(self, encargo: str, eventos: Sequence[Evento]) -> tuple[Resultado, ...]:
+        ukeys = [evento.ukey for evento in eventos]
+        if len(set(ukeys)) != len(ukeys):
+            raise ValueError("el lote repite una ukey")
+        return tuple(
+            self._cotejar(encargo, indice, evento) for indice, evento in enumerate(eventos)
+        )
+
+    def _aplicar_ausentes(
+        self, encargo: str, eventos: Sequence[Evento], resultados: Sequence[Resultado]
+    ) -> tuple[Encargo | None, int]:
+        """El estado guardado con los eventos `nuevo` del lote aplicados en orden.
+
+        `append_many` y `proyectar` lo calculan aquí. Un evento `igual` ya está
+        en lo guardado: aplicarlo otra vez contaría dos veces, por ejemplo, una
+        nota de `procedimiento`."""
+        estado, _ultimo, conteo = self._estado_vigente(encargo)
+        for indice, (evento, resultado) in enumerate(zip(eventos, resultados, strict=True)):
+            if resultado == "igual":
+                continue
+            try:
+                estado = reducir(estado, {"kind": evento.kind, "data": evento.data}, nuevo=True)
+            except TransicionIlegal as exc:
+                raise EventoIlegal(indice, evento.kind, str(exc)) from exc
+        return estado, conteo
 
     def _cotejar(self, encargo: str, indice: int, evento: Evento) -> Resultado:
         fila = self.db.execute(
