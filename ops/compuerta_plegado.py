@@ -40,36 +40,58 @@ class NoPude(Exception):
     pass
 
 
+def existe(ruta, que):
+    """False solo si ahí no hay nada. Un enlace roto o un error de lectura es NoPude."""
+    try:
+        os.stat(str(ruta))
+        return True
+    except FileNotFoundError:
+        if not any(os.path.islink(str(r)) for r in (ruta, ruta.parent)):
+            return False
+        causa = "hay un enlace roto en el camino"
+    except OSError as exc:
+        causa = type(exc).__name__
+    raise NoPude("no pude leer %s: %s" % (que, causa))
+
+
 def servicio(home):
     """El intérprete y la base de encargos con que arranca el supervisor.
 
     En Mac y Mini salen del LaunchAgent. En la PC el vigilante lanza un
     supervisor.ps1 que el repo no genera: ahí quedan el intérprete de esta
-    sesión y la base fija.
+    sesión y la base fija. La base fija vale solo si el plist no existe.
     """
     py, base = sys.executable, home / ".motor-encargos"
-    if os.name == "nt":
+    plist = home / "Library" / "LaunchAgents" / "ai.goncloud.motor-encargos.plist"
+    if os.name == "nt" or not existe(plist, "el plist del LaunchAgent"):
         return py, base
-    try:
-        import plistlib
+    import plistlib
 
-        plist = home / "Library" / "LaunchAgents" / "ai.goncloud.motor-encargos.plist"
+    try:
         datos = plistlib.loads(plist.read_bytes())
-        argumentos = datos.get("ProgramArguments") if isinstance(datos, dict) else None
-    except Exception:
-        return py, base
+    except Exception as exc:
+        raise NoPude("el plist del LaunchAgent no se puede leer: " + type(exc).__name__) from None
+    argumentos = datos.get("ProgramArguments") if isinstance(datos, dict) else None
     if not isinstance(argumentos, list) or not all(isinstance(a, str) for a in argumentos):
-        return py, base
+        raise NoPude("el plist del LaunchAgent no trae ProgramArguments como lista de textos")
     if argumentos and pathlib.Path(argumentos[0]).exists():
         py = argumentos[0]
-    if "--base" in argumentos[:-1]:
-        base = pathlib.Path(argumentos[argumentos.index("--base") + 1])
-        if not base.is_absolute():
-            # launchd la resuelve contra el WorkingDirectory; ssh corre desde el home.
-            directorio = datos.get("WorkingDirectory")
-            if not isinstance(directorio, str) or not directorio:
-                raise NoPude("el --base del LaunchAgent es relativo y el plist no trae WorkingDirectory")
-            base = pathlib.Path(directorio) / base
+    # El supervisor exige --base y argparse se queda con la última, en cualquiera de las dos formas.
+    texto = ""
+    for i, argumento in enumerate(argumentos):
+        if i and argumentos[i - 1] == "--base":
+            texto = argumento
+        elif argumento.startswith("--base="):
+            texto = argumento[len("--base="):]
+    if not texto or texto.startswith("-"):
+        raise NoPude("el LaunchAgent no dice con qué --base arranca el supervisor")
+    base = pathlib.Path(texto)
+    if not base.is_absolute():
+        # launchd la resuelve contra el WorkingDirectory; ssh corre desde el home.
+        directorio = datos.get("WorkingDirectory")
+        if not isinstance(directorio, str) or not directorio:
+            raise NoPude("el --base del LaunchAgent es relativo y el plist no trae WorkingDirectory")
+        base = pathlib.Path(directorio) / base
     return py, base
 
 
@@ -168,7 +190,7 @@ def resumen_comparar(py, candidato, instalado, sha, registro):
 def compuerta(arbol, sha):
     py, base = servicio(pathlib.Path.home())
     registro = base / "registro.sqlite"
-    if not registro.exists():
+    if not existe(registro, "el registro de encargos"):
         return ["resultado sin_registro", "comparar sin registro; no comparo"]
     instalado = git("-C", arbol, "rev-parse", "HEAD").stdout.strip()
     barre_viejos()
