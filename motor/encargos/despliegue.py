@@ -454,11 +454,14 @@ def _rutas(receta: dict) -> None:
 
 def _leer(path: Path, identidad: dict) -> dict:
     datos = leer_json(path)
+    if not isinstance(datos, dict):
+        raise ValueError("el recibo de despliegue no es un objeto")
     if any(datos.get(k) != v for k, v in identidad.items()):
         raise ValueError("el recibo de despliegue no corresponde a esta fase, SHA y receta")
     if datos.get("estado") == "aplicado":
         pasos = datos.get("pasos", [])
-        if ([p.get("paso") for p in pasos] != ["desplegar", "checklist"]
+        if (not isinstance(pasos, list) or not all(isinstance(p, dict) for p in pasos)
+                or [p.get("paso") for p in pasos] != ["desplegar", "checklist"]
                 or any(p.get("codigo") != 0 for p in pasos)
                 or any(p.get("script") != identidad["receta"][p["paso"]] for p in pasos)):
             raise ValueError("el recibo no demuestra despliegue y checklist con salida 0")

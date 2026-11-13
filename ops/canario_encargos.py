@@ -703,12 +703,12 @@ def _json_o_vacio(ruta: Path) -> dict:
     return datos if isinstance(datos, dict) else {}
 
 
-def _procesos_de_turnos(base: Path, e: Encargo, eventos: list[dict]) -> Resto:
+def _procesos_de_turnos(base: Path, encargo: str, eventos: list[dict]) -> Resto:
     """Los mismos candidatos que cierra el motor al limpiar (`proc.json` o
     `wrapper.json` de `ejecucion/<id>` y de cada intento), más la identidad de cada
     `intento_abierto`, que sobrevive al borrado del directorio. El proceso vigente
     del encargo sale de esos mismos eventos, así que ya está entre ellos."""
-    raiz = base / "ejecucion" / e.id
+    raiz = base / "ejecucion" / encargo
     try:
         carpetas = [raiz, *sorted(raiz.glob("intento-*"))] if raiz.is_dir() else []
     except OSError:
@@ -740,8 +740,6 @@ def _recibo(e: Encargo, fase: str) -> Recibo:
         datos = comprobar_recibo(replace(e, fase_activa=fase))
     except ValueError as exc:
         return Recibo(fase, str(exc), "")
-    except AttributeError as exc:  # comprobar_recibo no valida que el recibo y sus pasos sean objetos
-        return Recibo(fase, f"no se puede verificar el recibo de despliegue: {exc}", "")
     return Recibo(fase, "aplicado", str(datos.get("sha") or ""))
 
 
@@ -841,7 +839,17 @@ def _restos(
             for rama in ramas
         ),
         *([] if ramas else [Resto("referencia", "ninguna rama que buscar en el clon del servicio", False)]),
-        _procesos_de_turnos(base, e, eventos),
+        _procesos_de_turnos(base, e.id, eventos),
+    )
+
+
+def procesos(base: Path, encargo: str) -> tuple[Resto, ...]:
+    """Los procesos del encargo que la fila limpio pide muertos, mirados con las mismas
+    identidades que `observar`: los de sus turnos y sus trabajadores de despliegue."""
+    eventos = _eventos(base / "registro.sqlite", encargo)
+    return (
+        _procesos_de_turnos(base, encargo, eventos),
+        *(r for r in _despliegues(base, encargo) if r.tipo == "proceso"),
     )
 
 
