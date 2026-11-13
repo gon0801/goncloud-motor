@@ -517,6 +517,20 @@ def _ruta(texto: str) -> Path:
     return Path(texto).expanduser().resolve()
 
 
+def _positivo(texto: str) -> float:
+    valor = float(texto)
+    if not valor > 0:
+        raise argparse.ArgumentTypeError(f"{texto} no es un número mayor que 0")
+    return valor
+
+
+def _no_negativo(texto: str) -> float:
+    valor = float(texto)
+    if not valor >= 0:
+        raise argparse.ArgumentTypeError(f"{texto} no es un número mayor o igual que 0")
+    return valor
+
+
 def main(
     argv: list[str] | None = None, gh: canario.LectorPR | None = None,
     supervisor: Sequence[str] | None = None,
@@ -535,9 +549,9 @@ def main(
     a.add_argument("--despliegue", type=_ruta, default=str(casa / "motor-canario-despliegue"))
     a.add_argument("--corrida", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     a.add_argument("--maquina", default="")
-    a.add_argument("--tope-min", type=float)
-    a.add_argument("--tope-cierre-s", type=float, default=120.0)
-    a.add_argument("--intervalo-s", type=float, default=60.0)
+    a.add_argument("--tope-min", type=_no_negativo)
+    a.add_argument("--tope-cierre-s", type=_no_negativo, default=120.0)
+    a.add_argument("--intervalo-s", type=_positivo, default=60.0)
     a.add_argument("--esperado", type=_ruta, default=str(canario.ESPERADO))
     args = a.parse_args(argv)
     if not CORRIDA.fullmatch(args.corrida):
