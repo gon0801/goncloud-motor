@@ -27,7 +27,8 @@ solas salen con 0, salvo con `--estricto`. El reductor de la base corre en otro
 proceso, sacado con `git archive`, para no mezclar dos versiones del mismo módulo.
 
 `--json` cambia la salida en español por un documento para un guion. Si no
-puede leer un registro o sacar el reductor de la base, sale con 2.
+puede leer un registro o sacar el reductor de la base, sale con 2. Escribe en
+UTF-8 en cualquier sistema, también por la salida de errores.
 
 La salida trae errores del reductor que pueden citar datos del registro, como
 el texto de un encargo: no va a un log público.
@@ -450,7 +451,7 @@ def _plegar_en_la_base(sha: str, rutas: Sequence[Path]) -> dict[str, list[Plegad
         hecho = subprocess.run(
             [sys.executable, "-I", str(Path(__file__).resolve()), "plegar",
              "--raiz", tmp, *map(str, rutas)],
-            capture_output=True, text=True, check=False,
+            capture_output=True, encoding="utf-8", errors="replace", check=False,
         )
     if hecho.returncode != 0:
         _no_pude(f"el reductor de {sha[:12]} no pudo plegar:\n{hecho.stderr}")
@@ -539,7 +540,15 @@ _PRIVACIDAD = ("La salida puede traer datos del registro, como el texto de un en
                " no la mandes a un log público.")
 
 
+def _escribir_en_utf8() -> None:
+    """Sin esto la codificación la pone la consola: una tubería de Windows usa cp1252."""
+    for flujo in (sys.stdout, sys.stderr):
+        if isinstance(flujo, io.TextIOWrapper):
+            flujo.reconfigure(encoding="utf-8")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _escribir_en_utf8()
     parser = argparse.ArgumentParser(
         description="Pliega registros de encargos con el reductor.", epilog=_PRIVACIDAD)
     ordenes = parser.add_subparsers(dest="orden", required=True)
