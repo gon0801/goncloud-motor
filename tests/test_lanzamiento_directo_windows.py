@@ -77,6 +77,43 @@ class EntornoDelUsuarioWindows(unittest.TestCase):
 
 
 @entorno.requiere_windows
+class LaGuardiaDeGhEnWindows(unittest.TestCase):
+    def test_cmd_resuelve_la_guardia_y_no_llega_al_gh_real_para_mergear(self):
+        import subprocess
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            espacio, runtime = _coincidencia(base)
+            real, llamadas = base / "gh-real", base / "llamadas.txt"
+            real.mkdir()
+            (real / "gh.cmd").write_text(
+                f'@echo off\r\n>>"{llamadas}" echo %*\r\n', encoding="utf-8", newline=""
+            )
+            path = os.pathsep.join([str(real), os.environ.get("PATH", "")])
+            with mock.patch.dict(os.environ, {"PATH": path}):
+                comando = aislar([sys.executable, "-c", "pass"], espacio, runtime)
+
+            def gh(*args: str) -> int:
+                return subprocess.run(
+                    ["cmd.exe", "/d", "/c", "gh", *args],
+                    cwd=espacio,
+                    env=comando.entorno,
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=60,
+                ).returncode
+
+            self.assertEqual(gh("pr", "merge", "5", "--squash"), 3)
+            self.assertEqual(gh("api", "-X", "PUT", "repos/o/r/pulls/5/merge"), 3)
+            self.assertEqual(gh("pr", "view", "5"), 0)
+            self.assertEqual(
+                llamadas.read_text(encoding="utf-8", errors="replace").split(),
+                ["pr", "view", "5"],
+            )
+
+
+@entorno.requiere_windows
 class CadaAgenteRecibeSuSesionWindows(unittest.TestCase):
     def _entorno_de(self, agente: str, runtime: Path) -> dict:
         cmd = [agente]

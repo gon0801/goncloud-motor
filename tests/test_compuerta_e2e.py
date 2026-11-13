@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -250,7 +251,7 @@ class _LaBaseYaTieneLaFaseDos(_DeepSeekAprueba):
 # --------------------------------------------------------------------------- agente de ensayo
 
 _TRABAJO_SH = """#!/bin/bash
-exec "@PY@" "@AGENTE@" "$(dirname "$0")/escenario.json"
+@PREVIO@exec "@PY@" "@AGENTE@" "$(dirname "$0")/escenario.json"
 """
 
 _GITATTRS = "* -text\n"
@@ -343,11 +344,12 @@ class Banco:
         gh_cls=FakeGitHub,
         escenario: Escenario,
         pedido: str = "banco compuerta: deja el producto de cada fase con su despliegue local",
+        previo: str = "",
     ):
         self.tmp = tmp
         self.destino = tmp / "destino"
         self.destino.mkdir()
-        self._semilla(tmp, escenario)
+        self._semilla(tmp, escenario, previo)
         fake = tmp / "fake"
         fake.mkdir()
         if config:
@@ -378,13 +380,15 @@ class Banco:
         self.ident = salida["encargo"]
         self.espacio = self.base / "espacio" / self.ident
 
-    def _semilla(self, tmp: Path, escenario: Escenario) -> None:
+    def _semilla(self, tmp: Path, escenario: Escenario, previo: str) -> None:
         semilla = tmp / "semilla"
         semilla.mkdir()
         (semilla / ".gitattributes").write_text(_GITATTRS, encoding="utf-8")
         (semilla / "base.txt").write_text("base\n", encoding="utf-8")
         (semilla / "trabajo.sh").write_text(
-            _TRABAJO_SH.replace("@PY@", PY).replace("@AGENTE@", AGENTE.as_posix()),
+            _TRABAJO_SH.replace("@PREVIO@", previo)
+            .replace("@PY@", PY)
+            .replace("@AGENTE@", AGENTE.as_posix()),
             encoding="utf-8",
             newline="\n",
         )
@@ -972,3 +976,57 @@ class ElPasoTrasIntegrarDiceSuResultado(CompuertaReal):
             ["uno", "dos"],
         )
         self.assertEqual(banco.fold().fases[2].estado, "pendiente")
+
+
+def _gh_de_la_maquina(carpeta: Path, llamadas: Path) -> None:
+    """El `gh` real del banco: anota cada llamada que le llega."""
+    carpeta.mkdir()
+    if os.name == "nt":
+        (carpeta / "gh.cmd").write_text(
+            f'@echo off\r\n>>"{llamadas}" echo %*\r\n', encoding="utf-8", newline=""
+        )
+        return
+    (carpeta / "gh").write_text(
+        f'#!/bin/sh\necho "$@" >> {shlex.quote(str(llamadas))}\n', encoding="utf-8"
+    )
+    (carpeta / "gh").chmod(0o755)
+
+
+_INTENTOS_GH = """if [ ! -e "@INTENTOS@" ]; then {
+gh pr merge 5 --squash; echo "merge=$?"
+gh api -X PUT repos/o/r/pulls/5/merge; echo "api=$?"
+gh pr view 5; echo "view=$?"
+} > "@INTENTOS@" 2>&1; fi
+"""
+
+
+class ElAgenteNoIntegra(CompuertaReal):
+    """El agente que lanza el motor no integra por su cuenta. En el incidente
+    de la PC el implementador mergeó su PR con `gh pr merge` antes de que
+    empezara el revisor."""
+
+    def _primer_turno(self, intentos: str) -> str:
+        """Los intentos corren solo en el primer turno: el del revisor arranca
+        en el mismo barrido que cierra al responsable."""
+        registro = self.tmp / "intentos.txt"
+        banco = self.banco(
+            _escenario_tres_fases(False, self.tmp / "destino"),
+            previo=intentos.replace("@INTENTOS@", registro.as_posix()),
+        )
+        banco.correr(lambda: bool(banco.eventos("intento_cerrado")))
+        return registro.read_text(encoding="utf-8", errors="replace")
+
+    def test_el_gh_del_agente_niega_el_merge_y_lo_demas_llega_al_gh_real(self):
+        llamadas = self.tmp / "gh-llamadas.txt"
+        _gh_de_la_maquina(self.tmp / "gh-real", llamadas)
+        path = os.pathsep.join([str(self.tmp / "gh-real"), os.environ.get("PATH", "")])
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            salida = self._primer_turno(_INTENTOS_GH)
+        for intento in ("merge=3", "api=3", "view=0"):
+            self.assertIn(intento, salida.splitlines(), salida)
+        self.assertIn("gh pr merge", salida)
+        self.assertIn("prohibido", salida)
+        self.assertEqual(
+            [linea.split() for linea in llamadas.read_text(encoding="utf-8").splitlines()],
+            [["pr", "view", "5"]],
+        )

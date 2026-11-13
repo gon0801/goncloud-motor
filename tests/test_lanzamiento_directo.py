@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -77,6 +78,38 @@ class SinSandboxExec(unittest.TestCase):
             )
         self.assertEqual(hecho.returncode, 0, hecho.stderr)
         self.assertEqual(hecho.stdout, "lanzado\n")
+
+
+@unittest.skipUnless(ES_POSIX, "el lanzamiento directo es de la rama POSIX")
+class LaGuardiaDeGhEnElPath(unittest.TestCase):
+    def test_el_comando_lanzado_no_mergea_y_lo_demas_llega_al_gh_real(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            espacio, runtime = _coincidencia(base)
+            real, llamadas = base / "gh-real", base / "llamadas"
+            real.mkdir()
+            (real / "gh").write_text(
+                f'#!/bin/sh\necho "$@" >> {shlex.quote(str(llamadas))}\n', encoding="utf-8"
+            )
+            (real / "gh").chmod(0o755)
+            guion = (
+                'gh pr merge 5 --squash; echo "merge=$?"; '
+                'gh api -X PUT repos/o/r/pulls/5/merge; echo "api=$?"; '
+                'gh pr view 5; echo "view=$?"'
+            )
+            path = os.pathsep.join([str(real), os.environ.get("PATH", "")])
+            with mock.patch.dict(os.environ, {"PATH": path}):
+                comando = aislar(["/bin/sh", "-c", guion], espacio, runtime, interprete=True)
+            hecho = subprocess.run(
+                comando.argv,
+                cwd=espacio,
+                env=comando.entorno,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(hecho.stdout.split(), ["merge=3", "api=3", "view=0"], hecho.stderr)
+            self.assertEqual(llamadas.read_text(encoding="utf-8").split(), ["pr", "view", "5"])
 
 
 @unittest.skipUnless(ES_POSIX, "el entorno del usuario es de la rama POSIX")
