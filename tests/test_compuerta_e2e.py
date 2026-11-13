@@ -35,7 +35,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from motor import plataforma
-from motor.encargos import ciclo, despliegue
+from motor.encargos import aislamiento, ciclo, despliegue
 from motor.encargos.agentes import (
     _bash_de_ensayo,
     _disponible,
@@ -1044,7 +1044,9 @@ class ElAgenteNoIntegra(CompuertaReal):
         )
 
     def test_el_agente_empuja_su_rama_y_no_la_base_ni_otra(self):
-        salida, banco = self._primer_turno(_INTENTOS_PUSH)
+        """Ni con la salida de la receta en el entorno del supervisor, que el wrapper hereda."""
+        with mock.patch.dict(os.environ, {aislamiento.EMPUJE_DE_RECETA: "1"}):
+            salida, banco = self._primer_turno(_INTENTOS_PUSH)
         lineas = salida.splitlines()
         for intento in ("propia=0", "base=1", "vacia=1", "sin=1", "otra=1"):
             self.assertIn(intento, lineas, salida)

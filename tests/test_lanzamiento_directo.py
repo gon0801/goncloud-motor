@@ -236,6 +236,14 @@ class ElPrePushDelProducto(_EspacioConRemoto):
         self.lanzar(NADA)
         self.comprobar_cadena(codigo)
 
+    def test_un_espacio_sin_clonar_no_toca_el_repo_que_lo_contiene(self):
+        de_afuera = self.base / "de-afuera"
+        self.git("init", "-q", str(de_afuera))
+        espacio, runtime = _coincidencia(de_afuera)
+        with mock.patch.dict(os.environ, git_env_limpio(), clear=True):
+            aislar(NADA, espacio, runtime, ramas=RAMAS)
+        self.assertFalse((de_afuera / ".git" / "hooks" / "pre-push").exists())
+
     def test_con_git_como_archivo_va_a_los_hooks_del_directorio_real(self):
         (self.espacio / ".git").rename(self.base / "git-real")
         (self.espacio / ".git").write_text(
