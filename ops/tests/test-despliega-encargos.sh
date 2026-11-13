@@ -59,7 +59,7 @@ crear_plist() { # <home>
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>Label</key><string>ai.goncloud.motor-encargos</string>
-<key>ProgramArguments</key><array><string>$(command -v python3)</string><string>-m</string><string>motor</string><string>supervisor</string></array>
+<key>ProgramArguments</key><array><string>$(command -v python3)</string><string>-m</string><string>motor</string><string>supervisor</string><string>--base</string><string>$1/.motor-encargos</string></array>
 <key>WorkingDirectory</key><string>$1/motor-sucesor</string>
 </dict></plist>
 PLIST
@@ -534,7 +534,7 @@ echo "# la compuerta pliega el registro de la base que el servicio de la Mac abr
 reset_maquinas
 mkdir -p "$S/mac/otra/.motor-encargos"
 registro "$S/mac/otra" enc_mac_uno roto_mac
-sed -i.bak "s#<string>supervisor</string>#<string>supervisor</string><string>--base</string><string>$S/mac/otra/.motor-encargos</string>#" \
+sed -i.bak "s#<string>--base</string><string>[^<]*</string>#<string>--base</string><string>$S/mac/otra/.motor-encargos</string>#" \
   "$S/mac/Library/LaunchAgents/ai.goncloud.motor-encargos.plist"
 espera "se niega por el registro de la base del servicio" 1 \
   env TMPDIR="$S/tmp-maquinas" bash "$COMPUERTA" --sha "$SHA" --maquina mac
@@ -546,7 +546,7 @@ reset_maquinas
 mkdir -p "$S/mac/relativa/.motor-encargos"
 registro "$S/mac/relativa" enc_mac_uno roto_mac
 PLIST_MAC="$S/mac/Library/LaunchAgents/ai.goncloud.motor-encargos.plist"
-sed -i.bak "s#<string>supervisor</string>#<string>supervisor</string><string>--base</string><string>../relativa/.motor-encargos</string>#" \
+sed -i.bak "s#<string>--base</string><string>[^<]*</string>#<string>--base</string><string>../relativa/.motor-encargos</string>#" \
   "$PLIST_MAC"
 espera "se niega por el registro de la base relativa" 1 \
   env TMPDIR="$S/tmp-maquinas" bash "$COMPUERTA" --sha "$SHA" --maquina mac
@@ -558,6 +558,52 @@ espera "sin WorkingDirectory el módulo termina" 0 \
 contiene "no adivina la base" "$S/salida" \
   "resultado no_pude el --base del LaunchAgent es relativo y el plist no trae WorkingDirectory"
 sin_temporales "base relativa" "$S/tmp-maquinas"
+
+# "No pude mirar" nunca es "no hay": la base por omisión de la Mac está vacía y la del
+# servicio, en otro lado, no pliega. Si la compuerta no puede leer cuál es, no deja pasar.
+compuerta_mac() { # <nombre> <resultado esperado>
+  espera "$1: el módulo termina" 0 \
+    env HOME="$S/mac" TMPDIR="$S/tmp-maquinas" python3 "$RAIZ/ops/compuerta_plegado.py" "$S/mac/motor-sucesor" "$SHA"
+  contiene "$1" "$S/salida" "$2"
+  no_contiene "$1: no dice que no hay registro" "$S/salida" "resultado sin_registro"
+}
+base_aparte() { # <argumentos del supervisor en el plist>
+  reset_maquinas
+  rm -rf "$S/mac/aparte"
+  mkdir -p "$S/mac/aparte/.motor-encargos"
+  registro "$S/mac/aparte" enc_mac_uno roto_mac
+  sed -i.bak "s#<string>supervisor</string><string>--base</string><string>[^<]*</string>#$1#" "$PLIST_MAC"
+}
+
+echo "# un plist que existe y no se puede leer no cae a la base por omisión"
+base_aparte '<string>supervisor</string><string>--base</string><string>'"$S"'/mac/aparte/.motor-encargos</string>'
+printf 'esto no es un plist' >"$PLIST_MAC"
+compuerta_mac "plist ilegible" "resultado no_pude el plist del LaunchAgent no se puede leer"
+
+echo "# un ProgramArguments que no es una lista de textos no cae a la base por omisión"
+base_aparte '<string>supervisor</string><string>--base</string><string>'"$S"'/mac/aparte/.motor-encargos</string>'
+sed -i.bak 's#<key>ProgramArguments</key><array>#<key>ProgramArguments</key><array><integer>1</integer>#' "$PLIST_MAC"
+compuerta_mac "ProgramArguments con un número" "resultado no_pude el plist del LaunchAgent no trae ProgramArguments como lista de textos"
+
+echo "# un LaunchAgent sin --base legible no cae a la base por omisión"
+base_aparte '<string>supervisor</string>'
+compuerta_mac "sin --base" "resultado no_pude el LaunchAgent no dice con qué --base arranca el supervisor"
+base_aparte '<string>supervisor</string><string>--base</string>'
+compuerta_mac "--base sin valor" "resultado no_pude el LaunchAgent no dice con qué --base arranca el supervisor"
+
+echo "# un --base=RUTA se lee como lo lee el supervisor"
+base_aparte '<string>supervisor</string><string>--base='"$S"'/mac/aparte/.motor-encargos</string>'
+compuerta_mac "--base=RUTA" "resultado no_pliega 2 1"
+
+echo "# un registro que es un enlace roto no es un registro que no existe"
+reset_maquinas
+ln -s "$S/mac/no-esta/registro.sqlite" "$S/mac/.motor-encargos/registro.sqlite"
+compuerta_mac "registro enlace roto" "resultado no_pude no pude leer el registro de encargos"
+base_aparte '<string>supervisor</string><string>--base</string><string>'"$S"'/mac/desmontada</string>'
+ln -s "$S/mac/no-esta" "$S/mac/desmontada"
+compuerta_mac "base enlace roto" "resultado no_pude no pude leer el registro de encargos"
+rm -f "$S/mac/desmontada"
+sin_temporales "no pude mirar" "$S/tmp-maquinas"
 
 echo "# el comprobador no cae al recibo del motor viejo"
 reset_maquinas
