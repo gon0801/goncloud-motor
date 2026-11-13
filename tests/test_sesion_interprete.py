@@ -101,11 +101,11 @@ class LaSesionPideElInterprete(unittest.TestCase):
 @unittest.skipIf(os.name == "nt", "el delta del entorno es de la rama directa POSIX")
 class ElArranqueGuardadoNoTraeElEntornoDelSupervisor(unittest.TestCase):
     """En lanzamiento directo el agente hereda el entorno del supervisor del
-    wrapper que lo lanza; `arranque.json` solo guarda la parte que el motor
-    añade o cambia. El entorno completo del usuario llega igual al agente sin
-    escribirse entero en el intento."""
+    wrapper que lo lanza, más la parte que el motor añade o cambia, que viaja
+    por el entorno del wrapper. `arranque.json` no guarda entorno: el delta
+    trae las llaves de las suscripciones."""
 
-    def test_el_arranque_json_guarda_solo_el_delta_y_el_agente_ve_todo(self):
+    def test_el_arranque_json_no_guarda_entorno_y_el_agente_ve_todo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             raiz = Path(tmp).resolve()
             espacio = raiz / "base" / "espacio" / "enc_x"
@@ -116,7 +116,7 @@ class ElArranqueGuardadoNoTraeElEntornoDelSupervisor(unittest.TestCase):
                 os.environ,
                 {"MOTOR_SECRETO_SUPERVISOR": "no-en-disco", "HOME": "/home/real"},
             ):
-                sesion.preparar_administrado(
+                delta = sesion.preparar_administrado(
                     ["python3", "-c", "pass"],
                     espacio,
                     directorio,
@@ -128,12 +128,13 @@ class ElArranqueGuardadoNoTraeElEntornoDelSupervisor(unittest.TestCase):
                 spec = json.loads(
                     (directorio / "arranque.json").read_text(encoding="utf-8")
                 )
-                lanzado = {**os.environ, **spec["env"]}
-            self.assertNotIn("HOME", spec["env"])
-            self.assertNotIn("MOTOR_SECRETO_SUPERVISOR", spec["env"])
+                lanzado = {**os.environ, **delta}
+            self.assertNotIn("env", spec)
+            self.assertNotIn("HOME", delta)
+            self.assertNotIn("MOTOR_SECRETO_SUPERVISOR", delta)
             runtime = (raiz / "runtime").resolve()
-            self.assertEqual(Path(spec["env"]["TMPDIR"]), runtime / "tmp")
-            self.assertIn(str(runtime / "bin"), spec["env"]["PATH"])
+            self.assertEqual(Path(delta["TMPDIR"]), runtime / "tmp")
+            self.assertIn(str(runtime / "bin"), delta["PATH"])
             self.assertEqual(lanzado["MOTOR_SECRETO_SUPERVISOR"], "no-en-disco")
             self.assertEqual(lanzado["HOME"], "/home/real")
             self.assertEqual(Path(lanzado["TMPDIR"]), runtime / "tmp")

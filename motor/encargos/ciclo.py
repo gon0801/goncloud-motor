@@ -11083,7 +11083,7 @@ def _lanzar_uno_en_turno(
             else None
         )
         try:
-            preparar_administrado(
+            entorno_agente = preparar_administrado(
                 cmd, espacio, directorio, enc, sesion, hora, runtime, entorno_gen,
                 agente=agente_lanzado,
                 modelo=modelo_lanzado,
@@ -11141,7 +11141,7 @@ def _lanzar_uno_en_turno(
             from motor import plataforma
 
             plataforma.sincroniza_directorio(raiz)
-            proc = lanzar_administrado(directorio, token)
+            proc = lanzar_administrado(directorio, token, entorno_agente)
         except CuentaNoDisponible as exc:
             _liberar_flota()
             from .rutas import fallo

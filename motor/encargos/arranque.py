@@ -483,8 +483,8 @@ def _autenticacion_expirada(spec: dict, fallo: str) -> bool:
 def crear_agente(spec: dict, d: Path, opciones: dict):
     """Crea el proceso del agente con lanzamiento directo, sin jaula.
 
-    El wrapper heredó el entorno del supervisor al ser lanzado y
-    `arranque.json` solo guarda lo que el motor añade o cambia. En Windows el
+    El wrapper heredó el entorno del supervisor al ser lanzado y `spec["env"]`
+    trae solo lo que el motor añade o cambia. En Windows el
     Job de la plataforma es solo para cerrar el árbol al terminar: sin límites
     de memoria, de procesos ni de permisos.
     """
@@ -515,6 +515,8 @@ def _limpiar_temporal_de(spec: dict) -> None:
 
 
 def ejecutar(spec_path: Path) -> int:
+    from motor.encargos.aislamiento import entorno_recibido
+
     spec = leer_json(spec_path)
     d = spec_path.parent
     candado = plataforma.candado(d / "arranque.lock")
@@ -532,6 +534,7 @@ def ejecutar(spec_path: Path) -> int:
     plataforma.sincroniza_directorio(d)
     reg = Registro(Path(spec["base"]))
     try:
+        spec["env"] = entorno_recibido()
         with turno(reg.base):
             enc = reg.fold(spec["encargo"])
             if (
