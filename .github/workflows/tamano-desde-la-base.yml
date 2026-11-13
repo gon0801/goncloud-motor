@@ -1,8 +1,9 @@
 name: Tamaño juzgado desde la base
 
 # El paso de tamaño del job `gate` corre el código del propio PR, que puede
-# debilitarlo. Este corre el workflow y `tools/calidad.py` de la rama base: del
-# PR solo trae objetos de git y los lee como datos; nada suyo se ejecuta.
+# debilitarlo. Este corre el workflow de la rama base y el `tools/calidad.py` de
+# su punta: del PR solo trae objetos de git y los lee como datos; nada suyo se
+# ejecuta.
 on:
   pull_request_target:
 
@@ -37,6 +38,8 @@ jobs:
           git fetch --no-tags --quiet origin \
             "+${GITHUB_REF}:refs/remotes/base/punta" "+${CABEZA_DEL_PR}:refs/remotes/pr/cabeza"
           base=$(git rev-parse refs/remotes/base/punta)
+          # El juez también es el de la punta: un re-run trae el checkout del evento.
+          git checkout --quiet --detach "$base"
           # Se mide la unión y no la cabeza sola: lo que entra a la base es la unión.
           if ! arbol=$(git merge-tree --write-tree "$base" "$CABEZA_DEL_PR"); then
             echo "::error::tamano: el PR choca con la base; actualiza la rama para medir lo que entraría" >&2

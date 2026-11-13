@@ -2,8 +2,8 @@ name: Tamaño reevaluado al avanzar la base
 
 # `tamano-desde-la-base` mide la unión del PR con la base de cuando corrió. Si
 # la base avanza, dos PR que solos caben pueden pasar juntos del límite. Este
-# job repite ese check en cada PR abierto; mientras corre, el PR no está en
-# verde. No trae código: solo habla con la API de GitHub.
+# job repite ese check en cada PR abierto contra la rama; mientras corre, el PR
+# no está en verde. No trae código: solo habla con la API de GitHub.
 on:
   push:
     branches: [main]
@@ -27,25 +27,54 @@ jobs:
         run: |
           repo="repos/${GITHUB_REPOSITORY}"
           fallas=0
-          cabezas=$(gh api --paginate "${repo}/pulls?state=open&per_page=100" --jq '.[].head.sha')
+          falla() {
+            echo "::error::tamano: $1" >&2
+            fallas=1
+          }
+          if ! cabezas=$(gh api --paginate \
+              "${repo}/pulls?state=open&base=${GITHUB_REF_NAME}&per_page=100" --jq '.[].head.sha'); then
+            echo "::error::tamano: no se pudo listar los PR abiertos contra ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
           for cabeza in $cabezas; do
-            corrida=$(gh api \
-              "${repo}/actions/workflows/tamano-desde-la-base.yml/runs?event=pull_request_target&head_sha=${cabeza}&per_page=1" \
-              --jq '.workflow_runs[0].id // empty')
-            if [[ -z "$corrida" ]]; then
-              echo "::notice::tamano: ${cabeza} no tiene corrida de tamano-desde-la-base que repetir"
+            # El check publicado en la cabeza es el que frena el merge: su corrida es la que se repite.
+            if ! detalle=$(gh api "${repo}/commits/${cabeza}/check-runs?check_name=tamano-desde-la-base" \
+                --jq '.check_runs[0].details_url // empty'); then
+              falla "no se pudo leer el check tamano-desde-la-base de ${cabeza}"
               continue
             fi
-            # GitHub no repite una corrida que no terminó, y la que está en
-            # curso pudo leer la base de antes de este push.
-            until [[ "$(gh api "${repo}/actions/runs/${corrida}" --jq .status)" == completed ]]; do
+            if [[ -z "$detalle" ]]; then
+              echo "::notice::tamano: ${cabeza} no tiene check tamano-desde-la-base que repetir"
+              continue
+            fi
+            if [[ ! "$detalle" =~ /actions/runs/([0-9]+)/ ]]; then
+              falla "el check de ${cabeza} no apunta a una corrida de Actions: ${detalle}"
+              continue
+            fi
+            corrida=${BASH_REMATCH[1]}
+            # GitHub no repite una corrida que no terminó, y la que está en curso pudo
+            # leer la base de antes de este push.
+            estado=""
+            for ((vuelta = 0; vuelta < 36; vuelta++)); do
+              if ! estado=$(gh api "${repo}/actions/runs/${corrida}" --jq .status); then
+                estado=ilegible
+                break
+              fi
+              [[ "$estado" == completed ]] && break
               sleep 10
             done
+            if [[ "$estado" == ilegible ]]; then
+              falla "no se pudo leer el estado de la corrida ${corrida} de ${cabeza}; un push al PR lo vuelve a medir"
+              continue
+            fi
+            if [[ "$estado" != completed ]]; then
+              falla "la corrida ${corrida} de ${cabeza} no terminó en 6 minutos; un push al PR lo vuelve a medir"
+              continue
+            fi
             if gh api -X POST "${repo}/actions/runs/${corrida}/rerun" > /dev/null; then
               echo "tamano: ${cabeza} se vuelve a medir en la corrida ${corrida}"
             else
-              echo "::error::tamano: no se pudo repetir la corrida ${corrida} de ${cabeza} (GitHub no repite corridas de más de 30 días ni de 50 intentos); un push al PR lo vuelve a medir" >&2
-              fallas=1
+              falla "no se pudo repetir la corrida ${corrida} de ${cabeza} (GitHub no repite corridas de más de 30 días ni de 50 intentos); un push al PR lo vuelve a medir"
             fi
           done
           exit "$fallas"
