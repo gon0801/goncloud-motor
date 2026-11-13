@@ -15,9 +15,8 @@ se corre la orden.
 
 Una corrida da estos pasos, en este orden (`Paso`):
 
-1. preparar: deja la base aparte con enlaces duros a los archivos de la máquina
-   en la base viva (`ENLACES`), una copia de lo que el motor lee de sus carpetas
-   (`COPIAS`) y sin `PROHIBIDOS`.
+1. preparar: deja la base aparte con lo que el motor lee de la base viva, cada cosa
+   como dice `COMPARTIDOS`, y sin `PROHIBIDOS`.
 2. encargar: recibe un encargo de nivel desplegado contra el repo del canario,
    con la clave canario-<versión>-<máquina>-<corrida>. La misma corrida retoma
    el mismo encargo.
@@ -34,7 +33,9 @@ Una corrida da estos pasos, en este orden (`Paso`):
    queda en `Cierre.fallas`; un Ctrl-C se vuelve a lanzar al terminar el cierre.
 6. medir: `canario_encargos.observar` y `juzgar`.
 7. limpiar: borra su rama remota encargo/<id>, espacio/<id>, ejecucion/<id> y
-   trabajos/<id>.json de la flota. Con algo que no es un id no borra nada.
+   trabajos/<id>.json de la flota. Con algo que no es un id no borra nada, ni
+   tampoco por una carpeta de la base que lleve fuera de ella. Después recoge lo
+   mismo de los encargos cerrados de corridas anteriores (`recoger`).
 
 Solo se mide y se borra con el cierre listo (`Cierre.listo`): el encargo cerrado,
 el grupo del supervisor ausente, ningún proceso del encargo vivo o sin poder
@@ -42,10 +43,17 @@ mirarse y ningún paso del cierre caído. Si no, la orden no borra nada y nombra
 que quedó.
 
 Por stderr van los avances y la tabla. Por stdout, un solo objeto JSON: el
-`Informe` una vez recibido el encargo, o `{"paso", "error", "codigo": 2}` si no se
-llegó a recibir (`paso` vacío ante un error que ningún paso esperaba). Sale con 0
-si cada fila da lo esperado, el cierre quedó listo y la limpieza terminó; con 1 si
+`Informe` una vez recibido el encargo, o `{"corrida", "paso", "error", "codigo": 2}`
+si no se llegó a recibir (`paso` vacío ante un error que ningún paso esperaba). El
+mismo objeto queda en `<base>/canario-informe.json`. Sale con 0 si cada fila da lo
+esperado, el cierre quedó listo y la limpieza y la recogida terminaron; con 1 si
 no; con 2 si un paso no pudo correr.
+
+La corrida sigue aunque se pierda la sesión que la lanzó: escribir en ella es de
+mejor esfuerzo y SIGHUP no la corta. Por ssh, al caerse la sesión, escribir falla
+con EPIPE en la Mac y la Mini y con EINVAL en la PC. En la PC, OpenSSH mete la
+sesión en un Job que mata a sus procesos cuando sale el lanzador; el supervisor y
+los trabajadores del motor salen de ese Job al nacer.
 
 La salida trae ids, ramas y el repo: no va a un log público.
 """
@@ -53,23 +61,26 @@ La salida trae ids, ramas y el repo: no va a un log público.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, TypeVar, cast
+from typing import Literal, TextIO, TypeVar, cast
 
 RAIZ = Path(__file__).resolve().parents[1]
 if str(RAIZ) not in sys.path:
@@ -79,7 +90,7 @@ from motor import plataforma  # noqa: E402
 from motor.encargos.copiar import _quitar as quitar  # noqa: E402
 from motor.encargos.registro import Registro  # noqa: E402
 from motor.github import GhGitHub  # noqa: E402
-from motor.io import leer_texto  # noqa: E402
+from motor.io import escribir_texto, leer_texto  # noqa: E402
 from motor.repositorios import resolver_repositorio  # noqa: E402
 from ops import canario_encargos as canario  # noqa: E402
 
@@ -89,17 +100,46 @@ CERRADOS: dict[str, Fin] = {"terminado": "terminado", "detenido": "detenido", "c
 Presencia = Literal["ausente", "vivo", "incierto"]
 """Lo que queda del grupo del supervisor, con las palabras de `plataforma.presencia_grupo`."""
 
-ENLACES = ("maquina.toml", "github.json", "capacidades.json", "flota-home.json")
-"""Enlaces duros: Windows pide un privilegio para crear un enlace simbólico y no para
-uno duro, y el canario lee el mismo archivo que la base viva, no una copia."""
-COPIAS = (Path("politica") / "poteto",)
-"""Carpetas de la base viva que el motor lee. Una carpeta no admite enlace duro, y una
-copia no deja que lo que escriba el canario caiga en la base viva."""
+Forma = Literal["enlace duro", "copia"]
+
+
+@dataclass(frozen=True)
+class Compartido:
+    """Algo de la base viva que el motor lee, y cómo lo recibe la base del canario."""
+
+    ruta: Path
+    forma: Forma
+    porque: str
+    obligatorio: bool = True
+    """False: si la base viva no lo tiene, el canario lo quita de su base y sigue."""
+
+
+_SOLO_LO_LEE = (
+    "el motor solo lo lee: el enlace duro no pide el privilegio que Windows pide para uno"
+    " simbólico, y el canario lee el mismo archivo que la base viva"
+)
+COMPARTIDOS = (
+    Compartido(Path("maquina.toml"), "enlace duro", _SOLO_LO_LEE),
+    Compartido(Path("github.json"), "enlace duro", _SOLO_LO_LEE),
+    Compartido(Path("capacidades.json"), "enlace duro", _SOLO_LO_LEE),
+    Compartido(
+        Path("flota-home.json"), "copia",
+        "servicio.vincular_base lo escribe en sitio: por un enlace, esa escritura caería en la"
+        " base viva",
+    ),
+    Compartido(
+        Path("politica") / "poteto", "copia",
+        "una carpeta no admite enlace duro, y por un enlace lo que escribiera el canario caería"
+        " en la base viva",
+        obligatorio=False,
+    ),
+)
 PROHIBIDOS = ("secretos.env", "canal.json")
 """secretos.env trae la URL de Kuma y canal.json el canal: con ellos el supervisor
 del canario hablaría en nombre del servicio vivo."""
 REGISTRO = ("registro.sqlite", "registro.sqlite-wal", "registro.sqlite-shm")
 """Lo que SQLite escribe del registro: si uno fuera el de la base viva, el canario escribiría en ella."""
+INFORME = "canario-informe.json"
 TEXTO = "Canario: escribe el id de esta corrida en corridas/<máquina>.txt."
 ID = re.compile(r"enc_[0-9a-f]+")
 CORRIDA = re.compile(r"[A-Za-z0-9._-]+")
@@ -189,6 +229,8 @@ class Informe:
     limpieza: tuple[Borrado, ...]
     """Vacío si no se borró: el cierre no quedó listo."""
     fallo: Fallo | None = None
+    recogida: tuple[Borrado, ...] = ()
+    """Lo que `recoger` borró, o no pudo borrar, de las corridas anteriores."""
 
     @property
     def coincide(self) -> bool:
@@ -198,7 +240,9 @@ class Informe:
     def codigo(self) -> int:
         if self.fallo is not None:
             return 2
-        limpio = self.cierre.listo and all(b.resultado != "falló" for b in self.limpieza)
+        limpio = self.cierre.listo and all(
+            b.resultado != "falló" for b in (*self.limpieza, *self.recogida)
+        )
         return 0 if self.coincide and limpio else 1
 
     def json(self) -> dict:
@@ -220,8 +264,36 @@ class Informe:
         }
 
 
+def _decir(texto: str, flujo: TextIO) -> None:
+    """Escribe en la sesión si sigue ahí: sin ella, la corrida termina igual."""
+    try:
+        print(texto, file=flujo, flush=True)
+    except (OSError, ValueError):
+        # Lo que quedó en el búfer falla otra vez al salir, y Python sale entonces con 120.
+        with contextlib.suppress(OSError, ValueError):
+            nulo = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(nulo, flujo.fileno())
+            finally:
+                os.close(nulo)
+
+
 def _avance(paso: Paso | None, texto: str) -> None:
-    print(f"canario [{paso or '?'}] {texto}", file=sys.stderr, flush=True)
+    _decir(f"canario [{paso or '?'}] {texto}", sys.stderr)
+
+
+@contextlib.contextmanager
+def _sin_colgar() -> Iterator[None]:
+    """SIGHUP no corta la corrida. Un manejador, y no SIG_IGN, para que no lo hereden
+    los procesos que lanza."""
+    if not hasattr(signal, "SIGHUP") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    antes = signal.signal(signal.SIGHUP, lambda *_: None)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGHUP, antes)
 
 
 def _entorno() -> dict[str, str]:
@@ -256,10 +328,45 @@ def _estado(p: Pedido, encargo: str, paso: Paso) -> str:
         return ""
 
 
+def _aparte(base: Path, viva: Path) -> bool:
+    base, viva = base.expanduser().resolve(), viva.expanduser().resolve()
+    return not (base == viva or viva in base.parents or base in viva.parents)
+
+
+def _sale_de(base: Path, ruta: Path) -> bool:
+    """Si las carpetas de `ruta` llevan fuera de `base`: rmtree y la copia siguen un enlace
+    que no sea el último tramo."""
+    return not ruta.parent.resolve().is_relative_to(base.resolve())
+
+
+def _enlazar(fuente: Path, enlace: Path) -> None:
+    if enlace.exists() and enlace.samefile(fuente):
+        return
+    if os.path.lexists(enlace) and not enlace.is_symlink():
+        raise NoSePuede(
+            "preparar",
+            f"{enlace} existe y no es el archivo de {fuente}; si es un enlace viejo, bórralo",
+        )
+    enlace.unlink(missing_ok=True)
+    os.link(fuente, enlace)
+
+
+def _copiar(fuente: Path, copia: Path) -> None:
+    # Un archivo se desenlaza sin tocar sus permisos: puede ser un enlace duro al vivo.
+    if copia.is_dir() and not copia.is_symlink():
+        quitar(copia)
+    elif os.path.lexists(copia):
+        copia.unlink()
+    if fuente.is_dir():
+        shutil.copytree(fuente, copia)
+    elif fuente.is_file():
+        shutil.copyfile(fuente, copia)
+
+
 def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
-    base, viva = p.base.expanduser().resolve(), p.base_viva.expanduser().resolve()
-    if base == viva or viva in base.parents or base in viva.parents:
+    if not _aparte(p.base, p.base_viva):
         raise NoSePuede("preparar", f"{p.base} no está aparte de la base viva {p.base_viva}")
+    base, viva = p.base.expanduser().resolve(), p.base_viva.expanduser().resolve()
     sobran = [n for n in PROHIBIDOS if os.path.lexists(base / n)]
     if sobran:
         raise NoSePuede("preparar", f"{p.base} trae {', '.join(sobran)}")
@@ -268,31 +375,16 @@ def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
         if propio.is_symlink() or (propio.exists() and vivo.exists() and propio.samefile(vivo)):
             raise NoSePuede("preparar", f"{propio} es un enlace o el de la base viva")
     base.mkdir(parents=True, exist_ok=True)
-    for nombre in ENLACES:
-        fuente, enlace = viva / nombre, base / nombre
-        if not fuente.is_file():
+    for c in COMPARTIDOS:
+        fuente, propio = viva / c.ruta, base / c.ruta
+        if _sale_de(base, propio):
+            raise NoSePuede("preparar", f"{propio} lleva fuera de {p.base} por un enlace")
+        if c.obligatorio and not fuente.is_file():
             raise NoSePuede("preparar", f"falta {fuente}")
-        if enlace.exists() and enlace.samefile(fuente):
-            continue
-        if os.path.lexists(enlace) and not enlace.is_symlink():
-            raise NoSePuede(
-                "preparar",
-                f"{enlace} existe y no es el archivo de {fuente}; si es un enlace viejo, bórralo",
-            )
         try:
-            enlace.unlink(missing_ok=True)
-            os.link(fuente, enlace)
+            (_enlazar if c.forma == "enlace duro" else _copiar)(fuente, propio)
         except OSError as exc:
-            raise NoSePuede("preparar", f"no pude enlazar {enlace}: {exc}") from exc
-    for relativa in COPIAS:
-        fuente, copia = viva / relativa, base / relativa
-        try:
-            if os.path.lexists(copia):
-                quitar(copia)
-            if fuente.is_dir():
-                shutil.copytree(fuente, copia)
-        except OSError as exc:
-            raise NoSePuede("preparar", f"no pude copiar {fuente}: {exc}") from exc
+            raise NoSePuede("preparar", f"no pude dejar {propio} como {c.forma}: {exc}") from exc
     try:
         nombre = str(tomllib.loads(leer_texto(base / "maquina.toml")).get("nombre") or "")
         esperado = canario.leer_esperado(p.esperado)
@@ -501,6 +593,65 @@ def _ramas(base: Path, encargo: str) -> list[str]:
     return sorted({f.rama for f in e.fases if f.rama}) if e is not None else []
 
 
+def _flota(base: Path) -> Path | None:
+    home = str(canario._json_o_vacio(base / "flota-home.json").get("home") or "")
+    return Path(home) if home else None
+
+
+def _cerrados(base: Path) -> list[str]:
+    reg = Registro(base)
+    try:
+        return [i for i in reg.ids() if (e := reg.fold(i)) is not None and e.estado in CERRADOS]
+    finally:
+        reg.close()
+
+
+def _ramas_remotas(repo: str) -> frozenset[str]:
+    """Las ramas encargo/* del repo del canario; vacío si no se pudieron leer."""
+    try:
+        remoto = resolver_repositorio(repo).remoto
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return frozenset()
+    salida = canario._git(
+        "ls-remote", "--heads", "--", remoto, "refs/heads/encargo/*", espera=2 * canario.ESPERA_GIT_S,
+    )
+    return frozenset(
+        linea.split("\t", 1)[1].removeprefix("refs/heads/")
+        for linea in (salida or "").splitlines() if "\t" in linea
+    )
+
+
+def recoger(p: Pedido, salvo: str = "") -> tuple[Borrado, ...]:
+    """Limpia lo que dejaron las corridas anteriores: cada encargo de la base del canario,
+    salvo `salvo`, que ya cerró, que aún deja algo y del que no queda ningún proceso vivo.
+
+    Corre después del cierre y no al preparar: el supervisor de esta corrida vuelve a
+    crear `espacio/<id>` vacío al barrer un encargo cerrado de la anterior."""
+    if not (p.base / "registro.sqlite").is_file():
+        return ()
+    try:
+        cerrados = [i for i in _cerrados(p.base) if i != salvo]
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        return (Borrado(
+            "los restos de las corridas anteriores", "falló",
+            f"no pude leer el registro ({type(exc).__name__}: {exc})",
+        ),)
+    remotas, flota = _ramas_remotas(p.repo), _flota(p.base)
+    borrados: list[Borrado] = []
+    for encargo in cerrados:
+        locales = [p.base / "espacio" / encargo, p.base / "ejecucion" / encargo]
+        if flota:
+            locales.append(flota / "trabajos" / f"{encargo}.json")
+        if f"encargo/{encargo}" not in remotas and not any(os.path.lexists(r) for r in locales):
+            continue
+        if vivos := _vivos(p.base, encargo):
+            borrados.append(Borrado(f"los restos de {encargo}", "falló", f"siguen {', '.join(vivos)}"))
+            continue
+        _avance("limpiar", f"recojo lo que dejó {encargo}, cerrado en una corrida anterior")
+        borrados += limpiar(p, encargo)
+    return tuple(borrados)
+
+
 def limpiar(p: Pedido, encargo: str) -> tuple[Borrado, ...]:
     if not ID.fullmatch(encargo):
         borrados = [Borrado(f"los restos de {encargo!r}", "falló", "no es un id de encargo: no borro nada")]
@@ -520,11 +671,16 @@ def limpiar(p: Pedido, encargo: str) -> tuple[Borrado, ...]:
                 else Borrado(f"la rama remota {rama}", "falló", f"no es {suya}: no la borro")
                 for rama in ramas
             ]
-        borrados += [_borrar_ruta(p.base / d / encargo, f"{d}/{encargo}") for d in ("espacio", "ejecucion")]
-        flota = str(canario._json_o_vacio(p.base / "flota-home.json").get("home") or "")
+        for d in ("espacio", "ejecucion"):
+            ruta, nombre = p.base / d / encargo, f"{d}/{encargo}"
+            borrados.append(
+                Borrado(nombre, "falló", f"{p.base / d} lleva fuera de la base: no lo borro")
+                if _sale_de(p.base, ruta) else _borrar_ruta(ruta, nombre)
+            )
+        flota = _flota(p.base)
         trabajo = f"trabajos/{encargo}.json de la flota"
         borrados.append(
-            _borrar_ruta(Path(flota) / "trabajos" / f"{encargo}.json", trabajo) if flota
+            _borrar_ruta(flota / "trabajos" / f"{encargo}.json", trabajo) if flota
             else Borrado(trabajo, "falló", "flota-home.json no dice dónde está la flota")
         )
     for b in borrados:
@@ -532,11 +688,15 @@ def limpiar(p: Pedido, encargo: str) -> tuple[Borrado, ...]:
     return tuple(borrados)
 
 
+def _traza() -> None:
+    _decir(traceback.format_exc().rstrip(), sys.stderr)
+
+
 def _fallo(exc: Exception) -> Fallo:
     if isinstance(exc, NoSePuede):
         fallo = Fallo(exc.paso, exc.causa)
     else:
-        traceback.print_exc()
+        _traza()
         fallo = Fallo(None, f"{type(exc).__name__}: {exc}")
     _avance(fallo.paso, f"no pude seguir: {fallo.causa}")
     return fallo
@@ -551,12 +711,12 @@ def correr(p: Pedido, gh: canario.LectorPR, supervisor: Sequence[str] | None = N
     _avance("preparar", f"base {p.base} lista; {maquina} en {version[:12]}")
     inicio = time.monotonic()
     encargo = encargar(p, clave)
-    _avance("encargar", f"{encargo} con la clave {clave}")
     proceso: dict | None = None
     fin: Fin | None = None
     estado = ""
     fallo: Fallo | None = None
     try:
+        _avance("encargar", f"{encargo} con la clave {clave}")
         proceso = lanzar(p, supervisor or [
             sys.executable, "-B", "-m", "motor", "supervisor", "--base", str(p.base), "--agente", "ensayo",
         ])
@@ -573,6 +733,7 @@ def correr(p: Pedido, gh: canario.LectorPR, supervisor: Sequence[str] | None = N
         fallo = Fallo("cerrar", "; ".join(cierre.fallas))
     filas: tuple[canario.Fila, ...] = ()
     limpieza: tuple[Borrado, ...] = ()
+    recogida: tuple[Borrado, ...] = ()
     if cierre.listo:
         if fallo is None:
             try:
@@ -580,10 +741,24 @@ def correr(p: Pedido, gh: canario.LectorPR, supervisor: Sequence[str] | None = N
             except Exception as exc:
                 fallo = _fallo(exc)
         limpieza = limpiar(p, encargo)
+        recogida = recoger(p, salvo=encargo)
     return Informe(
         maquina, version, p.corrida, clave, encargo, fin, estado, segundos, cierre,
-        filas, limpieza, fallo,
+        filas, limpieza, fallo, recogida,
     )
+
+
+def _guardar(p: Pedido, salida: dict) -> None:
+    """Deja la salida en la base del canario, para leerla aunque se haya perdido la sesión."""
+    if not _aparte(p.base, p.base_viva) or not p.base.is_dir():
+        return
+    destino = p.base / INFORME
+    temporal = destino.with_name(f"{INFORME}.tmp")
+    try:
+        escribir_texto(temporal, json.dumps(salida, ensure_ascii=False, indent=1))
+        os.replace(temporal, destino)
+    except OSError as exc:
+        _avance(None, f"no pude dejar el informe en {destino}: {exc}")
 
 
 def _ruta(texto: str) -> Path:
@@ -635,21 +810,22 @@ def main(
         tope_s=None if args.tope_min is None else args.tope_min * 60.0,
         intervalo_s=args.intervalo_s, esperado=args.esperado, tope_cierre_s=args.tope_cierre_s,
     )
-    try:
-        informe = correr(p, gh or GhGitHub(), supervisor)
-    except NoSePuede as exc:
-        _avance(exc.paso, f"no pude seguir: {exc.causa}")
-        print(json.dumps({"paso": exc.paso, "error": exc.causa, "codigo": 2}, ensure_ascii=False))
-        return 2
-    except Exception as exc:  # el 1 queda para una tabla que no coincide, siempre con su informe
-        traceback.print_exc()
-        error = f"{type(exc).__name__}: {exc}"
-        print(json.dumps({"paso": "", "error": error, "codigo": 2}, ensure_ascii=False))
-        return 2
-    if informe.filas:
-        print(canario.tabla(informe.filas), file=sys.stderr)
-    print(json.dumps(informe.json(), ensure_ascii=False))
-    return informe.codigo
+    with _sin_colgar():
+        try:
+            informe = correr(p, gh or GhGitHub(), supervisor)
+            salida = informe.json()
+            if informe.filas:
+                _decir(canario.tabla(informe.filas), sys.stderr)
+        except NoSePuede as exc:
+            _avance(exc.paso, f"no pude seguir: {exc.causa}")
+            salida = {"corrida": p.corrida, "paso": exc.paso, "error": exc.causa, "codigo": 2}
+        except Exception as exc:  # el 1 queda para una tabla que no coincide, siempre con su informe
+            _traza()
+            error = f"{type(exc).__name__}: {exc}"
+            salida = {"corrida": p.corrida, "paso": "", "error": error, "codigo": 2}
+        _guardar(p, salida)
+        _decir(json.dumps(salida, ensure_ascii=False), sys.stdout)
+        return int(salida["codigo"])
 
 
 if __name__ == "__main__":
