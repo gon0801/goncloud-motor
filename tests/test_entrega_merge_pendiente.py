@@ -72,6 +72,88 @@ def _politica_con_checks(directorio):
     gh.merge = merge
     return gh
 
+
+_BASE_MODIFICADA = (
+    "gh pr merge 1: GraphQL: Base branch was modified. Review and try the merge "
+    "again. (mergePullRequest)"
+)
+
+
+def _base_modificada(veces):
+    """Los primeros `veces` merges GitHub contesta que la base cambió mientras
+    mergeaba, como pasa cuando otra máquina integra en el mismo repo. La
+    respuesta pasa por el adaptador real; después mergea el doble."""
+
+    def fabrica(directorio):
+        gh = github_con_corridas(directorio)
+        mergear = gh.merge
+        adaptador = GhGitHub()
+
+        def merge(repo, numero, sha, metodo, mensaje):
+            if len(gh.intentos) >= veces:
+                return mergear(repo, numero, sha, metodo, mensaje)
+            gh.intentos.append(sha)
+            with mock.patch.object(
+                adaptador, "_gh", side_effect=RuntimeError(_BASE_MODIFICADA)
+            ):
+                return adaptador.merge("o/r", numero, sha, metodo, mensaje)
+
+        gh.merge = merge
+        return gh
+
+    return fabrica
+
+
+def _hasta_dejar_de_esperar(vuelta, r, e, vueltas=10):
+    for _ in range(vueltas):
+        if e.estado != "esperando_reintento":
+            break
+        epoch = datetime.fromisoformat(e.reanuda_en.replace("Z", "+00:00")).timestamp()
+        barrer(r.reg, e.reanuda_en, epoch, None, gh=vuelta.gh)
+        e = r.fold()
+    return e
+
+
+class BaseModificadaAlMergear(unittest.TestCase):
+    def preparar(self, veces):
+        tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+        return _entrega_pr(
+            self, tmp, "merge-base-modificada", _base_modificada(veces),
+            nivel="integrado",
+        )
+
+    def test_la_base_modificada_espera_y_el_reintento_integra(self):
+        vuelta, r = self.preparar(veces=1)
+        e = vuelta("hola")
+        self.assertEqual(e.estado, "esperando_reintento")
+        self.assertEqual(e.nivel_alcanzado, "pr")
+        self.assertEqual(e.pendientes_entrega, ())
+        self.assertEqual(e.impedimentos, ())
+
+        final = _hasta_dejar_de_esperar(vuelta, r, e)
+        self.assertEqual(final.estado, "terminado")
+        self.assertEqual(final.nivel_alcanzado, "integrado")
+        self.assertEqual(final.pendientes_entrega, ())
+        self.assertEqual(final.impedimentos, ())
+        self.assertEqual(vuelta.gh.intentos, [e.pr_sha, e.pr_sha])
+        self.assertEqual(r.eventos("pregunta"), [])
+
+    def test_la_base_que_sigue_modificada_se_detiene_al_tercer_intento_con_la_causa(self):
+        vuelta, r = self.preparar(veces=99)
+        e = _hasta_dejar_de_esperar(vuelta, r, vuelta("hola"))
+        self.assertNotEqual(e.estado, "esperando_reintento")
+        self.assertEqual(len(vuelta.gh.intentos), 3)
+
+        barrer(r.reg, ahora_iso(), time.time(), None, gh=vuelta.gh)
+        e = r.fold()
+        self.assertEqual(len(vuelta.gh.intentos), 3)
+        self.assertNotEqual(e.estado, "esperando_reintento")
+        self.assertEqual(e.nivel_alcanzado, "pr")
+        causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
+        self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
+        self.assertEqual(r.eventos("pregunta"), [])
+
+
 class EntregaMergePendiente(unittest.TestCase):
     def preparar(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
