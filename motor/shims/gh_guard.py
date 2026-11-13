@@ -1,8 +1,10 @@
-"""`gh` para los agentes: todo pasa al `gh` real salvo mergear, cerrar, marcar listo o revisar PRs.
+"""`gh` para los agentes: todo pasa al `gh` real salvo abrir, mergear, cerrar, marcar listo o
+revisar PRs.
 
-El único que mergea es el motor, con su MergeTicket. MOTOR 01 (2026-10-20): GitHub rechazó un
-merge porque faltaban pruebas, el agente recibió el rechazo como tarea y mergeó él mismo con
-`gh pr merge`. Este filtro corta ese camino; la regla también va escrita en cada encargo.
+El único que abre y mergea es el motor, con su MergeTicket. MOTOR 01 (2026-10-20): GitHub
+rechazó un merge porque faltaban pruebas, el agente recibió el rechazo como tarea y mergeó él
+mismo con `gh pr merge`. Este filtro corta ese camino; la regla también va escrita en cada
+encargo.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ ACCIONES = (
     ),
     Accion("close", (Rest("PATCH", r"pulls/\d+", "state=closed"),), ("closePullRequest",)),
     Accion("ready", (), ("markPullRequestReadyForReview",)),
+    Accion("create", (Rest("POST", r"pulls"),), ("createPullRequest",)),
     Accion(
         "review",
         (Rest("POST", r"pulls/\d+/reviews"), Rest("POST", r"pulls/\d+/reviews/\d+/events")),
@@ -106,7 +109,8 @@ def main() -> int:
     que = bloqueado(args)
     if que:
         print(
-            f"{que} está prohibido para los agentes: solo el motor mergea, marca listo o cierra PRs. "
+            f"{que} está prohibido para los agentes: solo el motor mergea, abre, marca listo o "
+            "cierra PRs. "
             "Si el merge falló por conflicto, actualiza tu rama con la principal y vuelve a entregar.",
             file=sys.stderr,
         )
