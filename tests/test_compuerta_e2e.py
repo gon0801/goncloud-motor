@@ -855,10 +855,11 @@ class LasVariantesDeLaCompuerta(CompuertaReal):
 
 
 class LosTropiezosDelMerge(CompuertaReal):
-    """La serie de tropiezos del merge es de un merge: el que entra la cierra y
-    el PR de la fase siguiente empieza con sus cinco intentos."""
+    """La serie de tropiezos es de un PR. Un PR mergeado no se vuelve a mergear,
+    así que no tropieza otra vez; el de la fase siguiente empieza con sus cinco
+    intentos."""
 
-    def test_un_merge_que_entra_reinicia_la_serie(self):
+    def test_el_pr_de_la_fase_siguiente_empieza_con_sus_cinco_intentos(self):
         escenario = {
             "fases": [
                 {"id": "uno", "resultado": "saludo.txt con hola"},

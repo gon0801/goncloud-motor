@@ -14,6 +14,7 @@ from unittest import mock
 
 from motor.encargos.ciclo import ahora_iso, barrer
 from motor.github import FakeGitHub, GhGitHub, PoliticaBloquea, PuntaMovida
+from motor.respuestas_merge import CHECKS_SIN_LEER, ETIQUETAS
 from tests.test_flujo_revisiones import (
     _entrega_pr,
     sonda_sin_aislamiento_del_host,
@@ -109,6 +110,17 @@ def _cli_head_modificada(movida):
     return cli
 
 
+def _cli_sin_leer(*args):
+    """`gh pr merge` sale bien, pero el PR no se puede leer para confirmarlo."""
+    if args[:2] == ("pr", "merge"):
+        return ""
+    raise RuntimeError("gh pr view 1: HTTP 502: Bad Gateway (https://api.github.com/graphql)")
+
+
+def _cli_sin_respuesta(*args):
+    raise subprocess.TimeoutExpired(["gh", *args], 60)
+
+
 # Lo que contesta el CLI de GitHub al merge y el pedazo de la causa que lo
 # nombra. La punta del PR sigue en el SHA revisado en todas.
 _PASAJERAS = {
@@ -119,6 +131,7 @@ _PASAJERAS = {
     "sin respuesta": (subprocess.TimeoutExpired(["gh", "pr", "merge"], 60), "no contestó"),
     "sin marcar": (_cli_sin_marcar, "no lo marcó como mergeado"),
     "head modificada": (_cli_head_modificada(movida=False), "Head branch was modified"),
+    "sin leer": (_cli_sin_leer, "el PR no se pudo leer"),
 }
 
 
@@ -136,6 +149,30 @@ def _github_contesta(cli, veces):
                 return mergear(repo, numero, sha, metodo, mensaje)
             gh.intentos.append(sha)
             with mock.patch.object(adaptador, "_gh", side_effect=cli):
+                return adaptador.merge("o/r", numero, sha, metodo, mensaje)
+
+        gh.merge = merge
+        return gh
+
+    return fabrica
+
+
+def _el_merge_entra(cli):
+    """`gh pr merge` sí integra el PR en el doble, y después el CLI contesta con
+    `cli` como si no se supiera."""
+
+    def fabrica(directorio):
+        gh = github_con_corridas(directorio)
+        mergear = gh.merge
+        adaptador = GhGitHub()
+
+        def merge(repo, numero, sha, metodo, mensaje):
+            def integra_y_contesta(*args):
+                if args[:2] == ("pr", "merge"):
+                    mergear(repo, numero, sha, metodo, mensaje)
+                return cli(*args)
+
+            with mock.patch.object(adaptador, "_gh", side_effect=integra_y_contesta):
                 return adaptador.merge("o/r", numero, sha, metodo, mensaje)
 
         gh.merge = merge
@@ -197,12 +234,16 @@ class BaseModificadaAlMergear(unittest.TestCase):
         self.assertEqual(e.nivel_alcanzado, "pr")
         causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
         self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
+        self.assertTrue(
+            any("tras 5 tropiezos seguidos: base movida: " in c for c in causas), causas
+        )
         self.assertEqual(r.eventos("pregunta"), [])
 
 
 class OtrasRespuestasPasajerasAlMergear(unittest.TestCase):
-    """Un 5xx, un `gh` que no contesta, un merge que GitHub aún no marca y una
-    punta "modificada" que sigue en el SHA revisado no son un bloqueo."""
+    """Un 5xx, un `gh` que no contesta, un merge que GitHub aún no marca, un PR
+    que no se puede leer tras el merge y una punta "modificada" que sigue en el
+    SHA revisado no son un bloqueo."""
 
     def preparar(self, cli, veces):
         tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
@@ -240,6 +281,7 @@ class OtrasRespuestasPasajerasAlMergear(unittest.TestCase):
                 self.assertEqual(e.nivel_alcanzado, "pr")
                 causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
                 self.assertTrue(any(marca in c for c in causas), causas)
+                self.assertTrue(any("tras 5 tropiezos seguidos: " in c for c in causas), causas)
                 self.assertEqual(r.eventos("pregunta"), [])
 
     def test_la_punta_que_de_verdad_se_movio_no_se_reintenta(self):  # no-roja-en-base: ya bloqueaba en la base; fija que el reintento de la misma punta no lo alcance
@@ -313,6 +355,9 @@ class TodosLosTropiezosEnUnaSerie(unittest.TestCase):
         ))
         self.assertEqual(merges, 5)
         self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
+        self.assertTrue(
+            any("tras 5 tropiezos seguidos: base movida: " in c for c in causas), causas
+        )
 
     def test_los_checks_que_nunca_se_leen_se_detienen_al_quinto_tropiezo_con_la_causa(self):
         merges, causas = self.recorrer(_sin_leer_checks(_github_contesta(_POLITICA, veces=99)))
@@ -320,6 +365,37 @@ class TodosLosTropiezosEnUnaSerie(unittest.TestCase):
         self.assertTrue(
             any("no se pudieron leer los checks requeridos" in c for c in causas), causas
         )
+        self.assertTrue(
+            any("tras 5 tropiezos seguidos: checks sin leer: " in c for c in causas), causas
+        )
+
+    def test_cada_tropiezo_tiene_una_etiqueta_distinta(self):
+        etiquetas = [*ETIQUETAS.values(), CHECKS_SIN_LEER]
+        self.assertEqual(sorted(set(etiquetas)), sorted(etiquetas))
+
+
+class ElMergeQueEntroSinConfirmarse(unittest.TestCase):
+    """`gh pr merge` integró, pero no terminó a tiempo o el PR no se pudo leer
+    después: el reintento lo ve mergeado y lo adopta sin repetir el merge."""
+
+    def test_el_reintento_adopta_el_merge_sin_repetirlo(self):
+        for nombre, cli in {"sin respuesta": _cli_sin_respuesta, "sin leer": _cli_sin_leer}.items():
+            with self.subTest(nombre):
+                tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+                vuelta, r = _entrega_pr(
+                    self, tmp, "merge-hecho", _el_merge_entra(cli), nivel="integrado",
+                )
+                e = vuelta("hola")
+                self.assertEqual(e.estado, "esperando_reintento")
+                self.assertEqual(e.impedimentos, ())
+
+                final = _hasta_dejar_de_esperar(vuelta, r, e)
+                self.assertEqual(final.estado, "terminado")
+                self.assertEqual(final.nivel_alcanzado, "integrado")
+                self.assertEqual(final.impedimentos, ())
+                self.assertEqual(final.pendientes_entrega, ())
+                self.assertEqual(vuelta.gh.intentos, [e.pr_sha])
+                self.assertEqual(r.eventos("pregunta"), [])
 
 
 class EntregaMergePendiente(unittest.TestCase):

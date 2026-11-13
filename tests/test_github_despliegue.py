@@ -814,13 +814,23 @@ class MergeTest(unittest.TestCase):
                     F({}).merge("o/r", 7, "b" * 40, "squash", "m")  # el PR sigue en SHA
 
     def test_gh_tipa_las_respuestas_pasajeras_del_merge(self):
-        from motor.github import ErrorDeGitHub, MergeSinConfirmar, MergeSinRespuesta, PrSinAsentar
+        from motor.github import (
+            ErrorDeGitHub, MergeSinConfirmar, MergeSinRespuesta, PrSinAsentar, PrSinLeer,
+        )
 
         def falla(error):
             def cli(*a):
                 if a[:2] == ("pr", "merge"):
                     raise error
                 return _pr_json()
+
+            return cli
+
+        def sin_leer(error):
+            def cli(*a):
+                if a[:2] == ("pr", "merge"):
+                    return ""
+                raise error
 
             return cli
 
@@ -833,6 +843,9 @@ class MergeTest(unittest.TestCase):
             ),
             (falla(subprocess.TimeoutExpired(["gh", "pr", "merge"], 60)), MergeSinRespuesta),
             (lambda *a: "" if a[:2] == ("pr", "merge") else _pr_json(), MergeSinConfirmar),
+            (sin_leer(RuntimeError("gh pr view 7: HTTP 502: x (https://api.github.com/graphql)")),
+             PrSinLeer),
+            (sin_leer(subprocess.TimeoutExpired(["gh", "pr", "view"], 60)), PrSinLeer),
             (falla(cambiada), PrSinAsentar),
             (cambiada, PuntaMovida),
         ]
