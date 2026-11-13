@@ -324,7 +324,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         (trabajador,) = _trabajadores(self.base)
         self.assertEqual(plataforma.estado_proc(trabajador), "vivo", "mató la reversa a medias")
 
-    def test_un_parar_que_no_cierra_el_encargo_no_deja_borrar_nada(self):
+    def test_un_parar_que_no_cierra_el_encargo_no_deja_borrar_nada(self):  # no-roja-en-base: la base ya sale con 1; la prueba afirmaba solo "distinto de 0" y ahora fija el 1 que DeepSeek puso en duda
         motor = canario_lanzador._motor
 
         def parar_falla(p, *argv):
@@ -335,7 +335,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         with mock.patch.object(canario_lanzador, "_motor", parar_falla):
             codigo, informe = self.correr(modo=("--muere-tras", "2"))
 
-        self.assertNotEqual(codigo, 0)
+        self.assertEqual(codigo, 1, informe)
         (estado,) = self.estados()
         self.assertNotIn(estado, CERRADOS)
         self.assertEqual(informe["limpieza"], [], "borró con el encargo abierto")
