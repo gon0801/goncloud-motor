@@ -14,6 +14,21 @@ Sin opciones despliega el `origin/main` actual en `mac`, `mini` y `pc`. Con
 que ya esté en `origin/main`; si no lo está, se niega antes de tocar las máquinas.
 El comando no crea etiquetas ni escribe en el remoto.
 
+Antes de escribir recibos o mover árboles, el comando corre la compuerta de
+plegado (`ops/compuerta-plegado.sh`). En cada máquina saca el SHA a un temporal
+y pliega con él el registro de encargos que abre el servicio. El registro no
+sale de la máquina. Cada máquina termina en uno de cuatro resultados:
+
+- `pliega`: todos los encargos guardados pliegan con el SHA. Pasa.
+- `sin_registro`: la máquina no tiene registro. No hay nada que perder. Pasa.
+- `no_pliega`: algún encargo no pliega. Dice cuántos, sin nombrarlos. Frena.
+- `no_pude`: no se pudo comprobar, por ejemplo porque el origin de la máquina
+  no tiene el SHA o el registro no se puede leer. Dice la causa. Frena.
+
+Si una sola máquina frena, el comando dice `No moví ninguna máquina: ...` y
+sale sin tocar ninguna. La compuerta también corre sola y solo lee:
+`bash ops/compuerta-plegado.sh --sha <sha>`.
+
 Cada máquina recibe su recibo en `~/.motor-encargos/instalacion.json` con
 `destino.codigo` igual al SHA desplegado. Antes de mover el árbol escribe
 `instalacion-pendiente.json` con el SHA anterior; si un paso falla, se detiene y

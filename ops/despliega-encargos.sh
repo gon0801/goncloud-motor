@@ -45,8 +45,9 @@ fi
 # El remoto primero: si el SHA no está publicado, no se escribe ni un recibo.
 reintenta 3 git -C "$raiz" fetch -q --force origin \
   || { echo "no pude traer origin" >&2; exit 3; }
-sha="$(git -C "$raiz" rev-parse --verify "$sha^{commit}" 2>/dev/null)" \
-  || { echo "el SHA '${sha}' no existe en $raiz" >&2; exit 3; }
+commit="$(git -C "$raiz" rev-parse --verify "$sha^{commit}" 2>/dev/null)" \
+  || { echo "el SHA '$sha' no existe en $raiz" >&2; exit 3; }
+sha="$commit"
 if ! git -C "$raiz" merge-base --is-ancestor "$sha" "origin/$rama"; then
   echo "el SHA ${sha:0:12} no está en origin/$rama: no despliego nada" >&2
   exit 3

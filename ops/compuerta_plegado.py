@@ -40,20 +40,31 @@ class NoPude(Exception):
     pass
 
 
-def interprete_supervisor(home):
+def servicio(home):
+    """El intérprete y la base de encargos con que arranca el supervisor.
+
+    En Mac y Mini salen del LaunchAgent. En la PC el vigilante lanza un
+    supervisor.ps1 que el repo no genera: ahí quedan el intérprete de esta
+    sesión y la base fija.
+    """
+    py, base = sys.executable, home / ".motor-encargos"
     if os.name == "nt":
-        return sys.executable
+        return py, base
     try:
         import plistlib
 
         plist = home / "Library" / "LaunchAgents" / "ai.goncloud.motor-encargos.plist"
         datos = plistlib.loads(plist.read_bytes())
         argumentos = datos.get("ProgramArguments") if isinstance(datos, dict) else None
-        if argumentos and isinstance(argumentos[0], str) and pathlib.Path(argumentos[0]).exists():
-            return argumentos[0]
     except Exception:
-        pass
-    return sys.executable
+        return py, base
+    if not isinstance(argumentos, list) or not all(isinstance(a, str) for a in argumentos):
+        return py, base
+    if argumentos and pathlib.Path(argumentos[0]).exists():
+        py = argumentos[0]
+    if "--base" in argumentos[:-1]:
+        base = pathlib.Path(argumentos[argumentos.index("--base") + 1])
+    return py, base
 
 
 def git(*args):
@@ -149,12 +160,11 @@ def resumen_comparar(py, candidato, instalado, sha, registro):
 
 
 def compuerta(arbol, sha):
-    home = pathlib.Path.home()
-    registro = home / ".motor-encargos" / "registro.sqlite"
+    py, base = servicio(pathlib.Path.home())
+    registro = base / "registro.sqlite"
     if not registro.exists():
         return ["resultado sin_registro", "comparar sin registro; no comparo"]
     instalado = git("-C", arbol, "rev-parse", "HEAD").stdout.strip()
-    py = interprete_supervisor(home)
     barre_viejos()
     tmp = pathlib.Path(tempfile.mkdtemp(prefix=PREFIJO))
     try:

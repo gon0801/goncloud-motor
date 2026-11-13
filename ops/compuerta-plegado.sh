@@ -37,9 +37,11 @@ for m in $maquinas; do
 done
 # shellcheck disable=SC2086
 set -- $maquinas
+[ $# -gt 0 ] || { echo "--maquina necesita mac, mini o pc" >&2; exit 2; }
 maquinas="$*"
-sha="$(git -C "$raiz" rev-parse --verify "$sha^{commit}" 2>/dev/null)" \
-  || { echo "el SHA '${sha}' no existe en $raiz" >&2; exit 2; }
+commit="$(git -C "$raiz" rev-parse --verify "$sha^{commit}" 2>/dev/null)" \
+  || { echo "el SHA '$sha' no existe en $raiz" >&2; exit 2; }
+sha="$commit"
 
 COMPUERTA_B64="$(_pc_b64 <"$aqui/compuerta_plegado.py")" || exit 2
 
