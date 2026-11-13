@@ -154,23 +154,6 @@ lee_estado_encargos() { # <maquina> -> sha de pasada, completa, recibo
   escribe_remoto "$1" "$ESTADO_B64" | tr -d '\r'
 }
 
-sha_del_arbol() { # <maquina> <ruta>
-  local m=$1 ruta=$2 salida
-  [ -n "$ruta" ] || return 1
-  if [ "$m" = pc ]; then
-    salida="$(ssh_a "$(host_de pc)" "git -C \"$ruta\" rev-parse HEAD" 2>/dev/null)" || return 1
-  else
-    salida="$(en_posix "$m" "$m" "$ruta" <<'REMOTO' 2>/dev/null
-set -euo pipefail
-git -C "$2" rev-parse HEAD
-REMOTO
-)" || return 1
-  fi
-  salida="$(printf '%s' "$salida" | tr -d '\r\n')"
-  [ -n "$salida" ] || return 1
-  printf '%s' "$salida"
-}
-
 mover_arbol() { # <maquina> <ruta> <sha>
   local m=$1 ruta=$2 sha=$3
   if [ "$m" = pc ]; then
