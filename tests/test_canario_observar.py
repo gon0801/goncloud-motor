@@ -149,6 +149,24 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         )
         self.assertIs(_turnos(self.mirar()), True)
 
+    def test_mirar_un_comprobador_vivo_no_escribe_en_la_base(self):  # no-roja-en-base: la base ya mira con escribir=False; la prueba falla si el canario deja de hacerlo
+        raiz = self.raiz()
+        comprobador = raiz / "comprobador-t"
+        comprobador.mkdir()
+        (raiz / "comprobador-actual").write_text(comprobador.name, encoding="utf-8")
+        spec = comprobador / "arranque.json"
+        spec.write_text(json.dumps({"base": str(self.banco.base), "token": "t"}), encoding="utf-8")
+        arranque = Path(sesion.__file__).with_name("arranque.py")
+        proceso = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)", str(spec), str(arranque)],
+        )
+        self.addCleanup(proceso.wait)
+        self.addCleanup(proceso.kill)
+        antes = sorted(self.banco.base.rglob("*"))
+
+        self.assertIs(_turnos(self.mirar()), True)
+        self.assertEqual(sorted(self.banco.base.rglob("*")), antes)
+
     def test_un_lanzador_en_wrapper_json_tambien_se_mira(self):
         (self.raiz() / "wrapper.json").write_text(json.dumps(self.huerfano()), encoding="utf-8")
         self.assertIs(_turnos(self.mirar()), True)
