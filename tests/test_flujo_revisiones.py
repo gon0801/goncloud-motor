@@ -2483,5 +2483,37 @@ class MedianosDeepseekFlujo(unittest.TestCase):
         self.assertEqual([h.gravedad for h in low], ["observacion"])
 
 
+class _ListoFallaUnaVez(FakeGitHub):
+    def __init__(self, d):
+        super().__init__(d)
+        self.fallos = 1
+
+    def marcar_listo(self, repo, numero):
+        if self.fallos:
+            self.fallos -= 1
+            raise RuntimeError("gh pr ready: HTTP 502 Bad Gateway")
+        super().marcar_listo(repo, numero)
+
+
+class PrListoTrasUnFallo(unittest.TestCase):
+    def test_un_fallo_de_marcar_listo_no_deja_el_pr_en_borrador(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "listo-falla", _ListoFallaUnaVez, nivel="integrado"
+            )
+            e = vuelta("hola")
+            self.assertIn("HTTP 502", e.motivo)
+
+            inicio = datetime.now(timezone.utc)
+            for horas in (1, 2, 3):
+                hora = (inicio + timedelta(hours=horas)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                e = _paso_entrega(r.reg, r.fold(), vuelta.gh, hora)
+
+            pr = next(iter(json.loads((vuelta.gh.d / "github.json").read_text())["prs"].values()))
+            self.assertFalse(pr["borrador"])
+            self.assertEqual(pr["estado"], "mergeado")
+            self.assertEqual(e.nivel_alcanzado, "integrado")
+
+
 if __name__ == "__main__":
     unittest.main()

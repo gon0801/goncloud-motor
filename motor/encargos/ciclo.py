@@ -115,7 +115,6 @@ from .politica import (
     CERRADOS_SONDEO_RAPIDO_S,
     CERRADOS_VENTANA_S,
     TOPE_DEEPSEEK_MIN,
-    hallazgo_contra_politica,
 )
 from .resultado import Avanzo, Devolver, Espera, NecesitaAgente, Resultado, permite_lanzar
 from .suscripciones import CuentaNoDisponible
@@ -5524,7 +5523,19 @@ def _preparar_indice(espacio: Path) -> str:
     luego se saca lo interno con `rm --cached --ignore-unmatch`. Las caches
     vuelven al estado de `HEAD` igual que antes: ni sus altas ni sus cambios ni
     sus borrados entran al commit.
+
+    Una ruta sin fusionar frena todo: `git add -A` la daría por resuelta con
+    los marcadores de conflicto dentro, y git ya no impediría el commit.
     """
+    r = _git(espacio, "diff", "--name-only", "--diff-filter=U")
+    if r.returncode != 0:
+        return f"git diff de rutas sin fusionar fallo: {r.stderr.strip()[-300:]}"
+    sin_resolver = r.stdout.splitlines()
+    if sin_resolver:
+        return (
+            "hay una mezcla sin resolver en " + ", ".join(sin_resolver)
+            + "; resuélvela, 'git add' y 'git commit' antes de publicar"
+        )
     r = _git(espacio, "add", "-A", "--", ".")
     if r.returncode != 0:
         return f"git add fallo: {r.stderr.strip()[-300:]}"
@@ -6430,7 +6441,7 @@ def _anotar_lectura_deepseek(
             h,
             permisos=enc.permisos,
             prohibiciones=enc.prohibiciones,
-        ) or hallazgo_contra_politica(h)
+        )
         if razon:
             fuera.append((h.id, h.titulo, razon))
             hallazgos[indice] = replace(
@@ -7138,7 +7149,6 @@ def _revisar_deepseek_del_cerrado(
                 permisos=enc.permisos,
                 prohibiciones=enc.prohibiciones,
             )
-            and not hallazgo_contra_politica(h)
         ]
         if not abiertos:
             # Solo los Low del bloque estructurado dejan nota. Un comentario
@@ -7286,7 +7296,6 @@ def _veredicto_antes_de_cerrar(
                 permisos=enc.permisos,
                 prohibiciones=enc.prohibiciones,
             )
-            and not hallazgo_contra_politica(h)
         ]
         if not abiertos:
             continue
@@ -9829,9 +9838,12 @@ def _paso_entrega_paso(
             if vista_pr.base != base and vista_pr.estado == "abierto":
                 gh.cambiar_base(enc.entrega.repo, enc.pr_numero, base)
                 vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
+            if vista_pr.borrador and vista_pr.estado == "abierto":
+                gh.marcar_listo(enc.entrega.repo, enc.pr_numero)
         except Exception as exc:
             causa = (
-                f"no se pudo consultar el PR #{enc.pr_numero} registrado: {exc}"
+                f"no se pudo consultar o preparar el PR #{enc.pr_numero} "
+                f"registrado: {exc}"
             )
             _anotar_instrumento(
                 registro, enc, "github", causa,

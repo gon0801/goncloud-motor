@@ -162,6 +162,39 @@ class ChoqueAntesDelMerge(unittest.TestCase):
             self.assertIn("conflicto en saludo.txt", " ".join(_notas(r)))
 
 
+class LaMezclaSinResolverNoSePublica(unittest.TestCase):
+    def test_entregar_con_pendientes_no_publica_marcadores_y_dice_por_que(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "choque-pendientes", github_con_corridas,
+                config={"mergeable": "CONFLICTING"}, nivel="integrado",
+            )
+            _avanzar_main(Path(tmp), "saludo.txt", "desde main\n")
+            e = vuelta("hola\n")
+            self.assertTrue(
+                _git(r.espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").strip()
+            )
+            bare = Path(tmp) / "repo.git"
+            rama = str(e.entrega.rama)
+            punta = _git(bare, "rev-parse", rama).strip()
+
+            e = ciclo._entregar_con_pendientes(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            self.assertEqual(
+                _git(bare, "rev-parse", rama).strip(), punta,
+                "la rama remota no cambia",
+            )
+            self.assertNotIn("<<<<<<<", _rama(bare, rama, "saludo.txt"))
+            self.assertTrue(
+                any("mezcla sin resolver" in nota for nota in e.notas_pr),
+                e.notas_pr,
+            )
+            self.assertTrue(
+                any("mezcla sin resolver" in x for x in e.evidencia), e.evidencia
+            )
+            self.assertIn("<<<<<<<", (r.espacio / "saludo.txt").read_text())
+
+
 class MergeableAunSinCalcular(unittest.TestCase):
     def test_la_lectura_de_produccion_reintenta_ante_unknown(self):
         gh = GhGitHub(env={})

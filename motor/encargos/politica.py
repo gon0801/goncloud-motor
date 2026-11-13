@@ -8,7 +8,6 @@ otro sitio vuelve a tener dos dueños.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 # Valores de la política. Los lee el motor; no se repiten como constantes en
@@ -42,8 +41,6 @@ class Fila:
     valor: str
     decision: str
     comportamiento: str
-    claves: tuple[str, ...] = ()
-    valores_numericos: tuple[int, ...] = ()
 
 
 FILAS: tuple[Fila, ...] = (
@@ -53,8 +50,6 @@ FILAS: tuple[Fila, ...] = (
         valor=f"{TOPE_DEEPSEEK_MIN} min",
         decision="David, 6-nov",
         comportamiento="a los 29 min espera; a los 31 min omite con la causa escrita",
-        claves=("deepseek", "tope", "revisión externa", "revision externa"),
-        valores_numericos=(TOPE_DEEPSEEK_MIN,),
     ),
     Fila(
         id="cerrados",
@@ -62,8 +57,6 @@ FILAS: tuple[Fila, ...] = (
         valor=f"{CERRADOS_VENTANA_S // 86400} días; {CERRADOS_POR_PASADA} por pasada",
         decision="David, 6-nov",
         comportamiento="a los 6 días sondea; a los 8 no; 5 consultas entran y la 6.ª queda para la pasada siguiente",
-        claves=("cerrado", "sondeo", "días", "dias"),
-        valores_numericos=(CERRADOS_VENTANA_S // 86400, CERRADOS_POR_PASADA),
     ),
     Fila(
         id="ci_no_compuerta",
@@ -85,7 +78,6 @@ FILAS: tuple[Fila, ...] = (
         valor="Critical, High o Medium",
         decision="David, sin fecha registrada en el pedido",
         comportamiento="un Medium abierto en alcance bloquea; uno fuera de alcance no",
-        claves=("medium", "critical", "high", "severidad"),
     ),
     Fila(
         id="medium_mismo_pr",
@@ -93,7 +85,6 @@ FILAS: tuple[Fila, ...] = (
         valor="mismo PR",
         decision="David, 30-oct",
         comportamiento="un Medium abierto en alcance reabre la fase y vuelve al responsable; no espera otro encargo",
-        claves=("medium", "mismo pr", "mismo pull request"),
     ),
     Fila(
         id="relevo_sesion",
@@ -101,7 +92,6 @@ FILAS: tuple[Fila, ...] = (
         valor="openai/gpt-6-astra",
         decision="David, 6-nov",
         comportamiento="una sesión de Opus ilegible no espera a una persona: el rol relega a Astra; cuando Opus vuelve, la siguiente revisión es suya",
-        claves=("opus", "astra", "sesión", "sesion"),
     ),
     Fila(
         id="nada_espera_persona",
@@ -194,83 +184,4 @@ def relevo_de_sesion(rol: str, modelo: str) -> str:
     for clave, sustituto in RELEVO_POR_SESION.get(rol, ()):
         if clave in identidad:
             return sustituto
-    return ""
-
-
-_SOLICITA_CAMBIO = (
-    "cambiar", "cambia", "cambie", "subir", "sube", "suban", "bajar", "baja",
-    "aumentar", "aumenta", "reducir", "reduce", "ampliar", "amplía", "amplia",
-    "debería ser", "deberia ser", "deberían ser", "deberian ser", "hay que",
-    "should be", "should increase", "should decrease", "increase", "decrease",
-    "lower", "raise", "change", "instead of",
-)
-_INCUMPLE = (
-    "incumple", "incumplen", "incumpliendo", "incumplimiento", "no cumple",
-    "no respeta", "no se respeta", "no aplica",
-    "no se aplica", "no implementa", "no está implementado", "no esta implementado",
-    "difiere de", "falta", "faltan", "ignora", "bug", "does not", "doesn't",
-    "not applied", "not implemented", "ignores",
-)
-
-
-_PROPUESTAS = (
-    # «de 60 a 30»: 60 es el valor actual del código y 30 la propuesta. Solo
-    # cuenta el destino; llevar el código al valor de la tabla no cambia la
-    # regla del propietario.
-    re.compile(
-        r"\bde\s+\d{1,6}\s*(?:minutos?|min|d[ií]as?|consultas?)?\s*a\s+(\d{1,6})"
-    ),
-    re.compile(
-        r"\b(?:deber[ií]a|deber[ií]an|debe|deben|should(?:\s+be)?|hay\s+que)"
-        r"\s+(?:ser|be|usar|use)?\s*(\d{1,6})"
-    ),
-    re.compile(
-        r"\b(?:subir|sube|suban|bajar|baja|bajan|aumentar|aumenta|reducir|"
-        r"reduce|ampliar|ampl[ií]a|amplia|cambiar|change|lower|raise|increase|"
-        r"decrease)\b[^\d]{0,30}?(?:\ba\s+(\d{1,6})|"
-        r"(\d{1,6})\s*(?:minutos?|min|d[ií]as?|consultas?))"
-    ),
-)
-
-
-def _propuestas(texto: str) -> list[int]:
-    """Solo los números que el hallazgo propone como valor nuevo."""
-    vistos: list[int] = []
-    for patron in _PROPUESTAS:
-        for grupos in patron.findall(texto):
-            valores = grupos if isinstance(grupos, tuple) else (grupos,)
-            vistos.extend(int(v) for v in valores if v)
-    return vistos
-
-
-def hallazgo_contra_politica(hallazgo) -> str:
-    """Razón por la que un hallazgo pide cambiar una regla de David.
-
-    Solo cuenta una petición de cambio de valor. Un hallazgo que dice que el
-    código incumple una regla sigue siendo un hallazgo normal: ahí el defecto
-    está en el código, no en la decisión del propietario.
-    """
-    texto = " ".join(
-        str(x or "")
-        for x in (
-            getattr(hallazgo, "titulo", ""),
-            getattr(hallazgo, "reproduccion", ""),
-        )
-    ).lower()
-    if not texto.strip() or any(marca in texto for marca in _INCUMPLE):
-        return ""
-    if not any(marca in texto for marca in _SOLICITA_CAMBIO):
-        return ""
-    propuestas = _propuestas(texto)
-    for fila in FILAS:
-        if not fila.valores_numericos:
-            continue
-        if not any(clave in texto for clave in fila.claves):
-            continue
-        if any(n not in fila.valores_numericos for n in propuestas):
-            return (
-                "el hallazgo pide cambiar el valor de una regla del propietario: "
-                f"«{fila.regla}» = {fila.valor} ({fila.decision}); una decisión "
-                "de política no se resuelve en este PR"
-            )
     return ""
