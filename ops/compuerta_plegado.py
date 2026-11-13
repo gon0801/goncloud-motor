@@ -20,6 +20,7 @@ valores del registro.
 Solo stdlib y Python 3.9: el python3 de ssh en la Mini es el del sistema.
 """
 
+import argparse
 import json
 import os
 import pathlib
@@ -40,36 +41,73 @@ class NoPude(Exception):
     pass
 
 
+def existe(ruta, que):
+    """False solo si al camino le falta un tramo de verdad.
+
+    os.stat dice "no existe" igual por un tramo que falta que por un enlace roto en
+    cualquier tramo, así que recorre el camino desde la raíz. Un tramo que lstat ve y
+    stat no resuelve es un enlace roto. Eso, o cualquier otro error al mirar, es NoPude.
+    """
+    try:
+        for tramo in (*reversed(ruta.parents), ruta):
+            try:
+                os.stat(str(tramo))
+            except FileNotFoundError:
+                os.lstat(str(tramo))
+                raise NoPude("no pude leer %s: hay un enlace roto en el camino" % que) from None
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise NoPude("no pude leer %s: %s" % (que, type(exc).__name__)) from None
+    return True
+
+
+class ArgumentosDelSupervisor(argparse.ArgumentParser):
+    """Un error de argparse es NoPude, no la salida del proceso."""
+
+    def error(self, message):
+        raise NoPude("el LaunchAgent no dice con qué --base arranca el supervisor: " + message)
+
+
 def servicio(home):
     """El intérprete y la base de encargos con que arranca el supervisor.
 
     En Mac y Mini salen del LaunchAgent. En la PC el vigilante lanza un
     supervisor.ps1 que el repo no genera: ahí quedan el intérprete de esta
-    sesión y la base fija.
+    sesión y la base fija. La base fija vale solo si el plist no existe.
     """
     py, base = sys.executable, home / ".motor-encargos"
-    if os.name == "nt":
+    plist = home / "Library" / "LaunchAgents" / "ai.goncloud.motor-encargos.plist"
+    if os.name == "nt" or not existe(plist, "el plist del LaunchAgent"):
         return py, base
-    try:
-        import plistlib
+    import plistlib
 
-        plist = home / "Library" / "LaunchAgents" / "ai.goncloud.motor-encargos.plist"
+    try:
         datos = plistlib.loads(plist.read_bytes())
-        argumentos = datos.get("ProgramArguments") if isinstance(datos, dict) else None
-    except Exception:
-        return py, base
+    except Exception as exc:
+        raise NoPude("el plist del LaunchAgent no se puede leer: " + type(exc).__name__) from None
+    argumentos = datos.get("ProgramArguments") if isinstance(datos, dict) else None
     if not isinstance(argumentos, list) or not all(isinstance(a, str) for a in argumentos):
-        return py, base
+        raise NoPude("el plist del LaunchAgent no trae ProgramArguments como lista de textos")
     if argumentos and pathlib.Path(argumentos[0]).exists():
         py = argumentos[0]
-    if "--base" in argumentos[:-1]:
-        base = pathlib.Path(argumentos[argumentos.index("--base") + 1])
-        if not base.is_absolute():
-            # launchd la resuelve contra el WorkingDirectory; ssh corre desde el home.
-            directorio = datos.get("WorkingDirectory")
-            if not isinstance(directorio, str) or not directorio:
-                raise NoPude("el --base del LaunchAgent es relativo y el plist no trae WorkingDirectory")
-            base = pathlib.Path(directorio) / base
+    # argparse, como el supervisor: gana la última, --base=-x vale y --bas también.
+    lector = ArgumentosDelSupervisor(add_help=False)
+    lector.add_argument("--base", type=pathlib.Path)
+    siguen = argumentos[argumentos.index("supervisor") + 1:] if "supervisor" in argumentos else []
+    base = lector.parse_known_args(siguen)[0].base
+    if base is None:
+        raise NoPude("el LaunchAgent no dice con qué --base arranca el supervisor")
+    if not base.is_absolute():
+        # launchd la resuelve contra el WorkingDirectory; ssh corre desde el home.
+        directorio = datos.get("WorkingDirectory")
+        if not isinstance(directorio, str) or not directorio:
+            raise NoPude("el --base del LaunchAgent es relativo y el plist no trae WorkingDirectory")
+        base = pathlib.Path(directorio) / base
+    # `motor instala-encargos` crea la base antes de dar el plist, y el plist manda ahí la
+    # bitácora del servicio: con el plist puesto, que falte es un volumen desmontado.
+    if not existe(base, "la base que declara el LaunchAgent"):
+        raise NoPude("la base que declara el LaunchAgent no existe: %s" % base)
     return py, base
 
 
@@ -168,7 +206,7 @@ def resumen_comparar(py, candidato, instalado, sha, registro):
 def compuerta(arbol, sha):
     py, base = servicio(pathlib.Path.home())
     registro = base / "registro.sqlite"
-    if not registro.exists():
+    if not existe(registro, "el registro de encargos"):
         return ["resultado sin_registro", "comparar sin registro; no comparo"]
     instalado = git("-C", arbol, "rev-parse", "HEAD").stdout.strip()
     barre_viejos()
