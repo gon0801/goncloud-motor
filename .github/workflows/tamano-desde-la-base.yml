@@ -11,7 +11,6 @@ permissions:
 
 jobs:
   tamano-desde-la-base:
-    name: Tamaño de motor/ juzgado con el código de la base
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
