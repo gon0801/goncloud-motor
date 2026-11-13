@@ -16,13 +16,17 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from motor import plataforma
+from motor.encargos.registro import Registro
 from motor.github import FakeGitHub
 from ops import canario_lanzador
 from ops.canario_encargos import Fila
@@ -31,6 +35,7 @@ from tests.test_compuerta_e2e import _git
 
 RAIZ = Path(__file__).resolve().parents[1]
 FALSO = RAIZ / "tests" / "canario_supervisor_falso.py"
+CERRADOS = ("terminado", "detenido", "cancelado")
 
 _TRABAJO_SH = """#!/bin/bash
 set -euo pipefail
@@ -62,10 +67,32 @@ def _matar(pid_en: Path) -> None:
         os.kill(int(pid_en.read_text(encoding="utf-8")), signal.SIGKILL)
 
 
+def _matar_identidad(ruta: Path) -> None:
+    with contextlib.suppress(OSError, ValueError):
+        ident = json.loads(ruta.read_text(encoding="utf-8"))
+        plataforma.matar_proc(int(ident["pid"]), str(ident["inicio"]))
+
+
+def _trabajadores(base: Path) -> list[dict]:
+    return [
+        json.loads(ruta.read_text(encoding="utf-8"))
+        for ruta in sorted(base.glob("despliegues/*/proceso.json"))
+    ]
+
+
+def _esperar_trabajadores(base: Path) -> None:
+    """Que ningún trabajador de despliegue de la prueba siga vivo al borrar el temporal."""
+    vence = time.monotonic() + 60
+    for ident in _trabajadores(base):
+        while plataforma.estado_proc(ident) == "vivo" and time.monotonic() < vence:
+            time.sleep(0.1)
+        plataforma.matar_proc(int(ident["pid"]), str(ident["inicio"]))
+
+
 @unittest.skipIf(os.name == "nt", "el supervisor falso deja un sleep en su grupo de POSIX")
 class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="canario-lanzador-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="canario-lanzador-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.viva, self.base = self.tmp / "viva", self.tmp / "canario"
         self.flota, self.destino = self.tmp / "flota", self.tmp / "destino"
@@ -115,7 +142,25 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         _git(semilla, "init", "--bare", "-q", "-b", "main", str(self.repo))
         _git(semilla, "push", "-q", str(self.repo), "main", "main:encargo/enc_ajeno")
 
-    def correr(self, *extra: str, modo: tuple[str, ...] = ()) -> tuple[int, dict]:
+    def cambiar_repo(self, archivos: dict[str, str]) -> None:
+        """Deja estos archivos en `main` del repo del canario."""
+        clon = self.tmp / "clon"
+        _git(self.tmp, "clone", "-q", str(self.repo), str(clon))
+        for nombre, texto in archivos.items():
+            (clon / nombre).write_text(texto, encoding="utf-8", newline="\n")
+        _git(clon, "add", "-A")
+        _git(clon, "-c", "user.name=t", "-c", "user.email=t@local", "commit", "-q", "-m", "variante")
+        _git(clon, "push", "-q", "origin", "main")
+        shutil.rmtree(clon)
+
+    def reversa_larga(self, reversa: str) -> dict[str, str]:
+        """Un despliegue que no termina solo y esta reversa. Al parar el encargo, el
+        trabajador del motor corta el despliegue y corre la reversa hasta el final."""
+        return {"ops/despliega.sh": "sleep 600\n", "ops/rollback.sh": f"set -eu\n{reversa}\n"}
+
+    def correr(
+        self, *extra: str, modo: tuple[str, ...] = (), supervisor: list[str] | None = None,
+    ) -> tuple[int, dict]:
         hijo = self.tmp / "hijo.pid"
         self.addCleanup(_matar, hijo)
         argv = [
@@ -123,23 +168,40 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
             "--despliegue", str(self.destino), "--corrida", "prueba", "--intervalo-s", "0.2",
             *extra,
         ]
-        supervisor = [
+        supervisor = supervisor or [
             sys.executable, "-B", str(FALSO), "--base", str(self.base), "--hijo", str(hijo), *modo,
         ]
         salida, avances = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(salida), contextlib.redirect_stderr(avances):
-            codigo = main(argv, gh=FakeGitHub(self.fake), supervisor=supervisor)
-        self.hijo = int(hijo.read_text(encoding="utf-8")) if hijo.is_file() else 0
-        self.avances = avances.getvalue()
+        try:
+            with contextlib.redirect_stdout(salida), contextlib.redirect_stderr(avances):
+                codigo = main(argv, gh=FakeGitHub(self.fake), supervisor=supervisor)
+        finally:
+            self.hijo = int(hijo.read_text(encoding="utf-8")) if hijo.is_file() else 0
+            self.avances = avances.getvalue()
         return codigo, json.loads(salida.getvalue())
 
     def filas(self, informe: dict) -> dict[str, dict]:
         return {f["nombre"]: f for f in informe["filas"]}
 
     def sin_procesos_suyos(self, informe: dict) -> None:
-        self.assertEqual(informe["supervisor"], "ausente", self.avances)
+        self.assertEqual(informe["cierre"]["supervisor"], "ausente", self.avances)
         self.assertTrue(self.hijo, "el supervisor falso no llegó a dejar su hijo")
         self.assertFalse(plataforma.pid_vivo(self.hijo), "el hijo del supervisor sigue vivo")
+
+    def estados(self) -> list[str]:
+        """El estado de cada encargo de la base del canario, según el registro."""
+        reg = Registro(self.base)
+        try:
+            return [e.estado for e in (reg.fold(i) for i in reg.ids()) if e is not None]
+        finally:
+            reg.close()
+
+    def queda_cerrado(self) -> None:
+        estados = self.estados()
+        self.assertTrue(estados, "no se recibió ningún encargo")
+        self.assertTrue(set(estados) <= set(CERRADOS), f"{estados}: un supervisor posterior lo retomaría")
+        if self.hijo:
+            self.assertFalse(plataforma.pid_vivo(self.hijo), "el hijo del supervisor sigue vivo")
 
     def test_una_corrida_que_termina_da_la_tabla_esperada_y_borra_solo_lo_suyo(self):
         ajenos = [
@@ -163,7 +225,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertTrue(informe["coincide"], informe["tabla"])
         self.assertEqual(codigo, 0, informe["tabla"])
         self.sin_procesos_suyos(informe)
-        self.assertEqual(informe["parada"], "")
+        self.assertEqual(informe["cierre"]["parada"], "")
         self.assertEqual(
             {b["resto"]: b["resultado"] for b in informe["limpieza"]},
             {
@@ -191,7 +253,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(self.filas(informe)["termina"]["resultado"], "falla")
         self.assertEqual(codigo, 1)
         self.sin_procesos_suyos(informe)
-        self.assertEqual(informe["parada"], "detenido")
+        self.assertEqual(informe["cierre"]["parada"], "detenido")
         self.assertNotIn("falló", {b["resultado"] for b in informe["limpieza"]})
 
     def test_un_supervisor_que_muere_a_media_corrida_no_deja_su_grupo(self):
@@ -202,8 +264,177 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(self.filas(informe)["termina"]["resultado"], "falla")
         self.assertEqual(codigo, 1)
         self.sin_procesos_suyos(informe)
-        self.assertEqual(informe["parada"], "detenido")
+        self.assertEqual(informe["cierre"]["parada"], "detenido")
         self.assertFalse((self.base / "espacio" / informe["encargo"]).exists())
+
+    def test_un_turno_vivo_al_morir_el_supervisor_se_cierra_antes_de_medir(self):
+        self.cambiar_repo({"trabajo.sh": "#!/bin/bash\nexec sleep 600\n"})
+        turno = self.tmp / "turno.json"
+        self.addCleanup(_matar_identidad, turno)
+
+        codigo, informe = self.correr(modo=("--muere-con-turno", str(turno)))
+
+        self.assertTrue(turno.is_file(), "el agente no llegó a correr")
+        agente = json.loads(turno.read_text(encoding="utf-8"))
+        self.assertNotEqual(plataforma.estado_proc(agente), "vivo", "el agente sigue trabajando")
+        self.assertEqual(informe["fin"], "supervisor_muerto", self.avances)
+        self.assertIn(
+            "quedó detenido", self.filas(informe)["termina"]["observado"],
+            "midió el encargo antes de pararlo, con el agente trabajando",
+        )
+        self.assertEqual(informe["cierre"]["estado"], "detenido", self.avances)
+        self.assertEqual(informe["cierre"]["vivos"], [], self.avances)
+        self.assertEqual(codigo, 1)
+        self.assertFalse((self.base / "espacio" / informe["encargo"]).exists())
+
+    def test_un_trabajador_de_despliegue_que_termina_dentro_del_tope_se_espera(self):
+        revertido = self.tmp / "revertido"
+        self.cambiar_repo(self.reversa_larga(f'sleep 15\ntouch "{revertido.as_posix()}"'))
+        self.addCleanup(_esperar_trabajadores, self.base)
+
+        codigo, informe = self.correr(modo=("--muere-al-desplegar",))
+
+        self.assertTrue(
+            revertido.is_file(),
+            "la orden volvió antes de que el trabajador de despliegue terminara su reversa",
+        )
+        self.assertEqual(informe["fin"], "supervisor_muerto", self.avances)
+        self.assertEqual(informe["cierre"]["estado"], "detenido", self.avances)
+        self.assertEqual(informe["cierre"]["vivos"], [], self.avances)
+        self.assertEqual(codigo, 1)
+        self.assertFalse((self.base / "espacio" / informe["encargo"]).exists())
+
+    def test_un_trabajador_de_despliegue_vivo_al_vencer_el_tope_no_deja_borrar_nada(self):
+        suelta = self.tmp / "suelta-la-reversa"
+        self.cambiar_repo(self.reversa_larga(f'while [ ! -e "{suelta.as_posix()}" ]; do sleep 0.1; done'))
+        self.addCleanup(_esperar_trabajadores, self.base)
+        self.addCleanup(suelta.touch)
+
+        codigo, informe = self.correr("--tope-cierre-s", "2", modo=("--muere-al-desplegar",))
+
+        ident = informe["encargo"]
+        self.assertNotEqual(codigo, 0)
+        self.assertTrue(
+            any("trabajador de despliegue" in v for v in informe["cierre"]["vivos"]), informe["cierre"],
+        )
+        self.assertEqual(informe["limpieza"], [], "borró con un trabajador vivo")
+        self.assertEqual(informe["filas"], [], "midió con un trabajador vivo")
+        for tipo in ("espacio", "ejecucion"):
+            self.assertTrue((self.base / tipo / ident).is_dir(), f"borró {tipo}/{ident}")
+        (trabajador,) = _trabajadores(self.base)
+        self.assertEqual(plataforma.estado_proc(trabajador), "vivo", "mató la reversa a medias")
+
+    def test_un_parar_que_no_cierra_el_encargo_no_deja_borrar_nada(self):
+        motor = canario_lanzador._motor
+
+        def parar_falla(p, *argv):
+            if argv[0] == "parar":
+                raise RuntimeError("motor parar salió 1: la base está ocupada")
+            return motor(p, *argv)
+
+        with mock.patch.object(canario_lanzador, "_motor", parar_falla):
+            codigo, informe = self.correr(modo=("--muere-tras", "2"))
+
+        self.assertNotEqual(codigo, 0)
+        (estado,) = self.estados()
+        self.assertNotIn(estado, CERRADOS)
+        self.assertEqual(informe["limpieza"], [], "borró con el encargo abierto")
+        self.assertTrue((self.base / "espacio" / informe["encargo"]).is_dir())
+        self.assertIn("no se pudo parar", informe["cierre"]["parada"])
+
+    def test_si_no_puede_lanzar_su_supervisor_cierra_el_encargo(self):
+        codigo, salida = self.correr(supervisor=[str(self.tmp / "no-existe")])
+
+        self.assertEqual(codigo, 2, salida)
+        self.assertEqual(salida["paso"], "lanzar")
+        self.queda_cerrado()
+
+    def test_si_la_espera_se_cae_cierra_el_encargo(self):
+        with mock.patch.object(canario_lanzador, "esperar", side_effect=RuntimeError("se cayó")):
+            codigo, salida = self.correr()
+
+        self.assertEqual(codigo, 2, salida)
+        self.assertIn("se cayó", salida["error"])
+        self.queda_cerrado()
+
+    def test_si_interrumpen_la_espera_cierra_el_encargo(self):
+        with mock.patch.object(canario_lanzador, "esperar", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.correr()
+
+        self.queda_cerrado()
+
+    def test_si_medir_se_cae_cierra_el_encargo_y_limpia(self):
+        with mock.patch.object(canario_lanzador, "medir", side_effect=RuntimeError("no midió")):
+            codigo, salida = self.correr("--tope-min", "0.05", modo=("--quieto",))
+
+        self.assertEqual(codigo, 2, salida)
+        self.assertIn("no midió", salida["error"])
+        self.queda_cerrado()
+        self.assertNotIn("falló", {b["resultado"] for b in salida["limpieza"]})
+
+    def test_un_remoto_que_no_se_puede_resolver_no_tumba_la_limpieza(self):
+        ciclo = ValueError("los remotos locales del repositorio forman un ciclo")
+        with mock.patch.object(canario_lanzador, "resolver_repositorio", side_effect=ciclo):
+            codigo, informe = self.correr()
+
+        ident = informe["encargo"]
+        limpieza = {b["resto"]: b for b in informe["limpieza"]}
+        rama = limpieza[f"la rama remota encargo/{ident}"]
+        self.assertEqual(rama["resultado"], "falló")
+        self.assertIn("ValueError", rama["causa"])
+        for resto in (f"espacio/{ident}", f"ejecucion/{ident}", f"trabajos/{ident}.json de la flota"):
+            self.assertEqual(limpieza[resto]["resultado"], "borrado", resto)
+        self.assertEqual(codigo, 1)
+
+    def test_un_push_que_no_responde_no_tumba_la_limpieza(self):
+        run = subprocess.run
+
+        def sin_respuesta(argv, *a, **k):
+            if "push" in argv:
+                raise subprocess.TimeoutExpired(argv, 60)
+            return run(argv, *a, **k)
+
+        with mock.patch.object(subprocess, "run", sin_respuesta):
+            codigo, informe = self.correr()
+
+        ident = informe["encargo"]
+        limpieza = {b["resto"]: b for b in informe["limpieza"]}
+        rama = limpieza[f"la rama remota encargo/{ident}"]
+        self.assertEqual(rama["resultado"], "falló")
+        self.assertIn("TimeoutExpired", rama["causa"])
+        self.assertEqual(limpieza[f"espacio/{ident}"]["resultado"], "borrado")
+        self.assertEqual(codigo, 1)
+
+    def test_las_rutas_relativas_se_leen_desde_donde_se_corre_la_orden(self):
+        aparte = self.tmp / f"canario-relativa-{os.getpid()}-{time.monotonic_ns()}"
+        self.base.rename(aparte)
+        self.base = aparte
+        self.addCleanup(shutil.rmtree, RAIZ / aparte.name, True)
+        hijo = self.tmp / "hijo.pid"
+        self.addCleanup(_matar, hijo)
+        supervisor = [sys.executable, "-B", str(FALSO), "--base", str(aparte), "--hijo", str(hijo)]
+        argv = [
+            "--repo", str(self.repo), "--base", aparte.name, "--base-viva", self.viva.name,
+            "--despliegue", self.destino.name, "--corrida", "prueba", "--intervalo-s", "0.2",
+            "--tope-min", "1",
+        ]
+        salida = io.StringIO()
+        with contextlib.chdir(self.tmp), contextlib.redirect_stdout(salida), \
+                contextlib.redirect_stderr(io.StringIO()):
+            codigo = main(argv, gh=FakeGitHub(self.fake), supervisor=supervisor)
+        informe = json.loads(salida.getvalue())
+
+        self.assertFalse((RAIZ / aparte.name).exists(), "usó la base relativa al árbol")
+        self.assertEqual(informe.get("fin"), "terminado", informe)
+        self.assertEqual(self.filas(informe)["entregado"]["resultado"], "pasa")
+        self.assertEqual(codigo, 0, informe.get("tabla"))
+
+    def test_mide_el_arbol_donde_vive_y_no_acepta_otro(self):
+        with self.assertRaises(SystemExit) as salida:
+            self.correr("--arbol", str(RAIZ))
+        self.assertEqual(salida.exception.code, 2)
+        self.assertFalse((self.base / "registro.sqlite").exists(), "recibió un encargo")
 
     def test_repetir_la_corrida_retoma_el_mismo_encargo(self):
         _, primera = self.correr()
@@ -230,9 +461,10 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
 
     def test_preparar_converge_a_los_mismos_enlaces(self):
         pedido = Pedido(
-            repo=str(self.repo), arbol=RAIZ, base=self.base, base_viva=self.viva,
+            repo=str(self.repo), base=self.base, base_viva=self.viva,
             despliegue=self.destino, corrida="prueba", maquina="", tope_s=None,
             intervalo_s=1.0, esperado=RAIZ / "ops" / "canario_encargos.esperado.json",
+            tope_cierre_s=1.0,
         )
         (self.base / "github.json").symlink_to(self.tmp / "otro-github.json")
         for _ in range(2):
@@ -254,23 +486,37 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
 
 
 class ElCodigoDeSalida(unittest.TestCase):
-    """0 solo si la tabla coincide, el supervisor no dejó a nadie y la limpieza terminó."""
+    """0 solo si la tabla coincide, el cierre dejó todo cerrado y la limpieza terminó;
+    2 si un paso no pudo correr."""
 
-    def informe(self, *, resultado="pasa", supervisor="ausente", limpieza="borrado") -> Informe:
+    def informe(
+        self, *, resultado="pasa", estado="terminado", supervisor="ausente", vivos=(),
+        limpieza="borrado", fallo=None, medido=True,
+    ) -> Informe:
+        from ops.canario_lanzador import Cierre
+
         fila = Fila("termina", "1", resultado, "pasa", "", "")  # type: ignore[arg-type]
         hora = datetime.now(timezone.utc).isoformat()
         return Informe(
             "banco", "a" * 40, hora, "clave", "enc_0", "terminado", "terminado", 1,
-            supervisor, (fila,), "", (Borrado("espacio/enc_0", limpieza),),  # type: ignore[arg-type]
+            Cierre(estado, "", supervisor, vivos),  # type: ignore[arg-type]
+            (fila,) if medido else (), (Borrado("espacio/enc_0", limpieza),),  # type: ignore[arg-type]
+            fallo,
         )
 
     def test_cada_condicion_cuenta(self):
+        from ops.canario_lanzador import Fallo
+
         self.assertEqual(self.informe().codigo, 0)
         self.assertEqual(self.informe(resultado="falla").codigo, 1)
         self.assertEqual(self.informe(supervisor="vivo").codigo, 1)
         self.assertEqual(self.informe(supervisor="incierto").codigo, 1)
+        self.assertEqual(self.informe(estado="deteniendo").codigo, 1)
+        self.assertEqual(self.informe(vivos=("algún trabajador de despliegue (vivo)",)).codigo, 1)
+        self.assertEqual(self.informe(medido=False).codigo, 1)
         self.assertEqual(self.informe(limpieza="falló").codigo, 1)
         self.assertEqual(self.informe(limpieza="no estaba").codigo, 0)
+        self.assertEqual(self.informe(fallo=Fallo("medir", "no midió"), medido=False).codigo, 2)
 
 
 if __name__ == "__main__":

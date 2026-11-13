@@ -653,6 +653,36 @@ class DespliegueReal(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "checklist"):
             comprobar_recibo(final)
 
+    def test_un_recibo_sin_forma_de_objeto_no_acredita(self):
+        despliegue = self.despliegue
+        from motor.encargos.despliegue import comprobar_recibo
+        _, _, _, _, integrar = despliegue
+        integrar()
+        final = paso(despliegue)
+        recibo = Path(final.fase_actual.desplegado_recibo)
+        bueno = json.loads(recibo.read_text())
+        malos = ([], "aplicado", {**bueno, "pasos": ["desplegar", "checklist"]},
+                 {**bueno, "pasos": "desplegar"})
+        for malo in malos:
+            recibo.write_text(json.dumps(malo))
+            with self.assertRaisesRegex(ValueError, "recibo", msg=f"recibo {malo!r}"):
+                comprobar_recibo(final)
+
+    def test_un_recibo_fallido_sin_forma_de_objeto_no_tumba_el_paso(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, _, integrar = despliegue
+        with (espacio / "d.sh").open("a") as f:
+            f.write("exit 9\n")
+        integrar()
+        paso(despliegue)
+        (recibo,) = (reg.base / "despliegues").rglob("recibo.json")
+        assert json.loads(recibo.read_text())["estado"] == "fallido"
+        recibo.write_text(json.dumps([]))
+        final, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+        assert final.nivel_alcanzado != "desplegado"
+        causas = [ev["data"]["causa"] for ev in reg.eventos(ident) if ev["kind"] == "impedimento"]
+        assert any("no es un objeto" in c for c in causas), causas
+
     def test_una_violacion_transitoria_al_publicar_recibo_no_aborta_la_receta(self):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
