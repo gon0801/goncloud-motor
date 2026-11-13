@@ -406,6 +406,53 @@ class LimitesDeLaPolitica(unittest.TestCase):
             self.assertEqual(e.estado, "terminado")
 
 
+class CentroCongelado(unittest.TestCase):
+    """Decisión 6: durante la reconstrucción, un Medium en el centro va a la lista."""
+
+    def _leer(self, tmp: str, clave: str, archivo: str, severidad: str):
+        from tests.dobles import github_con_hallazgo
+
+        vuelta, r = _entrega_pr(
+            self, tmp, clave,
+            partial(github_con_hallazgo, archivo=archivo, severidad=severidad),
+        )
+        e = vuelta("uno")
+        cuerpo = vuelta.gh.ver(str(r.fold().entrega.repo), e.pr_numero).cuerpo
+        return e, cuerpo
+
+    def test_un_medium_en_ciclo_va_a_la_lista_y_no_vuelve_al_responsable(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            e, cuerpo = self._leer(
+                tmp, "congelado-medium", "motor/encargos/ciclo.py", "medium"
+            )
+        self.assertEqual(_ids(e), [])
+        self.assertEqual(e.estado, "terminado")
+        self.assertEqual([x[0] for x in e.fuera_de_alcance], ["F1"])
+        razon = e.fuera_de_alcance[0][2]
+        self.assertIn("motor/encargos/ciclo.py", razon)
+        self.assertIn("David, 12-nov", razon)
+        self.assertIn("## Hallazgos fuera de alcance", cuerpo)
+        self.assertIn(razon, cuerpo)
+
+    def test_un_medium_en_otro_archivo_sigue_bloqueando(self):  # no-roja-en-base: caracterización; fuera del centro la regla no cambia
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            e, _ = self._leer(
+                tmp, "congelado-otro", "motor/encargos/comprobacion.py", "medium"
+            )
+        self.assertEqual(_ids(e), ["F1"])
+        self.assertEqual(e.estrategia, "investigar")
+        self.assertEqual(e.fuera_de_alcance, ())
+
+    def test_un_high_en_ciclo_sigue_bloqueando(self):  # no-roja-en-base: caracterización; Critical y High no cambian
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            e, _ = self._leer(
+                tmp, "congelado-high", "motor/encargos/ciclo.py", "high"
+            )
+        self.assertEqual(_ids(e), ["F1"])
+        self.assertEqual(e.estrategia, "investigar")
+        self.assertEqual(e.fuera_de_alcance, ())
+
+
 class LecturaDeLaSesion(_SesionFalsa):
     def test_tras_renovar_la_sesion_el_motor_lanza_claude(self):
         self.host("renovada")
