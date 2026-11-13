@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import time
 import unittest
@@ -79,10 +80,51 @@ _BASE_MODIFICADA = (
 )
 
 
-def _base_modificada(veces):
-    """Los primeros `veces` merges GitHub contesta que la base cambió mientras
-    mergeaba, como pasa cuando otra máquina integra en el mismo repo. La
-    respuesta pasa por el adaptador real; después mergea el doble."""
+def _pr_abierto(punta):
+    return json.dumps({
+        "number": 1, "headRefName": "f", "baseRefName": "main", "isDraft": False,
+        "headRefOid": punta, "state": "OPEN", "mergeCommit": None, "body": "",
+    })
+
+
+def _cli_sin_marcar(*args):
+    """`gh pr merge` sale bien, pero el PR todavía se ve abierto."""
+    return "" if args[:2] == ("pr", "merge") else _pr_abierto("a" * 40)
+
+
+def _cli_head_modificada(movida):
+    """GitHub dice que la rama del PR cambió. El PR muestra después la punta que
+    se pidió mergear o, si `movida`, otra."""
+    pedidas = []
+
+    def cli(*args):
+        if args[:2] == ("pr", "merge"):
+            pedidas.append(args[args.index("--match-head-commit") + 1])
+            raise RuntimeError(
+                "gh pr merge 1: GraphQL: Head branch was modified. Review and try "
+                "the merge again. (mergePullRequest)"
+            )
+        return _pr_abierto("b" * 40 if movida else pedidas[-1])
+
+    return cli
+
+
+# Lo que contesta el CLI de GitHub al merge y el pedazo de la causa que lo
+# nombra. La punta del PR sigue en el SHA revisado en todas.
+_PASAJERAS = {
+    "5xx": (
+        RuntimeError("gh pr merge 1: HTTP 502: Bad Gateway (https://api.github.com/graphql)"),
+        "HTTP 502",
+    ),
+    "sin respuesta": (subprocess.TimeoutExpired(["gh", "pr", "merge"], 60), "no contestó"),
+    "sin marcar": (_cli_sin_marcar, "no lo marcó como mergeado"),
+    "head modificada": (_cli_head_modificada(movida=False), "Head branch was modified"),
+}
+
+
+def _github_contesta(cli, veces):
+    """Los primeros `veces` merges pasan por el adaptador real con `cli` en lugar
+    del CLI de GitHub; después mergea el doble."""
 
     def fabrica(directorio):
         gh = github_con_corridas(directorio)
@@ -93,15 +135,19 @@ def _base_modificada(veces):
             if len(gh.intentos) >= veces:
                 return mergear(repo, numero, sha, metodo, mensaje)
             gh.intentos.append(sha)
-            with mock.patch.object(
-                adaptador, "_gh", side_effect=RuntimeError(_BASE_MODIFICADA)
-            ):
+            with mock.patch.object(adaptador, "_gh", side_effect=cli):
                 return adaptador.merge("o/r", numero, sha, metodo, mensaje)
 
         gh.merge = merge
         return gh
 
     return fabrica
+
+
+def _base_modificada(veces):
+    """GitHub contesta que la base cambió mientras mergeaba, como pasa cuando
+    otra máquina integra en el mismo repo."""
+    return _github_contesta(RuntimeError(_BASE_MODIFICADA), veces)
 
 
 def _hasta_dejar_de_esperar(vuelta, r, e, vueltas=10):
@@ -152,6 +198,57 @@ class BaseModificadaAlMergear(unittest.TestCase):
         causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
         self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
         self.assertEqual(r.eventos("pregunta"), [])
+
+
+class OtrasRespuestasPasajerasAlMergear(unittest.TestCase):
+    """Un 5xx, un `gh` que no contesta, un merge que GitHub aún no marca y una
+    punta "modificada" que sigue en el SHA revisado no son un bloqueo."""
+
+    def preparar(self, cli, veces):
+        tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+        return _entrega_pr(
+            self, tmp, "merge-pasajero", _github_contesta(cli, veces), nivel="integrado",
+        )
+
+    def test_cada_respuesta_pasajera_espera_y_el_reintento_integra(self):
+        for nombre, (cli, _) in _PASAJERAS.items():
+            with self.subTest(nombre):
+                vuelta, r = self.preparar(cli, veces=1)
+                e = vuelta("hola")
+                self.assertEqual(e.estado, "esperando_reintento")
+                self.assertEqual(e.impedimentos, ())
+
+                final = _hasta_dejar_de_esperar(vuelta, r, e)
+                self.assertEqual(final.estado, "terminado")
+                self.assertEqual(final.nivel_alcanzado, "integrado")
+                self.assertEqual(final.impedimentos, ())
+                self.assertEqual(final.pendientes_entrega, ())
+                self.assertEqual(vuelta.gh.intentos, [e.pr_sha, e.pr_sha])
+                self.assertEqual(r.eventos("pregunta"), [])
+
+    def test_cada_respuesta_que_sigue_se_detiene_al_tercer_intento_con_la_causa(self):
+        for nombre, (cli, marca) in _PASAJERAS.items():
+            with self.subTest(nombre):
+                vuelta, r = self.preparar(cli, veces=99)
+                e = _hasta_dejar_de_esperar(vuelta, r, vuelta("hola"))
+                self.assertEqual(len(vuelta.gh.intentos), 3)
+
+                barrer(r.reg, ahora_iso(), time.time(), None, gh=vuelta.gh)
+                e = r.fold()
+                self.assertEqual(len(vuelta.gh.intentos), 3)
+                self.assertNotEqual(e.estado, "esperando_reintento")
+                self.assertEqual(e.nivel_alcanzado, "pr")
+                causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
+                self.assertTrue(any(marca in c for c in causas), causas)
+                self.assertEqual(r.eventos("pregunta"), [])
+
+    def test_la_punta_que_de_verdad_se_movio_no_se_reintenta(self):  # no-roja-en-base: ya bloqueaba en la base; fija que el reintento de la misma punta no lo alcance
+        vuelta, r = self.preparar(_cli_head_modificada(movida=True), veces=99)
+        e = vuelta("hola")
+        self.assertNotEqual(e.estado, "esperando_reintento")
+        self.assertEqual(len(vuelta.gh.intentos), 1)
+        causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
+        self.assertTrue(any("Head branch was modified" in c for c in causas), causas)
 
 
 class EntregaMergePendiente(unittest.TestCase):

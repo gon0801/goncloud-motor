@@ -658,6 +658,9 @@ class TestSoloElMotorMergea(Banco):
             "GraphQL: Base branch was modified. Review and try the merge again."
         )
 
+    def test_un_5xx_de_github_se_reintenta_sin_invalidar_los_checks(self):
+        self._merge_que_se_reintenta("HTTP 502: Bad Gateway (https://api.github.com/graphql)")
+
     def test_merge_hecho_por_fuera_se_adopta(self):
         d, plan, snap = self._daemon_con_pr()
         d.fx.cx.gh.estado = "mergeado"

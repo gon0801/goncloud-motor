@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import threading
 import time
@@ -801,7 +802,37 @@ class MergeTest(unittest.TestCase):
                         return _pr_json()
 
                 with self.assertRaises(tipo):
-                    F({}).merge("o/r", 7, SHA, "squash", "m")
+                    F({}).merge("o/r", 7, "b" * 40, "squash", "m")  # el PR sigue en SHA
+
+    def test_gh_tipa_las_respuestas_pasajeras_del_merge(self):
+        from motor.github import ErrorDeGitHub, MergeSinConfirmar, MergeSinRespuesta, PrSinAsentar
+
+        def falla(error):
+            def cli(*a):
+                if a[:2] == ("pr", "merge"):
+                    raise error
+                return _pr_json()
+
+            return cli
+
+        cambiada = RuntimeError("GraphQL: Head branch was modified. Review and try the merge again.")
+        casos = [
+            *(
+                (falla(RuntimeError(f"gh pr merge 7: HTTP {codigo}: x (https://api.github.com/graphql)")),
+                 ErrorDeGitHub)
+                for codigo in (500, 502, 503, 504)
+            ),
+            (falla(subprocess.TimeoutExpired(["gh", "pr", "merge"], 60)), MergeSinRespuesta),
+            (lambda *a: "" if a[:2] == ("pr", "merge") else _pr_json(), MergeSinConfirmar),
+            (falla(cambiada), PrSinAsentar),
+            (cambiada, PuntaMovida),
+        ]
+        for cli, tipo in casos:
+            with self.subTest(tipo=tipo.__name__):
+                gh = GhGitHub({})
+                with mock.patch.object(gh, "_gh", side_effect=cli):
+                    with self.assertRaises(tipo):
+                        gh.merge("o/r", 7, SHA, "squash", "m")
 
     def _fx_merge(self, error):
         from motor.github import PrView
