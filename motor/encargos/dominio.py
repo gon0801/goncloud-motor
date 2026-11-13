@@ -3538,9 +3538,7 @@ def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
     """Un bloqueante que una restricción expresa deja fuera no sostiene el encargo.
 
     No es un reinicio de campos: aplica la restricción al hallazgo guardado y
-    deja el hecho en `fuera_de_alcance`, con su razón, para el PR. El filtro de
-    política no vive aquí: se decide al anotar la lectura de DeepSeek
-    (`ciclo._anotar_lectura_deepseek`), donde queda el evento que lo sostiene.
+    deja el hecho en `fuera_de_alcance`, con su razón, para el PR.
     """
     fase = e.fase_actual
     if fase is None:

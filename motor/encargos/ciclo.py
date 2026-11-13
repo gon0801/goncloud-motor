@@ -115,7 +115,6 @@ from .politica import (
     CERRADOS_SONDEO_RAPIDO_S,
     CERRADOS_VENTANA_S,
     TOPE_DEEPSEEK_MIN,
-    hallazgo_contra_politica,
 )
 from .resultado import Avanzo, Devolver, Espera, NecesitaAgente, Resultado, permite_lanzar
 from .suscripciones import CuentaNoDisponible
@@ -6430,7 +6429,7 @@ def _anotar_lectura_deepseek(
             h,
             permisos=enc.permisos,
             prohibiciones=enc.prohibiciones,
-        ) or hallazgo_contra_politica(h)
+        )
         if razon:
             fuera.append((h.id, h.titulo, razon))
             hallazgos[indice] = replace(
@@ -7138,7 +7137,6 @@ def _revisar_deepseek_del_cerrado(
                 permisos=enc.permisos,
                 prohibiciones=enc.prohibiciones,
             )
-            and not hallazgo_contra_politica(h)
         ]
         if not abiertos:
             # Solo los Low del bloque estructurado dejan nota. Un comentario
@@ -7286,7 +7284,6 @@ def _veredicto_antes_de_cerrar(
                 permisos=enc.permisos,
                 prohibiciones=enc.prohibiciones,
             )
-            and not hallazgo_contra_politica(h)
         ]
         if not abiertos:
             continue
