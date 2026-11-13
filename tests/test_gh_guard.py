@@ -1,4 +1,4 @@
-"""El `gh` de los agentes no mergea, cierra, marca listo ni revisa PRs, por ninguna de sus formas."""
+"""El `gh` de los agentes no abre, mergea, cierra, marca listo ni revisa PRs, por ninguna de sus formas."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ BLOQUEADOS = (
     ["pr", "-R", "o/r", "close", "5"],
     ["pr", "--repo", "o/r", "ready", "5"],
     ["pr", "-R", "o/r", "review", "5", "--approve"],
+    ["pr", "create", "--title", "t", "--body", "b"],
+    ["pr", "--repo", "o/r", "create", "--fill"],
     ["api", "-X", "PUT", "repos/o/r/pulls/5/merge"],
     ["api", "--method=PUT", "repos/{owner}/{repo}/pulls/5/merge"],
     ["api", "-XPUT", "/repos/o/r/pulls/5/merge", "-f", "merge_method=squash"],
@@ -28,12 +30,15 @@ BLOQUEADOS = (
     ["api", "--method", "PATCH", "repos/o/r/pulls/5", "--raw-field=state=closed"],
     ["api", "repos/o/r/pulls/5/reviews", "-f", "event=APPROVE"],
     ["api", "--paginate", "repos/o/r/pulls/5/reviews/9/events", "-F", "event=APPROVE"],
+    ["api", "repos/o/r/pulls", "-f", "head=f", "-f", "base=main"],
+    ["api", "-X", "POST", "/repos/{owner}/{repo}/pulls", "--input", "pr.json"],
     ["api", "graphql", "-f", MUTACION % "mergePullRequest"],
     ["api", "graphql", "-f", MUTACION % "enablePullRequestAutoMerge"],
     ["api", "graphql", "-f", MUTACION % "closePullRequest"],
     ["api", "graphql", "-f", MUTACION % "markPullRequestReadyForReview"],
     ["api", "graphql", "-F", MUTACION % "addPullRequestReview"],
     ["api", "graphql", "--raw-field", MUTACION % "submitPullRequestReview"],
+    ["api", "graphql", "-f", MUTACION % "createPullRequest"],
 )
 
 PERMITIDOS = (
@@ -42,7 +47,8 @@ PERMITIDOS = (
     ["pr", "list", "--search", "merge"],
     ["pr", "list", "--state", "closed"],
     ["pr", "comment", "5", "--body", "listo para merge y review"],
-    ["pr", "create", "--title", "close #3", "--body", "ready"],
+    ["issue", "create", "--title", "close #3", "--body", "ready"],
+    ["api", "repos/o/r/pulls"],
     ["api", "repos/o/r/pulls/5"],
     ["api", "repos/o/r/pulls/5/merge"],
     ["api", "repos/o/r/pulls/5/reviews"],
@@ -58,7 +64,7 @@ PERMITIDOS = (
 
 
 class TestGhDeLosAgentes(unittest.TestCase):
-    def test_las_cuatro_acciones_se_bloquean_por_toda_forma_y_lo_demas_pasa(self):
+    def test_las_cinco_acciones_se_bloquean_por_toda_forma_y_lo_demas_pasa(self):
         with tempfile.TemporaryDirectory() as tmp:
             real = Path(tmp) / "gh"
             real.write_text('#!/bin/sh\necho real "$@"\n', encoding="utf-8")

@@ -995,6 +995,7 @@ def _gh_de_la_maquina(carpeta: Path, llamadas: Path) -> None:
 _INTENTOS_GH = """if [ ! -e "@INTENTOS@" ]; then {
 gh pr merge 5 --squash; echo "merge=$?"
 gh api -X PUT repos/o/r/pulls/5/merge; echo "api=$?"
+gh pr create --base main --title t --body b; echo "create=$?"
 gh pr view 5; echo "view=$?"
 } > "@INTENTOS@" 2>&1; fi
 """
@@ -1016,15 +1017,16 @@ class ElAgenteNoIntegra(CompuertaReal):
         banco.correr(lambda: bool(banco.eventos("intento_cerrado")))
         return registro.read_text(encoding="utf-8", errors="replace")
 
-    def test_el_gh_del_agente_niega_el_merge_y_lo_demas_llega_al_gh_real(self):
+    def test_el_gh_del_agente_niega_el_merge_y_el_pr_y_lo_demas_llega_al_gh_real(self):
         llamadas = self.tmp / "gh-llamadas.txt"
         _gh_de_la_maquina(self.tmp / "gh-real", llamadas)
         path = os.pathsep.join([str(self.tmp / "gh-real"), os.environ.get("PATH", "")])
         with mock.patch.dict(os.environ, {"PATH": path}):
             salida = self._primer_turno(_INTENTOS_GH)
-        for intento in ("merge=3", "api=3", "view=0"):
+        for intento in ("merge=3", "api=3", "create=3", "view=0"):
             self.assertIn(intento, salida.splitlines(), salida)
         self.assertIn("gh pr merge", salida)
+        self.assertIn("gh pr create", salida)
         self.assertIn("prohibido", salida)
         self.assertEqual(
             [linea.split() for linea in llamadas.read_text(encoding="utf-8").splitlines()],
