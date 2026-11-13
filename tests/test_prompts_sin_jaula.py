@@ -48,6 +48,18 @@ class PromptsSinJaula(unittest.TestCase):
                 for prohibida in _PROHIBIDAS:
                     self.assertNotIn(prohibida, texto)
 
+    def test_el_responsable_no_empuja_a_la_base_ni_abre_ni_integra_el_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            enc = reg.fold(recibir(reg, "pedido", "sin-jaula", ahora_iso())["encargo"])
+            texto = prompt_responsable(enc)
+        self.assertIn(
+            "No empujes a la rama base ni abras o integres un PR: eso lo hace el motor "
+            "después de la revisión",
+            texto,
+        )
+
     def test_el_responsable_sigue_con_las_reglas_de_flujo(self):
         texto = instrucciones_responsable(Path("/espacio/.interno"))
         self.assertIn("No cambies el objetivo ni despliegues", texto)
