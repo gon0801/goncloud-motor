@@ -19,6 +19,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 HERRAMIENTA = RAIZ / "tools" / "plegado.py"
 
 _ENTREGA = ("entrega", {"id": "enc_a", "clave": "k", "huella": "h", "texto": "haz algo", "hora": "t0"})
+_CANCELAR = ("orden", {"accion": "cancelar"})
 
 
 def _intento(host: str | None) -> list[tuple[str, dict]]:
@@ -33,7 +34,8 @@ def _intento(host: str | None) -> list[tuple[str, dict]]:
 _FASES_VACIAS = ("fases", {"fases": []})
 
 
-def _armar(ruta: Path, encargos: dict[str, list[tuple[str, dict]]]) -> None:
+def _armar(ruta: Path, encargos: dict[str, list[tuple[str, dict | str]]]) -> None:
+    """Un `data` en texto se guarda tal cual, para armar filas que no son JSON."""
     db = sqlite3.connect(ruta)
     db.execute(
         "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
@@ -43,17 +45,21 @@ def _armar(ruta: Path, encargos: dict[str, list[tuple[str, dict]]]) -> None:
         for kind, data in eventos:
             db.execute(
                 "INSERT INTO events (ts, encargo, kind, data) VALUES ('t', ?, ?, ?)",
-                (encargo, kind, json.dumps(data)),
+                (encargo, kind, data if isinstance(data, str) else json.dumps(data)),
             )
     db.commit()
     db.close()
 
 
-def _correr(*args: str | Path, herramienta: Path = HERRAMIENTA) -> tuple[int, dict]:
-    hecho = subprocess.run(
+def _ejecutar(*args: str | Path, herramienta: Path = HERRAMIENTA) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         [sys.executable, str(herramienta), *map(str, args)],
         capture_output=True, text=True, check=False,
     )
+
+
+def _correr(*args: str | Path, herramienta: Path = HERRAMIENTA) -> tuple[int, dict]:
+    hecho = _ejecutar(*args, herramienta=herramienta)
     try:
         return hecho.returncode, json.loads(hecho.stdout)
     except json.JSONDecodeError:
@@ -98,6 +104,104 @@ class Comprobar(unittest.TestCase):
         violadas = [(v["invariante"], v["encargo"], v["evento"], v["tipo"]) for v in reg["violaciones"]]
         self.assertEqual(violadas, [("mismo_estado_con_otro_host", "sin_host", 2, "reserva")])
 
+    def test_un_cancelado_que_vuelve_a_deteniendo_viola_la_cancelacion_definitiva(self):
+        _armar(self.registro, {
+            "revive": [_ENTREGA, _CANCELAR, ("arbol", {"observacion": "ausente"}), _CANCELAR],
+            "queda": [_ENTREGA, _CANCELAR, *[("arbol", {"observacion": "ausente"})] * 2],
+        })
+        codigo, salida = _correr("comprobar", "--json", self.registro)
+        self.assertEqual(codigo, 0)
+        (reg,) = salida["registros"]
+        violadas = [(v["invariante"], v["encargo"], v["evento"]) for v in reg["violaciones"]
+                    if v["invariante"] == "cancelacion_definitiva"]
+        self.assertEqual(violadas, [("cancelacion_definitiva", "revive", 4)])
+
+    def test_una_fila_con_json_invalido_sale_con_dos_y_nombra_el_evento(self):
+        _armar(self.registro, {"enc_a": [_ENTREGA, ("orden", "{no es json")]})
+        for opciones in ((), ("--json",)):
+            with self.subTest(opciones=opciones):
+                hecho = _ejecutar("comprobar", *opciones, self.registro)
+                self.assertEqual(hecho.returncode, 2, hecho.stderr)
+                self.assertEqual(hecho.stdout, "")
+                self.assertIn("evento 2", hecho.stderr)
+
+    def test_el_texto_de_un_registro_sano_dice_cuantos_pliegan_y_cada_invariante(self):
+        _armar(self.registro, {"enc_a": [_ENTREGA, *_intento("hostA")]})
+        hecho = _ejecutar("comprobar", self.registro)
+        self.assertEqual(hecho.returncode, 0, hecho.stderr)
+        self.assertEqual(hecho.stdout.splitlines(), [
+            str(self.registro),
+            "  Leí 1 encargos; pliegan 1.",
+            "  Invariantes, revisadas en cada prefijo (no cambian la salida):",
+            "    cancelacion_definitiva: sin violaciones.",
+            "    mismo_estado_al_replegar: sin violaciones.",
+            "    mismo_estado_con_otro_host: sin violaciones.",
+        ])
+
+
+class _RepoFalso(unittest.TestCase):
+    """Un repo propio con la herramienta y un `motor/encargos/dominio.py` que escribe la prueba."""
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.repo = self.dir / "repo"
+        (self.repo / "tools").mkdir(parents=True)
+        (self.repo / "motor" / "encargos").mkdir(parents=True)
+        for paquete in ("motor", "motor/encargos"):
+            (self.repo / paquete / "__init__.py").touch()
+        shutil.copy(HERRAMIENTA, self.repo / "tools" / "plegado.py")
+        self.herramienta = self.repo / "tools" / "plegado.py"
+        self.registro = self.dir / "registro.sqlite"
+
+    def _escribir_dominio(self, texto: str) -> None:
+        (self.repo / "motor" / "encargos" / "dominio.py").write_text(texto)
+
+    def _git(self, *args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=prueba", "-c", "user.email=prueba@example.invalid", *args],
+            cwd=self.repo, check=True, capture_output=True,
+        )
+
+
+# Cada pasada completa (la empieza `estado is None`) toma el valor siguiente de
+# `valores`: el plegado, el repliegue y el de otro host ven valores alternos.
+_DOMINIO_QUE_ALTERNA = """
+from dataclasses import dataclass
+
+ESTADOS = ("recibido",)
+_pasadas = [0]
+
+
+@dataclass(frozen=True)
+class Encargo:
+    estado: str
+    orden_parada: str
+    escrituras: object
+
+
+def reducir(estado, evento, nuevo=True):
+    if estado is None:
+        _pasadas[0] += 1
+    valores = {valores!r}
+    return Encargo("recibido", "", valores[_pasadas[0] % 2])
+"""
+
+
+class ComprobarConReductorFalso(_RepoFalso):
+    def _violaciones(self, valores: tuple[object, object]) -> list[tuple[str, str, int, str]]:
+        self._escribir_dominio(_DOMINIO_QUE_ALTERNA.format(valores=valores))
+        codigo, salida = _correr("comprobar", "--json", self.registro, herramienta=self.herramienta)
+        self.assertEqual(codigo, 0)
+        return [(v["invariante"], v["encargo"], v["evento"], v["detalle"])
+                for v in salida["registros"][0]["violaciones"]]
+
+    def test_un_reductor_que_cambia_entre_pasadas_viola_el_mismo_estado_al_replegar(self):
+        _armar(self.registro, {"enc_a": [("entrega", {}), ("cierre", {})]})
+        self.assertEqual(self._violaciones((0, 0)), [])
+        self.assertEqual(self._violaciones((0, False)),
+                         [("mismo_estado_al_replegar", "enc_a", 1, "difieren escrituras")])
+
 
 _DOMINIO_FALSO = """
 from dataclasses import dataclass
@@ -117,50 +221,37 @@ class Encargo:
 {encargo}
 
 def reducir(estado, evento, nuevo=True):
+    {rompe}
     final = {final!r} if evento["kind"] == "cierre" else "recibido"
     return Encargo(final, hallazgos=tuple(Hallazgo(i) for i in {hallazgos!r}))
 """
 
 
-class Comparar(unittest.TestCase):
-    """`comparar` en un repo propio con dos versiones de un reductor mínimo."""
+class Comparar(_RepoFalso):
+    """`comparar` con dos versiones de un reductor mínimo: la de HEAD y la del árbol."""
 
     def setUp(self) -> None:
-        self.dir = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.dir)
-        self.repo = self.dir / "repo"
-        (self.repo / "tools").mkdir(parents=True)
-        (self.repo / "motor" / "encargos").mkdir(parents=True)
-        for paquete in ("motor", "motor/encargos"):
-            (self.repo / paquete / "__init__.py").touch()
-        shutil.copy(HERRAMIENTA, self.repo / "tools" / "plegado.py")
+        super().setUp()
         self._git("init", "-q")
         self._base()
-        self.registro = self.dir / "registro.sqlite"
         _armar(self.registro, {"enc_a": [("entrega", {}), ("cierre", {})],
                                "enc_b": [("entrega", {})]})
 
     def _dominio(self, final: str = "recibido", hallazgos: tuple[str, ...] = ("h1",),
-                 encargo: str = "", hallazgo: str = "") -> None:
-        texto = _DOMINIO_FALSO.format(final=final, hallazgos=hallazgos,
-                                      encargo=f"    {encargo}" if encargo else "",
-                                      hallazgo=f"    {hallazgo}" if hallazgo else "")
-        (self.repo / "motor" / "encargos" / "dominio.py").write_text(texto)
+                 encargo: str = "", hallazgo: str = "", rompe: str = "pass") -> None:
+        self._escribir_dominio(_DOMINIO_FALSO.format(
+            final=final, hallazgos=hallazgos, rompe=rompe,
+            encargo=f"    {encargo}" if encargo else "",
+            hallazgo=f"    {hallazgo}" if hallazgo else ""))
 
-    def _base(self, encargo: str = "") -> None:
-        self._dominio(encargo=encargo)
+    def _base(self, encargo: str = "", rompe: str = "pass") -> None:
+        self._dominio(encargo=encargo, rompe=rompe)
         self._git("add", ".")
         self._git("commit", "-q", "--allow-empty", "-m", "base")
 
-    def _git(self, *args: str) -> None:
-        subprocess.run(
-            ["git", "-c", "user.name=prueba", "-c", "user.email=prueba@example.invalid", *args],
-            cwd=self.repo, check=True, capture_output=True,
-        )
-
     def _comparar(self, *opciones: str) -> tuple[int, dict]:
         return _correr("comparar", "--base", "HEAD", "--json", *opciones, self.registro,
-                       herramienta=self.repo / "tools" / "plegado.py")
+                       herramienta=self.herramienta)
 
     def test_el_mismo_reductor_en_las_dos_refs_no_difiere(self):  # no-roja-en-base: control; muestra que comparar no reporta por defecto
         codigo, salida = self._comparar()
@@ -173,6 +264,25 @@ class Comparar(unittest.TestCase):
         self.assertEqual(codigo, 1)
         (reg,) = salida["registros"]
         self.assertEqual(reg["diferencias"], [{"encargo": "enc_a", "campos": ["estado"], "detalle": ""}])
+
+    def _cambio_de_tipo(self, antes: str, despues: str) -> None:
+        self._base(encargo=f"escrituras: object = {antes}")
+        self._dominio(encargo=f"escrituras: object = {despues}")
+        codigo, salida = self._comparar()
+        self.assertEqual(codigo, 1)
+        (reg,) = salida["registros"]
+        self.assertEqual([(d["encargo"], d["campos"]) for d in reg["diferencias"]],
+                         [("enc_a", ["escrituras"]), ("enc_b", ["escrituras"])])
+        self.assertEqual(reg["forma"], [])
+
+    def test_un_cero_que_pasa_a_false_es_diferencia_de_valor(self):
+        self._cambio_de_tipo("0", "False")
+
+    def test_un_uno_que_pasa_a_true_es_diferencia_de_valor(self):
+        self._cambio_de_tipo("1", "True")
+
+    def test_un_entero_que_pasa_a_flotante_es_diferencia_de_valor(self):
+        self._cambio_de_tipo("1", "1.0")
 
     def test_un_campo_que_solo_existe_en_el_arbol_es_forma_y_sale_con_cero(self):
         self._dominio(encargo='prioridad: str = "alta"')
@@ -222,6 +332,44 @@ class Comparar(unittest.TestCase):
         self.assertFalse(salida["ok"])
         (reg,) = salida["registros"]
         self.assertEqual((reg["diferencias"], [f["ruta"] for f in reg["forma"]]), ([], ["prioridad"]))
+
+    def test_el_mismo_fallo_con_otro_mensaje_no_es_diferencia_y_se_dice_que_no_pliega(self):
+        self._base(rompe='if evento["kind"] == "cierre": raise ValueError("texto viejo")')
+        self._dominio(rompe='if evento["kind"] == "cierre": raise ValueError("texto nuevo")')
+        codigo, salida = self._comparar()
+        self.assertEqual(codigo, 0)
+        (reg,) = salida["registros"]
+        self.assertEqual(reg["diferencias"], [])
+        self.assertEqual([(f["encargo"], f["evento"], f["excepcion"]) for f in reg["no_pliegan"]],
+                         [("enc_a", 2, "ValueError")])
+        hecho = _ejecutar("comparar", "--base", "HEAD", self.registro, herramienta=self.herramienta)
+        self.assertEqual(hecho.returncode, 0, hecho.stderr)
+        self.assertIn("  No pliegan en ningún lado (no cuentan como diferencia): 1 encargos.",
+                      hecho.stdout.splitlines())
+
+    def test_otra_excepcion_en_el_mismo_evento_es_diferencia_de_plegado(self):
+        self._base(rompe='if evento["kind"] == "cierre": raise ValueError("x")')
+        self._dominio(rompe='if evento["kind"] == "cierre": raise KeyError("x")')
+        codigo, salida = self._comparar()
+        self.assertEqual(codigo, 1)
+        (reg,) = salida["registros"]
+        self.assertEqual([(d["encargo"], d["campos"]) for d in reg["diferencias"]],
+                         [("enc_a", ["plegado"])])
+        self.assertEqual(reg["no_pliegan"], [])
+
+    def test_una_fila_con_json_invalido_sale_con_dos(self):
+        _armar(self.dir / "roto.sqlite", {"enc_a": [("entrega", "{no es json")]})
+        hecho = _ejecutar("comparar", "--base", "HEAD", self.dir / "roto.sqlite",
+                          herramienta=self.herramienta)
+        self.assertEqual(hecho.returncode, 2, hecho.stderr)
+        self.assertEqual(hecho.stdout, "")
+
+    def test_el_texto_sin_diferencias_nombra_la_ref_y_cuantos_encargos_compara(self):
+        hecho = _ejecutar("comparar", "--base", "HEAD", self.registro, herramienta=self.herramienta)
+        self.assertEqual(hecho.returncode, 0, hecho.stderr)
+        (cabeza, linea) = hecho.stdout.splitlines()
+        self.assertEqual(cabeza, str(self.registro))
+        self.assertRegex(linea, r"^  Comparé 2 encargos con el reductor de HEAD \([0-9a-f]{12}\): sin diferencias\.$")
 
 
 if __name__ == "__main__":
