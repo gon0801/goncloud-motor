@@ -430,6 +430,16 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(self.filas(informe)["entregado"]["resultado"], "pasa")
         self.assertEqual(codigo, 0, informe.get("tabla"))
 
+    def test_no_acepta_esperas_negativas_ni_vacias(self):
+        for opcion, valor in (
+            ("--intervalo-s", "-1"), ("--intervalo-s", "0"), ("--intervalo-s", "nan"),
+            ("--tope-cierre-s", "-5"), ("--tope-cierre-s", "nan"), ("--tope-min", "-1"),
+        ):
+            with self.assertRaises(SystemExit, msg=f"{opcion} {valor}") as salida:
+                self.correr(opcion, valor)
+            self.assertEqual(salida.exception.code, 2)
+        self.assertFalse((self.base / "registro.sqlite").exists(), "recibió un encargo")
+
     def test_mide_el_arbol_donde_vive_y_no_acepta_otro(self):
         with self.assertRaises(SystemExit) as salida:
             self.correr("--arbol", str(RAIZ))
