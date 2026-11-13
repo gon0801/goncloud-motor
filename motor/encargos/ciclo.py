@@ -9838,9 +9838,12 @@ def _paso_entrega_paso(
             if vista_pr.base != base and vista_pr.estado == "abierto":
                 gh.cambiar_base(enc.entrega.repo, enc.pr_numero, base)
                 vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
+            if vista_pr.borrador and vista_pr.estado == "abierto":
+                gh.marcar_listo(enc.entrega.repo, enc.pr_numero)
         except Exception as exc:
             causa = (
-                f"no se pudo consultar el PR #{enc.pr_numero} registrado: {exc}"
+                f"no se pudo consultar o preparar el PR #{enc.pr_numero} "
+                f"registrado: {exc}"
             )
             _anotar_instrumento(
                 registro, enc, "github", causa,
