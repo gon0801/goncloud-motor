@@ -285,15 +285,13 @@ def trabajar(espacio: Path, dir_: Path) -> None:
         )
         fase = ESCENARIO["fases"][0]["id"]
     _escribir(interno, espacio, fase)
-    abiertos = _bloqueantes_del_prompt(prompt)
-    if abiertos and ESCENARIO.get("arregla", True):
-        for titulo in abiertos.values():
-            for patron, fichas in ESCENARIO.get("arreglos", {}).items():
-                if patron in titulo:
-                    for ruta, contenido in fichas.items():
-                        destino = espacio / ruta
-                        destino.parent.mkdir(parents=True, exist_ok=True)
-                        destino.write_text(contenido, encoding="utf-8", newline="\\n")
+    for titulo in _bloqueantes_del_prompt(prompt).values():
+        for patron, fichas in ESCENARIO.get("arreglos", {}).items():
+            if patron in titulo:
+                for ruta, contenido in fichas.items():
+                    destino = espacio / ruta
+                    destino.parent.mkdir(parents=True, exist_ok=True)
+                    destino.write_text(contenido, encoding="utf-8", newline="\\n")
 
 
 def revisar(espacio: Path, dir_: Path) -> None:
@@ -315,7 +313,7 @@ def revisar(espacio: Path, dir_: Path) -> None:
             + ("coincide" if cumple else "no coincide con lo pedido")
         ),
     }
-    if fase in ESCENARIO.get("bloquear_fase", ()) or not cumple:
+    if not cumple:
         juicio["veredicto"] = "cambios"
         juicio["bloqueantes"] = [{
             "criterio": "comportamiento",
