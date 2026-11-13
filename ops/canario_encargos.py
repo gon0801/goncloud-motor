@@ -9,7 +9,9 @@ Uso, siempre en solo lectura:
 Tres capas separadas:
 
 - `observar` lee el registro (abierto con `mode=ro`), GitHub (`gh pr view` y
-  `git ls-remote`) y el disco de la base. Devuelve una `Observacion`.
+  `git ls-remote`), el disco de la base, el clon del servicio y los procesos.
+  Juzga cada fase y cada proceso con las funciones del motor. Devuelve una
+  `Observacion`.
 - `juzgar` es pura: de la observación y lo esperado saca una `Fila` por cada
   entrada de `TABLA`, con `pasa`, `falla` o `no medido`.
 - El archivo de lo esperado dice qué resultado se espera en cada fila y los
@@ -29,12 +31,14 @@ import argparse
 import dataclasses
 import io
 import json
+import os
+import socket
 import sqlite3
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Protocol, cast, get_args
@@ -43,15 +47,22 @@ RAIZ = Path(__file__).resolve().parents[1]
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
-from motor import plataforma  # noqa: E402
-from motor.encargos.dominio import Encargo, nivel_objetivo  # noqa: E402
+from motor.effects import observar_arbol  # noqa: E402
+from motor.encargos.dominio import (  # noqa: E402
+    Encargo,
+    nivel_cumplido,
+    nivel_de,
+    nivel_objetivo,
+)
 from motor.encargos.politica import CERRADOS_VENTANA_S  # noqa: E402
+from motor.encargos.sesion import Marca  # noqa: E402
 from motor.github import GhGitHub, PrView  # noqa: E402
 from motor.io import leer_json, leer_texto  # noqa: E402
 from motor.repositorios import resolver_repositorio  # noqa: E402
 from tools import plegado  # noqa: E402
 
 ESPERADO = RAIZ / "ops" / "canario_encargos.esperado.json"
+ESPERA_GIT_S = 30
 
 Resultado = Literal["pasa", "falla", "no medido"]
 NombreFila = Literal[
@@ -83,7 +94,9 @@ class Recibo:
     sha: str
 
 
-TipoResto = Literal["rama", "runtime", "proceso", "espacio", "ejecucion"]
+TipoResto = Literal[
+    "rama", "pr", "espacio", "ejecucion", "runtime", "despliegue", "referencia", "proceso",
+]
 
 
 @dataclass(frozen=True)
@@ -97,22 +110,43 @@ class Resto:
 
 
 @dataclass(frozen=True)
+class FaseVista:
+    """Una fase según el reductor, juzgada con las reglas del motor."""
+
+    id: str
+    estado: str
+    nivel: str
+    """`dominio.nivel_de` de la fase."""
+    cumplido: bool
+    """`dominio.nivel_cumplido` con esta fase como activa."""
+    desplegable: bool
+    """La fase no declaró `requiere_despliegue: false`."""
+    causa: str = ""
+    """Por qué quedó bloqueada."""
+
+
+@dataclass(frozen=True)
 class Pliegue:
     """Lo que el registro dice del encargo, plegado con el reductor del árbol."""
 
     estado: str
     nivel_autorizado: str
     nivel_efectivo: str
+    """`dominio.nivel_objetivo`: el autorizado o el que el motor dejó al bajarlo."""
+    motivo_efectivo: str
     nivel_alcanzado: str
+    """El que reporta el motor: el de la fase activa."""
+    fase_activa: str
     base: str
     recibido: str
     cierre: str
     """Vacío mientras el encargo no cierre."""
-    desplegables: tuple[str, ...]
-    """Las fases que deben dejar recibo de despliegue."""
+    completo: bool
+    """`Encargo.objetivo_completo()`: todas las fases preparadas."""
+    fases: tuple[FaseVista, ...]
     turnos: tuple[tuple[str, int], ...]
     rondas: int
-    """Revisiones independientes."""
+    """Revisiones independientes, contadas como las cuenta el reductor."""
     violaciones: tuple[str, ...]
     """Invariantes de `tools/plegado.py` que no se sostienen."""
 
@@ -150,6 +184,8 @@ class Observacion:
     recibos: tuple[Recibo, ...] = ()
     restos: tuple[Resto, ...] = ()
     version: Version = Version("", "", "")
+    actualizado: str = ""
+    """Hora de la última actualización del servicio (instalacion.json); vacío si no se sabe."""
     archivo: ArchivoDesplegado | None = None
     """None: nadie pidió revisar un archivo desplegado."""
 
@@ -198,24 +234,35 @@ DISCREPANCIAS: dict[tuple[Resultado, Resultado], str] = {
 
 Juicio = tuple[Resultado, str]
 
-# Regla de limpieza del modelo (docs/modelo-centro-encargos.md): la copia de
-# trabajo vive 7 días desde el estado final y `ejecucion/` hasta que cierra la
-# ventana de sondeo; lo demás debe desaparecer al cerrar.
-PLAZO_S: dict[TipoResto, int] = {
-    "rama": 0,
-    "runtime": 0,
-    "proceso": 0,
-    "espacio": 7 * 24 * 60 * 60,
-    "ejecucion": CERRADOS_VENTANA_S,
-}
+Plazo = int | Literal["actualización"]
+
+# La tabla "Limpieza" de docs/modelo-centro-encargos.md, entrada por entrada,
+# más los procesos que pide el diseño del canario. Lo que la regla conserva
+# (el recibo del despliegue, lo que tiene plazo sin vencer) no es resto.
+LIMPIEZA: tuple[tuple[TipoResto, str, Plazo], ...] = (
+    ("rama", "rama remota encargo/*, se borra al mergear o cerrar el PR", 0),
+    ("pr", "PR de un encargo cancelado, se cierra al cancelar", 0),
+    ("espacio", "espacio/<id>, se borra 7 días después del estado final", 7 * 24 * 60 * 60),
+    ("ejecucion", "ejecucion/<id>, se borra al cerrar la ventana de sondeo", CERRADOS_VENTANA_S),
+    ("runtime", "credenciales del turno en runtime/<id>, se borran al terminar cada turno", 0),
+    ("despliegue", "despliegues/<clave>, se conserva el recibo y se borra lo demás", 0),
+    ("referencia", "referencias a ramas remotas en el clon del servicio,"
+     " fetch --prune en cada actualización", "actualización"),
+    ("proceso", "procesos de sus turnos y despliegues, no quedan al cerrar", 0),
+)
 
 
 def _hora(iso: str) -> datetime:
     return datetime.fromisoformat(iso.replace("Z", "+00:00"))
 
 
-def _minutos(desde: str, hasta: str) -> int:
-    return round((_hora(hasta) - _hora(desde)).total_seconds() / 60)
+def _duracion(desde: str, hasta: str) -> timedelta:
+    return _hora(hasta) - _hora(desde)
+
+
+def _texto_duracion(d: timedelta) -> str:
+    minutos, segundos = divmod(int(d.total_seconds()), 60)
+    return f"{minutos} min {segundos} s" if segundos else f"{minutos} min"
 
 
 def _sin_pliegue(obs: Observacion) -> Juicio | None:
@@ -226,30 +273,53 @@ def _sin_pliegue(obs: Observacion) -> Juicio | None:
     return None
 
 
+def _bajado(p: Pliegue) -> str:
+    if p.nivel_efectivo == p.nivel_autorizado:
+        return ""
+    motivo = f": {p.motivo_efectivo}" if p.motivo_efectivo else ""
+    return f"el motor bajó el objetivo de {p.nivel_autorizado} a {p.nivel_efectivo}{motivo}"
+
+
 def _termina(obs: Observacion, topes: Topes) -> Juicio:
     if (fuera := _sin_pliegue(obs)) is not None:
         return fuera
     p = cast(Pliegue, obs.pliegue)
     if p.estado != "terminado":
         return "falla", f"el encargo quedó {p.estado}, no terminado"
-    if p.nivel_alcanzado != p.nivel_autorizado:
-        bajo = (
-            f"; el motor bajó el objetivo a {p.nivel_efectivo}"
-            if p.nivel_efectivo != p.nivel_autorizado else ""
-        )
-        return "falla", (
-            f"terminó en nivel {p.nivel_alcanzado} y se pidió {p.nivel_autorizado}{bajo}"
-        )
-    minutos = _minutos(p.recibido, p.cierre or obs.hora)
-    if minutos > topes.minutos_termina:
-        return "falla", (
-            f"terminó en nivel {p.nivel_alcanzado}, pero tardó {minutos} min"
-            f" y el tope es {topes.minutos_termina}"
-        )
-    return "pasa", (
-        f"terminó solo en nivel {p.nivel_alcanzado} en {minutos} min"
-        f" (tope {topes.minutos_termina})"
+    if not p.fases:
+        return "falla", "el encargo terminó sin fases"
+    if not p.completo:
+        faltan = [
+            f"la fase {f.id} quedó {f.estado}" + (f" ({f.causa})" if f.causa else "")
+            for f in p.fases if f.estado != "preparada"
+        ]
+        return "falla", "entrega parcial: " + "; ".join(faltan)
+    debajo = [
+        f"la fase {f.id} quedó en nivel {f.nivel}, por debajo de lo que el motor exige"
+        for f in p.fases if not f.cumplido
+    ]
+    if debajo:
+        return "falla", "; ".join(debajo)
+    duracion = _duracion(p.recibido, p.cierre or obs.hora)
+    tarde = duracion > timedelta(minutes=topes.minutos_termina)
+    niveles = ", ".join(
+        f"{f.id} {f.nivel}" + ("" if f.desplegable else " (no requiere despliegue)")
+        for f in p.fases
     )
+    partes = [
+        f"terminó solo sus {len(p.fases)} fases, cada una en el nivel que el motor exige"
+        f" ({niveles})",
+        f"{'pero ' if tarde else ''}tardó {_texto_duracion(duracion)}"
+        f" y el tope es {topes.minutos_termina} min",
+    ]
+    if bajado := _bajado(p):
+        partes.append(bajado)
+    if any(f.nivel != p.nivel_alcanzado for f in p.fases):
+        partes.append(
+            f"el motor reporta nivel {p.nivel_alcanzado} porque mira solo su fase activa,"
+            f" {p.fase_activa}"
+        )
+    return ("falla" if tarde else "pasa"), "; ".join(partes)
 
 
 def _entregado(obs: Observacion, _topes: Topes) -> Juicio:
@@ -260,23 +330,36 @@ def _entregado(obs: Observacion, _topes: Topes) -> Juicio:
         return "no medido", f"se pidió nivel {p.nivel_autorizado}: no hay merge que comprobar"
     fallas: list[str] = []
     sin_leer: list[str] = []
+    if p.estado != "terminado":
+        fallas.append(f"el encargo quedó {p.estado}, no entregado")
+    if bajado := _bajado(p):
+        fallas.append(bajado)
+    if not p.base:
+        sin_leer.append("la base pedida, que el registro no guarda")
     commits: dict[str, str] = {}
     for pr in obs.prs:
         if pr.numero == 0:
             fallas.append(f"la fase {pr.fase} no abrió PR")
         elif pr.estado is None:
-            sin_leer.append(f"PR #{pr.numero}")
+            sin_leer.append(f"el PR #{pr.numero}, porque GitHub no respondió")
         elif pr.estado != "mergeado":
             fallas.append(f"el PR #{pr.numero} está {pr.estado}")
-        elif pr.base != p.base:
+        elif not pr.base:
+            sin_leer.append(f"la base del PR #{pr.numero}, que GitHub no dio")
+        elif p.base and pr.base != p.base:
             fallas.append(f"el PR #{pr.numero} se mergeó en {pr.base} y se pidió {p.base}")
-        else:
+        elif not pr.merge_commit:
+            sin_leer.append(f"el commit de merge del PR #{pr.numero}, que GitHub no dio")
+        elif p.base:
             commits[pr.fase] = pr.merge_commit
     if not obs.prs:
         fallas.append("ninguna fase tiene PR")
+    desplegables = [f.id for f in p.fases if f.desplegable]
     desplegadas = 0
     if p.nivel_autorizado == "desplegado":
-        for fase in p.desplegables:
+        if not desplegables:
+            fallas.append("se pidió desplegado y ninguna fase requiere despliegue: no se desplegó nada")
+        for fase in desplegables:
             if fase not in commits:
                 continue
             if any(
@@ -294,12 +377,12 @@ def _entregado(obs: Observacion, _topes: Topes) -> Juicio:
     if fallas:
         return "falla", "; ".join(fallas)
     if sin_leer:
-        return "no medido", "GitHub no respondió por " + ", ".join(sin_leer)
+        return "no medido", "no pude leer " + ", ".join(sin_leer)
     partes = [f"PR mergeados en {p.base}: {len(commits)} de {len(obs.prs)}"]
     if p.nivel_autorizado == "desplegado":
         partes.append(
             f"fases con recibo de despliegue aplicado de su commit mergeado:"
-            f" {desplegadas} de {len(p.desplegables)}"
+            f" {desplegadas} de {len(desplegables)}"
         )
     partes.append(
         "el archivo desplegado trae la marca" if obs.archivo is not None
@@ -308,34 +391,54 @@ def _entregado(obs: Observacion, _topes: Topes) -> Juicio:
     return "pasa", "; ".join(partes)
 
 
+def _vencimiento(plazo: Plazo, cierre: datetime, actualizado: str) -> tuple[datetime, str] | None:
+    """Desde cuándo el resto está vencido y cómo decirlo; None si no se puede saber."""
+    if plazo == "actualización":
+        if not actualizado:
+            return None
+        hecha = _hora(actualizado)
+        if hecha > cierre:
+            return hecha, f"la actualización del {hecha:%Y-%m-%d %H:%M}"
+        return datetime.max.replace(tzinfo=timezone.utc), "la próxima actualización del servicio"
+    vence = cierre + timedelta(seconds=plazo)
+    return vence, f"{vence:%Y-%m-%d %H:%M}"
+
+
 def _limpio(obs: Observacion, _topes: Topes) -> Juicio:
     if (fuera := _sin_pliegue(obs)) is not None:
         return fuera
     p = cast(Pliegue, obs.pliegue)
     if not p.cierre:
         return "no medido", f"el encargo sigue {p.estado}: la limpieza empieza al cerrar"
+    cierre, ahora = _hora(p.cierre), _hora(obs.hora)
     quedan: list[str] = []
     en_plazo: list[str] = []
     sin_mirar: list[str] = []
-    for resto in obs.restos:
-        plazo_s = PLAZO_S[resto.tipo]
-        vence = _hora(p.cierre) + timedelta(seconds=plazo_s)
-        if resto.queda is None:
-            sin_mirar.append(resto.nombre)
-        elif not resto.queda:
-            continue
-        elif plazo_s == 0 or _hora(obs.hora) >= vence:
-            quedan.append(resto.nombre)
-        else:
-            en_plazo.append(f"{resto.nombre} hasta {vence:%Y-%m-%d}")
-    plazo = f"; dentro de su plazo: {', '.join(en_plazo)}" if en_plazo else ""
+    for tipo, regla, plazo in LIMPIEZA:
+        restos = [r for r in obs.restos if r.tipo == tipo]
+        if not restos:
+            sin_mirar.append(f"la regla «{regla}», que no se revisó")
+        for resto in restos:
+            if resto.queda is None:
+                sin_mirar.append(resto.nombre)
+                continue
+            if not resto.queda:
+                continue
+            vencimiento = _vencimiento(plazo, cierre, obs.actualizado)
+            if vencimiento is None:
+                sin_mirar.append(f"si {resto.nombre} ya venció: no sé cuándo se actualizó el servicio")
+            elif plazo == 0 or ahora >= vencimiento[0]:
+                quedan.append(resto.nombre)
+            else:
+                en_plazo.append(f"{resto.nombre} hasta {vencimiento[1]}")
+    plazo_txt = f"; dentro de su plazo: {', '.join(en_plazo)}" if en_plazo else ""
     if quedan:
-        return "falla", "quedan " + ", ".join(quedan) + plazo
+        return "falla", "quedan " + ", ".join(quedan) + plazo_txt
     if sin_mirar:
-        return "no medido", "no pude mirar " + ", ".join(sin_mirar) + plazo
+        return "no medido", "no pude mirar " + ", ".join(sin_mirar) + plazo_txt
     return "pasa", (
-        f"nada vencido sin borrar entre {len(obs.restos)} restos revisados"
-        f" (ramas remotas, runtime/, espacio/, ejecucion/ y procesos){plazo}"
+        f"nada vencido sin borrar: revisé las {len(LIMPIEZA)} reglas de limpieza"
+        f" ({len(obs.restos)} restos){plazo_txt}"
     )
 
 
@@ -343,17 +446,17 @@ def _cuesta_poco(obs: Observacion, topes: Topes) -> Juicio:
     if (fuera := _sin_pliegue(obs)) is not None:
         return fuera
     p = cast(Pliegue, obs.pliegue)
-    minutos = _minutos(p.recibido, p.cierre or obs.hora)
+    duracion = _duracion(p.recibido, p.cierre or obs.hora)
     turnos = ", ".join(f"{rol} {n}" for rol, n in p.turnos) or "ninguno"
     texto = (
         f"turnos {turnos} (tope {topes.turnos_por_rol} por rol);"
         f" rondas de revisión {p.rondas} (tope {topes.rondas});"
-        f" {minutos} min (tope {topes.minutos})"
+        f" {_texto_duracion(duracion)} (tope {topes.minutos})"
     )
     caro = (
         any(n > topes.turnos_por_rol for _, n in p.turnos)
         or p.rondas > topes.rondas
-        or minutos > topes.minutos
+        or duracion > timedelta(minutes=topes.minutos)
     )
     return ("falla" if caro else "pasa"), texto
 
@@ -397,8 +500,8 @@ Juez = Callable[[Observacion, Topes], Juicio]
 TABLA: tuple[tuple[NombreFila, str, str, Juez], ...] = (
     ("termina", "1", "registro: estado, nivel y horas", _termina),
     ("entregado", "2", "GitHub (gh pr view) y despliegues/*/recibo.json", _entregado),
-    ("limpio", "2", "GitHub (git ls-remote), runtime/, espacio/, ejecucion/ y procesos",
-     _limpio),
+    ("limpio", "2", "la tabla Limpieza del modelo: GitHub, la base, el clon del servicio"
+     " y los procesos", _limpio),
     ("no pierde", "3", "sin fuente todavía",
      _sin_medicion("necesita los cortes de energía del canario, que aún no existen")),
     ("no repite", "3", "sin fuente todavía",
@@ -466,23 +569,40 @@ def _eventos(registro: Path, encargo: str) -> list[dict]:
     ]
 
 
-def _pliegue(e: Encargo, eventos: list[dict], violaciones: tuple[str, ...]) -> Pliegue:
+def vista(e: Encargo, eventos: list[dict], violaciones: tuple[str, ...] = ()) -> Pliegue:
+    """El encargo plegado, juzgado con las funciones del motor y no con copias."""
     turnos = Counter(
         str(ev["data"].get("rol") or "") for ev in eventos if ev["kind"] == "intento_abierto"
     )
+    activa = e.fase_actual
     return Pliegue(
         estado=e.estado,
         nivel_autorizado=e.entrega.nivel,
         nivel_efectivo=nivel_objetivo(e),
+        motivo_efectivo=e.nivel_efectivo_motivo,
         nivel_alcanzado=e.nivel_alcanzado,
+        fase_activa=activa.id if activa else "",
         base=e.entrega.base,
         recibido=eventos[0]["ts"],
         cierre=e.hora_cierre,
-        desplegables=tuple(f.id for f in e.fases if f.requiere_despliegue is not False),
+        completo=e.objetivo_completo(),
+        fases=tuple(
+            FaseVista(
+                id=f.id,
+                estado=f.estado,
+                nivel=nivel_de(f),
+                cumplido=nivel_cumplido(replace(e, fase_activa=f.id)),
+                desplegable=f.requiere_despliegue is not False,
+                causa=f.bloqueo_causa,
+            )
+            for f in e.fases
+        ),
         turnos=tuple(sorted(turnos.items())),
+        # La misma lectura que el reductor: una revisión sin origen es independiente.
         rondas=sum(
             1 for ev in eventos
-            if ev["kind"] == "revision" and ev["data"].get("origen") == "independiente"
+            if ev["kind"] == "revision"
+            and str(ev["data"].get("origen") or "independiente") == "independiente"
         ),
         violaciones=violaciones,
     )
@@ -498,26 +618,70 @@ def _pr(gh: LectorPR, repo: str, fase: str, numero: int) -> PR:
     return PR(fase, numero, v.estado, v.base, v.merge_commit)
 
 
+def _git(*argv: str, espera: float) -> str | None:
+    """La salida de `git`; None si no se pudo correr o no terminó bien."""
+    try:
+        hecho = subprocess.run(
+            ["git", *argv], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            timeout=espera, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return hecho.stdout.strip() if hecho.returncode == 0 else None
+
+
 def _rama_existe(repo: str, rama: str) -> bool | None:
     try:
         remoto = resolver_repositorio(repo).remoto
-        hecho = subprocess.run(
-            ["git", "ls-remote", "--", remoto, f"refs/heads/{rama}"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
-            check=False,
-        )
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    except (OSError, ValueError):
         return None
-    if hecho.returncode != 0:
-        return None
-    return bool(hecho.stdout.strip())
+    salida = _git("ls-remote", "--", remoto, f"refs/heads/{rama}", espera=2 * ESPERA_GIT_S)
+    return None if salida is None else bool(salida)
 
 
-def _vivo(marca: dict) -> bool:
-    try:
-        return plataforma.estado_proc(marca) == "vivo"
-    except (KeyError, TypeError, ValueError):
+def _referencia_vencida(servicio: Path | None, rama: str, remota: bool | None) -> bool | None:
+    """La rama ya no existe en el remoto y el clon del servicio aún guarda su referencia."""
+    if servicio is None:
+        return None
+    salida = _git(
+        "-C", str(servicio), "for-each-ref", "--format=%(refname)",
+        f"refs/remotes/origin/{rama}", espera=ESPERA_GIT_S,
+    )
+    if salida is None:
+        return None
+    if not salida:
         return False
+    return None if remota is None else not remota
+
+
+def _tri(valores: Iterable[bool | None]) -> bool | None:
+    """True si alguno queda, None si alguno no se pudo mirar, False si ninguno."""
+    vistos = list(valores)
+    if True in vistos:
+        return True
+    return None if None in vistos else False
+
+
+def _existe(ruta: Path) -> bool | None:
+    try:
+        os.lstat(ruta)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return True
+
+
+def _vivo(directorio: Path, proc: dict) -> bool | None:
+    """El árbol de procesos de `proc` según `effects.observar_arbol`, que mira el grupo
+    entero y no solo al lanzador. None: no se pudo mirar."""
+    if proc.get("host") and proc["host"] != socket.gethostname():
+        return None
+    try:
+        estado = observar_arbol(Marca(directorio, proc))
+    except (OSError, KeyError, TypeError, ValueError):
+        return None
+    return {"vivo": True, "ausente": False}.get(estado)
 
 
 def _json_o_vacio(ruta: Path) -> dict:
@@ -528,47 +692,95 @@ def _json_o_vacio(ruta: Path) -> dict:
     return datos if isinstance(datos, dict) else {}
 
 
-def _despliegues(base: Path, encargo: str) -> tuple[tuple[Recibo, ...], bool]:
-    """Los recibos del encargo y si alguno de sus trabajadores sigue vivo."""
+def _procesos_de_turnos(base: Path, e: Encargo, eventos: list[dict]) -> Resto:
+    """Los mismos candidatos que cierra el motor al limpiar (`proc.json` o
+    `wrapper.json` de `ejecucion/<id>` y de cada intento, y el proceso vigente),
+    más la identidad de cada `intento_abierto`, que sobrevive al borrado del directorio."""
+    raiz = base / "ejecucion" / e.id
+    try:
+        carpetas = [raiz, *sorted(raiz.glob("intento-*"))] if raiz.is_dir() else []
+    except OSError:
+        return Resto("proceso", f"los procesos de sus turnos en {raiz.name}", None)
+    candidatos: list[tuple[Path, dict]] = []
+    for carpeta in carpetas:
+        for nombre in ("proc.json", "wrapper.json"):
+            if _existe(carpeta / nombre):
+                candidatos.append((carpeta, _json_o_vacio(carpeta / nombre)))
+                break
+    if e.proc is not None:
+        candidatos.append((raiz, e.proc.como_dict()))
+    for ev in eventos:
+        if ev["kind"] == "intento_abierto":
+            token = str(ev["data"].get("id") or "")
+            intento = next(iter(sorted(raiz.glob(f"intento-*-{token}"))), raiz) if token else raiz
+            candidatos.append((intento, ev["data"]))
+    unicos = {(str(p.get("pid")), str(p.get("inicio"))): (c, p) for c, p in candidatos}
+    turnos = sum(1 for ev in eventos if ev["kind"] == "intento_abierto")
+    return Resto(
+        "proceso", f"algún proceso de sus {turnos} turnos",
+        _tri(_vivo(c, p) for c, p in unicos.values()),
+    )
+
+
+def _despliegues(base: Path, encargo: str) -> tuple[tuple[Recibo, ...], tuple[Resto, ...]]:
+    """Los recibos del encargo, lo que quedó junto a ellos y sus trabajadores."""
+    raiz = base / "despliegues"
+    try:
+        claves = sorted(d for d in raiz.iterdir() if d.is_dir()) if raiz.is_dir() else []
+    except OSError:
+        return (), (
+            Resto("despliegue", "despliegues/", None),
+            Resto("proceso", "algún trabajador de despliegue", None),
+        )
     recibos: list[Recibo] = []
-    vivo = False
-    for pedido in sorted((base / "despliegues").glob("*/pedido.json")):
-        identidad = _json_o_vacio(pedido).get("identidad") or {}
-        if not isinstance(identidad, dict) or identidad.get("encargo") != encargo:
+    restos: list[Resto] = []
+    vivos: list[bool | None] = []
+    for clave in claves:
+        recibo = _json_o_vacio(clave / "recibo.json")
+        identidad = _json_o_vacio(clave / "pedido.json").get("identidad")
+        dueno = identidad.get("encargo") if isinstance(identidad, dict) else None
+        if encargo not in (dueno, recibo.get("encargo")):
             continue
-        recibo = _json_o_vacio(pedido.parent / "recibo.json")
         if recibo:
             recibos.append(Recibo(
                 str(recibo.get("fase") or ""), str(recibo.get("estado") or ""),
                 str(recibo.get("sha") or ""),
             ))
-        proceso = _json_o_vacio(pedido.parent / "proceso.json")
-        vivo = vivo or (bool(proceso) and _vivo(proceso))
-    return tuple(recibos), vivo
+        try:
+            demas = sorted(x.name for x in clave.iterdir() if x.name != "recibo.json")
+        except OSError:
+            restos.append(Resto("despliegue", f"despliegues/{clave.name[:12]}", None))
+        else:
+            restos.append(Resto(
+                "despliegue", f"despliegues/{clave.name[:12]} ({', '.join(demas)})", bool(demas),
+            ))
+        for nombre in ("proceso.json", "comando.json"):
+            ident = _json_o_vacio(clave / nombre)
+            if _existe(clave / nombre) and ident.get("estado") != "no_enviado":
+                vivos.append(_vivo(clave, ident))
+    puntero = raiz / f"{encargo}.actual"
+    if (hay := _existe(puntero)) is not False:
+        restos.append(Resto("despliegue", f"despliegues/{puntero.name}", hay))
+    if not restos:
+        restos.append(Resto("despliegue", "ningún despliegue del encargo", False))
+    restos.append(Resto("proceso", "algún trabajador de despliegue", _tri(vivos)))
+    return tuple(recibos), tuple(restos)
 
 
 def _git_head(arbol: Path) -> str:
-    try:
-        hecho = subprocess.run(
-            ["git", "-C", str(arbol), "rev-parse", "HEAD"],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30, check=False,
-        )
-    except OSError:
-        return ""
-    return hecho.stdout.strip() if hecho.returncode == 0 else ""
+    return _git("-C", str(arbol), "rev-parse", "HEAD", espera=ESPERA_GIT_S) or ""
 
 
-def _version_de(base: Path, arbol: Path | None, sha_desplegado: str) -> Version:
-    pasada = _json_o_vacio(base / "supervisor-pasada.json")
-    instalacion = _json_o_vacio(base / "instalacion.json")
+def _version_de(
+    pasada: dict, instalacion: dict, servicio: Path | None, sha_desplegado: str,
+) -> Version:
     destino = instalacion.get("destino")
     desplegado = sha_desplegado or str(
         (destino.get("codigo") if isinstance(destino, dict) else "") or ""
     )
-    ruta = arbol or (Path(str(pasada["ruta"])) if pasada.get("ruta") else None)
     return Version(
         desplegado=desplegado,
-        arbol=_git_head(ruta) if ruta else "",
+        arbol=_git_head(servicio) if servicio else "",
         pasada=str(pasada.get("sha") or ""),
     )
 
@@ -579,6 +791,41 @@ def _archivo(ruta: Path, marca: str) -> ArchivoDesplegado:
     except OSError:
         contiene = None
     return ArchivoDesplegado(str(ruta), marca, contiene)
+
+
+def _restos(
+    base: Path, e: Encargo, eventos: list[dict], prs: tuple[PR, ...],
+    servicio: Path | None, despliegue: tuple[Resto, ...],
+) -> tuple[Resto, ...]:
+    repo = e.entrega.repo
+    ramas = sorted({f.rama for f in e.fases if f.rama}) if repo else []
+    remotas = {rama: _rama_existe(repo, rama) for rama in ramas}
+    if e.estado == "cancelado":
+        abiertos = [
+            Resto("pr", f"el PR #{pr.numero} abierto", None if pr.estado is None else pr.estado == "abierto")
+            for pr in prs if pr.numero
+        ] or [Resto("pr", "ningún PR que cerrar", False)]
+    else:
+        abiertos = [Resto("pr", f"ningún PR que cerrar: el encargo quedó {e.estado}", False)]
+    return (
+        *(Resto("rama", f"la rama remota {rama}", queda) for rama, queda in remotas.items()),
+        *([] if ramas else [Resto("rama", "ninguna rama remota registrada", False)]),
+        *abiertos,
+        *(
+            Resto(tipo, f"{tipo}/{e.id}", _existe(base / tipo / e.id))
+            for tipo in ("espacio", "ejecucion", "runtime")
+        ),
+        *despliegue,
+        *(
+            Resto(
+                "referencia", f"la referencia origin/{rama} en el clon del servicio",
+                _referencia_vencida(servicio, rama, remotas[rama]),
+            )
+            for rama in ramas
+        ),
+        *([] if ramas else [Resto("referencia", "ninguna rama que buscar en el clon del servicio", False)]),
+        _procesos_de_turnos(base, e, eventos),
+    )
 
 
 def observar(
@@ -592,15 +839,21 @@ def observar(
     archivo: tuple[Path, str] | None = None,
 ) -> Observacion:
     eventos = _eventos(base / "registro.sqlite", encargo)
-    version = _version_de(base, arbol, sha_desplegado)
+    pasada = _json_o_vacio(base / "supervisor-pasada.json")
+    instalacion = _json_o_vacio(base / "instalacion.json")
+    servicio = arbol or (Path(str(pasada["ruta"])) if pasada.get("ruta") else None)
+    version = _version_de(pasada, instalacion, servicio, sha_desplegado)
+    actualizado = str(instalacion.get("hora") or "")
     desplegado = _archivo(*archivo) if archivo else None
     if not eventos:
-        return Observacion(hora, None, version=version, archivo=desplegado)
+        return Observacion(hora, None, version=version, actualizado=actualizado, archivo=desplegado)
     reductor = plegado.cargar_reductor(RAIZ)
     traza = plegado.trazar(reductor, eventos)
     if traza.fallo is not None:
         rotura = NoPliega(traza.fallo.evento, traza.fallo.tipo, traza.fallo.excepcion)
-        return Observacion(hora, rotura, version=version, archivo=desplegado)
+        return Observacion(
+            hora, rotura, version=version, actualizado=actualizado, archivo=desplegado,
+        )
     e: Encargo = traza.estados[-1]
     violaciones = tuple(
         nombre for nombre, invariante in plegado.INVARIANTES
@@ -608,28 +861,15 @@ def observar(
     )
     repo = e.entrega.repo
     prs = tuple(_pr(gh, repo, f.id, f.pr_numero) for f in e.fases) if repo else ()
-    recibos, despliegue_vivo = _despliegues(base, encargo)
-    turnos = [ev["data"] for ev in eventos if ev["kind"] == "intento_abierto"]
-    ramas = sorted({f.rama for f in e.fases if f.rama}) if repo else []
-    restos = (
-        *(Resto("rama", f"la rama remota {rama}", _rama_existe(repo, rama)) for rama in ramas),
-        *(
-            Resto(tipo, f"{tipo}/{encargo}", (base / tipo / encargo).exists())
-            for tipo in ("runtime", "espacio", "ejecucion")
-        ),
-        Resto(
-            "proceso", f"algún proceso de sus {len(turnos)} turnos",
-            any(_vivo(t) for t in turnos),
-        ),
-        Resto("proceso", "algún trabajador de despliegue", despliegue_vivo),
-    )
+    recibos, despliegue = _despliegues(base, encargo)
     return Observacion(
         hora=hora,
-        pliegue=_pliegue(e, eventos, violaciones),
+        pliegue=vista(e, eventos, violaciones),
         prs=prs,
         recibos=recibos,
-        restos=restos,
+        restos=_restos(base, e, eventos, prs, servicio, despliegue),
         version=version,
+        actualizado=actualizado,
         archivo=desplegado,
     )
 

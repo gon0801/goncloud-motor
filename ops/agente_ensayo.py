@@ -138,6 +138,14 @@ def leer_escenario(ruta: Path) -> Escenario:
         _validar(datos, Escenario, "escenario")
         if not datos["fases"]:
             raise FormaInvalida("escenario.fases: el agente toma la primera fase y no hay")
+        for i, fase in enumerate(datos["fases"]):
+            # La regla con la que `_adoptar_fases` del dominio rechaza un id, sin el
+            # strip: el producto se indexa por el id tal como está escrito.
+            fid = fase["id"]
+            if not fid or not all(c.isalnum() or c in "-_" for c in fid):
+                raise FormaInvalida(
+                    f"escenario.fases[{i}].id: {fid!r} no es un id de fase que el motor acepte"
+                )
     except FormaInvalida as e:
         raise ValueError(f"{ruta}: {e}") from None
     return cast(Escenario, datos)
