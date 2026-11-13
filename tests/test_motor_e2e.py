@@ -643,6 +643,21 @@ class TestSoloElMotorMergea(Banco):
             "eso sí vuelve al agente",
         )
 
+    def _merge_que_se_reintenta(self, respuesta):
+        d, plan, snap = self._daemon_con_pr()
+        d.fx.cx.gh.motivo = respuesta
+        with self.assertRaises(RuntimeError):
+            d.fx.merge(plan, snap, m.Merge(m.MergeTicket("A", "a" * 40, 7)))
+        tipos = {e.kind for e in d.store.events("demo")}
+        self.assertNotIn("ChecksInvalidados", tipos, "no vuelve a esperar los checks")
+        self.assertNotIn("ChecksResult", tipos, "no es tarea del agente")
+
+    def test_base_modificada_se_reintenta_sin_invalidar_los_checks(self):
+        """Otra máquina integró en la misma base mientras GitHub mergeaba."""
+        self._merge_que_se_reintenta(
+            "GraphQL: Base branch was modified. Review and try the merge again."
+        )
+
     def test_merge_hecho_por_fuera_se_adopta(self):
         d, plan, snap = self._daemon_con_pr()
         d.fx.cx.gh.estado = "mergeado"

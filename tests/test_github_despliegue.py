@@ -9,8 +9,10 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from motor import effects as fxmod
+from motor import github as ghmod
 from motor import machine as m
 from motor.conf import Maquina
 from motor.diagnostico import Causa, diagnostico
@@ -751,6 +753,31 @@ class MergeTest(unittest.TestCase):
         git("push", "-q", self.repo, "main", cwd=self.w)
         with self.assertRaises(Conflicto):
             gh2.merge(self.repo, pr2.numero, self.sha, "squash", "m")
+
+    def test_fake_la_base_que_otra_maquina_mueve_en_pleno_merge_es_base_movida(self):
+        from motor.github import BaseMovida
+
+        gh = self._fake({"requeridos": ["ci"], "checks": {"ci": "./ci.sh"}})
+        pr = gh.abrir_pr(self.repo, "feat", "main", "t", "c")
+        gh.marcar_listo(self.repo, pr.numero)
+        otra = self.t / "otra"
+        git("clone", "-q", "-b", "main", self.repo, str(otra))
+        (otra / "z.txt").write_text("z\n")
+        git("add", "-A", cwd=otra)
+        git("-c", "user.name=b", "-c", "user.email=b@l", "commit", "-q", "-m", "z", cwd=otra)
+        pendiente = [otra]
+
+        def git_con_carrera(*args, **kw):
+            if args[:1] == ("push",) and pendiente:
+                git("push", "-q", "origin", "main", cwd=pendiente.pop())
+            return git(*args, **kw)
+
+        with mock.patch.object(ghmod, "git", git_con_carrera):
+            with self.assertRaises(BaseMovida):
+                gh.merge(self.repo, pr.numero, self.sha, "squash", "m")
+        self.assertEqual(gh.merge(self.repo, pr.numero, self.sha, "squash", "m").estado, "mergeado")
+        for archivo in ("x.txt", "z.txt"):
+            self.assertEqual(git("cat-file", "-e", f"main:{archivo}", cwd=self.repo).returncode, 0)
 
     def test_gh_clasifica_por_tipo(self):
         from motor.github import BaseMovida
