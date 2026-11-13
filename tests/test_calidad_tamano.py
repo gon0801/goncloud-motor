@@ -6,6 +6,7 @@ en un commit y corre la herramienta como la corre el CI, contra esa base.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -44,8 +45,8 @@ class Repo:
         shutil.copy(HERRAMIENTA, raiz / "tools" / "calidad.py")
         return repo
 
-    def clonar(self, *opciones: str) -> Repo:
-        destino = self.raiz.parent / "clon"
+    def clonar(self, *opciones: str, nombre: str = "clon") -> Repo:
+        destino = self.raiz.parent / nombre
         subprocess.run(
             ["git", "clone", "-q", *opciones, self.raiz.as_uri(), str(destino)],
             capture_output=True,
@@ -442,6 +443,31 @@ class EnlacesYSubmodulosEnElArbol(unittest.TestCase):
         self.assertEqual(corrida.returncode, 1, corrida.stdout)
         self.assertIn("motor/vendor es un submódulo", corrida.stderr)
 
+    def _submodulo_en_el_indice(self) -> Path:
+        self.repo.git("update-index", "--add", "--cacheinfo", f"160000,{self.base},motor/vendor")
+        self.repo.git("commit", "-q", "-m", "submódulo")
+        return self.repo.raiz / "motor" / "vendor"
+
+    def test_un_submodulo_reemplazado_por_archivos_sin_agregar_se_mide_como_arbol(self):
+        vendor = self._submodulo_en_el_indice()
+        self.repo.escribir("motor/vendor/propio.py", _relleno(10))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+
+        (vendor / "propio.py").write_text(_relleno(1001), encoding="utf-8")
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/vendor/propio.py: archivo de 1001 líneas", corrida.stderr)
+        self.assertNotIn("submódulo", corrida.stderr)
+
+    def test_un_submodulo_iniciado_bajo_motor_falla_nombrandolo(self):  # no-roja-en-base: guarda que leer el disco no deje pasar un submódulo con su propio .git
+        vendor = self._submodulo_en_el_indice()
+        self.repo.escribir("motor/vendor/ajeno.py", _relleno(10))
+        (vendor / ".git").write_text("gitdir: ../../.git/modules/vendor\n", encoding="utf-8")
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/vendor es un submódulo", corrida.stderr)
+
 
 class LoQueLaBaseNoPuedeMedir(unittest.TestCase):
     """La base solo pone el techo: lo que ella no puede medir no traba al PR que lo arregla."""
@@ -583,8 +609,10 @@ class JobDeLaBase(unittest.TestCase):
         self.origen.escribir("README", "base\n")
         self.base = self.origen.commit()
 
-    def _pr(self, cambios: dict[str, str], enlaces: dict[str, str] | None = None) -> str:
-        self.origen.git("checkout", "-q", "-b", "pr", self.base)
+    def _pr(
+        self, cambios: dict[str, str], enlaces: dict[str, str] | None = None, rama: str = "pr"
+    ) -> str:
+        self.origen.git("checkout", "-q", "-b", rama, self.base)
         for ruta, texto in cambios.items():
             self.origen.escribir(ruta, texto)
         for ruta, destino in (enlaces or {}).items():
@@ -593,9 +621,16 @@ class JobDeLaBase(unittest.TestCase):
         self.origen.git("checkout", "-q", "main")
         return cabeza
 
-    def _avanzar_la_base(self, ruta: str, texto: str) -> None:
+    def _avanzar_la_base(self, ruta: str, texto: str) -> str:
         self.origen.escribir(ruta, texto)
-        self.origen.commit()
+        return self.origen.commit()
+
+    def _corrida_repetida(self, cabeza: str) -> subprocess.CompletedProcess:
+        """Un re-run de GitHub: checkout nuevo, pero en el mismo `GITHUB_SHA` del evento."""
+        nombre = f"repetida-{len(list(self.origen.raiz.parent.glob('repetida-*')))}"
+        checkout = self.origen.clonar("--single-branch", "--branch", "main", nombre=nombre)
+        checkout.git("reset", "-q", "--hard", self.base)
+        return self._guion(checkout, cabeza)
 
     def _clon(self) -> Repo:
         """El checkout de la base: solo `main`, sin la rama ni los objetos del PR."""
@@ -624,7 +659,7 @@ class JobDeLaBase(unittest.TestCase):
         python = binarios / "python3"
         python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
         python.chmod(0o755)
-        entorno = dict(os.environ, CABEZA_DEL_PR=cabeza)
+        entorno = dict(os.environ, CABEZA_DEL_PR=cabeza, GITHUB_REF="refs/heads/main")
         entorno["PATH"] = f"{binarios}{os.pathsep}{entorno['PATH']}"
         return subprocess.run(
             ["bash", "-e", "-c", guion],
@@ -669,6 +704,27 @@ class JobDeLaBase(unittest.TestCase):
         self.assertIn("motor/grande.py: archivo de 1101 líneas", corrida.stderr)
         self.assertIn("mide 1100", corrida.stderr)
 
+    def test_dos_pr_que_juntos_cruzan_el_limite_el_que_sigue_abierto_falla_al_repetirse(self):
+        self.base = self._avanzar_la_base("motor/medio.py", _numerado(0, 999))
+        self._pr({"motor/medio.py": "a = 0\n" + _numerado(0, 999)}, rama="primero")
+        segundo = self._pr({"motor/medio.py": _numerado(0, 999) + "z = 0\n"}, rama="segundo")
+        corrida = self._job(segundo)
+        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+
+        self.origen.git("merge", "-q", "--no-ff", "-m", "entra el primero", "primero")
+        corrida = self._corrida_repetida(segundo)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
+        self.assertIn("motor/medio.py: archivo de 1001 líneas", corrida.stderr)
+        self.assertIn("mide 1000", corrida.stderr)
+
+    def test_un_pr_atrasado_que_no_toca_motor_sigue_pasando_al_repetirse(self):
+        cabeza = self._pr({"README.pr": "pr\n"})
+        self.assertEqual(self._job(cabeza).returncode, 0)
+        punta = self._avanzar_la_base("motor/grande.py", _numerado(0, 1100))
+        corrida = self._corrida_repetida(cabeza)
+        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+        self.assertIn(f"contra {punta}", corrida.stdout)
+
     def test_un_pr_que_choca_con_la_base_falla_y_pide_actualizar_la_rama(self):
         cabeza = self._pr({"README": "pr\n"})
         self._avanzar_la_base("README", "main\n")
@@ -712,6 +768,149 @@ class JobDeLaBase(unittest.TestCase):
         self.assertEqual(
             expresiones, ["CABEZA_DEL_PR: ${{ github.event.pull_request.head.sha }}"]
         )
+
+
+FLUJO_AL_AVANZAR = RAIZ / ".github" / "workflows" / "tamano-al-avanzar-la-base.yml"
+
+# Un `gh` falso que contesta como la API de GitHub y anota cada llamada.
+GH_FALSO = """
+import json, os, re, sys
+escenario_ruta = os.environ["ESCENARIO"]
+escenario = json.load(open(escenario_ruta))
+args = sys.argv[1:]
+with open(os.environ["LLAMADAS"], "a") as log:
+    log.write(json.dumps(args) + "\\n")
+url = next(a for a in args if a.startswith("repos/"))
+if "/pulls?" in url:
+    print("\\n".join(escenario["prs"]))
+elif m := re.search(r"/workflows/tamano-desde-la-base.yml/runs\\?.*head_sha=(\\w+)", url):
+    print(escenario["corridas"].get(m.group(1), ""))
+elif m := re.fullmatch(r"repos/[^/]+/[^/]+/actions/runs/(\\d+)/rerun", url):
+    sys.exit(0 if m.group(1) not in escenario["no_se_repiten"] else 1)
+elif m := re.fullmatch(r"repos/[^/]+/[^/]+/actions/runs/(\\d+)", url):
+    estados = escenario["estados"].setdefault(m.group(1), [])
+    print(estados.pop(0) if estados else "completed")
+    json.dump(escenario, open(escenario_ruta, "w"))
+else:
+    sys.exit(f"gh falso: no conozco {args}")
+"""
+
+
+class ReevaluacionAlAvanzarLaBase(unittest.TestCase):
+    """En cada push a la base, cada PR abierto vuelve a correr su check de tamaño."""
+
+    def setUp(self):
+        directorio = tempfile.TemporaryDirectory()
+        self.addCleanup(directorio.cleanup)
+        self.dir = Path(directorio.name)
+
+    def _job(self, escenario: dict) -> tuple[subprocess.CompletedProcess, list[list[str]]]:
+        lineas = FLUJO_AL_AVANZAR.read_text(encoding="utf-8").splitlines()
+        _, guion = _bloque_run(lineas)
+        binarios = self.dir / "bin"
+        binarios.mkdir()
+        gh = binarios / "gh"
+        gh.write_text(f"#!{sys.executable}\n{GH_FALSO}", encoding="utf-8")
+        dormir = binarios / "sleep"
+        dormir.write_text("#!/bin/sh\n", encoding="utf-8")
+        for ejecutable in (gh, dormir):
+            ejecutable.chmod(0o755)
+        (self.dir / "escenario.json").write_text(json.dumps(escenario), encoding="utf-8")
+        entorno = dict(
+            os.environ,
+            PATH=f"{binarios}{os.pathsep}{os.environ['PATH']}",
+            ESCENARIO=str(self.dir / "escenario.json"),
+            LLAMADAS=str(self.dir / "llamadas"),
+            GITHUB_REPOSITORY="duena/repo",
+            GITHUB_REF_NAME="main",
+        )
+        corrida = subprocess.run(
+            ["bash", "-e", "-c", guion],
+            cwd=self.dir,
+            env=entorno,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        llamadas = (self.dir / "llamadas").read_text(encoding="utf-8").splitlines()
+        return corrida, [json.loads(linea) for linea in llamadas]
+
+    @staticmethod
+    def _repetidas(llamadas: list[list[str]]) -> list[str]:
+        return [
+            url.split("/")[-2]
+            for args in llamadas
+            for url in args
+            if url.endswith("/rerun") and "POST" in args
+        ]
+
+    def test_repite_la_ultima_corrida_de_cada_pr_abierto_despues_de_que_termina(self):
+        corrida, llamadas = self._job(
+            {
+                "prs": ["a" * 40, "b" * 40],
+                "corridas": {"a" * 40: "11", "b" * 40: "22"},
+                "estados": {"11": ["in_progress", "queued"]},
+                "no_se_repiten": [],
+            }
+        )
+        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+        self.assertEqual(self._repetidas(llamadas), ["11", "22"])
+        consultas_de_11 = [
+            i for i, args in enumerate(llamadas) if "repos/duena/repo/actions/runs/11" in args
+        ]
+        repeticion_de_11 = next(
+            i for i, args in enumerate(llamadas) if "repos/duena/repo/actions/runs/11/rerun" in args
+        )
+        self.assertEqual(len(consultas_de_11), 3, "espera a que la corrida en curso termine")
+        self.assertLess(max(consultas_de_11), repeticion_de_11)
+
+    def test_un_pr_sin_corrida_se_avisa_y_no_frena_a_los_demas(self):
+        corrida, llamadas = self._job(
+            {
+                "prs": ["a" * 40, "b" * 40],
+                "corridas": {"b" * 40: "22"},
+                "estados": {},
+                "no_se_repiten": [],
+            }
+        )
+        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+        self.assertEqual(self._repetidas(llamadas), ["22"])
+        self.assertIn("::notice::", corrida.stdout)
+        self.assertIn("a" * 40, corrida.stdout)
+
+    def test_una_corrida_que_no_se_puede_repetir_tumba_el_job_despues_de_intentar_todas(self):
+        corrida, llamadas = self._job(
+            {
+                "prs": ["a" * 40, "b" * 40],
+                "corridas": {"a" * 40: "11", "b" * 40: "22"},
+                "estados": {},
+                "no_se_repiten": ["11"],
+            }
+        )
+        self.assertEqual(corrida.returncode, 1)
+        self.assertEqual(self._repetidas(llamadas), ["11", "22"])
+        self.assertIn("::error::", corrida.stderr)
+        self.assertIn("a" * 40, corrida.stderr)
+
+    def test_corre_en_el_push_a_main_con_el_permiso_mas_chico_y_sin_codigo(self):
+        texto = FLUJO_AL_AVANZAR.read_text(encoding="utf-8")
+        lineas = texto.splitlines()
+        disparo = lineas.index("on:")
+        self.assertEqual(lineas[disparo + 1 : disparo + 4], ["  push:", "    branches: [main]", ""])
+        permisos = lineas.index("permissions:")
+        self.assertEqual(
+            lineas[permisos + 1 : permisos + 4], ["  actions: write", "  pull-requests: read", ""]
+        )
+        self.assertNotIn("uses:", texto, "no hace checkout ni corre acciones de terceros")
+        self.assertNotIn("secrets.", texto)
+        previo, guion = _bloque_run(lineas)
+        self.assertNotIn("${{", guion)
+        self.assertEqual(
+            [linea.strip() for linea in previo if "${{" in linea],
+            ["GH_TOKEN: ${{ github.token }}"],
+        )
+        self.assertIn("tamano-desde-la-base.yml", guion)
+        self.assertTrue(FLUJO_DE_LA_BASE.is_file())
 
 
 if __name__ == "__main__":
