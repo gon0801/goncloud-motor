@@ -46,8 +46,19 @@ class MergeSinRespuesta(RuntimeError):
     mergeó, así que quien reintenta vuelve a mirar el PR antes."""
 
 
-# Las que repetir el mismo merge puede arreglar.
-PASAJERAS = (BaseMovida, ErrorDeGitHub, MergeSinConfirmar, PrSinAsentar, MergeSinRespuesta)
+# Las que repetir el mismo merge puede arreglar, cada una con la etiqueta que su
+# espera lleva antes del primer ": ". El motor cuenta los reintentos seguidos por
+# ese prefijo: con su etiqueta, una respuesta no gasta los intentos de otra.
+ETIQUETAS: dict[type[BaseException], str] = {
+    BaseMovida: "base movida",
+    ErrorDeGitHub: "error de GitHub",
+    MergeSinConfirmar: "merge sin confirmar",
+    PrSinAsentar: "PR sin asentar",
+    MergeSinRespuesta: "merge sin respuesta",
+}
+PASAJERAS = tuple(ETIQUETAS)
+# La política no dejó mergear y no se supo si por los checks.
+CHECKS_SIN_LEER = "checks sin leer"
 
 _RECHAZOS_DE_MERGE = (
     (Borrador, ("draft", "borrador")),
@@ -67,3 +78,16 @@ def clasificar_merge(error: BaseException) -> MergeRechazado:
         if any(marca in texto.lower() for marca in marcas):
             return tipo(texto)
     return PoliticaBloquea(texto)
+
+
+def motivo_del_merge(
+    numero: int, error: BaseException, lectura: BaseException | None = None
+) -> str:
+    """Por qué no se integró el PR. `lectura` es el error al leer los checks
+    requeridos tras un rechazo de la política."""
+    etiqueta = CHECKS_SIN_LEER if lectura is not None else ETIQUETAS.get(type(error))
+    serie = f" ({etiqueta})" if etiqueta else ""
+    motivo = f"no se pudo integrar el PR #{numero}{serie}: {error}"
+    if lectura is not None:
+        motivo += f"; no se pudieron leer los checks requeridos: {lectura}"
+    return motivo

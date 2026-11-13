@@ -17,7 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from motor.fallas import es_sesion_local
-from motor.github import PASAJERAS, Conflicto, MergeRechazado, PoliticaBloquea
+from motor.github import PASAJERAS, Conflicto, MergeRechazado, PoliticaBloquea, motivo_del_merge
 
 from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .comprobacion import (
@@ -10320,7 +10320,7 @@ def _paso_entrega_paso(
                 # El merge chocó aunque la lectura previa dijera limpio (la
                 # base se movió en medio): el mismo camino que un choque leído.
                 return _traer_la_base_al_pr(registro, enc, gh, hora)
-            causa = f"no se pudo integrar el PR #{enc.pr_numero}: {exc}"
+            causa = motivo_del_merge(enc.pr_numero, exc)
             checks = None
             # Ni una respuesta pasajera de GitHub ni unos checks sin leer o en
             # marcha son un rechazo de la política: se reintenta sin preguntar.
@@ -10337,8 +10337,7 @@ def _paso_entrega_paso(
                 except MergeRechazado as rechazo:
                     causa += f"; {rechazo}"
                 except Exception as lectura:
-                    causa += f"; no se pudieron leer los checks requeridos: {lectura}"
-                    espera = causa
+                    espera = motivo_del_merge(enc.pr_numero, exc, lectura)
             if checks is not None and (
                 checks.en_marcha
                 and not checks.fallas

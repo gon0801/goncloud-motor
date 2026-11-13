@@ -38,6 +38,7 @@ from .respuestas_merge import (
     PrSinAsentar,
     PuntaMovida,
     clasificar_merge,
+    motivo_del_merge,
 )
 from .workspace import git
 
@@ -1478,5 +1479,6 @@ __all__ = [
     "PuntaMovida",
     "asdict",
     "clasificar_merge",
+    "motivo_del_merge",
     "para",
 ]
