@@ -32,7 +32,6 @@ import dataclasses
 import io
 import json
 import os
-import socket
 import sqlite3
 import subprocess
 import sys
@@ -47,15 +46,17 @@ RAIZ = Path(__file__).resolve().parents[1]
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
-from motor.effects import observar_arbol  # noqa: E402
+from motor.encargos import sesion  # noqa: E402
+from motor.encargos.despliegue import comprobar_recibo  # noqa: E402
 from motor.encargos.dominio import (  # noqa: E402
     Encargo,
+    Fase,
+    con_fase,
     nivel_cumplido,
     nivel_de,
     nivel_objetivo,
 )
 from motor.encargos.politica import CERRADOS_VENTANA_S  # noqa: E402
-from motor.encargos.sesion import Marca  # noqa: E402
 from motor.github import GhGitHub, PrView  # noqa: E402
 from motor.io import leer_json, leer_texto  # noqa: E402
 from motor.repositorios import resolver_repositorio  # noqa: E402
@@ -87,10 +88,12 @@ class PR:
 
 @dataclass(frozen=True)
 class Recibo:
-    """Un `despliegues/<clave>/recibo.json` del encargo."""
+    """El recibo de despliegue de una fase, leído con `despliegue.comprobar_recibo`,
+    la misma comprobación que pide el cierre."""
 
     fase: str
     estado: str
+    """`aplicado` si el motor lo acepta; si no, el motivo que da para rechazarlo."""
     sha: str
 
 
@@ -120,7 +123,7 @@ class FaseVista:
     cumplido: bool
     """`dominio.nivel_cumplido` con esta fase como activa."""
     desplegable: bool
-    """La fase no declaró `requiere_despliegue: false`."""
+    """El motor exige desplegarla: `nivel_cumplido` no la da por cumplida en integrado."""
     causa: str = ""
     """Por qué quedó bloqueada."""
 
@@ -356,19 +359,20 @@ def _entregado(obs: Observacion, _topes: Topes) -> Juicio:
         fallas.append("ninguna fase tiene PR")
     desplegables = [f.id for f in p.fases if f.desplegable]
     desplegadas = 0
-    if p.nivel_autorizado == "desplegado":
-        if not desplegables:
-            fallas.append("se pidió desplegado y ninguna fase requiere despliegue: no se desplegó nada")
-        for fase in desplegables:
-            if fase not in commits:
-                continue
-            if any(
-                r.fase == fase and r.estado == "aplicado" and r.sha == commits[fase]
-                for r in obs.recibos
-            ):
-                desplegadas += 1
-            else:
-                fallas.append(f"la fase {fase} no tiene recibo aplicado de su commit mergeado")
+    for fase in desplegables:
+        if fase not in commits:
+            continue
+        if any(
+            r.fase == fase and r.estado == "aplicado" and r.sha == commits[fase]
+            for r in obs.recibos
+        ):
+            desplegadas += 1
+            continue
+        rechazos = [r.estado for r in obs.recibos if r.fase == fase and r.estado != "aplicado"]
+        fallas.append(
+            f"la fase {fase} no tiene recibo aplicado de su commit mergeado"
+            + (f" ({'; '.join(rechazos)})" if rechazos else "")
+        )
     if obs.archivo is not None:
         if obs.archivo.contiene is None:
             fallas.append(f"no existe el archivo desplegado {obs.archivo.ruta}")
@@ -499,7 +503,8 @@ Juez = Callable[[Observacion, Topes], Juicio]
 
 TABLA: tuple[tuple[NombreFila, str, str, Juez], ...] = (
     ("termina", "1", "registro: estado, nivel y horas", _termina),
-    ("entregado", "2", "GitHub (gh pr view) y despliegues/*/recibo.json", _entregado),
+    ("entregado", "2", "GitHub (gh pr view) y el recibo de cada fase (despliegue.comprobar_recibo)",
+     _entregado),
     ("limpio", "2", "la tabla Limpieza del modelo: GitHub, la base, el clon del servicio"
      " y los procesos", _limpio),
     ("no pierde", "3", "sin fuente todavía",
@@ -569,6 +574,12 @@ def _eventos(registro: Path, encargo: str) -> list[dict]:
     ]
 
 
+def _exige_despliegue(e: Encargo, f: Fase) -> bool:
+    """Si la fase se quedara en integrado, `nivel_cumplido` no la daría por cumplida."""
+    integrada = con_fase(e, replace(f, ultimo_paso_entrega="integrado"))
+    return not nivel_cumplido(replace(integrada, fase_activa=f.id))
+
+
 def vista(e: Encargo, eventos: list[dict], violaciones: tuple[str, ...] = ()) -> Pliegue:
     """El encargo plegado, juzgado con las funciones del motor y no con copias."""
     turnos = Counter(
@@ -592,7 +603,7 @@ def vista(e: Encargo, eventos: list[dict], violaciones: tuple[str, ...] = ()) ->
                 estado=f.estado,
                 nivel=nivel_de(f),
                 cumplido=nivel_cumplido(replace(e, fase_activa=f.id)),
-                desplegable=f.requiere_despliegue is not False,
+                desplegable=_exige_despliegue(e, f),
                 causa=f.bloqueo_causa,
             )
             for f in e.fases
@@ -673,14 +684,14 @@ def _existe(ruta: Path) -> bool | None:
 
 
 def _vivo(directorio: Path, proc: dict) -> bool | None:
-    """El árbol de procesos de `proc` según `effects.observar_arbol`, que mira el grupo
-    entero y no solo al lanzador. None: no se pudo mirar."""
-    if proc.get("host") and proc["host"] != socket.gethostname():
-        return None
+    """Lo que dice `sesion.observar` sin escribir: el grupo del lanzador, el comprobador
+    en curso y los descendientes de `arbol.json`. None: no se pudo mirar."""
     try:
-        estado = observar_arbol(Marca(directorio, proc))
+        estado = sesion.observar(directorio, proc, escribir=False)
     except (OSError, KeyError, TypeError, ValueError):
         return None
+    if estado == "ausente" and not proc:
+        return None  # una identidad ilegible no demuestra que no quede nadie
     return {"vivo": True, "ausente": False}.get(estado)
 
 
@@ -694,8 +705,9 @@ def _json_o_vacio(ruta: Path) -> dict:
 
 def _procesos_de_turnos(base: Path, e: Encargo, eventos: list[dict]) -> Resto:
     """Los mismos candidatos que cierra el motor al limpiar (`proc.json` o
-    `wrapper.json` de `ejecucion/<id>` y de cada intento, y el proceso vigente),
-    más la identidad de cada `intento_abierto`, que sobrevive al borrado del directorio."""
+    `wrapper.json` de `ejecucion/<id>` y de cada intento), más la identidad de cada
+    `intento_abierto`, que sobrevive al borrado del directorio. El proceso vigente
+    del encargo sale de esos mismos eventos, así que ya está entre ellos."""
     raiz = base / "ejecucion" / e.id
     try:
         carpetas = [raiz, *sorted(raiz.glob("intento-*"))] if raiz.is_dir() else []
@@ -707,14 +719,15 @@ def _procesos_de_turnos(base: Path, e: Encargo, eventos: list[dict]) -> Resto:
             if _existe(carpeta / nombre):
                 candidatos.append((carpeta, _json_o_vacio(carpeta / nombre)))
                 break
-    if e.proc is not None:
-        candidatos.append((raiz, e.proc.como_dict()))
     for ev in eventos:
         if ev["kind"] == "intento_abierto":
             token = str(ev["data"].get("id") or "")
-            intento = next(iter(sorted(raiz.glob(f"intento-*-{token}"))), raiz) if token else raiz
-            candidatos.append((intento, ev["data"]))
-    unicos = {(str(p.get("pid")), str(p.get("inicio"))): (c, p) for c, p in candidatos}
+            intentos = sorted(raiz.glob(f"intento-*-{token}")) if token else []
+            candidatos += [(carpeta, ev["data"]) for carpeta in (raiz, *intentos)]
+    # Cada carpeta guarda su comprobador y su arbol.json: la misma identidad se mira en todas.
+    unicos = {
+        (str(c), str(p.get("pid")), str(p.get("inicio"))): (c, p) for c, p in candidatos
+    }
     turnos = sum(1 for ev in eventos if ev["kind"] == "intento_abierto")
     return Resto(
         "proceso", f"algún proceso de sus {turnos} turnos",
@@ -722,17 +735,24 @@ def _procesos_de_turnos(base: Path, e: Encargo, eventos: list[dict]) -> Resto:
     )
 
 
-def _despliegues(base: Path, encargo: str) -> tuple[tuple[Recibo, ...], tuple[Resto, ...]]:
-    """Los recibos del encargo, lo que quedó junto a ellos y sus trabajadores."""
+def _recibo(e: Encargo, fase: str) -> Recibo:
+    try:
+        datos = comprobar_recibo(replace(e, fase_activa=fase))
+    except ValueError as exc:
+        return Recibo(fase, str(exc), "")
+    return Recibo(fase, "aplicado", str(datos.get("sha") or ""))
+
+
+def _despliegues(base: Path, encargo: str) -> tuple[Resto, ...]:
+    """Lo que quedó junto a los recibos del encargo y sus trabajadores."""
     raiz = base / "despliegues"
     try:
         claves = sorted(d for d in raiz.iterdir() if d.is_dir()) if raiz.is_dir() else []
     except OSError:
-        return (), (
+        return (
             Resto("despliegue", "despliegues/", None),
             Resto("proceso", "algún trabajador de despliegue", None),
         )
-    recibos: list[Recibo] = []
     restos: list[Resto] = []
     vivos: list[bool | None] = []
     for clave in claves:
@@ -741,11 +761,6 @@ def _despliegues(base: Path, encargo: str) -> tuple[tuple[Recibo, ...], tuple[Re
         dueno = identidad.get("encargo") if isinstance(identidad, dict) else None
         if encargo not in (dueno, recibo.get("encargo")):
             continue
-        if recibo:
-            recibos.append(Recibo(
-                str(recibo.get("fase") or ""), str(recibo.get("estado") or ""),
-                str(recibo.get("sha") or ""),
-            ))
         try:
             demas = sorted(x.name for x in clave.iterdir() if x.name != "recibo.json")
         except OSError:
@@ -764,7 +779,7 @@ def _despliegues(base: Path, encargo: str) -> tuple[tuple[Recibo, ...], tuple[Re
     if not restos:
         restos.append(Resto("despliegue", "ningún despliegue del encargo", False))
     restos.append(Resto("proceso", "algún trabajador de despliegue", _tri(vivos)))
-    return tuple(recibos), tuple(restos)
+    return tuple(restos)
 
 
 def _git_head(arbol: Path) -> str:
@@ -861,13 +876,13 @@ def observar(
     )
     repo = e.entrega.repo
     prs = tuple(_pr(gh, repo, f.id, f.pr_numero) for f in e.fases) if repo else ()
-    recibos, despliegue = _despliegues(base, encargo)
+    pliegue = vista(e, eventos, violaciones)
     return Observacion(
         hora=hora,
-        pliegue=vista(e, eventos, violaciones),
+        pliegue=pliegue,
         prs=prs,
-        recibos=recibos,
-        restos=_restos(base, e, eventos, prs, servicio, despliegue),
+        recibos=tuple(_recibo(e, f.id) for f in pliegue.fases if f.desplegable),
+        restos=_restos(base, e, eventos, prs, servicio, _despliegues(base, encargo)),
         version=version,
         actualizado=actualizado,
         archivo=desplegado,
