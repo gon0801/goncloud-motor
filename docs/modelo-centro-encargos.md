@@ -1,12 +1,12 @@
 # Modelo del centro del motor de encargos
 
-Borrador para aprobación de David. Estado: propuesta, sin implementar.
+Aprobado por David el 2026-11-12. Estado: aprobado, sin implementar.
 
 El centro del motor es la parte que lleva la cuenta de en qué va cada encargo y
 decide el paso siguiente. Hoy vive en `motor/encargos/ciclo.py` y
 `motor/encargos/dominio.py`. Este documento fija cómo debe funcionar ese centro
-antes de reconstruirlo. Ningún cambio de código de la reconstrucción empieza
-hasta que David apruebe las decisiones de la última sección.
+antes de reconstruirlo. David aprobó las siete decisiones de la sección
+"Decisiones de David", y con eso empieza la reconstrucción.
 
 Los números de este documento salen de `origin/main` en `eac9899` y de una copia
 del registro de la Mac tomada el 2026-11-12. El inventario completo y los guiones
@@ -137,12 +137,19 @@ lo que cada estado lleva consigo: un dato tipado en lugar de banderas y texto.
 | `esperando_reintento` | clase de espera, plazo y tope | el hecho que la cierra, o el tope |
 | `conciliando` | el efecto externo incierto | el recibo del efecto |
 | `deteniendo` | la orden: parar o cancelar | los procesos ya no existen |
-| `detenido` | la causa: orden del dueño, tope de una espera o falta de avance | `continuar` |
+| `detenido` | la causa, una de las cuatro de abajo | `continuar` |
 | `cancelado` | nada | la limpieza |
 | `terminado` | el resultado: completo, o parcial con las fases que faltan | la limpieza |
 
+Un encargo queda `detenido` por una de estas cuatro causas y por ninguna otra:
+una orden del dueño, el tope de una espera, la falta de avance, o un PR mergeado
+en una base distinta de la pedida.
+
 Se agrega un hecho final, `limpio`. Un encargo `terminado` o `cancelado` queda
-`limpio` cuando el motor comprobó que ya no existe nada de lo que creó.
+`limpio` cuando el motor comprobó que ya no existe nada de lo que creó, salvo la
+copia de trabajo. Esa copia se conserva 7 días por si llega una corrección
+tardía y se borra sola al vencer el plazo. Una copia en ese plazo no impide
+decir "entregado".
 
 ### Qué significa cada palabra del reporte
 
@@ -150,12 +157,22 @@ El motor usa estas palabras y ninguna otra para decir cómo quedó un encargo.
 
 | El motor dice | Solo cuando |
 |---|---|
-| entregado | Todas las fases llegaron al nivel pedido, comprobado contra GitHub y contra el recibo del despliegue, y el encargo está `limpio` |
+| entregado | Todas las fases cumplieron el nivel pedido, según la tabla de abajo, y el encargo está `limpio` |
 | listo para tu merge | El nivel pedido es `pr`. El PR está abierto, listo, revisado y sin bloqueantes. Falta el merge de David |
 | entrega parcial | Alguna fase quedó bloqueada o sin trabajar. El reporte nombra cada fase y su causa |
-| detenido | Se paró por una orden o por un tope. El reporte dice la causa y qué lo reanuda |
-| cancelado | Lo ordenó David. El PR quedó cerrado y la rama borrada |
+| detenido | El encargo está `detenido`. El reporte dice cuál de las cuatro causas y qué lo reanuda |
+| cancelado | Lo ordenó David, o David cerró el PR sin mergear. El PR quedó cerrado y la rama borrada |
 | falta limpiar | El trabajo terminó y la limpieza no. El reporte nombra lo que queda |
+
+Lo que exige "entregado" depende del nivel pedido. El motor lo comprueba contra
+GitHub y contra el recibo, no contra su propio registro.
+
+| Nivel pedido | Se cumple cuando |
+|---|---|
+| `terminado` | El resultado llegó al director. No hay PR |
+| `pr` | David mergeó el PR. Antes de eso el motor dice "listo para tu merge" |
+| `integrado` | El motor mergeó el PR en la base pedida |
+| `desplegado` | El motor mergeó el PR y existe el recibo del despliegue de ese commit |
 
 ### Estados del PR y qué hace el motor en cada uno
 
@@ -175,7 +192,7 @@ El registro guarda el estado observado del PR. Ninguna celda queda sin tratar.
 La limpieza es parte de la entrega. Cada recurso tiene una regla, y el motor
 comprueba que el recurso ya no existe antes de anotar `limpio`.
 
-| Lo que el motor crea | Hoy | Regla propuesta |
+| Lo que el motor crea | Hoy | Regla |
 |---|---|---|
 | Rama remota `encargo/*` | Nunca se borra | Se borra al mergear o cerrar el PR, y al cancelar |
 | PR de un encargo cancelado | Queda abierto | Se cierra al cancelar |
@@ -209,15 +226,21 @@ Estas cuatro comprobaciones dicen si el modelo se sostiene. Corren en CI o antes
 de activar una versión.
 
 1. Plegado de registros reales. Antes de activar una versión en una máquina, esa
-   versión pliega el registro completo de esa máquina. Si un encargo deja de
-   plegarse, la versión no se activa.
-2. Invariantes sobre secuencias generadas de eventos. Aplicar nunca lanza. Una
-   cancelación es definitiva. Un resultado completo implica todas las fases
-   preparadas. El mismo registro da el mismo estado.
+   versión pliega el registro completo de esa máquina. La versión no se activa
+   si el plegado de algún encargo lanza una excepción o termina en un estado que
+   no está en `ESTADOS`. Hasta que aterrice el paso 3, el reductor todavía puede
+   rechazar un evento ya guardado, y esta comprobación es la que lo detecta.
+2. Invariantes sobre secuencias generadas de eventos. Aplicar un evento ya
+   guardado nunca lanza. Anotar un evento nuevo sí puede rechazarse, y entonces
+   falla en voz alta. Una cancelación es definitiva. Un resultado completo
+   implica todas las fases preparadas. El mismo registro da el mismo estado.
 3. Pruebas de tabla para la decisión de entrega, una fila por cada celda de la
    tabla de estados del PR.
-4. Un encargo de punta a punta en cada máquina, con `ops/canario`. El resultado
-   se compara con la lista de la primera sección.
+4. Un encargo de punta a punta en cada máquina. Ese canario de encargos no
+   existe todavía. `ops/canario` ejercita el motor de planes, y
+   `ops/ensayo_encargos.py` es la receta de un ensayo anterior. El canario se
+   construye antes del paso 4, y su resultado se compara con la lista de la
+   primera sección.
 
 Una prueba por combinación reportada deja de ser la norma.
 
@@ -226,8 +249,9 @@ Una prueba por combinación reportada deja de ser la norma.
 Cada paso es un PR que no cambia el comportamiento observable, salvo donde este
 documento lo dice.
 
-1. Red de seguridad. El plegado de registros reales, las invariantes y los
-   límites de tamaño en CI.
+1. Red de seguridad. El plegado de registros reales, las invariantes, los
+   límites de tamaño en CI y la suspensión de `medium_mismo_pr` que pide la
+   decisión 6.
 2. Escritura. `Registro.append_many`, `anotar` estricto, y los dos pasos con más
    estados a medias: recibir un resultado y cerrar con el juicio.
 3. Reductor por tabla, validación separada y estados con dato tipado.
@@ -244,33 +268,35 @@ documento lo dice.
   catálogos de modelos.
 - El formato del registro. Sigue siendo SQLite que solo agrega.
 - Los nombres de los estados que leen los directores.
-- Las reglas de David que ya están en `motor/encargos/politica.py`.
+- Las reglas de David que ya están en `motor/encargos/politica.py`. La única que
+  cambia es `medium_mismo_pr`, por la decisión 6.
 
-## Decisiones que necesita David
+## Decisiones de David
 
-Cada una trae la recomendación y lo que cambia si David decide otra cosa.
+David aprobó las siete el 2026-11-12. Cada una entra a
+`motor/encargos/politica.py` en el paso que la hace cumplir.
 
-1. **Palabras del reporte.** Recomendación: la tabla de arriba. "Entregado" solo
-   con todo mergeado, desplegado y limpio. Con nivel `pr` el motor dice "listo
-   para tu merge".
-2. **Limpieza.** Recomendación: la tabla de arriba, con 7 días para la copia del
-   repo, y activar en GitHub el borrado de la rama al mergear como segunda red.
-   Un plazo más corto libera disco antes y obliga a volver a clonar si llega una
-   corrección tardía.
-3. **PR cerrado a mano.** Recomendación: significa que David cancela esa fase.
-   El motor no la reabre, borra la rama y lo reporta. La alternativa es tomarlo
-   como "rehazla" y abrir un PR nuevo.
-4. **PR mergeado a mano con nivel `pr`.** Recomendación: cuenta como integrado
-   por David, y el motor limpia.
-5. **Tope de las esperas técnicas.** Recomendación: 60 minutos por omisión para
-   las que hoy no tienen tope. Al llegar, el encargo se detiene y avisa. Las
-   reglas que ya tienen su valor, como los 30 minutos de DeepSeek, no cambian.
-6. **Durante la reconstrucción.** Recomendación: no entran funciones nuevas a
-   `ciclo.py` ni a `dominio.py`, y los hallazgos Medium de DeepSeek sobre esos
-   dos archivos van a una lista en vez de a otro parche. Sin esto la
-   reconstrucción persigue un código que cambia 14 veces al día.
-7. **Quién reconstruye.** Recomendación: sesiones directas con revisión del
-   flujo completo en cada paso. El motor no se reconstruye a sí mismo.
+1. **Palabras del reporte.** Valen las dos tablas de "Qué significa cada palabra
+   del reporte". "Entregado" exige el nivel pedido cumplido y el encargo
+   `limpio`. Con nivel `pr` el motor dice "listo para tu merge" hasta que David
+   mergea.
+2. **Limpieza.** Vale la tabla de limpieza, con 7 días para la copia de trabajo.
+   En GitHub se activa el borrado de la rama al mergear, como segunda red.
+3. **PR cerrado a mano.** Significa que David cancela esa fase. El motor no la
+   reabre, borra la rama y lo reporta.
+4. **PR mergeado a mano con nivel `pr`.** Cuenta como integrado por David, y el
+   motor limpia.
+5. **Tope de las esperas técnicas.** 60 minutos por omisión para las que hoy no
+   tienen tope. Al llegar, el encargo se detiene y avisa. Las reglas que ya
+   tienen su valor, como los 30 minutos de DeepSeek, no cambian.
+6. **Durante la reconstrucción.** No entran funciones nuevas a `ciclo.py` ni a
+   `dominio.py`. La regla `medium_mismo_pr` de `motor/encargos/politica.py`
+   queda suspendida para esos dos archivos: sus hallazgos Medium de DeepSeek van
+   a una lista en vez de a otro parche. El paso 1 cambia `politica.py`, la tabla
+   generada de `AGENTS.md` y `CLAUDE.md`, y sus pruebas. La suspensión termina
+   con la reconstrucción.
+7. **Quién reconstruye.** Sesiones directas, con revisión del flujo completo en
+   cada paso. El motor no se reconstruye a sí mismo.
 
 ## Cuándo se da por bueno
 
