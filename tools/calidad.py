@@ -421,12 +421,15 @@ def _medir_la_base(lectura: Lectura, ref: str) -> dict[tuple, collections.Counte
 def _fuentes_del_arbol() -> Lectura:
     motor = RAIZ / "motor"
     caminos = sorted([motor, *motor.rglob("*")])
-    # El submódulo sale del índice: sin iniciarlo, como lo deja el checkout del
-    # CI, en el disco es una carpeta vacía.
-    submodulos = [
-        (entrada.split(b"\t", 1)[1].decode(), AJENOS_DE_MOTOR[b"160000"])
+    gitlinks = [
+        RAIZ / entrada.split(b"\t", 1)[1].decode()
         for entrada in _git("ls-files", "--stage", "-z", "--", "motor").split(b"\0")
         if entrada.startswith(b"160000 ")
+    ]
+    submodulos = [
+        (camino.relative_to(RAIZ).as_posix(), AJENOS_DE_MOTOR[b"160000"])
+        for camino in gitlinks
+        if _sigue_siendo_submodulo(camino)
     ]
     enlaces = [
         (camino.relative_to(RAIZ).as_posix(), AJENOS_DE_MOTOR[b"120000"])
@@ -439,6 +442,18 @@ def _fuentes_del_arbol() -> Lectura:
         if archivo.suffix == ".py" and archivo.is_file()
     ]
     return fuentes, sorted(enlaces + submodulos)
+
+
+def _sigue_siendo_submodulo(camino: Path) -> bool:
+    """El submódulo sale del índice: sin iniciarlo, como lo deja el checkout del
+    CI, en el disco es una carpeta vacía, o nada. Solo cuando el disco muestra
+    archivos propios sin `.git` es eso lo que el árbol mide. Un enlace en su
+    lugar ya se reporta como enlace."""
+    if camino.is_symlink():
+        return False
+    if not camino.is_dir():
+        return not camino.exists()
+    return (camino / ".git").exists() or not any(camino.iterdir())
 
 
 def _git(*args: str, entrada: bytes | None = None) -> bytes:

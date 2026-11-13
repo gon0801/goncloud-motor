@@ -1,0 +1,92 @@
+name: Tamaño reevaluado al avanzar la base
+
+# `tamano-desde-la-base` mide la unión del PR con la base de cuando corrió. Si
+# la base avanza, dos PR que solos caben pueden pasar juntos del límite. Este
+# job repite ese check en cada PR abierto contra la rama; mientras corre, el PR
+# no está en verde. No trae código: solo habla con la API de GitHub.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: tamano-al-avanzar-la-base
+  cancel-in-progress: true
+
+jobs:
+  reevaluar-tamano:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Cada PR abierto vuelve a medir su tamaño contra la base nueva
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="repos/${GITHUB_REPOSITORY}"
+          flujo=tamano-desde-la-base.yml
+          # Un solo plazo para toda la espera, holgado dentro de timeout-minutes.
+          limite=$(( $(date +%s) + 600 ))
+          fallas=0
+          falla() {
+            echo "::error::tamano: $1" >&2
+            fallas=1
+          }
+          repetir() {
+            if gh api -X POST "${repo}/actions/runs/$2/rerun" > /dev/null; then
+              echo "tamano: $1 se vuelve a medir en la corrida $2"
+            else
+              falla "no se pudo repetir la corrida $2 de $1 (GitHub no repite corridas de más de 30 días ni de 50 intentos); un push al PR lo vuelve a medir"
+            fi
+          }
+          if ! cabezas=$(gh api --paginate \
+              "${repo}/pulls?state=open&base=${GITHUB_REF_NAME}&per_page=100" --jq '.[].head.sha'); then
+            echo "::error::tamano: no se pudo listar los PR abiertos contra ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          en_curso=()
+          for cabeza in $cabezas; do
+            # Un workflow del PR puede publicar en su cabeza un check con el mismo nombre;
+            # en `pull_request_target` solo corre el workflow de la base.
+            if ! corrida=$(gh api "${repo}/actions/workflows/${flujo}/runs?event=pull_request_target&head_sha=${cabeza}&per_page=100" \
+                --jq '.workflow_runs | max_by(.created_at) // empty | "\(.id) \(.status)"'); then
+              falla "no se pudo buscar la corrida de ${flujo} de ${cabeza}"
+              continue
+            fi
+            # `pull_request_target` corre al abrir el PR y en cada push: sin corrida,
+            # el tamaño de este PR nadie lo midió.
+            if [[ -z "$corrida" ]]; then
+              falla "${cabeza} no tiene corrida de ${flujo} que repetir; un push al PR lo vuelve a medir"
+              continue
+            fi
+            read -r id estado <<< "$corrida"
+            if [[ "$estado" == completed ]]; then
+              repetir "$cabeza" "$id"
+            else
+              en_curso+=("${cabeza} ${id}")
+            fi
+          done
+          # GitHub no repite una corrida que no terminó, y la que está en curso pudo
+          # leer la base de antes de este push.
+          while (( ${#en_curso[@]} > 0 && $(date +%s) < limite )); do
+            sleep 15
+            siguen=()
+            for par in "${en_curso[@]}"; do
+              read -r cabeza id <<< "$par"
+              if ! estado=$(gh api "${repo}/actions/runs/${id}" --jq .status); then
+                falla "no se pudo leer la corrida ${id} de ${cabeza}; un push al PR lo vuelve a medir"
+              elif [[ "$estado" == completed ]]; then
+                repetir "$cabeza" "$id"
+              else
+                siguen+=("$par")
+              fi
+            done
+            en_curso=("${siguen[@]}")
+          done
+          for par in "${en_curso[@]}"; do
+            read -r cabeza id <<< "$par"
+            falla "la corrida ${id} de ${cabeza} no terminó en los 10 minutos que espera este job; un push al PR lo vuelve a medir"
+          done
+          exit "$fallas"
