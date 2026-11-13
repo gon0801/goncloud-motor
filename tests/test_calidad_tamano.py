@@ -1038,16 +1038,16 @@ class ReevaluacionAlAvanzarLaBase(unittest.TestCase):
         self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
         self.assertEqual(self._repetidas(llamadas), ["13"])
 
-    def test_un_pr_sin_corrida_del_workflow_de_la_base_se_avisa_y_no_frena_a_los_demas(self):
+    def test_un_pr_abierto_sin_corrida_del_workflow_de_la_base_deja_el_job_en_rojo(self):
         corrida, llamadas = self._job(
             _escenario(
                 [_pr_abierto(A), _pr_abierto(B)],
                 [_corrida("66", A, evento="pull_request"), _corrida("22", B)],
             )
         )
-        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
         self.assertEqual(self._repetidas(llamadas), ["22"])
-        self.assertIn(f"::notice::tamano: {A}", corrida.stdout)
+        self.assertRegex(corrida.stderr, rf"::error::tamano: {A} no tiene corrida")
 
     def test_si_la_api_falla_al_buscar_la_corrida_el_job_queda_en_rojo_y_sigue_con_los_demas(self):
         corrida, llamadas = self._job(
