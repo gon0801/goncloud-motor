@@ -6,8 +6,10 @@
 # porque el canario sobre una flota mezclada no prueba nada. Una máquina que no contesta
 # falla y las demás corren igual.
 # Cada máquina deja un PR mergeado en el repo del canario; el lanzador borra lo demás.
+# Si la sesión de una máquina se cae, su lanzador termina solo y deja su informe en
+# ~/.motor-canario/canario-informe.json.
 # La salida trae ids, ramas y el repo del canario: no va a un log público.
-# Sale 0 si el canario coincide con lo esperado en todas, 1 si no, 2 si la orden está mal.
+# Sale 0 si en todas coincide con lo esperado y quedó limpio, 1 si no, 2 si la orden está mal.
 #
 # --repo R       El repo del canario, dueño/nombre (o MOTOR_CANARIO_REPO). No va en el repo.
 # --maquina M    mac, mini o pc, o varias separadas por espacios. Sin ella, las tres.
@@ -27,18 +29,24 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "--maquina necesita mac, mini o pc" >&2; exit 2; }
       maquinas="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,13p' "$0"; exit 0 ;;
+      sed -n '2,/^[^#]/p' "$0" | grep '^#'; exit 0 ;;
     *) echo "opción desconocida: $1" >&2; exit 2 ;;
   esac
 done
 # Viaja en la línea de cmd.exe de la PC: sin espacios ni caracteres que cmd interprete.
 [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
   || { echo "falta el repo del canario como dueño/nombre: --repo o MOTOR_CANARIO_REPO" >&2; exit 2; }
+# Dos lanzadores en la misma máquina comparten base y encargo: uno limpiaría lo del otro.
+vistas=" "
 for m in $maquinas; do
   case "$m" in
     mac|mini|pc) ;;
     *) echo "--maquina es mac, mini o pc, no '$m'" >&2; exit 2 ;;
   esac
+  case "$vistas" in
+    *" $m "*) echo "--maquina repite '$m'" >&2; exit 2 ;;
+  esac
+  vistas="$vistas$m "
 done
 # shellcheck disable=SC2086
 set -- $maquinas
@@ -131,7 +139,24 @@ import json, sys
 from pathlib import Path
 
 tmp, sha, segundos, todas, corren = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4].split(), sys.argv[5].split()
-VEREDICTOS = {0: "coincide", 1: "no coincide", 2: "no pudo correr"}
+BIEN = "coincide"
+SIN_INFORME = "sin informe"
+
+
+def veredicto(rc, informe):
+    """Solo «coincide» cuenta como bien: con 1, la tabla puede coincidir y la limpieza no."""
+    if not isinstance(informe, dict) or informe.get("codigo") != rc or rc not in (0, 1, 2):
+        return f"{SIN_INFORME} (salió {rc})"
+    if rc == 2:
+        return "no pudo correr"
+    version = str(informe.get("version") or "")
+    if version != sha:
+        return f"corrió en {version[:12] or 'una versión que no dijo'}, no en {sha[:12]}"
+    if not informe.get("filas"):
+        return f"sin tabla (salió {rc})"
+    if not informe.get("coincide"):
+        return "no coincide"
+    return BIEN if rc == 0 else f"{BIEN}, pero no quedó limpio"
 
 
 def leer(m):
@@ -146,12 +171,13 @@ def leer(m):
         informe = json.loads((tmp / f"{m}.json").read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         informe = None
-    if not isinstance(informe, dict) or informe.get("codigo") != rc or rc not in VEREDICTOS:
-        return f"sin informe (salió {rc})", {}
-    return VEREDICTOS[rc], informe
+    juicio = veredicto(rc, informe)
+    return juicio, ({} if juicio.startswith(SIN_INFORME) else informe)
 
 
-def detalle(informe):
+def detalle(veredicto, informe):
+    if veredicto.startswith(SIN_INFORME):
+        return ["si su lanzador siguió solo, su informe queda en ~/.motor-canario/canario-informe.json"]
     if not informe:
         return []
     if "encargo" not in informe:
@@ -166,25 +192,26 @@ def detalle(informe):
     if informe.get("error"):
         lineas.append(f"no pudo {informe.get('paso') or 'seguir'}: {informe['error']}")
     lineas += [
-        f"limpieza: {b['resto']}: {b['resultado']}" + (f" ({b['causa']})" if b.get("causa") else "")
-        for b in informe.get("limpieza") or []
+        f"{que}: {b['resto']}: {b['resultado']}" + (f" ({b['causa']})" if b.get("causa") else "")
+        for que in ("limpieza", "recogida")
+        for b in informe.get(que) or []
     ]
     return lineas
 
 
 resultados = {m: leer(m) for m in todas}
-for m, (veredicto, informe) in resultados.items():
-    print(f"\n## {m}: {veredicto}")
-    for linea in detalle(informe):
+for m, (juicio, informe) in resultados.items():
+    print(f"\n## {m}: {juicio}")
+    for linea in detalle(juicio, informe):
         print(linea)
     if informe.get("tabla"):
         print()
         print(informe["tabla"])
 
-fallan = [m for m, (veredicto, _) in resultados.items() if veredicto != "coincide"]
+fallan = [m for m, (juicio, _) in resultados.items() if juicio != BIEN]
 duracion = f"{segundos // 60} min {segundos % 60} s"
 if fallan:
-    print(f"\nel canario con {sha[:12]} no coincide en: {' '.join(fallan)} (tardó {duracion})")
+    print(f"\nel canario con {sha[:12]} falla en: {' '.join(fallan)} (tardó {duracion})")
     sys.exit(1)
 print(f"\nel canario con {sha[:12]} coincide en: {' '.join(todas)} (tardó {duracion})")
 PY
