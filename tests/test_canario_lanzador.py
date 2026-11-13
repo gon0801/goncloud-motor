@@ -198,7 +198,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
     def argv(self, *extra: str) -> list[str]:
         if "--tope-min" not in extra:
             # Un encargo que no avanza falla al tope y no espera los 90 min de lo esperado.
-            extra = (*extra, "--tope-min", "0.5")
+            extra = (*extra, "--tope-min", "1")
         return [
             "--repo", str(self.repo), "--base", str(self.base), "--base-viva", str(self.viva),
             "--despliegue", str(self.destino), "--corrida", "prueba", "--intervalo-s", "0.2",
