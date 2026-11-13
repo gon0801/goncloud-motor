@@ -215,50 +215,66 @@ class TablaUnica(unittest.TestCase):
         )
         return vuelta, r
 
-    def test_un_hallazgo_que_pide_cambiar_la_regla_cita_la_fila(self):
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = self._con_titulo(
-                tmp, "politica-cambio", "bajar el tope de DeepSeek de 30 a 15 minutos"
-            )
-            e = vuelta("uno")
-        self.assertEqual(_ids(e), [])
-        razones = [x[2] for x in e.fuera_de_alcance]
-        self.assertTrue(
-            any("regla del propietario" in razon for razon in razones), razones
+    def test_un_bloqueante_de_deepseek_que_nombra_una_regla_sigue_bloqueando(self):
+        titulos = (
+            "SQL injection en el filtro de días: should be 1 query parametrizada",
+            "El reintento del tope HTTP: hay que subir el timeout a 120 segundos",
+            "el sondeo de cerrados hace 10 consultas por pasada; debería "
+            "ser 5 como dice la tabla, incumpliendo la regla",
+            "cambiar la redacción del tope de DeepSeek de 30 min en la "
+            "línea 42 del README",
+            "el tope de DeepSeek en ciclo.py es 60; cambiar de 60 a 30 "
+            "minutos como fija la tabla",
         )
-
-    def test_un_hallazgo_que_dice_que_el_codigo_incumple_sigue_siendo_normal(self):  # no-roja-en-base: caracterización: un incumplimiento real ya bloqueaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = self._con_titulo(
-                tmp,
-                "politica-incumple",
-                "el sondeo de cerrados hace 10 consultas por pasada; debería "
-                "ser 5 como dice la tabla, incumpliendo la regla",
+            vuelta, r = _entrega_pr(
+                self, tmp, "politica-defectos",
+                partial(github_con_hallazgos, titulos=titulos),
             )
             e = vuelta("uno")
-        self.assertNotEqual(_ids(e), [])
+        self.assertEqual(sorted(_ids(e)), sorted(f"ds_{t}" for t in titulos))
+        self.assertEqual(e.fuera_de_alcance, ())
+        self.assertEqual(e.estrategia, "investigar")
 
-    def test_un_numero_que_no_es_una_propuesta_no_saca_el_hallazgo(self):  # no-roja-en-base: caracterización: una mención numérica ya bloqueaba en la base
+    def test_pedir_cambiar_una_regla_del_propietario_lo_decide_el_revisor(self):
+        titulo = "bajar el tope de DeepSeek de 30 a 15 minutos"
+        razon = "el tope de 30 min es una regla del propietario en AGENTS.md"
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = self._con_titulo(
-                tmp,
-                "politica-redaccion",
-                "cambiar la redacción del tope de DeepSeek de 30 min en la "
-                "línea 42 del README",
-            )
+            vuelta, r = self._con_titulo(tmp, "politica-cambio", titulo)
             e = vuelta("uno")
-        self.assertNotEqual(_ids(e), [])
-
-    def test_llevar_el_codigo_al_valor_de_la_tabla_no_saca_el_hallazgo(self):  # no-roja-en-base: caracterización: la base ya lo dejaba bloquear
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = self._con_titulo(
-                tmp,
-                "politica-al-valor",
-                "el tope de DeepSeek en ciclo.py es 60; cambiar de 60 a 30 "
-                "minutos como fija la tabla",
+            self.assertEqual(_ids(e), [f"ds_{titulo}"])
+            interno = r.espacio / ".interno"
+            interno.mkdir(parents=True, exist_ok=True)
+            (interno / "disputa.json").write_text(
+                json.dumps({"hallazgo": f"ds_{titulo}", "evidencia": razon})
             )
-            e = vuelta("uno")
-        self.assertNotEqual(_ids(e), [])
+            r.incorporar()
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "estrategia",
+                    "data": {
+                        "estrategia": "revisar_evidencia",
+                        "rol": "revisor",
+                        "motivo": "la disputa la decide el revisor",
+                        "siguiente": "resolverla con evidencia",
+                        "hora": r.hora,
+                    },
+                },
+                "politica-cambio-revisor",
+            )
+            r.juicio(
+                {
+                    "veredicto": "aprobado",
+                    "evidencia": razon,
+                    "resueltos": [f"ds_{titulo}"],
+                }
+            )
+            e = r.incorporar()
+            cuerpo = ciclo._cuerpo_pr(e, r.espacio)
+        self.assertEqual(_ids(e), [])
+        self.assertIn("descartado por el revisor", cuerpo)
+        self.assertIn(razon, cuerpo)
 
     def test_continuar_no_vuelve_a_juzgar_la_politica(self):  # no-roja-en-base: caracterización: la base ya aplicaba el evento guardado como se aceptó
         from motor.encargos.dominio import con_fase, reducir

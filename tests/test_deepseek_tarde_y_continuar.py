@@ -320,11 +320,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             )
             self.assertEqual(r.eventos("fase_reabierta"), [])
 
-    def test_un_medium_tardio_que_pide_cambiar_la_politica_no_reabre(self):  # no-roja-en-base: la base solo avisaba cualquier Medium tardío; guarda que la reapertura nueva excluya las reglas de David
-        # Un hallazgo que pide mover una regla de David queda fuera de alcance:
-        # no se corrige en este PR y no puede reabrir el encargo. El camino
-        # normal ya lo descarta; el sondeo tardío tiene que hacer lo mismo y no
-        # dejar una reapertura sin ids.
+    def test_un_medium_tardio_que_pide_cambiar_la_politica_vuelve_con_su_id(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "ds-cerrado-politica", github_por_numero, nivel="pr"
@@ -350,20 +346,12 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             )
 
             e = r.fold()
-            self.assertEqual(
-                e.estado,
-                "terminado",
-                "una decisión de política no se resuelve reabriendo el encargo",
-            )
-            self.assertEqual(r.eventos("fase_reabierta"), [])
-            self.assertEqual(_ids(e), [])
+            self.assertEqual(len(r.eventos("fase_reabierta")), 1)
+            self.assertEqual(_ids(e), ["F40"])
+            self.assertEqual((e.rol, e.estrategia), ("responsable", "investigar"))
             self.assertEqual(e.preguntas, ())
 
-    def test_un_medium_tardio_que_pide_cambiar_la_politica_no_reabre_una_fase_anterior(self):
-        # F5: la reapertura al cerrar el encargo miraba los hallazgos crudos de
-        # la fase anterior sin el filtro de la lectura normal. Un hallazgo que
-        # pide mover una regla de David reabría esa fase y devolvía una causa
-        # sin ids. Tiene que quedar fuera de alcance, como en el resto del flujo.
+    def test_un_medium_tardio_que_pide_cambiar_la_politica_reabre_su_fase_con_el_id(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "ds-cierre-politica", github_por_numero, nivel="pr"
@@ -404,13 +392,10 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             )
             e = vuelta("dos")
 
-            self.assertEqual(
-                e.estado,
-                "terminado",
-                "una decisión de política no reabre una fase anterior al cerrar",
-            )
-            self.assertEqual(r.eventos("fase_reabierta"), [])
-            self.assertEqual(e.fase_activa, "dos")
+            self.assertEqual(len(r.eventos("fase_reabierta")), 1)
+            self.assertEqual(e.fase_activa, "uno")
+            self.assertEqual(_ids(e), ["F50"])
+            self.assertEqual((e.rol, e.estrategia), ("responsable", "investigar"))
 
     def test_un_medium_posterior_al_cierre_en_una_fase_anterior_se_avisa_en_su_pr(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
