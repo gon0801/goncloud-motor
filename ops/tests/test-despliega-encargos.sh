@@ -541,6 +541,24 @@ espera "se niega por el registro de la base del servicio" 1 \
 contiene "nombra la Mac y cuántos fallan" "$S/salida" "FALLA mac: 1 de 2 encargos no pliegan con ${SHA:0:12}"
 sin_temporales "base del servicio" "$S/tmp-maquinas"
 
+echo "# una base relativa del servicio se lee desde su WorkingDirectory, no desde el home de ssh"
+reset_maquinas
+mkdir -p "$S/mac/relativa/.motor-encargos"
+registro "$S/mac/relativa" enc_mac_uno roto_mac
+PLIST_MAC="$S/mac/Library/LaunchAgents/ai.goncloud.motor-encargos.plist"
+sed -i.bak "s#<string>supervisor</string>#<string>supervisor</string><string>--base</string><string>../relativa/.motor-encargos</string>#" \
+  "$PLIST_MAC"
+espera "se niega por el registro de la base relativa" 1 \
+  env TMPDIR="$S/tmp-maquinas" bash "$COMPUERTA" --sha "$SHA" --maquina mac
+contiene "nombra la Mac y cuántos fallan" "$S/salida" "FALLA mac: 1 de 2 encargos no pliegan con ${SHA:0:12}"
+# Sin WorkingDirectory el script ya se niega al buscar el árbol; el módulo tampoco adivina.
+sed -i.bak '/<key>WorkingDirectory<\/key>/d' "$PLIST_MAC"
+espera "sin WorkingDirectory el módulo termina" 0 \
+  env HOME="$S/mac" TMPDIR="$S/tmp-maquinas" python3 "$RAIZ/ops/compuerta_plegado.py" "$S/mac/motor-sucesor" "$SHA"
+contiene "no adivina la base" "$S/salida" \
+  "resultado no_pude el --base del LaunchAgent es relativo y el plist no trae WorkingDirectory"
+sin_temporales "base relativa" "$S/tmp-maquinas"
+
 echo "# el comprobador no cae al recibo del motor viejo"
 reset_maquinas
 git -C "$S/mac/motor-sucesor" checkout -q --detach "$SHA"
