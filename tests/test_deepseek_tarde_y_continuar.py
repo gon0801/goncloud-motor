@@ -1117,7 +1117,13 @@ def _encargo_con_pregunta_vieja(
 
 
 def _encargo_con_medium_en_el_pr(
-    caso, tmp: str, ancla: str = "motor/integraciones/cli.py:176"
+    caso,
+    tmp: str,
+    ancla: str = "motor/integraciones/cli.py:176",
+    restricciones: tuple[str, ...] = (
+        "Cambio acotado a motor/encargos/cli.py y su prueba.",
+    ),
+    severidad: str = "",
 ) -> tuple:
     """El estado real de enc_daf8e41dd3a3fac6: fase única, entrega integrada,
     revisión aprobada vigente, PR abierto y una lectura de DeepSeek con un
@@ -1128,7 +1134,7 @@ def _encargo_con_medium_en_el_pr(
         "nivel-pr-deepseek",
         FakeGitHub,
         nivel="integrado",
-        restricciones=("Cambio acotado a motor/encargos/cli.py y su prueba.",),
+        restricciones=restricciones,
     )
     e = vuelta("hola")
     hora = ahora_iso()
@@ -1157,6 +1163,7 @@ def _encargo_con_medium_en_el_pr(
                         "origen": "deepseek",
                         "estado": "abierto",
                     }
+                    | ({"severidad": severidad} if severidad else {})
                 ],
                 "hora": hora,
             },

@@ -452,6 +452,41 @@ class CentroCongelado(unittest.TestCase):
         self.assertEqual(e.estrategia, "investigar")
         self.assertEqual(e.fuera_de_alcance, ())
 
+    def _continuar(self, tmp: str, severidad: str):
+        from tests.test_deepseek_tarde_y_continuar import (
+            _encargo_con_medium_en_el_pr,
+        )
+
+        _, r = _encargo_con_medium_en_el_pr(
+            self, tmp, ancla="motor/encargos/ciclo.py:176",
+            restricciones=(), severidad=severidad,
+        )
+        self.assertEqual(_ids(r.fold()), ["F1"])
+        salida = ciclo.ordenar(r.reg, r.enc, "continuar", "continuar", ahora_iso())
+        self.assertFalse(salida.get("rechazada"), salida)
+        return r.fold()
+
+    def test_al_continuar_un_medium_guardado_en_ciclo_queda_fuera_de_alcance(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            e = self._continuar(tmp, "medium")
+        self.assertEqual(_ids(e), [])
+        self.assertEqual([x[0] for x in e.fuera_de_alcance], ["F1"])
+        razon = e.fuera_de_alcance[0][2]
+        self.assertIn("motor/encargos/ciclo.py", razon)
+        self.assertIn("David, 12-nov", razon)
+
+    def test_al_continuar_un_high_guardado_en_ciclo_sigue_bloqueando(self):  # no-roja-en-base: caracterización; Critical y High no cambian
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            e = self._continuar(tmp, "high")
+        self.assertEqual(_ids(e), ["F1"])
+        self.assertEqual(e.fuera_de_alcance, ())
+
+    def test_al_continuar_un_hallazgo_guardado_sin_severidad_sigue_bloqueando(self):  # no-roja-en-base: caracterización; un evento anterior al cambio no trae severidad y no se congela
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            e = self._continuar(tmp, "")
+        self.assertEqual(_ids(e), ["F1"])
+        self.assertEqual(e.fuera_de_alcance, ())
+
 
 class LecturaDeLaSesion(_SesionFalsa):
     def test_tras_renovar_la_sesion_el_motor_lanza_claude(self):
