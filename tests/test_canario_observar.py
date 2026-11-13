@@ -172,6 +172,19 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         fila = entregado()
         self.assertEqual(fila.resultado, "falla", fila.observado)
 
+    def test_un_recibo_que_no_tiene_la_forma_de_un_objeto_es_un_rechazo_con_su_causa(self):
+        ruta = self.clave() / "recibo.json"
+        bueno = json.loads(ruta.read_text(encoding="utf-8"))
+        for contenido in ([], {**bueno, "pasos": ["desplegar", "checklist"]}):
+            with self.subTest(contenido=contenido):
+                ruta.write_text(json.dumps(contenido), encoding="utf-8")
+                obs = self.mirar()
+                (recibo,) = obs.recibos
+                self.assertNotEqual(recibo.estado, "aplicado")
+                fila = next(f for f in juzgar(obs, _esperado()) if f.nombre == "entregado")
+                self.assertEqual(fila.resultado, "falla", fila.observado)
+                self.assertIn(recibo.estado, fila.observado)
+
     def test_un_remoto_que_no_se_puede_resolver_deja_la_rama_sin_medir(self):
         repo = self.tmp / "repo.git"
         _git(repo, "config", "remote.origin.url", str(repo))
