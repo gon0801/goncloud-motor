@@ -4,19 +4,83 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
+import sys
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 from .dominio import Encargo, TransicionIlegal, reducir
 
 _VIVO = Path.home() / ".motor"
 
+Resultado = Literal["nuevo", "igual"]
+
 
 class BaseProhibida(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class Evento:
+    kind: str
+    data: Mapping[str, object]
+    ukey: str
+
+
+class Rechazo(Exception):
+    """El registro no aceptó el lote y no escribió ninguno de sus eventos."""
+
+
+class EventoIlegal(Rechazo):
+    def __init__(self, indice: int, kind: str, motivo: str) -> None:
+        super().__init__(f"el evento {indice} del lote ({kind}) es ilegal: {motivo}")
+        self.indice = indice
+        self.kind = kind
+        self.motivo = motivo
+
+
+class ClaveOcupada(Rechazo):
+    def __init__(self, indice: int, ukey: str) -> None:
+        super().__init__(f"la ukey del evento {indice} del lote ya guarda otro hecho")
+        self.indice = indice
+        self.ukey = ukey
+
+
+def proyectar(estado: Encargo | None, eventos: Sequence[Evento]) -> Encargo:
+    """El estado tras aplicar el lote en orden con las reglas de escritura.
+
+    El paso que decide y el registro que guarda llaman a esta misma función:
+    lo que el paso decidió es lo que queda guardado."""
+    if not eventos:
+        raise ValueError("un lote vacío no proyecta ningún estado")
+    for indice, evento in enumerate(eventos):
+        try:
+            estado = reducir(estado, {"kind": evento.kind, "data": evento.data}, nuevo=True)
+        except TransicionIlegal as exc:
+            raise EventoIlegal(indice, evento.kind, str(exc)) from exc
+    return cast(Encargo, estado)
+
+
+# Solo palabras con guiones: un id de encargo (`enc_` y hexadecimal) o un hash
+# nunca casan, así que la línea del conteo no puede llevar datos del encargo.
+_CLASE_DE_UKEY = re.compile(r"[a-z]+(?:-[a-z]+)*")
+_TIPO = re.compile(r"[a-z]+(?:_[a-z]+)*")
+
+
+def _contar_rechazo(rechazo: Literal["ajena", "ilegal"], kind: str, ukey: str) -> None:
+    clase, separador, _resto = ukey.partition(":")
+    ukey_visible = f"{clase}:*" if separador and _CLASE_DE_UKEY.fullmatch(clase) else "?"
+    kind_visible = kind if _TIPO.fullmatch(kind) else "?"
+    print(
+        f"registro: rechazo={rechazo} kind={kind_visible} ukey={ukey_visible}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -26,7 +90,7 @@ class _Plegado:
     conteo: int
 
 
-def _estable(data: dict) -> dict:
+def _estable(data: Mapping[str, object]) -> dict:
     return {k: v for k, v in data.items() if k != "hora"}
 
 
@@ -153,36 +217,86 @@ class Registro:
         self.db.close()
 
     def append(self, encargo: str, kind: str, data: dict, ukey: str, ts: str) -> str:
-        """La decisión y el insert van en la misma transacción. `igual` solo si es el mismo hecho."""
-        payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        """Un lote de un evento que devuelve el rechazo como `ajena` o `ilegal`
+        en vez de lanzarlo. Cada rechazo deja una línea por stderr para medir
+        cuántos se callan hoy."""
+        try:
+            (resultado,) = self._escribir(encargo, [(Evento(kind, data, ukey), ts)])
+        except ClaveOcupada:
+            _contar_rechazo("ajena", kind, ukey)
+            return "ajena"
+        except EventoIlegal:
+            _contar_rechazo("ilegal", kind, ukey)
+            return "ilegal"
+        return resultado
+
+    def append_many(self, encargo: str, eventos: Sequence[Evento]) -> tuple[Resultado, ...]:
+        """Escribe el lote entero o nada, en una sola transacción.
+
+        Un evento cuya ukey ya guarda el mismo hecho (sin mirar `hora`) da
+        `igual` y no se reescribe; los demás se validan con `proyectar` sobre
+        el estado guardado y se insertan en orden. Una ukey que guarda otro
+        hecho lanza `ClaveOcupada`; un evento que el reductor rechaza lanza
+        `EventoIlegal`. Una ukey repetida dentro del lote es `ValueError`."""
+        return self._escribir(
+            encargo, [(evento, str(evento.data.get("hora") or "")) for evento in eventos]
+        )
+
+    def _escribir(
+        self, encargo: str, filas: Sequence[tuple[Evento, str]]
+    ) -> tuple[Resultado, ...]:
+        ukeys = [evento.ukey for evento, _ts in filas]
+        if len(set(ukeys)) != len(ukeys):
+            raise ValueError("el lote repite una ukey")
+        if not filas:
+            return ()
+        payloads = [
+            json.dumps(dict(evento.data), ensure_ascii=False, sort_keys=True)
+            for evento, _ts in filas
+        ]
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            row = self.db.execute(
-                "SELECT encargo, kind, data FROM events WHERE ukey = ?", (ukey,)
-            ).fetchone()
-            if row:
+            resultados: tuple[Resultado, ...] = tuple(
+                self._cotejar(encargo, indice, evento)
+                for indice, (evento, _ts) in enumerate(filas)
+            )
+            ausentes = [i for i, resultado in enumerate(resultados) if resultado == "nuevo"]
+            if not ausentes:
                 self.db.execute("ROLLBACK")
-                guardado = json.loads(row[2])
-                if row[0] == encargo and row[1] == kind and _estable(guardado) == _estable(data):
-                    return "igual"
-                return "ajena"
+                return resultados
             estado, _ultimo, conteo = self._estado_vigente(encargo)
             try:
-                aplicado = reducir(estado, {"kind": kind, "data": data}, nuevo=True)
-            except TransicionIlegal:
-                self.db.execute("ROLLBACK")
-                return "ilegal"
-            cursor = self.db.execute(
-                "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
-                (ts, encargo, kind, payload, ukey),
-            )
-            nuevo_id = int(cursor.lastrowid or 0)
+                aplicado = proyectar(estado, [filas[i][0] for i in ausentes])
+            except EventoIlegal as exc:
+                raise EventoIlegal(ausentes[exc.indice], exc.kind, exc.motivo) from exc
+            ultimo = 0
+            for i in ausentes:
+                evento, ts = filas[i]
+                cursor = self.db.execute(
+                    "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
+                    (ts, encargo, evento.kind, payloads[i], evento.ukey),
+                )
+                ultimo = int(cursor.lastrowid or 0)
             self.db.execute("COMMIT")
-        except Exception:
+        except BaseException:
             self.db.execute("ROLLBACK")
             raise
-        self._recordar_plegado(encargo, aplicado, nuevo_id, conteo + 1)
-        return "nuevo"
+        self._recordar_plegado(encargo, aplicado, ultimo, conteo + len(ausentes))
+        return resultados
+
+    def _cotejar(self, encargo: str, indice: int, evento: Evento) -> Resultado:
+        fila = self.db.execute(
+            "SELECT encargo, kind, data FROM events WHERE ukey = ?", (evento.ukey,)
+        ).fetchone()
+        if fila is None:
+            return "nuevo"
+        if (
+            fila[0] == encargo
+            and fila[1] == evento.kind
+            and _estable(json.loads(fila[2])) == _estable(evento.data)
+        ):
+            return "igual"
+        raise ClaveOcupada(indice, evento.ukey)
 
     def por_ukey(self, ukey: str) -> dict | None:
         row = self.db.execute(
