@@ -197,13 +197,15 @@ def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
         fuente, enlace = viva / nombre, base / nombre
         if not fuente.is_file():
             raise NoSePuede("preparar", f"falta {fuente}")
-        if enlace.is_symlink():
-            if os.readlink(enlace) == str(fuente):
-                continue
-            enlace.unlink()
-        elif os.path.lexists(enlace):
+        if enlace.is_symlink() and os.readlink(enlace) == str(fuente):
+            continue
+        if os.path.lexists(enlace) and not enlace.is_symlink():
             raise NoSePuede("preparar", f"{enlace} existe y no es un enlace a {fuente}")
-        enlace.symlink_to(fuente)
+        try:
+            enlace.unlink(missing_ok=True)
+            enlace.symlink_to(fuente)
+        except OSError as exc:
+            raise NoSePuede("preparar", f"no pude enlazar {enlace}: {exc}") from exc
     try:
         nombre = str(tomllib.loads(leer_texto(base / "maquina.toml")).get("nombre") or "")
         esperado = canario.leer_esperado(p.esperado)
