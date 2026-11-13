@@ -9883,7 +9883,7 @@ def _paso_entrega_paso(
                 return _intentar_cierre_paso(
                     registro, enc, espacio, directorio, hora
                 )
-            return _necesita_agente(enc)
+            return enc, Avanzo()
         if vista_pr.estado == "abierto":
             enc = _actualizar_cuerpo_pr(
                 registro, enc, gh, numero, sha, espacio, hora
@@ -10754,6 +10754,8 @@ def _paso_despliegue(
         # relanzamiento con el estado fresco.
         enc = registro.fold(enc.id) or enc
         resultado = despliegue.iniciar(registro, enc, espacio, politica, hora)
+    # Una parada durante la receta no se convierte en un cierre. El recibo
+    # queda disponible para conciliar al continuar el encargo.
     fresco = registro.fold(enc.id) or enc
     if not fresco.escrituras or not fresco.intentos_nuevos:
         return _espera_despliegue_sin_autoridad(registro, fresco, hora)
@@ -10763,13 +10765,11 @@ def _paso_despliegue(
             causa += "; recibo: " + resultado["recibo"]
         if resultado["estado"] in ("fallido", "incierto"):
             return _preguntar_despliegue(registro, enc, causa, hora)
-        marcar_espera(registro, enc.id, causa, _reanuda_desde(hora, 30), hora)
+        # Solo la receta en curso avanza sola. Una fase sin declarar o una
+        # receta inválida no cambian por mirarlas cada 30 s.
+        plazo = 30 if resultado["estado"] == "ejecutando" else 300
+        marcar_espera(registro, enc.id, causa, _reanuda_desde(hora, plazo), hora)
         return _con_espera(registro.fold(enc.id) or enc)
-    # Una parada durante la receta no se convierte en un cierre. El recibo
-    # queda disponible para conciliar al continuar el encargo.
-    fresco = registro.fold(enc.id) or enc
-    if not fresco.escrituras or not fresco.intentos_nuevos:
-        return _espera_despliegue_sin_autoridad(registro, fresco, hora)
     registro.anotar(
         enc.id,
         {"kind": "entrega_externa", "data": {
