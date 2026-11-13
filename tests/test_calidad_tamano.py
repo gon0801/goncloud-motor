@@ -206,5 +206,98 @@ class LimiteDeFuncion(unittest.TestCase):
         self.assertIn("motor/m.py::larga: función de 170 líneas", corrida.stderr)
 
 
+GRANDE = (
+    _relleno(1100)
+    + "\n"
+    + "# nota que explica algo\n"
+    + _funcion("chica", 5)
+    + _relleno(100)
+)
+
+
+class CantidadDeCodigo(unittest.TestCase):
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/grande.py", GRANDE)
+        self.base = self.repo.commit()
+
+    def _sin_crecer_en_lineas_falla_por_tokens(self, texto: str) -> None:
+        self.assertEqual(texto.count("\n"), GRANDE.count("\n"))
+        self.repo.escribir("motor/grande.py", texto)
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertIn("motor/grande.py: archivo de", corrida.stderr)
+        self.assertIn("tokens de código; en " + self.base + " mide", corrida.stderr)
+        self.assertNotIn("líneas; en", corrida.stderr)
+        self.assertIn("Saca código", corrida.stderr)
+
+    def test_cambiar_una_linea_en_blanco_por_codigo_falla(self):
+        self._sin_crecer_en_lineas_falla_por_tokens(
+            GRANDE.replace("\n\n# nota", "\ny = 2\n# nota", 1)
+        )
+
+    def test_cambiar_un_comentario_por_codigo_falla(self):
+        self._sin_crecer_en_lineas_falla_por_tokens(
+            GRANDE.replace("# nota que explica algo\n", "y = 2\n", 1)
+        )
+
+    def test_una_lista_larga_en_una_sola_linea_falla(self):
+        datos = "datos = [" + ", ".join(str(n) for n in range(5000)) + "]\n"
+        self._sin_crecer_en_lineas_falla_por_tokens(GRANDE.replace("x = 1\n", datos, 1))
+
+    def test_sacar_una_funcion_pasa_y_dice_contra_que_compara_cada_medida(self):
+        self.repo.escribir("motor/grande.py", GRANDE.replace(_funcion("chica", 5), ""))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+        self.assertIn(f"líneas: ninguno supera lo que mide en {self.base}", corrida.stdout)
+        self.assertIn(
+            f"tokens de código: ninguno supera lo que mide en {self.base}", corrida.stdout
+        )
+
+    def test_entra_tanto_codigo_como_sale_y_ni_un_token_mas(self):
+        self.repo.escribir("motor/grande.py", GRANDE.replace("def chica():", "def otra():"))
+        self.assertEqual(self.repo.tamano("--base", self.base).returncode, 0)
+
+        self.repo.escribir("motor/grande.py", GRANDE.replace("def chica():", "def otra(a):"))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("tokens de código", corrida.stderr)
+
+    def test_una_funcion_que_pasa_del_limite_tampoco_crece_en_tokens(self):
+        larga = "def larga():\n" + "    x = 1\n" * 100 + "\n" + "    x = 1\n" * 49
+        self.repo.escribir("motor/m.py", larga)
+        base = self.repo.commit()
+        self.repo.escribir("motor/m.py", larga.replace("\n\n", "\n    y = 2\n", 1))
+        corrida = self.repo.tamano("--base", base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/m.py::larga: función de", corrida.stderr)
+        self.assertIn("tokens de código", corrida.stderr)
+
+
+class ArchivoQueNoEsUtf8(unittest.TestCase):
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/m.py", _relleno(10))
+        self.latin = "nombre = 'Peña'\n".encode("latin-1")
+
+    def test_en_el_arbol_falla_nombrando_el_archivo(self):
+        base = self.repo.commit()
+        (self.repo.raiz / "motor" / "latin.py").write_bytes(self.latin)
+        corrida = self.repo.tamano("--base", base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn("motor/latin.py", corrida.stderr)
+        self.assertIn("UTF-8", corrida.stderr)
+        self.assertNotIn("Traceback", corrida.stderr)
+
+    def test_en_la_base_falla_nombrando_el_archivo_y_la_base(self):
+        (self.repo.raiz / "motor" / "latin.py").write_bytes(self.latin)
+        base = self.repo.commit()
+        (self.repo.raiz / "motor" / "latin.py").unlink()
+        corrida = self.repo.tamano("--base", base)
+        self.assertEqual(corrida.returncode, 1)
+        self.assertIn(f"motor/latin.py en {base}", corrida.stderr)
+        self.assertNotIn("Traceback", corrida.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
