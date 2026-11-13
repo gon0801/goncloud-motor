@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -23,7 +24,8 @@ from unittest import mock
 
 from motor.encargos import aislamiento
 from motor.encargos.aislamiento import aislar
-from motor.encargos.suscripciones import CuentaNoDisponible
+from motor.encargos.suscripciones import CuentaNoDisponible, preparar_kimi_opencode
+from motor.flota.runtime import exigir_poteto
 from tests import git_env_limpio
 
 SANDBOX = "/usr/bin/sandbox-exec"
@@ -442,6 +444,81 @@ class MuseUsaLaConfiguracionReal(unittest.TestCase):
             self.assertFalse((runtime / ".config" / "muse" / "auth.json").exists())
             self.assertTrue((Path(env["HOME"]) / ".config/muse/auth.json").is_file())
             self.assertEqual(auth.read_text(encoding="utf-8"), contenido)
+
+
+def _efecto_en_opencode(config: dict, ruta: Path) -> str:
+    """Lo que OpenCode v1 decide en `external_directory` al leer `ruta` fuera del espacio: pide
+    permiso sobre `<carpeta>/*` y gana la última regla que lo cubre, después de su `"*": "ask"`
+    (packages/opencode/src/tool/external-directory.ts, util/wildcard.ts y agent/agent.ts en
+    v1.18.35). Las reglas de `permission` valen para la sesión raíz y para cada ayudante."""
+    pedido = (ruta.parent / "*").as_posix()
+    efecto = "ask"
+    for patron, valor in config.get("permission", {}).get("external_directory", {}).items():
+        regex = re.escape(patron.replace("\\", "/")).replace(r"\*", ".*").replace(r"\?", ".")
+        if re.fullmatch(regex, pedido, re.S):
+            efecto = valor
+    return efecto
+
+
+class LaGuiaDelRuntimeEnOpenCode(unittest.TestCase):
+    """En un encargo de la PC un ayudante de OpenCode pidió `external_directory` para leer la
+    guía que el motor copia al runtime. `opencode run --auto` contesta solo a la sesión raíz
+    hasta la v1.17 y el encargo esperó 40 minutos a una respuesta que nadie iba a dar."""
+
+    def _guia(self, base: Path, runtime: Path, *, en_la_politica: bool) -> Path:
+        if en_la_politica:
+            fuente = base / "politica" / "poteto" / "skills" / "poteto-mode"
+        else:
+            fuente = base / "home" / ".agents" / "skills" / "poteto-mode"
+        fuente.mkdir(parents=True)
+        (fuente / "SKILL.md").write_text("# poteto-mode\n", encoding="utf-8")
+        with mock.patch.object(Path, "home", return_value=base / "home"):
+            skill, _ = exigir_poteto(None, base, runtime)
+        return skill
+
+    def _configs(self, runtime: Path) -> dict[str, dict]:
+        with mock.patch(
+            "motor.encargos.suscripciones.leer_cuenta",
+            return_value={"zai-coding-plan": {"type": "api", "key": "clave-prueba"}},
+        ):
+            directo = aislamiento._entorno(
+                runtime, True, ["opencode", "--model", "zai-coding-plan/glm-4.6"],
+                agente="opencode",
+            )
+        kimi = runtime / ".kimi-code"
+        kimi.mkdir(parents=True)
+        (kimi / "device_id").write_text("equipo\n", encoding="utf-8")
+        (kimi / "config.toml").write_text(
+            'default_model = "kimi-code/k3"\n'
+            '[providers."managed:kimi-code"]\n'
+            'api_key = "clave-prueba"\nbase_url = "https://api.kimi.com/coding/v1"\n'
+            '[models."kimi-code/k3"]\nprovider = "managed:kimi-code"\nmodel = "k3"\n',
+            encoding="utf-8",
+        )
+        por_kimi: dict[str, str] = {}
+        preparar_kimi_opencode(runtime, por_kimi)
+        return {
+            "opencode": json.loads(directo["OPENCODE_CONFIG_CONTENT"]),
+            "kimi por opencode": json.loads(por_kimi["OPENCODE_CONFIG_CONTENT"]),
+        }
+
+    def test_los_ayudantes_leen_la_guia_y_lo_demas_del_runtime_sigue_pidiendo_permiso(self):
+        for en_la_politica in (True, False):
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                base = Path(tmp).resolve()
+                _, runtime = _coincidencia(base)
+                skill = self._guia(base, runtime, en_la_politica=en_la_politica)
+                for cliente, config in self._configs(runtime).items():
+                    with self.subTest(cliente=cliente, en_la_politica=en_la_politica):
+                        for guia in (skill, skill.parent / "references" / "detalle.md"):
+                            self.assertEqual(_efecto_en_opencode(config, guia), "allow", guia)
+                        for ajena in (
+                            runtime / ".local" / "share" / "opencode" / "auth.json",
+                            runtime / ".kimi-code" / "config.toml",
+                            runtime / "prompt.md",
+                            base / "otra" / "SKILL.md",
+                        ):
+                            self.assertEqual(_efecto_en_opencode(config, ajena), "ask", ajena)
 
 
 class CredencialPropiaDeDeepSeek(unittest.TestCase):
