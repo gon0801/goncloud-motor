@@ -6,6 +6,7 @@ Uso, igual en local y en CI:
     python3 tools/calidad.py lint
     python3 tools/calidad.py io
     python3 tools/calidad.py tamano --base origin/main
+    python3 tools/calidad.py tamano --base <commit> --cabeza <commit>
 
 `tipos` y `lint` comparan contra `.github/calidad/baseline.json` y fallan solo
 si el cambio agrega un error. `io` es estricto: cualquier uso fuera de
@@ -16,7 +17,9 @@ PR que se está revisando).
 `tamano` mide `motor/` contra la rama base, leída de git: un archivo de más de
 1,000 líneas o una función de más de 100 no puede medir más que en la base, ni en
 líneas ni en tokens de código, y lo que en la base no existe o cabe no puede
-pasar del límite. No guarda nada.
+pasar del límite. No guarda nada. Sin `--cabeza` mide el árbol de trabajo; con
+`--cabeza` mide ese commit, leído de git igual que la base, y el árbol no cuenta:
+así juzga un PR quien no ejecuta nada suyo.
 """
 
 from __future__ import annotations
@@ -394,12 +397,12 @@ def _git(*args: str, entrada: bytes | None = None) -> bytes:
     ).stdout
 
 
-def _commit_de_la_base(ref: str) -> str:
+def _commit(ref: str, papel: str) -> str:
     try:
         return _git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").decode().strip()
     except subprocess.CalledProcessError:
         raise SystemExit(
-            f"tamano: la base {ref} no existe en este clon; {_como_traer(ref)}"
+            f"tamano: la {papel} {ref} no existe en este clon; {_como_traer(ref)}"
         ) from None
 
 
@@ -412,7 +415,7 @@ def _como_traer(ref: str) -> str:
     return "no es una rama de origin ni está en la historia del clon; revisa el nombre"
 
 
-def _fuentes_de_la_base(commit: str, ref: str):
+def _fuentes_de_git(commit: str, ref: str):
     """Los `.py` de `motor/` tal como están en `commit`, sin tocar el árbol."""
     blobs = []
     for entrada in _git("ls-tree", "-r", "-z", commit, "--", "motor/").split(b"\0"):
@@ -464,12 +467,17 @@ def _excesos_de_tamano(
     return excesos
 
 
-def _comparar_tamano(ref: str) -> int:
-    commit = _commit_de_la_base(ref)
-    hoy = tamanos(_fuentes_del_arbol())
-    excesos = _excesos_de_tamano(hoy, tamanos(_fuentes_de_la_base(commit, ref)), ref)
+def _comparar_tamano(ref: str, cabeza: str | None) -> int:
+    commit = _commit(ref, "base")
+    if cabeza is None:
+        hoy, medido = tamanos(_fuentes_del_arbol()), ""
+    else:
+        hoy, medido = tamanos(_fuentes_de_git(_commit(cabeza, "cabeza"), cabeza)), f" en {cabeza}"
+    excesos = _excesos_de_tamano(hoy, tamanos(_fuentes_de_git(commit, ref)), ref)
     if excesos:
-        print(f"tamano: {len(excesos)} límite(s) superado(s) contra {ref}", file=sys.stderr)
+        print(
+            f"tamano: {len(excesos)} límite(s) superado(s){medido} contra {ref}", file=sys.stderr
+        )
         print("\n".join(excesos), file=sys.stderr)
         print(MENSAJE_TAMANO, file=sys.stderr)
         return 1
@@ -478,7 +486,7 @@ def _comparar_tamano(ref: str) -> int:
         if medidas["líneas"] > LIMITES_DE_TAMANO[clave[0]]
     )
     print(
-        f"tamano: nada crece contra {ref} ({commit[:12]}). Pasan del límite hoy "
+        f"tamano: nada crece{medido} contra {ref} ({commit[:12]}). Pasan del límite hoy "
         f"{grandes['archivo']} archivo(s) de más de {LIMITES_DE_TAMANO['archivo']} "
         f"líneas y {grandes['funcion']} función(es) de más de "
         f"{LIMITES_DE_TAMANO['funcion']}; en ellos:"
@@ -605,11 +613,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--base", default="origin/main", help="solo tamano: la referencia de git a comparar"
     )
+    ap.add_argument(
+        "--cabeza", help="solo tamano: el commit a medir en vez del árbol de trabajo"
+    )
     args = ap.parse_args(argv)
     if args.modo == "tamano":
         if args.actualizar:
             ap.error("tamano no guarda nada que actualizar: compara contra --base")
-        return _comparar_tamano(args.base)
+        return _comparar_tamano(args.base, args.cabeza)
     if args.modo == "politica":
         if args.actualizar:
             _regenerar_politica()
