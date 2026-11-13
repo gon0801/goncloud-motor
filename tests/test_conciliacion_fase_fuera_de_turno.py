@@ -1143,6 +1143,47 @@ class ConciliacionFetchTransitorio(_Banco):
             self.assertEqual(len(intentos), 10, intentos)
             self.assertEqual(len(fetches), fetch_tope2)
 
+    def test_el_tope_consume_las_ordenes_que_ya_estaban(self):
+        reg, ident, gh, fusionado = self._preparar(
+            dependiente=True, receta_en_repo=True
+        )
+        reg.anotar(
+            ident,
+            {
+                "kind": "orden",
+                "data": {
+                    "accion": "continuar", "clave": "orden-antes-del-tope",
+                    "hora": ciclo.ahora_iso(),
+                },
+            },
+            "orden-antes-del-tope",
+        )
+        real_git, real_iniciar = ciclo._git, despliegue.iniciar
+        inicio, intentos = datetime.now(timezone.utc), []
+
+        def sin_fetch(espacio, *args):
+            if args and args[0] == "fetch":
+                return subprocess.CompletedProcess(
+                    ["git", *args], 1, "", "red caída"
+                )
+            return real_git(espacio, *args)
+
+        def iniciar(*args, **kwargs):
+            resultado = real_iniciar(*args, **kwargs)
+            intentos.append(resultado.get("estado"))
+            return resultado
+
+        with mock.patch.object(
+            ciclo, "_git", side_effect=sin_fetch
+        ), mock.patch.object(despliegue, "iniciar", side_effect=iniciar):
+            self._barrer(reg, gh, vueltas=5, salto_s=40, inicio=inicio)
+            self.assertEqual(len(intentos), 5, intentos)
+            self._barrer(
+                reg, gh, vueltas=3, salto_s=1,
+                inicio=inicio + timedelta(seconds=200),
+            )
+            self.assertEqual(len(intentos), 5, intentos)
+
     def test_el_merge_commit_se_vuelve_a_buscar_al_desplegar(self):
         reg, ident, gh, fusionado = self._preparar(
             dependiente=True, receta_en_repo=True

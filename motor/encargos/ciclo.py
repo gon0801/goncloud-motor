@@ -9429,13 +9429,12 @@ def _paso_despliegue_fase(
                 registro, enc, fase, causa, hora,
                 intentos=int(fase.despliegue_intentos),
             )
+            ordenes = despliegue.continuaciones(registro, enc.id)
             return _anotar_conciliacion(
                 registro, enc, fase, "espera_agotada", hora,
                 causa=causa,
-                huella=(
-                    f"agotada:{intentos}:"
-                    f"{despliegue.continuaciones(registro, enc.id)}"
-                ),
+                huella=f"agotada:{intentos}:{ordenes}",
+                ordenes=ordenes,
             )
         clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
         _anotar_impedimento(

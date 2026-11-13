@@ -3986,6 +3986,12 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
         causa = str(d.get("causa") or "").strip()
         if not causa:
             raise TransicionIlegal("la espera agotada no trae causa")
+        consumida = fase.despliegue_orden_consumida
+        if "ordenes" in d:
+            try:
+                consumida = int(d.get("ordenes") or 0)
+            except (TypeError, ValueError):
+                pass
         return replace(
             con_fase(
                 e,
@@ -3995,6 +4001,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
                     despliegue_espera_en="",
                     despliegue_en_curso=False,
                     despliegue_espera_agotada=True,
+                    despliegue_orden_consumida=consumida,
                 ),
             ),
             hora=hora or e.hora,
