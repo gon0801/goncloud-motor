@@ -1235,13 +1235,6 @@ class DefectoJuicio(ValueError):
         self.condicion = condicion
 
 
-@dataclass(frozen=True)
-class HallazgoDeepSeek(Hallazgo):
-    """El hallazgo leído del bloque estructurado, con la severidad que DeepSeek le dio."""
-
-    severidad: str = ""
-
-
 def _ruta_de(ancla: str) -> str:
     return ancla.split(":")[0].strip()
 
@@ -1340,10 +1333,9 @@ def hallazgo_fuera_de_alcance_por_restriccion(
     ruta = _ruta_de(hallazgo.ancla)
     if not ruta:
         return ""
-    if isinstance(hallazgo, HallazgoDeepSeek):
-        congelado = medium_congelado(hallazgo.severidad, ruta)
-        if congelado:
-            return congelado
+    congelado = medium_congelado(hallazgo.severidad, ruta)
+    if congelado:
+        return congelado
     for glob in prohibiciones:
         if fnmatch.fnmatch(ruta, glob):
             return (
@@ -1832,7 +1824,7 @@ def _hallazgos_estructurados(texto: str, sha: str) -> list[Hallazgo] | None:
         ancla = f"{archivo}:{linea}" if archivo and str(linea) else archivo
         fid = str(entrada.get("id") or "").strip()
         salida.append(
-            HallazgoDeepSeek(
+            Hallazgo(
                 id=fid or id_hallazgo("deepseek", ancla, titulo),
                 gravedad="bloqueante" if bloqueante else "observacion",
                 criterio=_criterio_deepseek(titulo) if bloqueante else "",
