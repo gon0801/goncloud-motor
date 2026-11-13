@@ -65,8 +65,25 @@ _SIN_PERMISOS_POSIX = unittest.skipIf(
 def _ejecutar(*args: str | Path, herramienta: Path = HERRAMIENTA) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(herramienta), *map(str, args)],
-        capture_output=True, text=True, check=False,
+        capture_output=True, encoding="utf-8", check=False,
     )
+
+
+def _ejecutar_sin_utf8(*args: str | Path, herramienta: Path) -> subprocess.CompletedProcess[bytes]:
+    """Como una tubería de Windows, que escribe en cp1252 si nadie dice otra cosa.
+
+    `PYTHONIOENCODING` alcanza al proceso que se lanza; el hijo de `comparar`
+    corre con `-I` y lo ignora, pero sigue a `LC_ALL` donde ese locale existe.
+    """
+    return subprocess.run(
+        [sys.executable, str(herramienta), *map(str, args)],
+        capture_output=True, check=False,
+        env={**os.environ, "PYTHONIOENCODING": "cp1252", "LC_ALL": "en_US.ISO8859-1"},
+    )
+
+
+_FUERA_DE_CP1252 = "≤ ✅"
+_ROMPE_CON_EL_TEXTO = 'if evento["kind"] == "cierre": raise ValueError(evento["data"]["texto"])'
 
 
 def _correr(*args: str | Path, herramienta: Path = HERRAMIENTA) -> tuple[int, dict]:
@@ -406,6 +423,34 @@ class Comparar(_RepoFalso):
         (cabeza, linea) = hecho.stdout.splitlines()
         self.assertEqual(cabeza, str(self.registro))
         self.assertRegex(linea, r"^  Comparé 2 encargos con el reductor de HEAD \([0-9a-f]{12}\): sin diferencias\.$")
+
+    def _registro_con_texto(self) -> Path:
+        registro = self.dir / "texto.sqlite"
+        _armar(registro, {"enc_a": [("entrega", {}), ("cierre", {"texto": _FUERA_DE_CP1252})]})
+        return registro
+
+    def test_plegar_entrega_su_documento_aunque_la_consola_no_sea_utf8(self):
+        """`plegar` es la orden que `comparar` lanza con el reductor de la base."""
+        self._dominio(rompe=_ROMPE_CON_EL_TEXTO)
+        registro = self._registro_con_texto()
+        hecho = _ejecutar_sin_utf8("plegar", "--raiz", self.repo, registro, herramienta=self.herramienta)
+        self.assertEqual(hecho.returncode, 0, hecho.stderr.decode("utf-8", "replace"))
+        (plegado,) = json.loads(hecho.stdout)[str(registro)]
+        self.assertEqual(plegado["fallo"]["error"], f"ValueError: {_FUERA_DE_CP1252}")
+
+    def test_comparar_en_una_consola_sin_utf8_muestra_el_texto_del_registro(self):
+        self._base(rompe=_ROMPE_CON_EL_TEXTO)
+        self._dominio(rompe=_ROMPE_CON_EL_TEXTO)
+        registro = self._registro_con_texto()
+        como_json = _ejecutar_sin_utf8("comparar", "--base", "HEAD", "--json", registro,
+                                       herramienta=self.herramienta)
+        self.assertEqual(como_json.returncode, 0, como_json.stderr.decode("utf-8", "replace"))
+        (reg,) = json.loads(como_json.stdout)["registros"]
+        self.assertEqual([f["error"] for f in reg["no_pliegan"]], [f"ValueError: {_FUERA_DE_CP1252}"])
+        texto = _ejecutar_sin_utf8("comparar", "--base", "HEAD", registro, herramienta=self.herramienta)
+        self.assertEqual(texto.returncode, 0, texto.stderr.decode("utf-8", "replace"))
+        self.assertIn(f"    enc_a: evento 2 (cierre): ValueError: {_FUERA_DE_CP1252}",
+                      texto.stdout.decode("utf-8").splitlines())
 
 
 if __name__ == "__main__":
