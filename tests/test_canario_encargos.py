@@ -8,7 +8,9 @@ de ensayo, lo mergea en el git local y lo despliega; la prueba solo lo mira.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import io
 import json
 import shutil
 import sqlite3
@@ -17,11 +19,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import get_args
 
 from motor import plataforma
 from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, VersionProducto
+from motor.encargos.politica import CERRADOS_VENTANA_S
 from ops.canario_encargos import (
     ESPERADO,
     LIMPIEZA,
@@ -84,6 +87,23 @@ def _pliegue(**cambios) -> Pliegue:
         violaciones=(),
     )
     return dataclasses.replace(base, **cambios)
+
+
+# La tabla "Limpieza" de docs/modelo-centro-encargos.md con su plazo desde el
+# cierre; la referencia vence con la actualización y tiene su propia prueba.
+PLAZOS_DEL_MODELO = (
+    ("rama", 0),
+    ("pr", 0),
+    ("espacio", 7 * 24 * 60 * 60),
+    ("ejecucion", CERRADOS_VENTANA_S),
+    ("runtime", 0),
+    ("despliegue", 0),
+    ("proceso", 0),
+)
+
+
+def _iso(hora: datetime) -> str:
+    return hora.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 RESTOS_LIMPIOS = (
@@ -250,6 +270,31 @@ class TerminaConLasReglasDelMotor(unittest.TestCase):
         self.assertEqual(fila.resultado, "falla")
         self.assertIn("entrega parcial", fila.observado)
 
+    def test_desplegado_cuyas_fases_no_requieren_despliegue_esta_entregado(self):
+        e = _encargo(
+            Fase("uno", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="integrado",
+                 requiere_despliegue=False, despliegue_fuente=".motor.toml"),
+        )
+        self.assertEqual(self.termina(e).resultado, "pasa")
+        fila = _fila(_obs(pliegue=vista(e, RECIBIDO_EV), recibos=()), "entregado")
+        self.assertEqual(fila.resultado, "pasa", fila.observado)
+
+    def test_una_fase_que_no_dice_de_donde_saco_que_no_se_despliega_pide_su_recibo(self):
+        e = _encargo(
+            Fase("uno", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="desplegado"),
+            Fase("dos", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="desplegado",
+                 requiere_despliegue=False),
+        )
+        obs = _obs(
+            pliegue=vista(e, RECIBIDO_EV),
+            prs=(PR("uno", 7, "mergeado", "main", SHA), PR("dos", 8, "mergeado", "main", OTRO)),
+            recibos=(Recibo("uno", "aplicado", SHA),),
+        )
+        self.assertEqual(_fila(obs, "termina").resultado, "pasa")
+        fila = _fila(obs, "entregado")
+        self.assertEqual(fila.resultado, "falla", fila.observado)
+        self.assertIn("la fase dos no tiene recibo", fila.observado)
+
     def test_una_revision_sin_origen_cuenta_como_independiente(self):
         eventos = [
             *RECIBIDO_EV,
@@ -281,6 +326,14 @@ class Entregado(unittest.TestCase):
 
     def test_un_recibo_fallido_no_cuenta_como_desplegado(self):
         self.falla(_obs(recibos=(Recibo("uno", "fallido", SHA),)), "recibo aplicado de su commit")
+
+    def test_un_recibo_que_el_motor_rechaza_dice_por_que(self):
+        motivo = "el recibo no demuestra despliegue y checklist con salida 0"
+        self.falla(_obs(recibos=(Recibo("uno", motivo, SHA),)), motivo)
+
+    def test_un_encargo_pedido_hasta_pr_no_tiene_merge_que_medir(self):
+        obs = _obs(pliegue=_pliegue(nivel_autorizado="pr", nivel_efectivo="pr", nivel_alcanzado="pr"))
+        self.assertEqual(_fila(obs, "entregado").resultado, "no medido")
 
     def test_el_archivo_desplegado_sin_la_marca_falla(self):
         archivo = ArchivoDesplegado("corridas/m.txt", "marca", False)
@@ -314,10 +367,6 @@ class Entregado(unittest.TestCase):
         for estado in ("cancelado", "detenido"):
             self.falla(_obs(pliegue=_pliegue(estado=estado)), f"quedó {estado}")
 
-    def test_desplegado_sin_fases_desplegables_no_esta_entregado(self):
-        sin = FaseVista("uno", "preparada", "integrado", True, desplegable=False)
-        self.falla(_obs(pliegue=_pliegue(fases=(sin,))), "ninguna fase requiere despliegue")
-
     def test_un_recibo_de_otra_fase_no_cuenta(self):
         self.falla(_obs(recibos=(Recibo("dos", "aplicado", SHA),)), "la fase uno no tiene recibo")
 
@@ -325,12 +374,11 @@ class Entregado(unittest.TestCase):
         self.falla(_obs(prs=()), "ninguna fase tiene PR")
 
     def test_un_encargo_integrado_no_pide_recibo(self):
-        obs = _obs(
-            pliegue=_pliegue(
-                nivel_autorizado="integrado", nivel_efectivo="integrado", nivel_alcanzado="integrado",
-            ),
-            recibos=(),
+        e = _encargo(
+            Fase("uno", "r", evidencia="e", estado="preparada", ultimo_paso_entrega="integrado"),
+            nivel="integrado",
         )
+        obs = _obs(pliegue=vista(e, RECIBIDO_EV), recibos=())
         self.assertEqual(_fila(obs, "entregado").resultado, "pasa")
 
 
@@ -361,8 +409,24 @@ class Limpio(unittest.TestCase):
         self.assertIn("espacio/x", fila.observado)
 
     def test_lo_que_no_se_pudo_mirar_no_se_mide(self):
-        fila = _fila(_obs(restos=(Resto("rama", "la rama remota r", None),)), "limpio")
+        restos = (*RESTOS_LIMPIOS, Resto("rama", "la rama remota s", None))
+        fila = _fila(_obs(restos=restos), "limpio")
         self.assertEqual(fila.resultado, "no medido")
+        self.assertIn("la rama remota s", fila.observado)
+
+    def test_cada_regla_del_modelo_vence_en_su_plazo(self):
+        nada = tuple(dataclasses.replace(r, queda=False) for r in RESTOS_LIMPIOS)
+        cierre = datetime.fromisoformat(CIERRE.replace("Z", "+00:00"))
+        for tipo, plazo in PLAZOS_DEL_MODELO:
+            restos = (*nada, Resto(tipo, f"el resto {tipo}", True))
+            vence = cierre + timedelta(seconds=plazo)
+            with self.subTest(tipo=tipo):
+                fila = _fila(_obs(restos=restos, hora=_iso(vence)), "limpio")
+                self.assertEqual(fila.resultado, "falla", fila.observado)
+                self.assertIn(f"el resto {tipo}", fila.observado)
+                if plazo:
+                    antes = _fila(_obs(restos=restos, hora=_iso(vence - timedelta(seconds=1))), "limpio")
+                    self.assertEqual(antes.resultado, "pasa", antes.observado)
 
     def test_sin_restos_revisados_no_se_mide(self):
         fila = _fila(_obs(restos=()), "limpio")
@@ -407,6 +471,10 @@ class CuestaPoco(unittest.TestCase):
     def test_un_turno_de_mas_por_rol_cuesta(self):
         obs = _obs(pliegue=_pliegue(turnos=(("responsable", 3), ("revisor", 1))))
         self.assertEqual(_fila(obs, "cuesta poco").resultado, "falla")
+
+    def test_los_turnos_iguales_al_tope_no_cuestan(self):
+        obs = _obs(pliegue=_pliegue(turnos=(("responsable", 2), ("revisor", 2))))
+        self.assertEqual(_fila(obs, "cuesta poco").resultado, "pasa")
 
     def test_una_ronda_de_mas_cuesta(self):
         self.assertEqual(_fila(_obs(pliegue=_pliegue(rondas=2)), "cuesta poco").resultado, "falla")
@@ -504,6 +572,17 @@ class LoEsperado(unittest.TestCase):
         with self.assertRaises(ValueError):
             leer_esperado(ruta)
 
+    def test_un_tope_que_no_es_entero_se_rechaza(self):
+        tmp = Path(tempfile.mkdtemp(prefix="esperado-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        datos = json.loads(ESPERADO.read_text(encoding="utf-8"))
+        ruta = tmp / "esperado.json"
+        for valor in ("45", 45.5, True):
+            datos["topes"]["minutos"] = valor
+            ruta.write_text(json.dumps(datos), encoding="utf-8")
+            with self.subTest(valor=valor), self.assertRaises(ValueError):
+                leer_esperado(ruta)
+
 
 # --------------------------------------------------------------------------- observar
 
@@ -572,6 +651,26 @@ class ObservarLaBase(unittest.TestCase):
 
     def test_main_sale_con_2_si_el_encargo_no_esta(self):
         self.assertEqual(main(["enc_x", "--base", str(self.base)], gh=_GitHubCaido()), 2)
+
+    def test_main_sale_con_2_si_lo_esperado_no_tiene_la_forma(self):
+        ruta = self.base / "esperado.json"
+        ruta.write_text(json.dumps({"filas": {}, "topes": {}}), encoding="utf-8")
+        argv = ["enc_x", "--base", str(self.base), "--esperado", str(ruta)]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(argv, gh=_GitHubCaido()), 2)
+
+    def test_main_sale_con_2_si_la_base_no_tiene_registro(self):
+        vacia = self.base / "vacia"
+        vacia.mkdir()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["enc_x", "--base", str(vacia)], gh=_GitHubCaido()), 2)
+
+    def test_observar_no_crea_nada_en_una_base_sin_registro(self):
+        vacia = self.base / "vacia"
+        vacia.mkdir()
+        with contextlib.suppress(sqlite3.Error):
+            observar(vacia, "enc_x", _GitHubCaido(), hora=HORA)
+        self.assertEqual(list(vacia.iterdir()), [])
 
 
 class ObservarUnEncargoDelBanco(unittest.TestCase):
