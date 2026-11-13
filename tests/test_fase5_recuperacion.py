@@ -285,7 +285,7 @@ class RecuperacionFase5(unittest.TestCase):
                     interno.mkdir(parents=True)
                     pedido = interno / "pedido-efecto.json"
                     pedido.write_text(json.dumps(invalido))
-                    bloqueado = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+                    bloqueado, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
                     self.assertEqual(bloqueado.impedimento, "pedido-efecto.json")
                     self.assertTrue(bloqueado.impedimento_causa)
                     self.assertEqual(bloqueado.nivel_alcanzado, "integrado")
@@ -304,7 +304,7 @@ class RecuperacionFase5(unittest.TestCase):
                         bloqueado.impedimento, bloqueado, espacio, reg.base, reg,
                     ))
                     ciclo._resolver_impedimento(reg, bloqueado, bloqueado.impedimento, HORA)
-                    final = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
+                    final, _ = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
                     self.assertEqual(final.nivel_alcanzado, "integrado")
                     self.assertEqual(final.estado, "esperando_reintento")
                     self.assertIn("receta", final.motivo)

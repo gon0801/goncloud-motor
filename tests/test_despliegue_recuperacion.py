@@ -277,11 +277,11 @@ class RecuperacionDespliegue(unittest.TestCase):
             self.assertIn("ocupado 6 veces", causa)
             # La ventana agotada pide intervención: continuar la reabre una vez.
             ciclo.ordenar(reg, ident, "continuar", "otra-ventana", horas[-1])
-            final = ciclo._paso_despliegue(
+            final, _ = ciclo._paso_despliegue(
                 reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
             )
             for _ in range(10):
-                final = ciclo._paso_despliegue(
+                final, _ = ciclo._paso_despliegue(
                     reg, reg.fold(ident), espacio, "2026-11-05T20:05:00+00:00"
                 )
                 if final.nivel_alcanzado == "desplegado":
@@ -324,7 +324,7 @@ class RecuperacionDespliegue(unittest.TestCase):
             ciclo.ordenar(reg, ident, "continuar", "otra-ventana", "2026-11-05T19:46:00+00:00")
             final = reg.fold(ident)
             for _ in range(10):
-                final = ciclo._paso_despliegue(
+                final, _ = ciclo._paso_despliegue(
                     reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
                 )
                 if final.nivel_alcanzado == "desplegado":
@@ -615,7 +615,7 @@ class RecuperacionDespliegue(unittest.TestCase):
             propio.write_text(json.dumps(contenido))
             final = reg.fold(ident)
             for _ in range(10):
-                final = ciclo._paso_despliegue(
+                final, _ = ciclo._paso_despliegue(
                     reg, reg.fold(ident), espacio, "2026-11-05T20:00:00+00:00"
                 )
                 if final.fase_activa == "O" and final.nivel_alcanzado == "desplegado":

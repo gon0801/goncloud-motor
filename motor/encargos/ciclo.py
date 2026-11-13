@@ -9619,8 +9619,7 @@ def _paso_entrega_paso(
         try:
             comprobar_recibo(enc)
         except ValueError as exc:
-            _preguntar_despliegue(registro, enc, str(exc), hora)
-            return registro.fold(enc.id) or enc, Avanzo()
+            return _preguntar_despliegue(registro, enc, str(exc), hora)
     if _devolver_correcciones(registro, enc, hora):
         return registro.fold(enc.id) or enc, NecesitaAgente("responsable")
     if _entrega_devuelta_pendiente(registro, enc):
@@ -9644,7 +9643,7 @@ def _paso_entrega_paso(
             Avanzo(),
         )
     if enc.entrega.nivel == "desplegado" and enc.nivel_alcanzado == "integrado":
-        enc = _paso_despliegue(registro, enc, _espacio(registro.base, enc.id), hora)
+        enc, resultado = _paso_despliegue(registro, enc, _espacio(registro.base, enc.id), hora)
         if nivel_cumplido(enc):
             return (
                 _cerrar_con_veredicto(
@@ -9653,7 +9652,7 @@ def _paso_entrega_paso(
                 ),
                 Avanzo(),
             )
-        return _necesita_agente(enc)
+        return enc, resultado
     if gh is None:
         causa = (
             "nivel de entrega "
@@ -9958,12 +9957,12 @@ def _paso_entrega_paso(
                             registro, enc, espacio, directorio, hora
                         )
                     # desplegado sin diff: no se abre un PR vacío.
-                    enc = _paso_despliegue(registro, enc, espacio, hora)
+                    enc, resultado = _paso_despliegue(registro, enc, espacio, hora)
                     if nivel_cumplido(enc) and enc.estado != "terminado":
                         return _intentar_cierre_paso(
                             registro, enc, espacio, directorio, hora
                         )
-                    return _necesita_agente(enc)
+                    return enc, resultado
         try:
             pr = gh.abrir_pr(
                 enc.entrega.repo,
@@ -10091,12 +10090,12 @@ def _paso_entrega_paso(
                     return _intentar_cierre_paso(
                         registro, enc, espacio, directorio, hora
                     )
-                enc = _paso_despliegue(registro, enc, espacio, hora)
+                enc, resultado = _paso_despliegue(registro, enc, espacio, hora)
                 if nivel_cumplido(enc) and enc.estado != "terminado":
                     return _intentar_cierre_paso(
                         registro, enc, espacio, directorio, hora
                     )
-                return registro.fold(enc.id) or enc, Avanzo()
+                return enc, resultado
             causa = f"no se pudo abrir o preparar el PR: {exc}"
             if not _fallo_transitorio(causa) and fallo_permanente_de_entrega(causa):
                 return _entregar_con_falla_permanente(
@@ -10435,13 +10434,13 @@ def _paso_entrega_paso(
             f"entrega:{enc.id}:{enc.fase_activa}:integrado:{enc.pr_sha}",
         )
         enc = registro.fold(enc.id)
-    enc = _paso_despliegue(registro, enc, espacio, hora)
+    enc, resultado = _paso_despliegue(registro, enc, espacio, hora)
     if nivel_cumplido(enc):
         return (
             _cerrar_con_veredicto(registro, enc, gh, espacio, directorio, hora),
             Avanzo(),
         )
-    return _necesita_agente(enc)
+    return enc, resultado
 
 
 
@@ -10452,9 +10451,12 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     return enc
 
 
-def _preguntar_despliegue(registro: Registro, enc: Encargo, causa: str, hora: str) -> None:
+def _preguntar_despliegue(
+    registro: Registro, enc: Encargo, causa: str, hora: str
+) -> tuple[Encargo, Resultado]:
     """El despliegue que no puede completarse deja un impedimento visible y un
-    pendiente de entrega; no pregunta ni espera a una persona."""
+    pendiente de entrega; no pregunta ni espera a una persona. El pendiente es
+    un hecho nuevo: el paso avanzó y la entrega parcial lo atiende."""
     huella = hashlib.sha256(causa.encode()).hexdigest()[:12]
     if enc.estado == "esperando_reintento":
         # El fallo reemplaza una espera de la receta que ya no corre: sin
@@ -10481,11 +10483,12 @@ def _preguntar_despliegue(registro: Registro, enc: Encargo, causa: str, hora: st
         },
         f"pendiente-despliegue:{enc.id}:{enc.fase_activa}:{huella}:{ronda}",
     )
+    return registro.fold(enc.id) or enc, Avanzo()
 
 
 def _espera_despliegue_sin_autoridad(
-    registro: Registro, enc: Encargo, fresco: Encargo, hora: str
-) -> None:
+    registro: Registro, fresco: Encargo, hora: str
+) -> tuple[Encargo, Resultado]:
     """El despliegue que pierde la autoridad queda en espera explícita.
 
     Sin la espera el planificador volvería a lanzar un turno sobre el mismo
@@ -10494,19 +10497,17 @@ def _espera_despliegue_sin_autoridad(
     `_mirar_autoridad` rearma `escrituras` y el plazo vencido reabre el paso,
     que concilia el recibo que haya quedado. Una parada ya ordenada no se
     toca: la maneja su propio camino."""
-    if (
-        not fresco.intentos_nuevos
-        or fresco.estado in ("deteniendo", "detenido", "cancelado", "terminado")
-        or fresco.estado == "esperando_reintento"
+    if fresco.intentos_nuevos and fresco.estado not in (
+        "deteniendo", "detenido", "cancelado", "terminado", "esperando_reintento"
     ):
-        return
-    marcar_espera(
-        registro, enc.id,
-        "la autoridad se perdió durante el paso de despliegue; el paso se "
-        "reanuda cuando la autoridad vuelva y el recibo que haya quedado se "
-        "concilia",
-        _reanuda_desde(hora, 30), hora,
-    )
+        marcar_espera(
+            registro, fresco.id,
+            "la autoridad se perdió durante el paso de despliegue; el paso se "
+            "reanuda cuando la autoridad vuelva y el recibo que haya quedado se "
+            "concilia",
+            _reanuda_desde(hora, 30), hora,
+        )
+    return _con_espera(registro.fold(fresco.id) or fresco)
 
 
 def _fase_desplegada_vigente(registro, enc: Encargo, fase) -> bool:
@@ -10644,13 +10645,13 @@ def _reintentar_despliegue_pendiente(
 
 def _despliegue_ocupado(
     registro: Registro, enc: Encargo, despliegue, hora: str
-) -> dict | None:
+) -> tuple[Encargo, Resultado] | None:
     """Gestiona un despliegue ocupado (salida 75 con reversa sin cambios).
 
-    Devuelve un resultado ya gestionado (espera anotada o impedimento en llano)
-    o None para que el paso siga y la receta se relance. El producto ya está
-    aprobado e integrado: entre reintentos no se relanza al responsable ni al
-    revisor, solo la receta del mismo SHA.
+    Devuelve el resultado del paso ya gestionado (espera anotada o impedimento
+    en llano) o None para que el paso siga y la receta se relance. El producto
+    ya está aprobado e integrado: entre reintentos no se relanza al responsable
+    ni al revisor, solo la receta del mismo SHA.
     """
     libro = despliegue.ocupado(registro, enc)
     if not libro:
@@ -10681,8 +10682,7 @@ def _despliegue_ocupado(
             "Producción no cambió: cada reversa terminó sin cambios. Cuando ese proceso "
             "termine el despliegue puede reintentarse con el mismo SHA."
         )
-        _preguntar_despliegue(registro, enc, texto, hora)
-        return {"estado": "impedido", "motivo": texto}
+        return _preguntar_despliegue(registro, enc, texto, hora)
     reanuda = _reanuda_desde(str(libro.get("ultimo") or hora), ESPERAS_OCUPADO_S[intentos - 1])
     if _reanuda_desde(hora, 0) < reanuda:
         maquina = ""
@@ -10699,7 +10699,7 @@ def _despliegue_ocupado(
             + f"; se reintenta solo a las {reanuda}"
         )
         marcar_espera(registro, enc.id, texto, reanuda, hora)
-        return {"estado": "ocupado", "motivo": texto}
+        return _con_espera(registro.fold(enc.id) or enc)
     if enc.estado == "esperando_reintento":
         # La espera venció: reabre el encargo con el mismo evento plazo que usa
         # el barrido (deduplicado por ukey) para que el recibo ocupado vuelva a
@@ -10714,18 +10714,19 @@ def _despliegue_ocupado(
 
 def _paso_despliegue(
     registro: Registro, enc: Encargo, espacio: Path, hora: str
-) -> Encargo:
-    """El sello se obtiene de la receta ejecutada sobre el commit integrado."""
+) -> tuple[Encargo, Resultado]:
+    """El sello se obtiene de la receta ejecutada sobre el commit integrado.
+
+    Dice su resultado: `Espera` mientras la receta corre o espera su turno,
+    `Avanzo` cuando deja un hecho y `NecesitaAgente` si no hay qué desplegar."""
     from . import despliegue, politica_despliegue
 
-    enc, _ = _reintentar_despliegue_pendiente(
-        registro, enc, hora, espacio
-    )
+    enc, _ = _reintentar_despliegue_pendiente(registro, enc, hora, espacio)
     if nivel_objetivo(enc) != "desplegado" or enc.nivel_alcanzado != "integrado":
-        return enc
+        return _necesita_agente(enc)
     enc = politica_despliegue.adoptar(registro, enc, espacio, hora)
     if nivel_cumplido(enc):
-        return enc
+        return enc, Avanzo()
     # Conserva el diagnóstico de instrumentos inválidos, pero ningún pedido
     # del agente ni recibo de ensayo acredita una ejecución de producción.
     try:
@@ -10740,7 +10741,7 @@ def _paso_despliegue(
             registro, enc, "pedido-efecto.json", str(exc),
             "que .interno/pedido-efecto.json vuelva a validar", hora,
         )
-        return registro.fold(enc.id) or enc
+        return registro.fold(enc.id) or enc, Avanzo()
     politica = politica_despliegue.resolver(espacio, enc)
     if politica.requiere_despliegue is None:
         resultado = {"estado": "esperando", "motivo":
@@ -10748,30 +10749,27 @@ def _paso_despliegue(
     else:
         gestionado = _despliegue_ocupado(registro, enc, despliegue, hora)
         if gestionado is not None:
-            return registro.fold(enc.id) or enc
+            return gestionado
         # El guard pudo reabrir el encargo con el plazo: `iniciar` decide el
         # relanzamiento con el estado fresco.
         enc = registro.fold(enc.id) or enc
         resultado = despliegue.iniciar(registro, enc, espacio, politica, hora)
     fresco = registro.fold(enc.id) or enc
     if not fresco.escrituras or not fresco.intentos_nuevos:
-        _espera_despliegue_sin_autoridad(registro, enc, fresco, hora)
-        return registro.fold(enc.id) or fresco
+        return _espera_despliegue_sin_autoridad(registro, fresco, hora)
     if resultado["estado"] != "aplicado":
         causa = resultado["motivo"]
         if resultado.get("recibo"):
             causa += "; recibo: " + resultado["recibo"]
         if resultado["estado"] in ("fallido", "incierto"):
-            _preguntar_despliegue(registro, enc, causa, hora)
-        else:
-            marcar_espera(registro, enc.id, causa, _reanuda_desde(hora, 30), hora)
-        return registro.fold(enc.id) or enc
+            return _preguntar_despliegue(registro, enc, causa, hora)
+        marcar_espera(registro, enc.id, causa, _reanuda_desde(hora, 30), hora)
+        return _con_espera(registro.fold(enc.id) or enc)
     # Una parada durante la receta no se convierte en un cierre. El recibo
     # queda disponible para conciliar al continuar el encargo.
     fresco = registro.fold(enc.id) or enc
     if not fresco.escrituras or not fresco.intentos_nuevos:
-        _espera_despliegue_sin_autoridad(registro, enc, fresco, hora)
-        return registro.fold(enc.id) or fresco
+        return _espera_despliegue_sin_autoridad(registro, fresco, hora)
     registro.anotar(
         enc.id,
         {"kind": "entrega_externa", "data": {
@@ -10782,7 +10780,7 @@ def _paso_despliegue(
         }},
         f"entrega:{enc.id}:{enc.fase_activa}:desplegado:{enc.fase_actual.integrado_sha}",
     )
-    return registro.fold(enc.id) or enc
+    return registro.fold(enc.id) or enc, Avanzo()
 
 
 def _lanzar_uno(
