@@ -499,7 +499,8 @@ def revertir(home: Path) -> dict:
         pend_anterior = str((pend.get("anterior") or {}).get("codigo") or "")
         comp_destino = str((comp.get("destino") or {}).get("codigo") or "")
         vigente = asignar(home) if (home / "actual").is_symlink() else comp_destino
-        if pend_anterior and pend_anterior in {vigente, comp_destino}:
+        anotada = comp.get("etapa") == "revirtiendo"
+        if not anotada and pend_anterior and pend_anterior in {vigente, comp_destino}:
             recibo = pend
             usado = "pendiente"
             consumir_pendiente = True
@@ -672,10 +673,20 @@ def _recuperar_instalada(home: Path) -> dict:
     return {"accion": "nada"}
 
 
+def _pendiente(home: Path) -> dict | None:
+    """El recibo pendiente que recuperar completa.
+
+    Una reversa anotada se termina antes; revertir consume el pendiente que quede.
+    """
+    if (_leer(home / "instalacion.json") or {}).get("etapa") == "revirtiendo":
+        return None
+    return _leer(home / "instalacion-pendiente.json")
+
+
 @_operacion_flota
 def recuperar(home: Path, sin_turnos: bool = False) -> dict:
     pend_path = home / "instalacion-pendiente.json"
-    pend = _leer(pend_path)
+    pend = _pendiente(home)
     if pend is None:
         return _recuperar_instalada(home)
     destino = (pend.get("destino") or {}).get("codigo") or ""
