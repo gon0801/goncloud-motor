@@ -54,12 +54,15 @@ def _commit(motor: Path, archivos: dict[str, str], mensaje: str) -> str:
 
 
 def _comprobar_py_lento():
-    """subprocess.run con el comprobar.py de la generacion pasado de su tope."""
+    """subprocess.run con el comprobar.py de la generacion pasado de su tope.
+
+    Como el real sin tuberias, la excepcion trae lo que quedaba del tope, no el tope.
+    """
     correr = subprocess.run
 
     def run(argv, *args, **kwargs):
         if str(list(argv)[-1]).endswith("comprobar.py"):
-            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"] - 0.00005)
         return correr(argv, *args, **kwargs)
 
     return run
