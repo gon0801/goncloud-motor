@@ -472,13 +472,16 @@ MOMENTOS: dict[Momento, str] = {
     "receta": "la receta de despliegue",
 }
 
-# Lo que corre una fase sin corte: cada rol del agente una vez y su receta una vez, con
-# el checklist en verde. El corte mata solo al supervisor y deja vivo al proceso que
-# esperaba la compuerta, así que no justifica repetir nada: el modelo concilia el efecto
-# en curso con su recibo (estado `conciliando`) y no lo relanza.
 ACEPTADAS: tuple[tuple[Quien, int], ...] = (
     ("responsable", 1), ("revisor", 1), ("desplegar", 1), ("checklist", 1), ("rollback", 0),
 )
+"""Lo que corre una fase sin corte: cada rol del agente una vez y su receta una vez, con
+el checklist en verde. Vale para lo que se mide, una caída del supervisor con el proceso
+en curso vivo: no justifica repetir nada, porque el modelo concilia el efecto en curso con
+su recibo (estado `conciliando`) y no lo relanza. No mide un corte de energía, que mata
+también ese proceso y con el que un turno o la receta pueden repetirse una vez."""
+
+AGUANTA = "aguanta una caída del supervisor con el proceso en curso vivo; no mide un corte de energía"
 
 
 def _y(partes: list[str]) -> str:
@@ -522,8 +525,8 @@ def _cortes(a: Apagon) -> Condicion:
     if faltan:
         return None, "no hubo corte durante " + " ni durante ".join(faltan)
     return True, (
-        f"cortó su supervisor durante {' y durante '.join(MOMENTOS.values())}, con el proceso que"
-        " esperaba vivo"
+        f"tiró su supervisor durante {' y durante '.join(MOMENTOS.values())}, con el proceso que"
+        f" esperaba vivo: {AGUANTA}"
     )
 
 
@@ -569,6 +572,8 @@ def _una_vez(a: Apagon, fases: int) -> Condicion:
     if a.invocaciones is None:
         return None, "no pude leer las invocaciones que anotan su agente y su receta"
     corridas = dict(a.invocaciones)
+    if not corridas.get("responsable"):
+        return None, "su responsable no anotó ningún turno: no hay qué contar"
     de_mas = [
         f"{quien}: {corridas[quien]} {'vez' if corridas[quien] == 1 else 'veces'} (acepto {n * fases})"
         for quien, n in ACEPTADAS if corridas.get(quien, 0) > n * fases
@@ -584,6 +589,8 @@ def _una_vez(a: Apagon, fases: int) -> Condicion:
 def _un_pr_un_merge(a: Apagon, fases: int) -> Condicion:
     if a.prs is None:
         return None, "no pude leer sus PR de GitHub"
+    if not a.prs:
+        return None, "GitHub no trae ningún PR de sus ramas: no hay qué contar"
     prs, merges = len(a.prs), sum(1 for pr in a.prs if pr.estado == "mergeado")
     de_mas = [
         texto for texto, n in ((f"{prs} PR", prs), (f"{merges} merges", merges)) if n > fases
@@ -615,12 +622,16 @@ def _no_pierde(obs: Observacion, _topes: Topes) -> Juicio:
 
 def _no_repite(obs: Observacion, _topes: Topes) -> Juicio:
     """Tras los cortes, cada rol del agente, cada paso de la receta, el PR y el merge corren
-    las veces que corren sin corte (`ACEPTADAS`, por fase)."""
+    las veces que corren sin corte (`ACEPTADAS`, por fase). Un PR o un merge de más es
+    repetir aunque el corte no sea el que se mide."""
+    a = obs.apagon
+    if a is None or not isinstance(a.pliegue, Pliegue):
+        return cast(Juicio, _sin_corte(obs))
+    fases = max(len(a.pliegue.fases), 1)
+    github = _un_pr_un_merge(a, fases)
     if (fuera := _sin_corte(obs)) is not None:
-        return fuera
-    a = cast(Apagon, obs.apagon)
-    fases = max(len(cast(Pliegue, a.pliegue).fases), 1)
-    return _juntar((_cortes(a), _una_vez(a, fases), _un_pr_un_merge(a, fases)))
+        return ("falla", f"{github[1]}; {fuera[1]}") if github[0] is False else fuera
+    return _juntar((_cortes(a), _una_vez(a, fases), github))
 
 
 Juez = Callable[[Observacion, Topes], Juicio]
@@ -661,7 +672,8 @@ def _sin_medir_en_windows(ruta: Path, datos: dict, nombres: set[str]) -> list[st
     filas = sin_medir.get("filas") if isinstance(sin_medir, dict) else None
     if (
         not isinstance(sin_medir, dict) or set(sin_medir) != {"filas", "razon"}
-        or not isinstance(filas, list) or not filas or len(set(filas)) != len(filas)
+        or not isinstance(filas, list) or not filas or not all(isinstance(f, str) for f in filas)
+        or len(set(filas)) != len(filas)
         or not set(filas) <= nombres
         or not isinstance(sin_medir["razon"], str) or not sin_medir["razon"].strip()
     ):
