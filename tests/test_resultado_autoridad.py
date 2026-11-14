@@ -287,6 +287,31 @@ class ResultadoDeLaAutoridad(unittest.TestCase):
                 ],
             )
 
+    def test_un_resultado_rechazado_cuenta_lo_que_el_registro_habria_rechazado(self):  # no-roja-en-base: la base anotaba la nota antes de rechazar y su rechazo ya salía por stderr; fija que el lote abandonado no lo calle
+        with tempfile.TemporaryDirectory() as tmp:
+            r, enc = _escena(self, Path(tmp))
+            r.reg.anotar(
+                enc.id,
+                {"kind": "nota_pr", "data": {"texto": "otro ds_Fuga de una fase anterior", "hora": HORA}},
+                f"disputa-resuelta-autoridad:{enc.id}:ds_Fuga",
+            )
+            observaciones, juicio = _resultado()
+            observaciones["solicitudes_efecto"] = [
+                {"id": "ef1", "operacion": "publicar", "clave": "k1", "cuerpo": "c"}
+            ]
+            juicio["efectos_pendientes"] = ["ef1"]
+            errores = io.StringIO()
+
+            with mock.patch.object(modulo_registro, "_CONTEO", modulo_registro._Conteo()), \
+                    redirect_stderr(errores):
+                salida = _recibir(r.reg, enc, observaciones, juicio)
+
+            self.assertTrue(salida.get("rechazado"), salida)
+            self.assertIn(
+                "registro: rechazo=ajena kind=nota_pr ukey=disputa-resuelta-autoridad:* veces=1",
+                errores.getvalue().splitlines(),
+            )
+
     def test_un_descarte_con_su_ukey_ocupada_no_rechaza_el_resultado(self):  # no-roja-en-base: la base ya calla y cuenta ese rechazo; fija que el lote no lo vuelva un rechazo del resultado entero
         with tempfile.TemporaryDirectory() as tmp:
             r, enc = _escena(self, Path(tmp))
