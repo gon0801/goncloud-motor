@@ -98,8 +98,11 @@ compara su plegado antes de mover nada.
 1. Abres el PR con la evidencia de su unidad en `## Verification`.
 2. Esperas el CI, la revisión de DeepSeek (comentario con el marcador `ai-review:sticky`), Devin
    Review y CodeRabbit. Atiendes todo hallazgo Critical, High o Medium de DeepSeek con commits
-   nuevos en la misma rama, y contestas cada hilo de los bots con lo que hiciste o con la razón
-   para no hacerlo.
+   nuevos en la misma rama, salvo los que el propio comentario de DeepSeek pone en «Hallazgos fuera
+   de alcance» (un Medium anclado en `ciclo.py` o `dominio.py`, que están congelados): esos no se
+   parchean. Contestas cada hilo de los bots con lo que hiciste o con la razón para no hacerlo. Si
+   a los 45 minutos de tu push no hay revisión de DeepSeek para tu cabeza, escríbelo en el PR y
+   sigue con lo demás; el revisor la vuelve a lanzar.
 3. El revisor publica en el PR un comentario `Revisión del revisor, ronda <n>` con lo que falta.
    Lo atiendes en la misma rama y contestas con `Atendido en <sha>`.
 4. Cuando el revisor da el visto bueno, él mergea y despliega, y publica `Desplegado <sha> en mac,
@@ -174,23 +177,28 @@ ciclo, ningún módulo de `reductor/` importa `dominio` en el nivel del módulo 
 `# no-roja-en-base: fija las tuplas que ahora salen de la tabla`; y la prueba de la red del 3.0
 ahora muta la fila (`corta_series` de `plazo`) en vez de la tupla, y sigue fallando como debe.
 
-**3.3 Validación separada** (un PR por módulo de la tabla; el último vuelve total el plegado).
+**3.3 Validación separada** (3 o 4 PR, agrupando temas de la tabla; el último vuelve total el
+plegado).
 - Los `raise` pasan a `Fila.validar`, en módulos nuevos. Donde validar y calcular van juntos, una
   lectura pura `leer_<kind>(d)` da la carga tipada que usan `validar` y `aplicar`. `validar` corre
   solo con `nuevo=True` (al escribir); `aplicar` corre siempre y no lanza.
 - El último PR de 3.3 hace tres cosas juntas: un kind desconocido deja de lanzar al plegar (devuelve
   el mismo estado y `plegado.py` lo cuenta); `tools/calidad.py` deja de sondear con un kind
-  inventado y lee `TABLA` cuando la ref la trae, si no sondea como hoy; la prueba de
+  inventado y lee `set(TABLA) | {"entrega"}` cuando la ref trae la tabla (`entrega` no está en
+  `TABLA` y sí lo escribe `ciclo.py`), si no sondea como hoy; la prueba de
   `tests/test_plegado.py` con la `orden inventada` pasa a un reductor sembrado que lanza.
 - **Evidencia.** `verificar` y `comparar --estricto` en 0. Una prueba de tabla con una fila por
   cada `raise` movido (kind, estado previo, datos, mensaje), con
   `# no-roja-en-base: fija la validación que se mueve`. Una prueba "aplicar no lanza" sobre cada
-  prefijo del corpus con los 82 kinds y `data={}`, roja en la base. `kinds` verde contra la base
-  vieja y la nueva.
+  prefijo del corpus con los 82 kinds y `data={}`, roja en la base. Una prueba de que un kind
+  desconocido deja el estado completo igual (`asdict` antes y después). `kinds` verde contra la
+  base vieja y la nueva.
 
 **3.4 Situación como lectura, sin cambiar la forma.**
 - `motor/encargos/situacion.py` trae los tipos de abajo y `situacion_de(e) -> Situacion`, que
-  lanza `EstadoIncoherente`. `tools/plegado.py comprobar` agrega la invariante `situacion_tipada` y
+  lanza `EstadoIncoherente`. `EstadoIncoherente` hereda de `TransicionIlegal`, porque
+  `contencion.vista_o_minima` y otros llamadores atrapan `TransicionIlegal` para mostrar la vista
+  mínima de un encargo incoherente. `tools/plegado.py comprobar` agrega la invariante `situacion_tipada` y
   otra que mide si `escrituras`, `intentos_nuevos` y `evidencia` dependen del estado. Los cuatro
   `raise` de `dominio.vista` por estados incoherentes pasan a `situacion_de`.
 - **Evidencia.** `python tools/plegado.py comprobar "$T"/c/registros/*.sqlite` imprime
@@ -205,6 +213,11 @@ ahora muta la fila (`corta_series` de `plazo`) en vez de la tupla, y sigue falla
   solo lectura con el mismo valor (`ciclo.py` no puede cambiar). `dominio.CAMPOS_LEGADOS` los lista,
   y `tools/plegado.py` arma el JSON de `comparar` con `asdict` sin `situacion` más esas
   propiedades, para que `comparar --estricto` contra la base siga en 0.
+- Los sitios que hoy escriben esos campos con `replace(e, estado=..., orden_parada=...,
+  reanuda_en=..., ...)` o `Encargo(..., estado=...)` (en `dominio.py`, `detencion.py`, los
+  manejadores de `reductor/` y unas 28 construcciones en 9 archivos de prueba) pasan a construir la
+  `situacion`. En `dominio.py` sin crecer: si un sitio no cabe, muévelo con su manejador a
+  `reductor/`.
 - **Evidencia.** `verificar` con `estado igual en K de K` (comparando con las propiedades
   legadas) y `comparar --estricto` en 0.
 
@@ -266,7 +279,8 @@ El campo `estado: Literal[...]` va en cada variante, porque sin él `asdict` da 
 ## Cierre
 
 El paso 3 termina cuando el 3.5 está mergeado y el revisor publicó `Desplegado` con la compuerta
-en "cambian de valor 0" en las tres máquinas. Son unos 9 o 10 PR. Al terminar cada uno, tu último
+en "cambian de valor 0" en las tres máquinas. Son unos 10 a 12 PR: 1 del 3.0, 2 o 3 del 3.1, 1 del
+3.2, 3 o 4 del 3.3, 1 del 3.4 y 1 del 3.5. Al terminar cada uno, tu último
 comentario en el PR es `LISTO <sha>` o `ATORADO <una línea>`.
 
 Lo que queda fuera: las banderas de `Fase` (despliegue, CI, inspección, DeepSeek), que son de los
