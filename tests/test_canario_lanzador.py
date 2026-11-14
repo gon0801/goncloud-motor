@@ -196,8 +196,9 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         return {"ops/despliega.sh": "sleep 600\n", "ops/rollback.sh": f"set -eu\n{reversa}\n"}
 
     def argv(self, *extra: str) -> list[str]:
-        if "--tope-min" not in extra:
-            # Un encargo que no avanza falla al tope y no espera los 90 min de lo esperado.
+        if "--tope-min" not in extra and "--esperado" not in extra:
+            # Un encargo que no avanza falla al tope y no espera los 90 min de lo esperado;
+            # una prueba con su propio esperado trae también sus topes.
             extra = (*extra, "--tope-min", "1")
         return [
             "--repo", str(self.repo), "--base", str(self.base), "--base-viva", str(self.viva),
@@ -236,6 +237,24 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         reg = Registro(self.base)
         try:
             return [e.estado for e in (reg.fold(i) for i in reg.ids()) if e is not None]
+        finally:
+            reg.close()
+
+    def eventos(self, encargo: str) -> list[dict]:
+        reg = Registro(self.base)
+        try:
+            return reg.eventos(encargo)
+        finally:
+            reg.close()
+
+    def cerro_en(self, encargo: str) -> int:
+        """El id del evento con que `encargo` quedó cerrado en el registro."""
+        reg = Registro(self.base)
+        try:
+            return next(
+                ev["id"] for ev in reg.eventos(encargo)
+                if getattr(reg.fold(encargo, ev["id"]), "estado", "") in CERRADOS
+            )
         finally:
             reg.close()
 
@@ -324,6 +343,25 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertIsNone(informe["detencion"])
         self.assertEqual(self.estados(), ["terminado"])
         self.assertEqual(codigo, 1)
+
+    def test_el_encargo_que_falla_se_para_a_su_tope_aunque_el_otro_siga(self):
+        """El tope de cada encargo cuenta desde su propio arranque: el que falla no corre
+        hasta que el otro termine. Con 0 min, el canario lo para en cuanto lo ve."""
+        esperado = self.tmp / "esperado.json"
+        datos = json.loads((RAIZ / "ops" / "canario_encargos.esperado.json").read_text(encoding="utf-8"))
+        datos["topes"].update(minutos_termina=1, minutos_se_detiene=0)
+        esperado.write_text(json.dumps(datos), encoding="utf-8")
+
+        _, informe = self.correr("--esperado", str(esperado))
+
+        falla = informe["detencion"]["encargo"]
+        self.assertEqual((informe["fin"], informe["detencion"]["fin"]), ("terminado", "tope"), self.avances)
+        ordenes = [ev["id"] for ev in self.eventos(falla) if ev["kind"] == "orden"]
+        self.assertTrue(ordenes, "el canario no paró el encargo que falla")
+        self.assertLess(ordenes[0], self.cerro_en(informe["encargo"]), "lo paró después de que el otro terminó")
+        fila = self.filas(informe)["se detiene"]
+        self.assertIn("no se paró solo: recibió la orden parar", fila["observado"])
+        self.queda_cerrado()
 
     def test_una_corrida_que_vence_el_tope_para_su_encargo_y_lo_limpia(self):
         codigo, informe = self.correr("--tope-min", "0.05", modo=("--quieto",))
