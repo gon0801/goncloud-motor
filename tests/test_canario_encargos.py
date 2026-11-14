@@ -879,7 +879,7 @@ class LeerLaDetencion(unittest.TestCase):
     def paso(self, paso: str, enviado: bool | None, codigo: int) -> dict:
         return {"paso": paso, "script": f"{paso}.sh", "codigo": codigo, "enviado": enviado}
 
-    def test_cada_recibo_suyo_dice_que_pasos_lanzo_el_trabajador(self):
+    def test_cada_recibo_suyo_dice_que_pasos_lanzo_el_trabajador(self):  # no-roja-en-base: fija la lectura de un recibo legible y de un checklist no enviado, que la ronda anterior ya hacía; lo ilegible lo prueba el caso de al lado
         self.despliegue({"encargo": self.ident, "fase": "uno", "estado": "fallido", "pasos": [
             self.paso("desplegar", True, 0), self.paso("checklist", True, 1), self.paso("rollback", True, 0),
         ]})
