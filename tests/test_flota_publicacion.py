@@ -120,16 +120,33 @@ class PublicacionesDeLaFlota(unittest.TestCase):
         _confirmar_routing(repo, thinking)
         return repo
 
-    def _como_v2(self, snapshot: Path) -> Path:
+    def _como(self, snapshot: Path, version: int) -> Path:
         """El mismo contenido tal como lo escribe un publicador sin actualizar."""
         doc = _leer(snapshot)
         doc.pop("publicacion")
         doc.pop("snapshot_sha256")
-        doc["schema"] = "goncloud.flota.compartida.v2"
+        if version == 1:
+            doc.pop("claw_routing")
+        doc["schema"] = f"goncloud.flota.compartida.v{version}"
         doc["snapshot_sha256"] = _sha256(_json_bytes(doc))
-        salida = self.base / "snapshot-v2.json"
+        salida = self.base / f"snapshot-v{version}.json"
         salida.write_bytes(_json_bytes(doc))
         return salida
+
+    def _con_numero(self) -> tuple[dict[str, bytes], Path]:
+        importar(self.replica, self._publicar(_politica("v8")))
+        return _archivos(self.replica), self.replica / "fuente-compartida.json"
+
+    def _ciclo_replica(self, snapshot: Path) -> tuple[int, str]:
+        error = io.StringIO()
+        with (
+            contextlib.redirect_stderr(error),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            rc = flota_ciclo.main(
+                ["--home", str(self.replica), "--replica", str(snapshot), "--json"]
+            )
+        return rc, error.getvalue()
 
     def test_un_snapshot_anterior_se_rechaza_sin_escribir_en_la_replica(self):
         primera = self._publicar(_politica("v8"))
@@ -216,7 +233,7 @@ class PublicacionesDeLaFlota(unittest.TestCase):
     def test_la_replica_deja_los_snapshots_sin_numero_en_cuanto_tiene_uno(self):
         repo = self._repo_hermes(thinking=False)
         v3 = self._publicar(_politica("v8"), repo_hermes=repo)
-        v2 = self._como_v2(v3)
+        v2 = self._como(v3, 2)
         self.assertEqual(importar(self.replica, v2)["accion"], "sincronizada")
         self.assertEqual(importar(self.replica, v3)["accion"], "sincronizada")
         antes = _archivos(self.replica)
@@ -224,6 +241,107 @@ class PublicacionesDeLaFlota(unittest.TestCase):
         with self.assertRaises(compartida.PublicacionRechazada):
             importar(self.replica, v2)
         self.assertEqual(_archivos(self.replica), antes)
+
+    def test_un_v1_entra_mientras_la_replica_no_tiene_numero(self):
+        v3 = self._publicar(_politica("v8"))
+        v1 = self._como(v3, 1)
+
+        resultado = importar(self.replica, v1)
+
+        self.assertEqual(resultado["accion"], "sincronizada")
+        self.assertEqual(
+            resultado["claw_routing"],
+            {"incluido": False, "motivo": "el snapshot no lleva claw-routing"},
+        )
+        fuente = leer_fuente(self.replica)
+        assert fuente is not None
+        self.assertEqual(fuente["schema"], "goncloud.flota.compartida.v1")
+        self.assertEqual(importar(self.replica, v3)["accion"], "sincronizada")
+        antes = _archivos(self.replica)
+
+        with self.assertRaises(compartida.PublicacionRechazada):
+            importar(self.replica, v1)
+        self.assertEqual(_archivos(self.replica), antes)
+
+    def test_un_v3_sin_checkout_dice_que_el_publicador_no_publico_routing(self):
+        resultado = importar(self.replica, self._publicar(_politica("v8")))
+
+        self.assertFalse(resultado["claw_routing"]["incluido"])
+        self.assertIn("no hubo checkout", resultado["claw_routing"]["motivo"])
+
+    def test_un_schema_que_no_es_texto_es_un_snapshot_invalido(self):  # no-roja-en-base: el TypeError lo introdujo la tabla _EXTRA de este PR; la base comparaba con == y ya daba SnapshotInvalido
+        antes, _ = self._con_numero()
+        for schema in (["goncloud.flota.compartida.v3"], {"v": 3}):
+            with self.subTest(schema=schema):
+                doc = _leer(self._publicar(_politica("v9")))
+                doc["schema"] = schema
+                roto = self.base / "schema-roto.json"
+                roto.write_text(json.dumps(doc), encoding="utf-8")
+
+                with self.assertRaises(compartida.SnapshotInvalido):
+                    importar(self.replica, roto)
+                self.assertEqual(_archivos(self.replica), antes)
+
+    def test_una_fuente_vigente_ilegible_se_diagnostica_sin_escribir(self):
+        corruptas = {
+            "json roto": b"{roto",
+            "vacia": b"",
+            "lista": b"[]",
+            "sin hash ni origen": b'{"publicacion": 1}',
+            "numero de texto": b'{"publicacion": "1", "hash": "x", "origen": "pc"}',
+        }
+        _, fuente = self._con_numero()
+        nueva = self._publicar(_politica("v9"))
+        for caso, contenido in corruptas.items():
+            with self.subTest(caso=caso):
+                fuente.write_bytes(contenido)
+                antes = _archivos(self.replica)
+
+                with self.assertRaises(compartida.SnapshotInvalido) as rechazo:
+                    importar(self.replica, nueva)
+                self.assertIn(str(fuente), str(rechazo.exception))
+                self.assertEqual(_archivos(self.replica), antes)
+
+                rc, error = self._ciclo_replica(nueva)
+                self.assertEqual(rc, 1)
+                self.assertIn(str(fuente), error)
+                self.assertNotIn("Traceback", error)
+                self.assertEqual(_archivos(self.replica), antes)
+
+    def test_un_contador_ilegible_se_diagnostica_y_desde_lo_resuelve(self):
+        repo = self._repo_hermes(thinking=False)
+        self._publicar(_politica("v8"), repo_hermes=repo)
+        contador = self.publicador / "ultima-publicacion.json"
+        corruptos = {"json roto": b"{roto", "vacio": b"{}", "lista": b"[]"}
+        for indice, (caso, contenido) in enumerate(corruptos.items()):
+            with self.subTest(caso=caso):
+                contador.write_bytes(contenido)
+                salida = self.base / f"contador-{indice}.json"
+                orden = [
+                    "publicar",
+                    "--home",
+                    str(self.publicador),
+                    "--salida",
+                    str(salida),
+                    "--repo-hermes",
+                    str(repo),
+                ]
+                error = io.StringIO()
+                with (
+                    contextlib.redirect_stderr(error),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    rc = cli.main(orden)
+
+                self.assertEqual(rc, 1)
+                self.assertIn(str(contador), error.getvalue())
+                self.assertIn("--desde", error.getvalue())
+                self.assertFalse(salida.exists())
+                self.assertEqual(contador.read_bytes(), contenido)
+
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.main([*orden, "--desde", "5"]), 0)
+                self.assertEqual(_leer(salida)["publicacion"], 5)
 
     def test_una_fuente_que_ya_no_valida_sigue_ordenando_y_la_cura_la_siguiente(self):
         primera = self._publicar(_politica("v7"))
