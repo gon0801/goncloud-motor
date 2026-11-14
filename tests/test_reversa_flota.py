@@ -392,6 +392,24 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(asignar(self.home), self.buena)
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
 
+    def test_un_arranque_lento_no_revierte_la_instalada_y_dice_que_no_se_midio(self) -> None:
+        con_motor = _commit(self.motor, {"motor/__main__.py": "print('ayuda')\n"}, "con motor")
+        aplicar(self.home, self.buena, sin_turnos=True)
+        self.assertEqual(aplicar(self.home, con_motor, sin_turnos=True)["accion"], "aplicada")
+        correr = subprocess.run
+
+        def ayuda_lenta(argv, *args, **kwargs):
+            if list(argv)[-1:] == ["--help"]:
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            return correr(argv, *args, **kwargs)
+
+        with mock.patch("subprocess.run", side_effect=ayuda_lenta):
+            salida = recuperar(self.home)
+        self.assertEqual(salida["accion"], "no_medido", salida)
+        self.assertIn("--help", salida["causa"])
+        self.assertEqual(asignar(self.home), con_motor)
+        self.assertTrue((self.home / "instalacion.json").exists())
+
     def _encargo_con_trabajador(self, clave: str):
         from motor.encargos.ciclo import ahora_iso, recibir
         from motor.encargos.registro import Registro
