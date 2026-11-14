@@ -276,7 +276,7 @@ class SesionConsistente(unittest.TestCase):
             any("se apartó" in n and "sin sesión" in n for n in notas), notas
         )
 
-    def test_sin_sesion_el_mismo_fallo_dice_la_causa_real_y_espera(self):
+    def test_sin_sesion_el_mismo_fallo_dice_la_causa_real_y_espera(self):  # no-roja-en-base: el segundo fallo llega en un turno nuevo, como en producción; la base ya pasaba repitiendo el intento incorporado
         hora = "2026-11-11T07:25:00Z"
         registro, enc = self._encargo(hora)
         self._base_con_wal(("v1",))
@@ -292,6 +292,8 @@ class SesionConsistente(unittest.TestCase):
         )
         self.assertTrue(apartado.is_dir())
         self.assertIn(enc1.estado, ("recibido", "ejecutando"))
+        registro.anotar(enc.id, {"kind": "reserva", "data": {"rol": "responsable"}}, "t-reserva-2")
+        registro.anotar(enc.id, {"kind": "reserva_cerrada", "data": {}}, "t-cerrada-2")
 
         enc2 = _incorporar(
             registro, registro.fold(enc.id), self.tmp / "espacio", hora,

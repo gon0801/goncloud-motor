@@ -93,9 +93,14 @@ from .frontera import (
     leer_parada_local,
     turno,
 )
-from .registro import Registro
-from .devolucion import corte_de_instrumento, devolver, sin_avance
-from .lote import Directo, excepcion, incorporado
+from .registro import Evento, Registro
+from .devolucion import devolver, sin_avance
+from . import instrumento
+from .instrumento import apariciones as _apariciones
+from .instrumento import entorno, fallo_juicio, impedimento_de_instrumento
+from .inspeccion import consumir_ligada, entregada, ligar
+from .lote import Directo, Lote, excepcion, guardar, guardar_incorporado, incorporado
+from .lote import sobre, ya_incorporado
 from .paso_juicio import juicio_sin_guardar
 from .fases import adoptar as adoptar_fases
 from .sesion import (
@@ -927,8 +932,9 @@ def _ultima_firma(enc: Encargo | None) -> str:
     return enc.ultima_firma if enc is not None else ""
 
 
-def _marcar_incorporado(registro: Registro, enc: Encargo, hora: str) -> None:
+def _marcar_incorporado(registro: Registro, enc: Encargo, hora: str) -> Encargo:
     Directo(registro, enc).con(incorporado(enc, hora))
+    return registro.fold(enc.id) or enc
 
 
 def _almacen_sesion(base: Path, encargo_id: str, rol: str) -> Path:
@@ -2000,7 +2006,7 @@ def _barrer_encargos(
             )
         if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
-            if juicio_sin_guardar(enc):
+            if juicio_sin_guardar(registro, enc):
                 informes.append(vista(enc))
                 continue
             arbol = observar(directorio, proc)
@@ -2039,9 +2045,7 @@ def _barrer_encargos(
             and enc.intentos_nuevos
         ):
             enc = _conciliar_fases(registro, enc, gh, hora)
-        resultado_paso: Resultado = NecesitaAgente(
-            str(getattr(enc, "rol", "") or "responsable")
-        )
+        resultado_paso: Resultado = NecesitaAgente(enc.rol or "responsable")
         if (
             not parada
             and enc.proc is None
@@ -2363,25 +2367,8 @@ def _anotar_instrumento(
     clase: str = "",
     artefacto: str = "",
 ) -> None:
-    """Registra el fallo con la operación que lo produjo. `clase` es la
-    identidad estable: no cambia porque el mensaje cambie de redacción.
-    `artefacto` es el archivo a revalidar para acreditar la reparación, cuando
-    no basta con una ruta canónica del espacio."""
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "instrumento_fallo",
-            "data": {
-                "fuente": fuente,
-                "causa": causa,
-                "clase": clase,
-                "artefacto": artefacto,
-                "version": enc.producto.firma if enc.producto else "",
-                "siguiente": siguiente,
-                "hora": hora,
-            },
-        },
-        f"instrumento:{enc.id}:{fuente}:{serie}",
+    Directo(registro, enc).con(
+        instrumento.fallo(enc, fuente, causa, siguiente, hora, serie, clase, artefacto)
     )
 
 
@@ -2607,14 +2594,6 @@ def _decision(
     )
 
 
-_VERIFICABLES = (
-    "entorno",
-    "comprobaciones.json",
-    "fases.json",
-    "pedido-efecto.json",
-    "disputa.json",
-)
-
 _EVIDENCIA_DE = {
     "entorno": (
         "la sonda del entorno funciona: temporal del CLI, espacio y fuentes autorizadas"
@@ -2629,12 +2608,6 @@ _EVIDENCIA_DE = {
 }
 
 
-def _es_verificable(clase: str) -> bool:
-    # El juicio también: su archivo se puede volver a validar contra la versión
-    # vigente sin gastar otro turno del revisor.
-    return clase in _VERIFICABLES or clase.startswith(("juicio:", "inspeccion:"))
-
-
 def _evidencia_de(clase: str) -> str:
     if clase.startswith("despliegue:"):
         return "un despliegue aplicado ya contiene el código de la fase pendiente"
@@ -2645,39 +2618,16 @@ def _evidencia_de(clase: str) -> str:
     return _EVIDENCIA_DE.get(clase, "la comprobación de la causa")
 
 
-def _apariciones(enc: Encargo, clase: str) -> int:
-    """Cuántas veces apareció esta causa. Sube al registrarla y al resolverla,
-    así una retransmisión no crea un evento y una recaída sí."""
-    return dict(enc.apariciones).get(clase, 0)
-
-
 def _anotar_impedimento(
     registro, enc: Encargo, clase: str, causa: str, condicion: str, hora: str,
     agente: str = "",
 ) -> None:
     """`agente` es el que se iba a lanzar si la causa depende de él (su shell)."""
-    enc = registro.fold(enc.id) or enc
-    if any(
-        i.clase == clase and i.causa == causa and i.condicion == condicion
-        and i.agente == agente
-        for i in enc.impedimentos
-    ):
-        return
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "impedimento",
-            "data": {
-                "clase": clase,
-                "causa": causa,
-                "condicion": condicion,
-                "verificable": _es_verificable(clase),
-                "agente": agente,
-                "hora": hora,
-            },
-        },
-        f"impedimento:{enc.id}:{clase}:{_apariciones(enc, clase) + 1}",
+    evento = instrumento.impedimento(
+        registro.fold(enc.id) or enc, clase, causa, condicion, hora, agente
     )
+    if evento is not None:
+        Directo(registro, enc).con(evento)
 
 
 def _resolver_impedimento(registro, enc: Encargo, clase: str, hora: str) -> None:
@@ -2713,15 +2663,8 @@ def _resolver_impedimentos_de_entrega(
 
 
 def _bloqueo_entorno(registro, enc: Encargo, espacio: Path, hora: str) -> bool:
-    """El entorno manda sobre el trabajador: si no deja trabajar, el fallo de
-    instrumento no es una corrección que el trabajador pueda hacer."""
     sonda = _sonda_entorno(enc, espacio, registro.base)
-    if sonda.ok:
-        return False
-    _anotar_impedimento(
-        registro, enc, "entorno", sonda.causa, sonda.condicion, hora, enc.agente or ""
-    )
-    return True
+    return entorno(Directo(registro, enc), sonda, hora) is not None
 
 
 def _juicio_reparado(
@@ -2908,15 +2851,6 @@ def _verificar_impedimento(
     return None
 
 
-def _instrumento_se_puede_omitir(clase: str) -> bool:
-    """Toda herramienta que falla igual tres veces se deja de usar.
-
-    Incluye el juicio, la inspección, el entorno y los artefactos internos: el
-    revisor decide con la evidencia que haya y lo que no se pudo comprobar queda
-    escrito en el PR. Ninguna caída deja al encargo esperando a una persona."""
-    return True
-
-
 def _instrumento_omitido(enc: Encargo, clase: str) -> bool:
     return clase in enc.herramientas_no_disponibles
 
@@ -2924,93 +2858,9 @@ def _instrumento_omitido(enc: Encargo, clase: str) -> bool:
 def _impedimento_de_instrumento(
     registro, enc: Encargo, clase: str, causa: str, condicion: str, hora: str
 ) -> bool:
-    """El mismo instrumento con el mismo defecto no es información nueva.
-
-    Se mide por la clase del defecto contra el registro de fallos, no por el
-    texto: un identificador de intento dentro del mensaje no reinicia la cuenta.
-    Una clase distinta sí es un intento de reparación y se deja pasar.
-
-    A la tercera falla igual, la herramienta se marca como no disponible para
-    este encargo: deja de bloquear y el trabajo sigue con la evidencia que hay,
-    también cuando la que falla es el juicio o la inspección. Devuelve True
-    cuando el caso queda manejado (la tercera falla ya no gasta un turno de
-    reparación leyendo el fold anterior) y False cuando el llamador debe
-    devolver el trabajo para reparar el instrumento."""
-    enc = registro.fold(enc.id) or enc
-    corte = corte_de_instrumento(
-        enc, causa, hora, f"impedimento-{clase}", str(enc.rol or "responsable")
-    )
-    if corte is not None:
-        Directo(registro, enc).con(corte)
-    previas = sum(1 for f in enc.fallos_instrumento if f[1] == clase)
-    if previas < 2:
-        return False
-    if _instrumento_se_puede_omitir(clase):
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "instrumento_no_disponible",
-                "data": {"clase": clase, "causa": causa, "hora": hora},
-            },
-            f"instrumento-no-disponible:{enc.id}:{clase}",
-        )
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "nota_pr",
-                "data": {
-                    "texto": (
-                        "herramienta no disponible para este encargo: "
-                        f"{clase} ({str(causa)[:200]})"
-                    ),
-                    "hora": hora,
-                },
-            },
-            f"nota-herramienta:{enc.id}:{clase}",
-        )
-        if clase.startswith(("juicio:", "inspeccion:")):
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "pendiente_entrega",
-                    "data": {
-                        "texto": (
-                            f"no se pudo obtener {clase} tras tres fallos iguales: "
-                            f"{str(causa)[:400]}"
-                        ),
-                        "hora": hora,
-                    },
-                },
-                f"pendiente-instrumento:{enc.id}:{clase}",
-            )
-        # La herramienta ya no bloquea: no se gasta un turno de reparación.
-        return True
-    _anotar_impedimento(registro, enc, clase, causa, condicion, hora)
-    return True
-
-
-def _fallo_juicio(
-    registro,
-    enc: Encargo,
-    clase: str,
-    causa: str,
-    siguiente: str,
-    condicion: str,
-    artefacto: str,
-    hora: str,
-    serie: str,
-) -> None:
-    """Único camino para registrar que el juicio no se pudo usar.
-
-    Concentra las dos decisiones que esa condición arrastra: la identidad del
-    defecto y el control de repetición. Una rama que anota y devuelve el control
-    al barrido sin pasar por aquí vuelve a lanzar al revisor en cada vuelta, y
-    eso ya pasó con la referencia obsoleta."""
-    _anotar_instrumento(
-        registro, enc, "juicio", causa, siguiente,
-        hora, serie, clase=clase, artefacto=artefacto,
-    )
-    _impedimento_de_instrumento(registro, enc, clase, causa, condicion, hora)
+    """Ver `instrumento.impedimento_de_instrumento`. `condicion` ya no decide
+    nada: a la tercera falla igual la herramienta deja de bloquear."""
+    return impedimento_de_instrumento(Directo(registro, enc), clase, causa, hora)[1]
 
 
 def _version_de_referencia(referencia: dict, enc: Encargo) -> str:
@@ -3480,146 +3330,6 @@ def _texto_respuestas_propietario(enc: Encargo) -> str:
     )
 
 
-def _ligar_inspeccion(
-    registro: Registro, enc: Encargo, espacio: Path, juicio: JuicioValidado, hora: str
-) -> None:
-    """La inspección pendiente pasa por el puente: petición ejecutable si una
-    capacidad concedida la cubre, o espera identificada del propietario."""
-    fase = enc.fase_actual
-    if fase is None:
-        return
-    ident = _id_inspeccion(enc, juicio, registro.base)
-    previa = next((s for s in enc.solicitudes if s.id == ident), None)
-    if fase.inspeccion_solicitud == ident and previa is not None:
-        # La pregunta ya está registrada como solicitud visible y no bloquea: el
-        # barrido sigue y el freno de no concluyentes acota la repetición.
-        return
-    # Con la liga puesta pero sin solicitud registrada (llegó tarde, con el
-    # encargo detenido) el pedido se vuelve a encolar en vez de darse por atendido.
-    if previa is not None:
-        if respuesta_consumida(fase, marca_inspeccion_entregada(previa)):
-            # La respuesta de esa solicitud ya se entregó y consumió: el mismo
-            # pedido no re-liga ni gasta otra entrega.
-            return
-        # El juicio vuelve a pedir una inspección cuya respuesta existe pero no
-        # se entregó a esta vuelta: se re-liga para que el próximo turno la reciba.
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "inspeccion_solicitud",
-                "data": {
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "solicitud": ident,
-                    "hora": hora,
-                },
-            },
-            f"inspeccion:{enc.id}:{enc.fase_activa}:{ident}:{enc.generacion}",
-        )
-        return
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "inspeccion_solicitud",
-            "data": {
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "solicitud": ident,
-                "hora": hora,
-            },
-        },
-        f"inspeccion:{enc.id}:{enc.fase_activa}:{ident}:{enc.generacion}",
-    )
-    enc = registro.fold(enc.id) or enc
-    try:
-        recursos = capacidades.cargar(registro.base)
-    except capacidades.ConfigInvalida:
-        recursos = {}
-    rev = enc.revision_vigente.revision_id if enc.revision_vigente else ""
-    pregunta = (
-        f"La revisión {rev or 'vigente'} de la fase {enc.fase_activa} (versión "
-        f"{juicio.version[:12]}) no concluyó: falta «{juicio.inspeccion_faltante}». "
-    )
-    intento = enc.intento or enc.conductor or "supervisor"
-    pedido = juicio.inspeccion
-    if pedido is not None and pedido.operacion in capacidades.operaciones_de(
-        recursos, pedido.recurso
-    ):
-        crudo = {
-            "id": ident,
-            "encargo": enc.id,
-            "operacion": pedido.operacion,
-            "recurso": pedido.recurso,
-            "fase": enc.fase_activa,
-            "intento": intento,
-            "generacion": enc.generacion,
-            "conductor": enc.conductor,
-            "motivo": pregunta[:necesidades.MAX_MOTIVO],
-            "parametros": dict(pedido.parametros),
-        }
-        try:
-            necesidades.pedir_inspeccion(espacio, enc, crudo)
-        except (OSError, ValueError):
-            # Sin buzón no hay ejecución: la espera del propietario es la única
-            # vía que queda y se registra abajo.
-            pass
-        else:
-            # La liga nace con su solicitud: una liga sin solicitud no bloquea.
-            necesidades.registrar_pedida(registro, enc, crudo, hora)
-            if recursos[pedido.recurso].get("autorizacion") == "propietario":
-                # La solicitud queda visible y admite respuesta, pero no detiene
-                # el trabajo: el revisor sigue con lo que tenga y la repetición
-                # la corta el freno de no concluyentes.
-                pass
-            return
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "solicitud",
-            "data": {
-                "id": ident,
-                "operacion": pedido.operacion if pedido is not None else "",
-                "recurso": pedido.recurso if pedido is not None else "",
-                "fase": enc.fase_activa,
-                "intento": intento,
-                "generacion": enc.generacion,
-                "conductor": enc.conductor,
-                "motivo": pregunta[:necesidades.MAX_MOTIVO],
-                "parametros": [
-                    list(x) for x in (pedido.parametros if pedido is not None else ())
-                ],
-                "estado": "pregunta",
-                "pregunta": (
-                    pregunta
-                    + "Ninguna capacidad concedida del puente la cubre"
-                    + (
-                        f": el recurso {pedido.recurso} no está concedido"
-                        if pedido is not None
-                        else ""
-                    )
-                    + f". Concede la capacidad o responde a la solicitud {ident}."
-                ),
-                "hora": hora,
-            },
-        },
-        f"solicitud:{enc.id}:{ident}",
-    )
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "procedimiento",
-            "data": {
-                "nota": (
-                    "consulta sin capacidad concedida, visible como solicitud "
-                    f"{ident}; el trabajo sigue sin esperar respuesta"
-                ),
-                "hora": hora,
-            },
-        },
-        f"consulta-sin-capacidad:{enc.id}:{ident}",
-    )
-
-
 def _cerrar_con_juicio(
     registro: Registro,
     enc: Encargo,
@@ -3634,40 +3344,33 @@ def _cerrar_con_juicio(
     except (ValueError, TypeError) as exc:
         pedidos = []
         error_pedidos = str(exc)
+    lote = sobre(registro, enc)
     if juicio.veredicto == "aprobado" and error_pedidos:
-        _anotar_instrumento(
-            registro, enc, "adaptador", error_pedidos,
+        lote = lote.con(instrumento.fallo(
+            enc, "adaptador", error_pedidos,
             "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
             hora, f"pedidos-{enc.generacion}", clase="pedido-efecto.json",
-        )
-        if _instrumento_omitido(enc, "pedido-efecto.json"):
-            error_pedidos = ""
-        else:
-            if not _impedimento_de_instrumento(
-                registro, enc, "pedido-efecto.json", error_pedidos,
-                "que .interno/pedido-efecto.json vuelva a validar", hora,
-            ):
-                _devolver(
-                    registro, enc, "reparar_instrumento", error_pedidos,
+        ))
+        if not _instrumento_omitido(enc, "pedido-efecto.json"):
+            lote, manejado = impedimento_de_instrumento(
+                lote, "pedido-efecto.json", error_pedidos, hora
+            )
+            if not manejado:
+                lote = devolver(
+                    lote, enc, "reparar_instrumento", error_pedidos,
                     "corregir la solicitud interna sin tocar el producto",
                     hora, "pedidos",
                 )
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
-    if juicio.veredicto == "aprobado" and pedidos:
-        if set(juicio.efectos_pendientes) != {str(p["id"]) for p in pedidos}:
-            _fallo_juicio(
-                registro, enc, "juicio:esquema:efectos",
-                "la aprobacion no enumera en efectos_pendientes los IDs exactos solicitados",
-                "volver a emitir el juicio enumerando los efectos aprobados",
-                "que el juicio enumere en efectos_pendientes los efectos "
-                "solicitados para la versión revisada",
-                str(directorio / "revision.json"), hora,
-                f"efectos-{enc.generacion}",
-            )
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
-    from .lote import guardar, sobre
+            return guardar_incorporado(registro, enc, lote, hora)
+    if juicio.veredicto == "aprobado" and pedidos and (
+        set(juicio.efectos_pendientes) != {str(p["id"]) for p in pedidos}
+    ):
+        return guardar_incorporado(registro, enc, fallo_juicio(
+            lote, enc, "juicio:esquema:efectos",
+            "la aprobacion no enumera en efectos_pendientes los IDs exactos solicitados",
+            "volver a emitir el juicio enumerando los efectos aprobados",
+            str(directorio / "revision.json"), hora, f"efectos-{enc.generacion}",
+        ), hora)
     from .paso_juicio import Foto, decidir
 
     paso = decidir(
@@ -3676,9 +3379,14 @@ def _cerrar_con_juicio(
             disputa_previa=bool(_disputas_pendientes(registro, enc, interno_de(espacio))),
             pedido=_pedido_de_inspeccion(registro.base, juicio),
         ),
-        sobre(registro, enc),
+        lote,
         region=lambda sha, h: _region_del_hallazgo(espacio, sha, h),
     )
+    if paso.respuesta == "ligar_inspeccion":
+        lote = lote.seguir(paso)
+        ident = _id_inspeccion(lote.estado, juicio, registro.base)
+        lote = ligar(lote, juicio, ident, espacio, registro.base, hora)
+        paso = lote.con(incorporado(enc, hora)).paso("nada")
     if guardar(registro, enc.id, paso):
         # Otro escritor chocó con el lote: no se guardó nada, tampoco
         # `incorporado`, y el barrido lo ve con `juicio_sin_guardar`.
@@ -3686,9 +3394,6 @@ def _cerrar_con_juicio(
     enc = registro.fold(enc.id)
     if paso.respuesta == "cerrar":
         _intentar_cierre(registro, enc, espacio, directorio, hora)
-    elif paso.respuesta == "ligar_inspeccion":
-        _ligar_inspeccion(registro, enc, espacio, juicio, hora)
-        _marcar_incorporado(registro, enc, hora)
     return registro.fold(enc.id)
 
 
@@ -3699,23 +3404,23 @@ def _incorporar(
     hora: str,
     directorio: Path | None = None,
 ) -> Encargo:
+    if ya_incorporado(registro, enc):
+        return enc
     directorio = directorio or _directorio(registro.base, enc.id)
     outcome_path = directorio / "outcome.json"
     if enc.intento_interrumpido and (not enc.intento or not outcome_path.is_file()):
-        _marcar_incorporado(registro, enc, hora)
-        return enc
+        return _marcar_incorporado(registro, enc, hora)
     if outcome_path.is_file():
         outcome = leer_json(outcome_path)
         sesion_runtime = str(outcome.get("sesion_runtime") or "")
+        lote = sobre(registro, enc)
         if sesion_runtime:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "intento_cerrado",
-                    "data": {"hora": hora, "sesion_runtime": sesion_runtime},
-                },
+            lote = lote.con(Evento(
+                "intento_cerrado", {"hora": hora, "sesion_runtime": sesion_runtime},
                 f"sesion-runtime:{enc.id}:{enc.generacion}",
-            )
+            ))
+        if sesion_runtime and not enc.intento_interrumpido:
+            guardar(registro, enc.id, lote.paso(None))
             enc = registro.fold(enc.id)
         spec = (
             leer_json((directorio / "arranque.json"))
@@ -3735,8 +3440,7 @@ def _incorporar(
                 hora,
             )
         if enc.intento_interrumpido:
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
+            return guardar_incorporado(registro, enc, lote, hora)
         if outcome.get("autenticacion_expirada"):
             marcar_espera(
                 registro,
@@ -3745,14 +3449,12 @@ def _incorporar(
                 hora,
                 hora,
             )
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
+            return _marcar_incorporado(registro, enc, hora)
         if outcome.get("fallo_runtime") and es_sesion_local(str(outcome["fallo_runtime"])):
             enc = _incorporar_falla_sesion_local(
                 registro, enc, agente, str(outcome["fallo_runtime"]), hora, almacen_previa
             )
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
+            return _marcar_incorporado(registro, enc, hora)
         if outcome.get("fallo_runtime") and spec.get("sesion_modo") == "reanudada":
             from motor.fallas import clasifica
 
@@ -3798,8 +3500,7 @@ def _incorporar(
                     "continuar con sesion reconstruida desde la libreta",
                     hora, f"sesion-{enc.generacion}",
                 )
-                _marcar_incorporado(registro, enc, hora)
-                return registro.fold(enc.id)
+                return _marcar_incorporado(registro, enc, hora)
         if outcome.get("fallo_runtime"):
             from .rutas import fallo
 
@@ -3824,8 +3525,7 @@ def _incorporar(
                     causa["hasta"],
                     hora,
                 )
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
+            return _marcar_incorporado(registro, enc, hora)
         if any(p.agente == agente for p in enc.pausas):
             registro.anotar(
                 enc.id,
@@ -4159,41 +3859,11 @@ def _juicio_repite_inspeccion(enc: Encargo, directorio: Path, base: Path) -> boo
     )
 
 
-def _consumir_ligada(registro: Registro, enc: Encargo, hora: str) -> None:
-    """Al cambiar de consulta, la respuesta ya entregada queda consumida.
-
-    Si no se registra, volver a la consulta anterior la re-liga como si nadie
-    la hubiera visto y el revisor gasta otro turno con el mismo error.
-    """
-    fase = enc.fase_actual
-    if fase is None or not fase.inspeccion_solicitud:
-        return
-    sol = next((s for s in enc.solicitudes if s.id == fase.inspeccion_solicitud), None)
-    if sol is None or sol.estado in ("pendiente", "pregunta"):
-        return
-    marca = marca_inspeccion_entregada(sol)
-    if respuesta_consumida(fase, marca):
-        return
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "inspeccion_entregada",
-            "data": {
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "solicitud": sol.id,
-                "marca": marca,
-                "hora": hora,
-            },
-        },
-        f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
-    )
-
-
 def _salta_inspeccion(
-    registro: Registro, enc: Encargo, directorio: Path, hora: str
-) -> bool:
-    """True cuando el juicio presente no debe consumirse como revisión.
+    registro: Registro, lote: Lote, directorio: Path, hora: str
+) -> tuple[Lote, bool]:
+    """El lote con lo que la inspección anota, y True cuando el juicio presente
+    no debe consumirse como revisión.
 
     Un turno muerto no produce juicio: la referencia sigue señalando el que
     una incorporación anterior ya consumió y no se gasta nada, con el gate
@@ -4201,12 +3871,13 @@ def _salta_inspeccion(
     pedido ligado acredita que la respuesta entregada se consumió: se anota
     la marca y tampoco gasta revisión.
     """
+    enc = lote.estado
     fase = enc.fase_actual
     if fase is None or not fase.inspeccion_pendiente:
-        return False
+        return lote, False
     resultado = _juicio_de_referencia(enc, directorio)
     if not isinstance(resultado, JuicioValidado):
-        return inspeccion_bloquea(enc) and _juicio_repite_inspeccion(
+        return lote, inspeccion_bloquea(enc) and _juicio_repite_inspeccion(
             enc, directorio, registro.base
         )
     if (
@@ -4216,62 +3887,29 @@ def _salta_inspeccion(
         )
         is not None
     ):
-        return True
+        return lote, True
     ident = _id_inspeccion(enc, resultado, registro.base)
     if ident != fase.inspeccion_solicitud:
-        _consumir_ligada(registro, enc, hora)
-        enc = registro.fold(enc.id) or enc
+        lote = consumir_ligada(lote, hora)
+        enc = lote.estado
         fase = enc.fase_actual or fase
         otra = next((s for s in enc.solicitudes if s.id == ident), None)
-        return otra is not None and respuesta_consumida(
+        return lote, otra is not None and respuesta_consumida(
             fase, marca_inspeccion_entregada(otra)
         )
     sol = next((s for s in enc.solicitudes if s.id == ident), None)
     if sol is None:
         # La liga apunta a una solicitud que nunca se registró: no hay respuesta
         # que el juicio acredite como consumida. Se consume para que
-        # `_ligar_inspeccion` vuelva a encolar el pedido en vez de descartarlo.
-        return False
-    if sol.estado == "pregunta":
-        # La pregunta por autorización no bloquea: el juicio se consume como una
-        # revisión más y la repetición la cuenta el freno de no concluyentes.
-        # Un pedido repetido sin respuesta no queda callado: deja el pendiente
-        # visible para entregar con lo que hay, sin esperar a una persona.
-        marca = marca_inspeccion_entregada(sol)
-        if fase.inspeccion_entregada != marca:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "inspeccion_entregada",
-                    "data": {
-                        "fase": enc.fase_activa,
-                        "intento": enc.intento,
-                        "solicitud": sol.id,
-                        "marca": marca,
-                        "hora": hora,
-                    },
-                },
-                f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
-            )
-        return False
-    if sol.estado != "pendiente":
-        marca = marca_inspeccion_entregada(sol)
-        if fase.inspeccion_entregada != marca:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "inspeccion_entregada",
-                    "data": {
-                        "fase": enc.fase_activa,
-                        "intento": enc.intento,
-                        "solicitud": sol.id,
-                        "marca": marca,
-                        "hora": hora,
-                    },
-                },
-                f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
-            )
-    return True
+        # `inspeccion.ligar` vuelva a encolar el pedido en vez de descartarlo.
+        return lote, False
+    if sol.estado != "pendiente" and fase.inspeccion_entregada != marca_inspeccion_entregada(sol):
+        lote = lote.con(entregada(enc, sol, hora))
+    # La pregunta por autorización no bloquea: el juicio se consume como una
+    # revisión más y la repetición la cuenta el freno de no concluyentes. Un
+    # pedido repetido sin respuesta no queda callado: deja el pendiente visible
+    # para entregar con lo que hay, sin esperar a una persona.
+    return lote, sol.estado != "pregunta"
 
 
 def _incorporar_revisor(
@@ -4281,24 +3919,19 @@ def _incorporar_revisor(
     hora: str,
     directorio: Path,
 ) -> Encargo:
-    if _salta_inspeccion(registro, enc, directorio, hora):
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
+    lote, salta = _salta_inspeccion(registro, sobre(registro, enc), directorio, hora)
+    if salta:
+        return guardar_incorporado(registro, enc, lote, hora)
+    guardar(registro, enc.id, lote.paso(None))
     ref_path = directorio / "revision.json"
     if not ref_path.is_file():
-        if _bloqueo_entorno(registro, enc, espacio, hora):
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
-        _fallo_juicio(
-            registro, enc, "juicio:referencia",
-            "falta la referencia de la revision",
+        lote = sobre(registro, enc)
+        sonda = _sonda_entorno(enc, espacio, registro.base)
+        return guardar_incorporado(registro, enc, entorno(lote, sonda, hora) or fallo_juicio(
+            lote, enc, "juicio:referencia", "falta la referencia de la revision",
             "volver a lanzar la revision sobre la misma version",
-            "que la referencia de la revisión señale un juicio válido "
-            "para la versión revisada",
             str(ref_path), hora, f"sinref-{enc.generacion}",
-        )
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
+        ), hora)
     try:
         referencia = leer_json(ref_path)
         if not isinstance(referencia, dict) or not str(
@@ -4306,31 +3939,22 @@ def _incorporar_revisor(
         ):
             raise ValueError("la referencia no señala el resultado del juicio")
     except (OSError, UnicodeError, ValueError) as exc:
-        if _bloqueo_entorno(registro, enc, espacio, hora):
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id) or enc
-        causa = f"la referencia de la revisión no se puede utilizar: {exc}"
-        _fallo_juicio(
-            registro, enc, "juicio:referencia", causa,
+        lote = sobre(registro, enc)
+        sonda = _sonda_entorno(enc, espacio, registro.base)
+        return guardar_incorporado(registro, enc, entorno(lote, sonda, hora) or fallo_juicio(
+            lote, enc, "juicio:referencia",
+            f"la referencia de la revisión no se puede utilizar: {exc}",
             "volver a lanzar la revision sobre la misma version",
-            "que la referencia de la revisión señale un juicio válido "
-            "para la versión revisada",
             str(ref_path), hora, f"refilegible-{enc.generacion}",
-        )
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id) or enc
+        ), hora)
     version_actual = version_producto(espacio)
     if version_actual.firma != _version_de_referencia(referencia, enc):
-        _fallo_juicio(
-            registro, enc, "juicio:referencia",
+        return guardar_incorporado(registro, enc, fallo_juicio(
+            sobre(registro, enc), enc, "juicio:referencia",
             "el producto cambio durante la revision",
             "volver a revisar la version vigente",
-            "que la referencia de la revisión señale un juicio válido "
-            "para la versión revisada",
             str(ref_path), hora, f"stale-{enc.generacion}",
-        )
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
+        ), hora)
     if enc.producto is None or enc.producto.firma != version_actual.firma:
         registro.anotar(
             enc.id,
@@ -4353,42 +3977,37 @@ def _incorporar_revisor(
         bloqueantes_abiertos(enc, "deepseek"),
     )
     if isinstance(resultado, FalloInstrumento):
-        if _bloqueo_entorno(registro, enc, espacio, hora):
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
         # Un juicio ilegible se vuelve a emitir sobre la misma versión: no es
         # trabajo del responsable. El mismo defecto dos veces sí lo detiene.
-        _fallo_juicio(
-            registro, enc, f"juicio:{resultado.defecto}", resultado.causa,
+        lote = sobre(registro, enc)
+        sonda = _sonda_entorno(enc, espacio, registro.base)
+        return guardar_incorporado(registro, enc, entorno(lote, sonda, hora) or fallo_juicio(
+            lote, enc, f"juicio:{resultado.defecto}", resultado.causa,
             "volver a emitir el juicio con el formato pedido sobre la misma version",
-            "que el juicio vuelva a validar para la versión revisada",
             str(Path(referencia["resultado"])), hora, f"juicio-{enc.generacion}",
-        )
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
+        ), hora)
     enc = _contestar_con_juicio_del_revisor(
         registro, enc, espacio, directorio, resultado, hora
     )
     if resultado.instrumento:
-        if _bloqueo_entorno(registro, enc, espacio, hora):
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
-        _anotar_instrumento(
-            registro, enc, "comprobacion", resultado.instrumento,
-            "reparar el instrumento de comprobacion sin tocar el producto",
-            hora, f"instrumento-revisor-{enc.generacion}", clase="comprobacion",
-        )
-        if not _impedimento_de_instrumento(
-            registro, enc, "comprobacion", resultado.instrumento,
-            "que el comando de comprobacion vuelva a ejecutarse", hora,
-        ):
-            _devolver(
-                registro, enc, "reparar_instrumento", resultado.instrumento,
-                "corregir el comando de comprobacion y volver a observar",
-                hora, "instrumento",
+        lote = sobre(registro, enc)
+        bloqueo = entorno(lote, _sonda_entorno(enc, espacio, registro.base), hora)
+        if bloqueo is None:
+            lote = lote.con(instrumento.fallo(
+                enc, "comprobacion", resultado.instrumento,
+                "reparar el instrumento de comprobacion sin tocar el producto",
+                hora, f"instrumento-revisor-{enc.generacion}", clase="comprobacion",
+            ))
+            lote, manejado = impedimento_de_instrumento(
+                lote, "comprobacion", resultado.instrumento, hora
             )
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
+            if not manejado:
+                lote = devolver(
+                    lote, enc, "reparar_instrumento", resultado.instrumento,
+                    "corregir el comando de comprobacion y volver a observar",
+                    hora, "instrumento",
+                )
+        return guardar_incorporado(registro, enc, bloqueo or lote, hora)
     return _cerrar_con_juicio(registro, enc, espacio, directorio, resultado, hora)
 
 
