@@ -14,7 +14,31 @@ Esquema v2: v1 más `claw_routing`, con `contenido` (el texto exacto de `claw-ro
 
 La réplica necesita el `claw-routing.json` porque `_reutilizar_config` copia `config/` de la generación vigente y de ahí derivaba `perfiles/claw/openclaw.json`: un cambio en goncloud-hermes nunca llegaba. El `claw_models.py` ya viene en esa copia, así que no se publica.
 
-El código que entiende v2 sigue aceptando v1 y se comporta como antes. El código anterior a v2 rechaza un v2 entero (estructura inválida), no lo aplica a medias.
+Esquema v3: v2 más `publicacion`, el número de la publicación. Lo asigna el publicador y solo crece. `claw_routing` va siempre y es nulo cuando no hubo checkout. `exportar` publica solo v3.
+
+El código que entiende v2 sigue aceptando v1 y se comporta como antes. El código anterior a v2 rechaza un v2 entero (estructura inválida), no lo aplica a medias. Igual el anterior a v3 con un v3: se despliegan primero las réplicas o toda la flota a la vez.
+
+## Orden de las publicaciones
+
+`generacion` no ordena: confirmar un modelo la vuelve un hash, y el catálogo o el routing cambian sin tocarla. El orden lo da `publicacion`.
+
+El contenido canónico es todo lo que la réplica aplica más quién lo publica: `publicador`, `generacion`, `manifiesto`, `sha256`, `catalogo` (con la versión, el canal y la integridad de cada herramienta) y `claw_routing`. No incluye `schema` ni `publicacion`. `snapshot_sha256` cubre el contenido canónico, `schema` y `publicacion`.
+
+El publicador guarda en `ultima-publicacion.json` de su home el último número y el SHA-256 del contenido canónico. Cada `exportar` reusa el número si el contenido es el mismo y lo sube en uno si cambió. Escribe ese archivo antes que el snapshot, para que una caída entre los dos no le dé un número ya entregado a otro contenido.
+
+La réplica compara contra el `publicacion` de su `fuente-compartida.json` antes de escribir:
+
+| Snapshot recibido | Réplica sin número | Réplica con número N |
+| --- | --- | --- |
+| v1 o v2, sin número | se aplica | se rechaza: el publicador no está actualizado |
+| v3 con número menor que N | se aplica | se rechaza sin escribir |
+| v3 con N y el mismo `snapshot_sha256` | se aplica | `sin_cambios`, no reescribe nada |
+| v3 con N y otro `snapshot_sha256` | se aplica | se rechaza: dos contenidos con el mismo número |
+| v3 con número mayor que N | se aplica | se aplica |
+
+El número vigente se lee sin validar la fuente, así una fuente que una versión nueva ya no acepta sigue ordenando y la cura la siguiente publicación. Un rechazo lanza `PublicacionRechazada` con la causa, y `ops/flota_ciclo.py --replica` sale 1 sin preparar nada.
+
+Si el publicador pierde su home, vuelve a numerar desde 1 y las réplicas lo rechazan. Nada se resetea solo. El rechazo trae la orden para seguir, que se corre en el publicador: `python -m motor flota publicar --home <flota> --salida <snapshot> --desde <N+1>`. Las corridas siguientes continúan desde ahí.
 
 ## Orden de trabajo
 
