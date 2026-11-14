@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos import ciclo
+from motor.encargos import ciclo, necesidades
 from motor.encargos.ciclo import (
     barrer,
     conceder_conductor,
@@ -86,6 +86,7 @@ class FalloInterno(unittest.TestCase):
 
         self.assertEqual(len(self.b.eventos(self.b.malo, "fallo_interno")), 1)
         self.assertEqual(self.b.eventos(self.b.malo, "instrumento_fallo"), [])
+        self.assertTrue(necesidades.detenida_ahora(self.b.reg, self.b.malo))
 
         salida = ordenar(self.b.reg, self.b.malo, "continuar", "sigue-1", DESPUES)
 
@@ -93,6 +94,7 @@ class FalloInterno(unittest.TestCase):
         malo = self.b.reg.fold(self.b.malo)
         self.assertEqual(malo.estado, "recibido")
         self.assertNotIn("fallo interno", malo.motivo)
+        self.assertFalse(necesidades.detenida_ahora(self.b.reg, self.b.malo))
 
     def test_un_proceso_vivo_se_cierra_antes_de_quedar_detenido(self):
         enc = replace(self.b.reg.fold(self.b.bueno), estado="recibido", reserva=True)
@@ -108,6 +110,7 @@ class FalloInterno(unittest.TestCase):
         )
 
         self.assertEqual(deteniendo.estado, "deteniendo")
+        self.assertTrue(deteniendo.intento_interrumpido)
         self.assertEqual(detenido.estado, "detenido")
         self.assertIn("estrategia:*", detenido.motivo)
         self.assertIn("continuar", detenido.motivo)

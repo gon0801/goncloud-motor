@@ -541,18 +541,8 @@ def _anotar_resolucion(
 def _detenida_ahora(registro: Registro, encargo_id: str) -> bool:
     if leer_parada_local(registro.base) is not None:
         return True
-    fila = registro.db.execute(
-        "SELECT data FROM events WHERE encargo = ? AND kind = 'orden'"
-        " ORDER BY id DESC LIMIT 1",
-        (encargo_id,),
-    ).fetchone()
-    if not fila:
-        return False
-    try:
-        accion = json.loads(fila[0]).get("accion")
-    except ValueError:
-        return False
-    return accion in ("parar", "cancelar")
+    enc = registro.fold(encargo_id)
+    return enc is not None and enc.orden_parada in ("parar", "cancelar", "fallo_interno")
 
 
 def _vitalidad(marca: dict) -> str:
@@ -1650,5 +1640,6 @@ def cerrar_herramientas_del_encargo(directorio: Path) -> int:
 
 
 def detenida_ahora(registro: Registro, encargo_id: str) -> bool:
-    """El propietario paró o canceló el encargo y no lo ha continuado."""
+    """El propietario paró o canceló el encargo, o el motor lo detuvo por un fallo
+    interno, y nadie lo ha continuado."""
     return _detenida_ahora(registro, encargo_id)

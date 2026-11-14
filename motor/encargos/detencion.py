@@ -47,6 +47,7 @@ def fallo_interno(e: Encargo, d: dict, hora: str) -> Encargo:
         e,
         estado="deteniendo" if vivo else "detenido",
         orden_parada="fallo_interno",
+        intento_interrumpido=e.intento_interrumpido or vivo,
         motivo=causa,
         ultimo_hecho=causa,
         siguiente="cerrar el proceso y quedar detenido hasta continuar"
