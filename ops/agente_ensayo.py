@@ -5,6 +5,10 @@ Ese `trabajo.sh` llama a este archivo con la ruta de un escenario JSON:
 
     exec "$PYTHON" "$ARBOL/ops/agente_ensayo.py" "$(dirname "$0")/escenario.json"
 
+Si la base del encargo trae `canario-escenarios/<encargo>.json`, ese escenario
+manda sobre el de `trabajo.sh`: así el canario hace fallar a propósito un
+encargo sin cambiar el repo que comparten todos sus encargos.
+
 Lee el turno por el protocolo normal (el prompt del turno o la revision.json
 que el lanzador deja en el intento) y escribe producto y juicio según el
 escenario. Habla el protocolo del motor, así que un cambio de protocolo lo
@@ -30,6 +34,9 @@ from typing import (
     get_type_hints,
     is_typeddict,
 )
+
+ESCENARIOS = "canario-escenarios"
+"""La carpeta de la base con el escenario propio de un encargo, por su id."""
 
 Archivos = dict[str, str]
 """Ruta relativa al espacio y su contenido completo."""
@@ -271,8 +278,9 @@ def revisar(escenario: Escenario, espacio: Path, dir_: Path) -> None:
 def main() -> None:
     if len(sys.argv) != 2:
         sys.exit("uso: agente_ensayo.py <escenario.json>")
-    escenario = leer_escenario(Path(sys.argv[1]))
     espacio = Path.cwd()
+    propio = espacio.parent.parent / ESCENARIOS / f"{espacio.name}.json"
+    escenario = leer_escenario(propio if propio.is_file() else Path(sys.argv[1]))
     dir_ = _intento(espacio)
     if (dir_ / "revision.json").is_file():
         revisar(escenario, espacio, dir_)
