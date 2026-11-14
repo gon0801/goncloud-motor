@@ -30,7 +30,8 @@ ESTADOS = (
 
 _CERRADOS = ("deteniendo", "detenido", "cancelado", "terminado")
 
-OrdenParada = Literal["", "parar", "cancelar"]
+# Quién detiene el encargo: el dueño con una orden, o el motor por un fallo interno.
+OrdenParada = Literal["", "parar", "cancelar", "fallo_interno"]
 
 # Los marcadores son observaciones del motor, no hechos del encargo: no cortan
 # las series de reintentos ni cuentan como movimiento del encargo.
@@ -758,8 +759,6 @@ class Encargo:
     hora: str = ""
     motivo: str = ""
     orden_parada: OrdenParada = ""
-    # La causa del último fallo interno, que `detenido` conserva hasta `continuar`.
-    fallo_interno: str = ""
     siguiente: str = ""
     preguntas: tuple[str, ...] = ()
     pendientes: tuple[str, ...] = ()
@@ -3659,7 +3658,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
         return replace(
             e,
             proc=None, herramienta="", conductor="", intento="",
-            motivo="", causa="", reanuda_en="", orden_parada="", fallo_interno="",
+            motivo="", causa="", reanuda_en="", orden_parada="",
         )
     raise TransicionIlegal(f"orden desconocida: {accion}")
 

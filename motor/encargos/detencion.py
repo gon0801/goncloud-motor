@@ -36,7 +36,7 @@ def causa_de_fallo_interno(d: dict) -> str:
 
 def fallo_interno(e: Encargo, d: dict, hora: str) -> Encargo:
     """Un proceso vivo se cierra primero, como con `parar`: `arbol` termina la
-    detención y conserva la causa."""
+    detención y conserva la causa en `motivo`."""
     from .dominio import _CERRADOS, TransicionIlegal
 
     if e.estado in _CERRADOS:
@@ -46,7 +46,7 @@ def fallo_interno(e: Encargo, d: dict, hora: str) -> Encargo:
     return replace(
         e,
         estado="deteniendo" if vivo else "detenido",
-        fallo_interno=causa,
+        orden_parada="fallo_interno",
         motivo=causa,
         ultimo_hecho=causa,
         siguiente="cerrar el proceso y quedar detenido hasta continuar"
@@ -70,7 +70,7 @@ def arbol(e: Encargo, d: dict, hora: str) -> Encargo:
         hora=hora or e.hora,
         ultimo_hecho="el árbol de procesos quedó ausente",
         siguiente="ninguna" if estado == "cancelado" else "detenido hasta continuar",
-        motivo=e.fallo_interno if estado == "detenido" else "cancelado",
+        motivo={"cancelar": "cancelado", "fallo_interno": e.motivo}.get(e.orden_parada, ""),
     )
 
 
