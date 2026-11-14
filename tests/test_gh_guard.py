@@ -103,6 +103,7 @@ RAMAS_SIN_PR = (
     ["api", "graphql", "-f", 'query=mutation{deleteRef(input:{refId:"X"}){clientMutationId}}'],
     ["api", "-X", "PUT", "repos/o/r/contents/src/a.py", "-f", "message=m", "-f", "content=eA=="],
     ["api", "-X", "DELETE", "repos/o/r/contents/README.md", "-f", "message=m", "-f", "sha=abc"],
+    ["api", "graphql", "-f", MUTACION % "createCommitOnBranch"],
 )
 
 LECTURAS_DE_RAMAS = (
