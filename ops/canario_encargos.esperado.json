@@ -6,13 +6,12 @@
   "no pierde": "no medido",
   "no repite": "no medido",
   "cuesta poco": "pasa",
-  "se detiene": "falla",
+  "se detiene": "pasa",
   "versión": "pasa",
   "legible": "pasa"
  },
  "razones": {
-  "limpio": "el motor aún no aplica la tabla de limpieza del modelo: la rama remota y lo que queda junto al recibo del despliegue no se borran (paso 4 del orden de trabajo)",
-  "se detiene": "el motor no se para solo en detenido: con el checklist de despliegue en rojo revierte el despliegue, escribe la causa y cierra el encargo terminado como entrega parcial; hoy solo una orden del dueño lo deja detenido"
+  "limpio": "el motor aún no aplica la tabla de limpieza del modelo: la rama remota y lo que queda junto al recibo del despliegue no se borran (paso 4 del orden de trabajo)"
  },
  "topes": {
   "minutos_termina": 90,

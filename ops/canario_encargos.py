@@ -539,11 +539,26 @@ def _corto(texto: str, largo: int = 160) -> str:
     return texto if len(texto) <= largo else texto[: largo - 1] + "…"
 
 
-def _detenido(p: Pliegue) -> Condicion:
+def _paro_con_palabra(p: Pliegue) -> Condicion:
+    """docs/modelo-centro-encargos.md, "Qué significa cada palabra del reporte": una fase
+    bloqueada se reporta "entrega parcial" con cada fase que falta y su causa, y `detenido`
+    queda para sus cuatro causas. La causa de un `detenido` la juzgan `_se_paro_solo` y
+    `_dice_por_que`: el registro todavía no la guarda como dato."""
     if p.estado == "detenido":
         return True, "quedó detenido"
-    parcial = " como entrega parcial" if p.estado == "terminado" and not p.completo else ""
-    return False, f"quedó {p.estado}{parcial}, no detenido"
+    if p.estado != "terminado":
+        return False, f"quedó {p.estado}: ni detenido ni entrega parcial"
+    if p.completo:
+        return False, "quedó terminado completo: no dijo que algo no se pudo"
+    faltan = [f for f in p.fases if f.estado != "preparada"]
+    if not faltan:
+        return False, "quedó terminado sin fases: no nombra qué faltó"
+    calladas = [f.id for f in faltan if not f.causa]
+    if calladas:
+        return False, f"quedó como entrega parcial sin decir por qué falta la fase {', '.join(calladas)}"
+    return True, "quedó como entrega parcial: " + "; ".join(
+        f"la fase {f.id}, «{_corto(f.causa)}»" for f in faltan
+    )
 
 
 def _se_paro_solo(p: Pliegue, hora: str, topes: Topes) -> Condicion:
@@ -603,7 +618,8 @@ def _acotado(p: Pliegue, topes: Topes) -> Condicion:
 
 def _se_detiene(obs: Observacion, topes: Topes) -> Juicio:
     """Con un checklist de despliegue que falla a propósito, el motor para el encargo
-    solo, con la causa escrita, sin dejar el despliegue roto y sin gastar de más."""
+    solo y con una palabra del modelo, con la causa escrita, sin dejar el despliegue
+    roto y sin gastar de más."""
     d = obs.detencion
     if d is None:
         return "no medido", "esta corrida no hizo el encargo cuyo checklist falla a propósito"
@@ -616,7 +632,7 @@ def _se_detiene(obs: Observacion, topes: Topes) -> Juicio:
         )
     p = d.pliegue
     condiciones = (
-        _detenido(p), _se_paro_solo(p, obs.hora, topes), _dice_por_que(p), _no_deja_roto(d),
+        _paro_con_palabra(p), _se_paro_solo(p, obs.hora, topes), _dice_por_que(p), _no_deja_roto(d),
         _acotado(p, topes),
     )
     fallas = [texto for ok, texto in condiciones if ok is False]
