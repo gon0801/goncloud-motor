@@ -45,7 +45,8 @@ _EXTRA = {SCHEMA_V2: {_CLAW}, SCHEMA_V3: {_CLAW, _NUMERO}}
 
 def _campos(schema) -> set[str]:
     """v1 es el snapshot de siempre; v2 suma claw_routing; v3 suma el numero de
-    publicacion y lleva claw_routing siempre, nulo si no hubo checkout."""
+    publicacion y lleva claw_routing siempre, nulo si el publicador no pudo
+    leerlo de un checkout."""
     return _CAMPOS | (_EXTRA.get(schema, set()) if isinstance(schema, str) else set())
 
 
@@ -537,7 +538,8 @@ def importar(home: Path, archivo: Path) -> dict:
         "componentes": [c["nombre"] for c in fuente["catalogo"]["componentes"]],
         "claw_routing": _informe_claw(
             fuente.get(_CLAW),
-            "el publicador no publico claw-routing: no hubo checkout"
+            "el publicador no publico claw-routing: no hallo un checkout "
+            "de goncloud-hermes del que pudiera leerlo"
             if _CLAW in fuente
             else "el snapshot no lleva claw-routing",
         ),
