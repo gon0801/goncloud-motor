@@ -566,6 +566,30 @@ class CamposDelRechazo(IntervaloDelConteo):
             ],
         )
 
+    def test_la_entrega_observada_desde_otro_intento_es_el_mismo_hecho_y_otro_sha_no(self):
+        ukey = f"entrega:{ENCARGO}:commit"
+
+        def commit(intento: str, sha: str, hora: str) -> str:
+            data = {"intento": intento, "paso": "commit", "sha": sha, "hora": hora}
+            return self.reg.append(ENCARGO, "entrega_externa", data, ukey, hora)
+
+        self.assertEqual(commit("uno", "a" * 40, HORA), "nuevo")
+        lineas = self.lineas(
+            lambda: (
+                self.assertEqual(commit("dos", "a" * 40, OTRA_HORA), "igual"),
+                self.assertEqual(commit("dos", "b" * 40, OTRA_HORA), "ajena"),
+            )
+        )
+
+        self.assertEqual(
+            lineas,
+            ["registro: rechazo=ajena kind=entrega_externa ukey=entrega:* campos=sha veces=1"],
+        )
+        self.assertEqual(
+            [(d["intento"], d["sha"]) for kind, d in self.guardados() if kind == "entrega_externa"],
+            [("uno", "a" * 40)],
+        )
+
     def test_un_lote_que_omite_el_evento_cuenta_la_misma_linea_que_append(self):
         ukey = f"entrega:{ENCARGO}:externa"
         self.guardar(ukey, {"intento": 1, "hora": HORA})
