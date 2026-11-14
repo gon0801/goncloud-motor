@@ -41,7 +41,7 @@ from .comprobacion import (
     sincronizar_declaradas_de_fase,
     version_producto,
 )
-from . import capacidades, necesidades, trabajos_ci
+from . import capacidades, necesidades, producto_listo, trabajos_ci
 from .dominio import (
     Encargo,
     Fase,
@@ -3017,20 +3017,7 @@ def _producto_no_aprobado(enc: Encargo, espacio: Path):
 def _reabrir_revision(
     registro: Registro, enc: Encargo, version, hora: str
 ) -> Encargo:
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "producto_listo",
-            "data": {
-                "version": version.firma,
-                "manifiesto": [list(x) for x in version.manifiesto],
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "hora": hora,
-            },
-        },
-        f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
-    )
+    producto_listo.anotar(registro, enc, producto_listo.visto(enc, version, hora))
     registro.anotar(
         enc.id,
         {
@@ -3632,24 +3619,10 @@ def _incorporar_responsable(
         guardar_declaradas_de_fase(interno, str(enc.fase_activa or ""))
     version = version_producto(espacio)
     commit_entregado = _commit_entregado(enc, version, espacio)
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "producto_listo",
-            "data": {
-                "version": version.firma,
-                "manifiesto": [list(x) for x in version.manifiesto],
-                "sha_git": commit_entregado,
-                "declara_comprobaciones": declaradas is not None,
-                "interno": _digest_interno(espacio),
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "hora": hora,
-            },
-        },
-        f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
-    )
-    enc = registro.fold(enc.id)
+    enc = producto_listo.anotar(registro, enc, producto_listo.entregado(
+        enc, version, commit_entregado, declaradas is not None,
+        _digest_interno(espacio), hora,
+    ))
     if _disputa_de_deepseek(registro, enc, interno, hora):
         _marcar_incorporado(registro, enc, hora)
         return registro.fold(enc.id)
@@ -3956,21 +3929,9 @@ def _incorporar_revisor(
             str(ref_path), hora, f"stale-{enc.generacion}",
         ), hora)
     if enc.producto is None or enc.producto.firma != version_actual.firma:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "producto_listo",
-                "data": {
-                    "version": version_actual.firma,
-                    "manifiesto": [list(x) for x in version_actual.manifiesto],
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "hora": hora,
-                },
-            },
-            f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version_actual.firma}",
+        enc = producto_listo.anotar(
+            registro, enc, producto_listo.visto(enc, version_actual, hora)
         )
-        enc = registro.fold(enc.id)
     alcance = alcance_de(enc)
     resultado = leer_juicio(
         Path(referencia["resultado"]), alcance,
