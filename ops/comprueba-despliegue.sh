@@ -3,7 +3,8 @@
 # Lee solo el recibo del motor de encargos (~/.motor-encargos/instalacion.json); no cae
 # al recibo del motor viejo de planes (~/.motor). Tampoco despliega ni revierte nada.
 # Para instalar el motor viejo de planes usa ops/instala-todo.sh; este comprobador no lo mira.
-# Es idempotente: solo lee y reintenta la lectura.
+# Es idempotente: solo lee y reintenta la lectura. Si el agente arrancaría sin el token de
+# GitHub de los agentes, avisa por máquina sin fallar.
 #
 # --sha SHA     SHA que debe estar instalado (por omisión, HEAD del repo).
 # --maquina M   Una sola máquina: mac, mini o pc.
@@ -149,6 +150,29 @@ if arbol_ruta and (home / ".motor-encargos" / "registro.sqlite").is_file():
 else:
     registro = "0 0"
 
+# El token de GitHub de los agentes, juzgado con el código del supervisor: la causa si no
+# sirve, nunca el valor.
+TOKEN = """import pathlib,sys
+sys.path.insert(0, sys.argv[1])
+from motor.encargos.aislamiento import token_de_agentes
+print(token_de_agentes(pathlib.Path.home() / ".motor-encargos")[1] or "ok")
+"""
+token = "no se pudo comprobar: la pasada no dice qué árbol ejecuta el supervisor"
+if arbol_ruta:
+    try:
+        r = subprocess.run(
+            [interprete_supervisor(), "-B", "-c", TOKEN, arbol_ruta],
+            capture_output=True, text=True, timeout=60,
+        )
+        lineas = (r.stdout or "").strip().splitlines()
+        if r.returncode == 0 and lineas:
+            token = lineas[-1]
+        else:
+            causa = (r.stderr or "").strip().splitlines()[-1:]
+            token = "no se pudo comprobar: " + (causa[0] if causa else "sin salida")
+    except Exception as exc:
+        token = "no se pudo comprobar: " + type(exc).__name__
+
 print("recibo", recibo)
 print("vivo", vivo)
 print(
@@ -160,6 +184,7 @@ print(
 print("ruta", arbol_ruta or "-")
 print("arbol", arbol)
 print("registro", registro)
+print("token", token)
 '
 
 PROGRAMA_PC_B64="$(printf '%s' "$PROGRAMA" | _pc_b64)"
@@ -234,6 +259,11 @@ for m in $maquinas; do
     fallos=$((fallos + 1))
   else
     echo "OK $m: recibo ${sha:0:12}, supervisor vivo, pasada completa y registro entero"
+  fi
+  # Sin el token de los agentes el motor funciona: el aviso no hace fallar el despliegue.
+  token="$(printf '%s\n' "$estado" | awk '/^token /{ $1=""; sub(/^ /,""); print; exit}')"
+  if [ -n "$token" ] && [ "$token" != ok ]; then
+    echo "AVISO $m: el agente arranca sin credencial de GitHub: $token" >&2
   fi
 done
 

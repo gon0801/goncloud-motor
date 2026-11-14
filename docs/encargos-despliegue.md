@@ -48,6 +48,32 @@ supervisor de encargos en su etiqueta fija `v1.0.35` y lo reinicia, así que no
 sirve para desplegar encargos; para eso está el comando nuevo, que nunca toca
 `~/motor`, `~/motor-conf` ni `~/.motor`.
 
+## El token de GitHub de los agentes
+
+Los agentes leen GitHub con un token fine-grained de solo lectura, nunca con la
+sesión de `gh` del usuario. Cada máquina lo guarda en una sola línea en
+`~/.motor-encargos/github-agentes.token`. En la PC es
+`C:\Users\<usuario>\.motor-encargos\github-agentes.token`.
+
+- Se coloca a mano en cada máquina. El despliegue no lo crea, no lo copia y no
+  lo muestra.
+- En la Mac y la Mini va con permisos `600`. Si el grupo u otros lo pueden
+  leer, el motor no lo usa.
+- Vence el 2027-11-13. Para renovarlo se reemplaza el contenido del archivo. El
+  siguiente intento ya lee el nuevo.
+- Sin un token que sirva, el agente arranca sin credencial de GitHub. `gh`
+  recibe un token que GitHub rechaza con 401 y `git` no da credencial para
+  github.com. La bitácora del supervisor anota la causa en cada intento, sin el
+  valor.
+- `ops/comprueba-despliegue.sh` avisa por máquina con `AVISO <máquina>: el
+  agente arranca sin credencial de GitHub: <causa>` si el archivo falta, está
+  vacío, tiene permisos abiertos o no se puede leer. El aviso no hace fallar el
+  despliegue. Un token vencido no se detecta ahí: `gh` y `git` del agente
+  fallan con 401.
+- El canario lo recibe como enlace duro si la base viva lo tiene.
+
+## Despliegue por fase
+
 El resto de este documento describe el contrato de despliegue por fase que ejecuta
 el propio motor con recetas `despliegue:`.
 

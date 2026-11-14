@@ -142,7 +142,7 @@ def preparar_administrado(
     modelo: str = "",
     sesion_modo: str = "",
     poteto_digest: str = "",
-) -> dict[str, str]:
+) -> dict[str, str | None]:
     """Deja `arranque.json` y devuelve el entorno que `lanzar_administrado` le pasa al wrapper."""
     from motor.runwrap import _publica
 
@@ -185,7 +185,7 @@ def preparar_administrado(
     return delta_de_entorno(comando)
 
 
-def lanzar_administrado(directorio: Path, token: str, entorno: dict[str, str]) -> dict:
+def lanzar_administrado(directorio: Path, token: str, entorno: dict[str, str | None]) -> dict:
     from .aislamiento import ENTORNO_DEL_AGENTE
 
     spec_path = directorio / "arranque.json"
