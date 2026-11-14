@@ -190,7 +190,6 @@ def generar(ref: str, salida: Path) -> int:
                 cwd=arbol, env={
                     **os.environ, "MOTOR_CORPUS_DIR": str(salida.resolve()),
                     "MOTOR_CORPUS_REPO": str(arbol.resolve()),
-                    "PYTHONPATH": str(arbol) + os.pathsep + os.environ.get("PYTHONPATH", ""),
                 },
                 capture_output=True, text=True, check=False,
             )

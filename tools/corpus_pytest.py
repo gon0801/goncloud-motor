@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import weakref
 from pathlib import Path
@@ -21,6 +23,7 @@ _INSTANCIAS: weakref.WeakKeyDictionary[registro.Registro, tuple[Path, tuple]] = 
 )
 _INICIO = registro.Registro.__init__
 _ESCRIBIR = registro.Registro._escribir
+_POPEN = subprocess.Popen
 _TABLA = (
     "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, "
     "encargo TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, ukey TEXT UNIQUE)"
@@ -119,3 +122,18 @@ def instalar() -> None:
 
 def pytest_configure() -> None:
     instalar()
+
+    class PopenCorpus(_POPEN):
+        def __init__(self, args, *posicional, **opciones):
+            if (isinstance(args, (list, tuple)) and len(args) > 1
+                    and str(args[1]) == "-c"
+                    and Path(str(args[0])).resolve() == Path(sys.executable).resolve()):
+                entorno = dict(opciones.get("env") or os.environ)
+                entorno["PYTHONPATH"] = (
+                    str(Path(__file__).resolve().parents[1])
+                    + os.pathsep + entorno.get("PYTHONPATH", "")
+                )
+                opciones["env"] = entorno
+            super().__init__(args, *posicional, **opciones)
+
+    subprocess.Popen = PopenCorpus
