@@ -113,14 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("--manifiesto", type=Path)
         s.add_argument("--repo-hermes", type=Path)
 
-    s = sub.add_parser("publicar")
-    s.add_argument("--home", required=True, type=Path)
-    s.add_argument("--salida", required=True, type=Path)
-    s.add_argument("--repo-hermes", type=Path)
-
-    s = sub.add_parser("sincronizar")
-    s.add_argument("--home", required=True, type=Path)
-    s.add_argument("--archivo", required=True, type=Path)
+    _ordenes_compartidas(sub)
 
     args = ap.parse_args(argv)
     try:
@@ -130,20 +123,35 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def _ordenes_compartidas(sub) -> None:
+    s = sub.add_parser("publicar")
+    s.add_argument("--home", required=True, type=Path)
+    s.add_argument("--salida", required=True, type=Path)
+    s.add_argument("--repo-hermes", type=Path)
+
+    s = sub.add_parser("sincronizar")
+    s.add_argument("--home", required=True, type=Path)
+    s.add_argument("--archivo", required=True, type=Path)
+
+
+def _correr_compartida(args) -> int:
+    from .compartida import exportar, importar
+
+    if args.cmd == "publicar":
+        return _json(exportar(args.home, args.salida, args.repo_hermes))
+    if str(args.archivo) == "-":
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="flota-fuente-") as tmp:
+            archivo = Path(tmp) / "snapshot.json"
+            escribir_texto(archivo, sys.stdin.read())
+            return _json(importar(args.home, archivo))
+    return _json(importar(args.home, args.archivo))
+
+
 def _correr(args) -> int:
     if args.cmd in ("publicar", "sincronizar"):
-        from .compartida import exportar, importar
-
-        if args.cmd == "publicar":
-            return _json(exportar(args.home, args.salida, args.repo_hermes))
-        if str(args.archivo) == "-":
-            import tempfile
-
-            with tempfile.TemporaryDirectory(prefix="flota-fuente-") as tmp:
-                archivo = Path(tmp) / "snapshot.json"
-                escribir_texto(archivo, sys.stdin.read())
-                return _json(importar(args.home, archivo))
-        return _json(importar(args.home, args.archivo))
+        return _correr_compartida(args)
     if args.cmd in ("descubrir", "preparar", "actualizar", "estado"):
         from . import actualizaciones
         from .control import _atomico
