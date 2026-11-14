@@ -139,7 +139,7 @@ lo que cada estado lleva consigo: un dato tipado en lugar de banderas y texto.
 | `ejecutando` | fase e intento abiertos | termina el intento, o se abre una espera |
 | `esperando_reintento` | clase de espera, plazo y tope | el hecho que la cierra, o el tope |
 | `conciliando` | el efecto externo incierto | el recibo del efecto |
-| `deteniendo` | la orden: parar o cancelar | los procesos ya no existen |
+| `deteniendo` | la orden: parar o cancelar, o un fallo interno | los procesos ya no existen |
 | `detenido` | la causa, una de las cinco de abajo | `continuar` |
 | `cancelado` | nada | la limpieza |
 | `terminado` | el resultado: completo, o parcial con las fases que faltan | la limpieza |
