@@ -878,13 +878,16 @@ class LaEsperaDeDeepSeekSaleDelRepo(CompuertaReal):
     hasta el tope; sin él no hay revisión que esperar y la fase sigue enseguida,
     con la causa escrita."""
 
-    def _integrar_una_fase(self, con_revisor: bool) -> tuple[Banco, dict, float]:
+    def _integrar_una_fase(
+        self, con_revisor: bool, lectura_rota: bool = False
+    ) -> tuple[Banco, dict, float]:
         escenario = {
             "fases": [{"id": "uno", "resultado": "saludo.txt con hola"}],
             "producto": {"uno": {"saludo.txt": "hola\\n"}},
             "comprobaciones": self._comprobaciones({"uno": "hola"}),
         }
         banco = self.banco(escenario, nivel="integrado")
+        banco.gh.falla = lectura_rota
         if con_revisor:
             semilla = self.tmp / "semilla"
             flujos = semilla / ".github" / "workflows"
@@ -946,6 +949,23 @@ class LaEsperaDeDeepSeekSaleDelRepo(CompuertaReal):
         self.assertEqual(
             [d["workflow"] for d in self._disparos(banco)], ["ai-review-worker.yml"]
         )
+        cierre, nota = self._lo_que_reporta(banco, omision["sha"])
+        self.assertIn("DeepSeek no revisó (sin revisión tras el tope).", cierre)
+        self.assertIn("tras el tope", nota)
+        self.assertNotIn("sin revisor", cierre + nota)
+
+    def test_sin_revisor_una_lectura_fallida_reintenta_hasta_el_tope(self):
+        banco, omision, minutos = self._integrar_una_fase(
+            con_revisor=False, lectura_rota=True
+        )
+        self.assertGreaterEqual(minutos, TOPE_DEEPSEEK_MIN)
+        reintentos = [
+            e for e in banco.eventos("espera")
+            if "no se pudieron leer los comentarios de DeepSeek" in e["data"]["motivo"]
+        ]
+        self.assertGreater(len(reintentos), 1)
+        self.assertIn("no se pudo leer: DeepSeek no responde", omision["evidencia"])
+        self.assertNotIn("sin revisor", omision["evidencia"])
         cierre, nota = self._lo_que_reporta(banco, omision["sha"])
         self.assertIn("DeepSeek no revisó (sin revisión tras el tope).", cierre)
         self.assertIn("tras el tope", nota)
