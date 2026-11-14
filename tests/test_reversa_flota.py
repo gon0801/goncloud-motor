@@ -214,6 +214,39 @@ class ReversaFlota(unittest.TestCase):
         self.assertFalse((self.home / "actual").exists())
         self.assertEqual(asignar(self.home), self.buena)
 
+    def test_un_apagon_a_mitad_de_la_reversa_al_clon_deja_asignar_en_pie_y_recuperar_la_termina(self) -> None:
+        class Apagon(BaseException):
+            pass
+
+        quitar, mover = Path.unlink, Path.replace
+
+        def apagar_al_quitar_actual(ruta: Path, *args, **kwargs):
+            if ruta.name == "actual":
+                raise Apagon
+            return quitar(ruta, *args, **kwargs)
+
+        def apagar_al_archivar_el_recibo(ruta: Path, destino, *args, **kwargs):
+            if Path(destino).parent.name == "historial":
+                raise Apagon
+            return mover(ruta, destino, *args, **kwargs)
+
+        cortes = (
+            ("al quitar actual", "unlink", apagar_al_quitar_actual, self.nueva),
+            ("al archivar el recibo", "replace", apagar_al_archivar_el_recibo, self.buena),
+        )
+        for nombre, metodo, efecto, asignada in cortes:
+            with self.subTest(corte=nombre):
+                aplicar(self.home, self.nueva, sin_turnos=True)
+                with mock.patch.object(Path, metodo, autospec=True, side_effect=efecto):
+                    with self.assertRaises(Apagon):
+                        revertir(self.home)
+                self.assertEqual(asignar(self.home), asignada)
+
+                self.assertEqual(recuperar(self.home)["accion"], "revertido")
+                self.assertFalse((self.home / "actual").exists())
+                self.assertFalse((self.home / "instalacion.json").exists())
+                self.assertEqual(asignar(self.home), self.buena)
+
     def test_recuperar_revierte_si_la_candidata_no_llego_a_instalarse(self) -> None:
         aplicar(self.home, self.buena, sin_turnos=True)
         self.assertEqual(aplicar(self.home, self.nueva, "pendiente")["accion"], "cortado")
