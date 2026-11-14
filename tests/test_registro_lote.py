@@ -20,6 +20,7 @@ from unittest import mock
 
 from motor.encargos import registro
 from motor.encargos.dominio import reducir
+from motor.encargos.lote import guardar, sobre
 from motor.encargos.registro import Registro
 
 HORA = "2026-11-13T10:00:00Z"
@@ -197,6 +198,31 @@ class Contrato(Base):
             self.reg.append_many(ENCARGO, lote(nota("uno"), repetida))
 
         self.assertEqual(self.guardados(self.reabierto()), [])
+
+
+class SeguirUnPaso(Base):
+    def test_un_evento_que_otro_escritor_ocupo_queda_fuera_y_el_paso_sigue_con_el_resto(self):
+        inicial = sobre(self.reg, self.reg.fold(ENCARGO))
+        uno, dos = lote(nota("uno"), nota("dos"))
+        paso = inicial.con(uno).con(dos).paso("seguir")
+        self.reg.anotar(ENCARGO, nota("otro hecho"), uno.ukey)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            seguido = inicial.seguir(paso)
+            self.assertEqual(guardar(self.reg, ENCARGO, seguido.paso(None)), "")
+
+        self.assertEqual(seguido.eventos, (dos,))
+        self.assertEqual(
+            [(e, type(r)) for e, r in seguido.omitidos], [(uno, registro.ClaveOcupada)]
+        )
+        self.assertEqual(
+            self.guardados(self.reabierto()),
+            [
+                ("procedimiento", {"nota": "otro hecho", "hora": HORA}),
+                ("procedimiento", {"nota": "dos", "hora": HORA}),
+            ],
+        )
+        self.assertEqual(seguido.estado, self.reg.fold(ENCARGO))
 
 
 _HIJO = """
