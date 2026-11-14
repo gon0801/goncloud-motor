@@ -21,7 +21,7 @@ from pathlib import Path
 from . import capacidades
 from .dominio import Solicitud, TransicionIlegal, respuesta_vigente
 from .frontera import leer_parada_local
-from .registro import Registro
+from .registro import Evento, Registro
 
 BUZON = Path(".interno") / "buzon"
 PETICIONES = "peticiones"
@@ -165,11 +165,6 @@ def pedir_inspeccion(espacio: Path, enc, crudo: dict) -> None:
     _sin_enlaces(espacio, buzon / PETICIONES)
     (buzon / PETICIONES).mkdir(parents=True, exist_ok=True)
     _publica(buzon / PETICIONES / f"{sol.id}.json", crudo, raiz=Path(espacio))
-
-
-def pedir_motor(espacio: Path, enc, crudo: dict) -> None:
-    """Una petición que hace el propio motor, con la misma validación del buzón."""
-    pedir_inspeccion(espacio, enc, crudo)
 
 
 def _parametros(crudo) -> tuple[tuple[str, str], ...]:
@@ -331,10 +326,6 @@ def _respuesta(
 def _destino_host(directorio: Path, solicitud_id: str) -> Path:
     """Instrucciones y resultados confiables, fuera del espacio del trabajador."""
     return Path(directorio) / HERRAMIENTAS / solicitud_id
-
-
-def _marca_herramienta(directorio: Path, solicitud_id: str) -> Path:
-    return Path(directorio) / HERRAMIENTAS / f"{solicitud_id}.json"
 
 
 def _marca_de(carpeta: Path) -> Path:
@@ -856,33 +847,34 @@ def _ejecutar(
     return resultado
 
 
-def registrar_pedida(registro: Registro, enc, crudo: dict, hora: str) -> str:
-    """Registra la petición que el motor dejó en el buzón, con la misma
-    identidad que usará `atender`: no se duplica ni se ejecuta dos veces."""
-    return _registrar_solicitud(registro, enc, _solicitud_de(enc, crudo), hora)
+def pedida(enc, crudo: dict, hora: str) -> Evento:
+    """La petición que el motor dejó en el buzón, con la misma identidad que
+    usará `atender`: no se duplica ni se ejecuta dos veces."""
+    return _solicitud(enc, _solicitud_de(enc, crudo), hora)
 
 
-def _registrar_solicitud(registro: Registro, enc, sol: Solicitud, hora: str) -> str:
-    return _anotar(
-        registro,
-        enc.id,
+def _solicitud(enc, sol: Solicitud, hora: str) -> Evento:
+    return Evento(
+        "solicitud",
         {
-            "kind": "solicitud",
-            "data": {
-                "id": sol.id,
-                "operacion": sol.operacion,
-                "recurso": sol.recurso,
-                "fase": sol.fase,
-                "intento": sol.intento,
-                "generacion": sol.generacion,
-                "conductor": sol.conductor,
-                "motivo": sol.motivo,
-                "parametros": [list(x) for x in sol.parametros],
-                "hora": hora,
-            },
+            "id": sol.id,
+            "operacion": sol.operacion,
+            "recurso": sol.recurso,
+            "fase": sol.fase,
+            "intento": sol.intento,
+            "generacion": sol.generacion,
+            "conductor": sol.conductor,
+            "motivo": sol.motivo,
+            "parametros": [list(x) for x in sol.parametros],
+            "hora": hora,
         },
         f"solicitud:{enc.id}:{sol.id}",
     )
+
+
+def _registrar_solicitud(registro: Registro, enc, sol: Solicitud, hora: str) -> str:
+    evento = _solicitud(enc, sol, hora)
+    return _anotar(registro, enc.id, {"kind": "solicitud", "data": evento.data}, evento.ukey)
 
 
 def _atender_decision(
