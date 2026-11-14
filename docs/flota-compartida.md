@@ -8,7 +8,7 @@ El snapshot incluye SHA-256 del TOML y de todo el contenido publicado. No contie
 
 ## Qué lleva el snapshot
 
-Esquema v1: manifiesto, su SHA-256, catálogo, generación y publicador, más `snapshot_sha256` sobre todo eso. Es el snapshot de siempre y se publica así cuando no hay checkout de goncloud-hermes.
+Esquema v1: manifiesto, su SHA-256, catálogo, generación y publicador, más `snapshot_sha256` sobre todo eso. Es el snapshot de siempre. Ya no se publica, pero una réplica sin número lo acepta.
 
 Esquema v2: v1 más `claw_routing`, con `contenido` (el texto exacto de `claw-routing.json`), `sha256` de esos bytes y `revision` (el HEAD del checkout de donde se leyó). `snapshot_sha256` también lo cubre. El archivo se lee de la revisión confirmada del checkout, no del árbol de trabajo: lo que no se confirmó no se publica.
 
@@ -38,6 +38,8 @@ La réplica compara contra el `publicacion` de su `fuente-compartida.json` antes
 
 El número vigente se lee sin validar la fuente, así una fuente que una versión nueva ya no acepta sigue ordenando y la cura la siguiente publicación. Un rechazo lanza `PublicacionRechazada` con la causa, y `ops/flota_ciclo.py --replica` sale 1 sin preparar nada.
 
+Si `fuente-compartida.json` no es JSON, no es un objeto, o trae `publicacion` sin un entero, un `hash` y un `origen`, la réplica no puede ordenar. `importar` lanza `SnapshotInvalido` con la ruta y no escribe nada. Se resuelve borrando la fuente y volviendo a importar el snapshot vigente del publicador. Lo mismo con un `ultima-publicacion.json` ilegible en el publicador: `exportar` se detiene con la ruta, y `--desde N` lo reemplaza.
+
 Si el publicador pierde su home, vuelve a numerar desde 1 y las réplicas lo rechazan. Nada se resetea solo. El rechazo trae la orden para seguir, que se corre en el publicador: `python -m motor flota publicar --home <flota> --salida <snapshot> --desde <N+1>`. Las corridas siguientes continúan desde ahí.
 
 ## Orden de trabajo
@@ -47,7 +49,7 @@ Publicadora:
 1. `git pull` en el checkout de goncloud-hermes.
 2. `motor flota publicar --home <flota> --salida <archivo> [--repo-hermes <checkout>]`.
 
-Sin `--repo-hermes` busca `goncloud-hermes` y `goncloud-hermes-encargos-3-4` junto al motor y `<padre>/motor-config/hermes`. Si no encuentra ninguno publica v1 y la salida JSON lo dice en `claw_routing.motivo`. Un `--repo-hermes` explícito que no es un checkout git, o que no tiene `claw-routing.json` en HEAD, falla. La salida lleva `claw_routing` con `incluido`, `revision` y `sha256`.
+Sin `--repo-hermes` busca `goncloud-hermes` y `goncloud-hermes-encargos-3-4` junto al motor y `<padre>/motor-config/hermes`. Si no encuentra ninguno publica v3 con `claw_routing` nulo y la salida JSON lo dice en `claw_routing.motivo`. Un `--repo-hermes` explícito que no es un checkout git, o que no tiene `claw-routing.json` en HEAD, falla. La salida lleva `claw_routing` con `incluido`, `revision` y `sha256`.
 
 Réplica:
 
