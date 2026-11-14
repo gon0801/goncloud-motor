@@ -43,6 +43,7 @@ from .comprobacion import (
 )
 from . import capacidades, necesidades, producto_listo, trabajos_ci
 from .dominio import (
+    _CERRADOS,
     Encargo,
     Fase,
     FASE_IMPLICITA,
@@ -5418,9 +5419,11 @@ def _refrescar_cuerpo_excepciones(
 
     Ese marcador cubre descartes del revisor, hallazgos fuera de alcance y la
     omisión de DeepSeek. El cuerpo se publica por SHA; la huella decide si hay
-    algo nuevo que publicar, así que repetir la pasada no lo reescribe.
+    algo nuevo que publicar, así que repetir la pasada no lo reescribe. Un
+    encargo cerrado o detenido no publica: espera `continuar`, y la entrega
+    refresca el cuerpo al reanudar.
     """
-    if gh is None or not getattr(enc, "pr_numero", 0):
+    if gh is None or not getattr(enc, "pr_numero", 0) or enc.estado in _CERRADOS:
         return enc
     if not _excepciones_del_registro(registro, enc, enc.pr_sha):
         return enc
