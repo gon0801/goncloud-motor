@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import hashlib
 import json
 import os
 import sqlite3
@@ -18,7 +19,6 @@ _CANDADO = threading.Lock()
 _INSTANCIAS: weakref.WeakKeyDictionary[registro.Registro, tuple[Path, tuple]] = (
     weakref.WeakKeyDictionary()
 )
-_ACEPTADOS: dict[tuple, set[int]] = {}
 _INICIO = registro.Registro.__init__
 _ESCRIBIR = registro.Registro._escribir
 _TABLA = (
@@ -27,10 +27,19 @@ _TABLA = (
 )
 
 
+def _ruta_aceptados(origen: tuple) -> Path:
+    carpeta = SALIDA / "aceptados"
+    carpeta.mkdir(mode=0o700, exist_ok=True)
+    return carpeta / (hashlib.sha256(repr(origen).encode()).hexdigest() + ".jsonl")
+
+
 def _sincronizar(instancia: registro.Registro) -> tuple[Path, tuple]:
     archivo, origen = _INSTANCIAS[instancia]
-    with _CANDADO:
-        ids = set(_ACEPTADOS.get(origen, ()))
+    ids: set[int] = set()
+    ruta = _ruta_aceptados(origen)
+    if ruta.exists():
+        with ruta.open(encoding="utf-8") as entrada:
+            ids.update(id for linea in entrada if linea.endswith("\n") for id in json.loads(linea))
     with sqlite3.connect(archivo) as copia:
         filas = instancia.db.execute(
             "SELECT id, ts, encargo, kind, data, ukey FROM events ORDER BY id"
@@ -90,12 +99,23 @@ def _escribir(
                 f"SELECT id FROM events WHERE ukey IN ({placeholders})", ukeys
             )
         }
+        linea = (json.dumps(sorted(nuevos)) + "\n").encode()
         with _CANDADO:
-            _ACEPTADOS.setdefault(origen, set()).update(nuevos)
+            fd = os.open(_ruta_aceptados(origen), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(fd, linea)
+            finally:
+                os.close(fd)
     _sincronizar(instancia)
     return resultados
 
 
-def pytest_configure() -> None:
+def instalar() -> None:
+    if registro.Registro._escribir is _escribir:
+        return
     registro.Registro.__init__ = _iniciar
     registro.Registro._escribir = _escribir
+
+
+def pytest_configure() -> None:
+    instalar()

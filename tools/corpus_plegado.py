@@ -183,10 +183,14 @@ def generar(ref: str, salida: Path) -> int:
                        check=True, capture_output=True)
         try:
             shutil.copy2(RAIZ / "tools" / "corpus_pytest.py", arbol / "tools" / "corpus_pytest.py")
+            shutil.copy2(RAIZ / "tools" / "corpus_sitecustomize.py", arbol / "sitecustomize.py")
             proceso = subprocess.run(
                 [sys.executable, "-m", "pytest", "-q", "-n", "8", "-p",
                  "tools.corpus_pytest", "tests"],
-                cwd=arbol, env={**os.environ, "MOTOR_CORPUS_DIR": str(salida.resolve())},
+                cwd=arbol, env={
+                    **os.environ, "MOTOR_CORPUS_DIR": str(salida.resolve()),
+                    "PYTHONPATH": str(arbol) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+                },
                 capture_output=True, text=True, check=False,
             )
             with os.fdopen(os.open(salida / "pytest-base.log", os.O_WRONLY | os.O_CREAT, 0o600),
