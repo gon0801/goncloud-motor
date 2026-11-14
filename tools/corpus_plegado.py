@@ -6,6 +6,7 @@ import argparse
 import ast
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -14,8 +15,21 @@ import tempfile
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
+FALLO_BASE = ("tests/test_rama_fase.py::UnFalloDeGitRepetidoPideAyuda"
+              "::test_un_ajuste_del_propietario_vuelve_a_intentarlo")
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
+
+
+def _fallos_pytest(codigo: int, salida: str) -> list[str]:
+    fallos = re.findall(r"^FAILED (\S+)", salida, re.MULTILINE)
+    errores = re.findall(r"^ERROR (\S+)", salida, re.MULTILINE)
+    if codigo == 0 and not fallos and not errores:
+        return []
+    if codigo == 1 and fallos == [FALLO_BASE] and not errores:
+        return fallos
+    raise RuntimeError(f"pytest no produjo el corpus esperado: salida {codigo}, "
+                       f"fallos {fallos}, errores {errores}")
 
 
 def _json(ruta: Path, valor: object) -> None:
@@ -197,10 +211,9 @@ def generar(ref: str, salida: Path) -> int:
                            "w", encoding="utf-8") as archivo:
                 archivo.write(proceso.stdout)
                 archivo.write(proceso.stderr)
-            if proceso.returncode not in (0, 1):
-                raise RuntimeError(f"pytest no produjo un corpus: {proceso.stderr[-1200:]}")
-            if proceso.returncode:
-                print("La batería en la base reportó fallas; el corpus incluye lo que sí escribió.",
+            fallos = _fallos_pytest(proceso.returncode, proceso.stdout + proceso.stderr)
+            if fallos:
+                print(f"La batería en la base falló solo en {fallos[0]}.",
                       file=sys.stderr)
             _, descartados, _, presentes = _referencia(salida, arbol, ref)
             _descartar(salida)
@@ -218,10 +231,14 @@ def generar(ref: str, salida: Path) -> int:
             )
             total = _kinds(arbol)
             if presentes != total:
-                raise RuntimeError(f"sin cubrir: {sorted(total - presentes)}")
+                raise RuntimeError(f"sin cubrir: {sorted(total - presentes)}; "
+                                   f"sobran: {sorted(presentes - total)}")
             with (salida / "meta.json").open(encoding="utf-8") as archivo:
                 meta = json.load(archivo)
-            _json(salida / "meta.json", {**meta, "sha": sha, "pytest_exit": proceso.returncode})
+            _json(salida / "meta.json", {
+                **meta, "sha": sha, "pytest_exit": proceso.returncode,
+                "pytest_fallos": fallos,
+            })
             rechazos = meta["rechazos"]
             print(f"{encargos} encargos ({descartados} descartados), {eventos} eventos, "
                   f"{rechazos} lotes rechazados, {len(presentes)} de {len(total)} kinds")
@@ -237,13 +254,21 @@ def verificar(salida: Path, raiz: Path) -> int:
     reductor = cargar_reductor(raiz)
     with (salida / "meta.json").open(encoding="utf-8") as archivo:
         meta = json.load(archivo)
-    iguales = total = aceptados = 0
-    for registro in _registros(salida):
+    if (meta.get("pytest_exit", 0) not in (0, 1)
+        or meta.get("pytest_exit", 0) == 1 and meta.get("pytest_fallos") != [FALLO_BASE]
+        or meta.get("pytest_exit", 0) == 0 and meta.get("pytest_fallos", [])):
+        print("el corpus proviene de una batería con fallos no aceptados")
+        return 1
+    iguales = total = aceptados = sin_referencia = 0
+    registros = _registros(salida)
+    for registro in registros:
         with (salida / "estado-base" / f"{registro.stem}.json").open(encoding="utf-8") as archivo:
             esperados = json.load(archivo)
         presentes = {}
         for encargo, secuencia in leer_encargos(registro, ultimo_evento(registro)):
             if encargo not in esperados:
+                sin_referencia += 1
+                print(f"{registro.name}/{encargo}: sin referencia")
                 continue
             total += 1
             traza = trazar(reductor, secuencia)
@@ -303,7 +328,10 @@ def verificar(salida: Path, raiz: Path) -> int:
     print(f"acepta {aceptados} de {meta.get('eventos', aceptados)}; "
           f"rechaza {rechazos} de {esperados_rechazos}; "
           f"estado igual en {iguales} de {total}")
-    return int(iguales != total or aceptados != meta.get("eventos", aceptados)
+    return int(iguales != total or sin_referencia != 0
+               or len(registros) != meta.get("archivos", len(registros))
+               or total != meta.get("encargos", total)
+               or aceptados != meta.get("eventos", aceptados)
                or rechazos_cambiados != 0 or rechazos != esperados_rechazos)
 
 
