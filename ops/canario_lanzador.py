@@ -31,9 +31,11 @@ Una corrida da estos pasos, en este orden (`Paso`):
    `MOTOR_CANARIO_ARBOL`, que es de donde el `trabajo.sh` del repo del canario
    toma el agente de ensayo, y `MOTOR_CANARIO_DESPLIEGUE`, la carpeta del
    despliegue, de donde la receta del que falla toma su destino.
-4. esperar: `motor ver` hasta que cada encargo cierra, vence su tope o el
-   supervisor muere. No da órdenes ni escribe eventos. El que falla tiene su
-   propio tope, más corto, para que un bucle del motor no alargue la corrida.
+4. esperar: `motor ver` de los dos encargos a la vez, hasta que cada uno cierra,
+   vence su tope o el supervisor muere. Cada tope cuenta desde que se recibió su
+   encargo, y el del que falla es más corto, para que un bucle del motor no
+   alargue la corrida. Al que vence lo para con `motor parar`, la orden del
+   canario, sin tocar el supervisor que el otro necesita. No escribe otro evento.
 5. cerrar: mata el grupo de su supervisor y, por cada encargo, lo para si no cerró
    y espera, hasta `--tope-cierre-s`, a que no quede vivo ningún proceso de sus
    turnos ni de sus trabajadores de despliegue, que el motor lanza en sesión
@@ -87,7 +89,7 @@ import threading
 import time
 import tomllib
 import traceback
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -208,13 +210,25 @@ class Fallo:
 
 
 @dataclass(frozen=True)
+class Espera:
+    """Cómo terminó la espera de un encargo."""
+
+    fin: Fin
+    estado: str
+    """El del encargo según `motor ver` cuando terminó su espera."""
+    parada: str = ""
+    """Lo que dejó `motor parar` al vencer su tope; vacío si no venció."""
+
+
+@dataclass(frozen=True)
 class Cierre:
     """Cómo quedó lo de la corrida antes de medir y borrar."""
 
     estado: str
     """El del encargo según `motor ver` al terminar el cierre; vacío si no se pudo leer."""
     parada: str
-    """Vacío si el encargo ya había cerrado; si no, lo que dejó el último `motor parar`."""
+    """Vacío si nadie lo paró; si no, lo que dejó el último `motor parar`, el de la espera
+    al vencer su tope o el del cierre."""
     supervisor: Presencia
     vivos: tuple[str, ...]
     """Los procesos del encargo que al vencer el tope seguían vivos o no se pudieron mirar."""
@@ -526,21 +540,36 @@ def lanzar(p: Pedido, argv: Sequence[str]) -> dict:
         raise NoSePuede("lanzar", str(exc)) from exc
 
 
-def esperar(p: Pedido, encargo: str, supervisor: dict, tope_s: float) -> tuple[Fin, str]:
-    vence = time.monotonic() + tope_s
-    estado = ""
-    while True:
-        visto = _estado(p, encargo, "esperar") or estado
-        if visto != estado:
-            _avance("esperar", f"{encargo} {visto}")
-        estado = visto
-        if estado in CERRADOS:
-            return CERRADOS[estado], estado
-        if plataforma.estado_proc(supervisor) != "vivo":
-            return "supervisor_muerto", estado
-        if time.monotonic() >= vence:
-            return "tope", estado
-        time.sleep(max(0.0, min(p.intervalo_s, vence - time.monotonic())))
+def esperar(p: Pedido, supervisor: dict, vencen: Mapping[str, float]) -> dict[str, Espera]:
+    """Mira a la vez cada encargo de `vencen`, con su tope en `time.monotonic()`, hasta que
+    cierra, vence su tope o el supervisor muere. Al que vence lo para en ese momento, para
+    que no siga corriendo mientras se espera al otro."""
+    estados = dict.fromkeys(vencen, "")
+    esperas: dict[str, Espera] = {}
+    while len(esperas) < len(vencen):
+        vivo = plataforma.estado_proc(supervisor) == "vivo"
+        for encargo, vence in vencen.items():
+            if encargo in esperas:
+                continue
+            visto = _estado(p, encargo, "esperar") or estados[encargo]
+            if visto != estados[encargo]:
+                _avance("esperar", f"{encargo} {visto}")
+            estados[encargo] = visto
+            if visto in CERRADOS:
+                espera = Espera(CERRADOS[visto], visto)
+            elif not vivo:
+                espera = Espera("supervisor_muerto", visto)
+            elif time.monotonic() >= vence:
+                espera = Espera("tope", visto, _parar(p, encargo))
+            else:
+                continue
+            esperas[encargo] = espera
+            _avance("esperar", f"{encargo} terminó por {espera.fin}" + (
+                f"; el canario lo paró: {espera.parada}" if espera.parada else ""
+            ))
+        if pendientes := [vence for encargo, vence in vencen.items() if encargo not in esperas]:
+            time.sleep(max(0.0, min(p.intervalo_s, min(pendientes) - time.monotonic())))
+    return esperas
 
 
 def detener(supervisor: dict) -> Presencia:
@@ -585,8 +614,9 @@ def _esperar_procesos(p: Pedido, encargo: str) -> tuple[str, ...]:
     return vivos
 
 
-def cerrar(p: Pedido, encargos: Sequence[str], supervisor: dict | None) -> tuple[Cierre, ...]:
-    """Un cierre por encargo, en el orden de `encargos`; el supervisor se detiene una vez."""
+def cerrar(p: Pedido, paradas: Mapping[str, str], supervisor: dict | None) -> tuple[Cierre, ...]:
+    """Un cierre por encargo de `paradas`, en su orden, cada uno con lo que dejó la parada
+    de su espera (vacío si no lo paró); el supervisor se detiene una vez."""
     cortes: list[BaseException] = []
 
     def intentar(fallas: list[str], que: str, hacer: Callable[[], T], si_falla: T) -> T:
@@ -604,7 +634,7 @@ def cerrar(p: Pedido, encargos: Sequence[str], supervisor: dict | None) -> tuple
         if supervisor else "ausente"
     )
 
-    def cerrar_uno(encargo: str) -> Cierre:
+    def cerrar_uno(encargo: str, parada: str) -> Cierre:
         fallas = list(del_supervisor)
 
         def estado_actual() -> str:
@@ -613,7 +643,8 @@ def cerrar(p: Pedido, encargos: Sequence[str], supervisor: dict | None) -> tuple
         def parar(antes: str) -> str:
             return intentar(fallas, "parar el encargo", lambda: _parar(p, encargo), antes)
 
-        parada = parar("") if estado_actual() not in CERRADOS else ""
+        if estado_actual() not in CERRADOS:
+            parada = parar(parada)
         sin_mirar = ("los procesos del encargo, que no pude esperar",)
         vivos = intentar(fallas, "esperar sus procesos", lambda: _esperar_procesos(p, encargo), sin_mirar)
         estado = estado_actual()
@@ -631,7 +662,7 @@ def cerrar(p: Pedido, encargos: Sequence[str], supervisor: dict | None) -> tuple
         ))
         return cierre
 
-    cierres = tuple(cerrar_uno(encargo) for encargo in encargos)
+    cierres = tuple(cerrar_uno(encargo, parada) for encargo, parada in paradas.items())
     if cortes:
         raise cortes[0]
     return cierres
@@ -835,40 +866,39 @@ def correr(p: Pedido, gh: canario.LectorPR, supervisor: Sequence[str] | None = N
         raise NoSePuede("encargar", f"no pude leer el SHA de {RAIZ}")
     clave = f"canario-{version[:12]}-{maquina}-{p.corrida}"
     _avance("preparar", f"base {p.base} lista; {maquina} en {version[:12]}")
+
+    def vence(arranque: float, minutos: int) -> float:
+        return arranque + (p.tope_s if p.tope_s is not None else minutos * 60.0)
+
     inicio = time.monotonic()
     encargo = encargar(p, clave)
+    vencen = {encargo: vence(inicio, esperado.topes.minutos_termina)}
     clave_detencion = f"{clave}-{SE_DETIENE}"
     detencion = ""
     proceso: dict | None = None
-    fin: Fin | None = None
-    fin_detencion: Fin | None = None
-    estado = estado_detencion = ""
+    esperas: dict[str, Espera] = {}
     fallo: Fallo | None = None
     try:
         _avance("encargar", f"{encargo} con la clave {clave}")
         if p.se_detiene:
+            arranque = time.monotonic()
             detencion = encargar(p, clave_detencion, TEXTO_SE_DETIENE)
+            vencen[detencion] = vence(arranque, esperado.topes.minutos_se_detiene)
             dejar_escenario(p, maquina, detencion)
             _avance("encargar", f"{detencion} con la clave {clave_detencion}: su checklist falla a propósito")
         proceso = lanzar(p, supervisor or [
             sys.executable, "-B", "-m", "motor", "supervisor", "--base", str(p.base), "--agente", "ensayo",
         ])
         _avance("lanzar", f"supervisor {proceso['pid']}")
-        topes = esperado.topes
-        tope_s = p.tope_s if p.tope_s is not None else topes.minutos_termina * 60.0
-        fin, estado = esperar(p, encargo, proceso, tope_s)
-        _avance("esperar", f"{encargo} terminó por {fin}")
-        if detencion:
-            tope_s = p.tope_s if p.tope_s is not None else topes.minutos_se_detiene * 60.0
-            restante = max(0.0, tope_s - (time.monotonic() - inicio))
-            fin_detencion, estado_detencion = esperar(p, detencion, proceso, restante)
-            _avance("esperar", f"{detencion} terminó por {fin_detencion}")
+        esperas = esperar(p, proceso, vencen)
     except Exception as exc:
         fallo = _fallo(exc)
     finally:
         segundos = int(time.monotonic() - inicio)
-        cierre, *otros = cerrar(p, (encargo, *([detencion] if detencion else [])), proceso)
+        paradas = {e: esperas[e].parada if e in esperas else "" for e in vencen}
+        cierre, *otros = cerrar(p, paradas, proceso)
     cierres = (cierre, *otros)
+    espera, espera_detencion = esperas.get(encargo), esperas.get(detencion)
     fallas = tuple(dict.fromkeys(f for c in cierres for f in c.fallas))
     if fallo is None and fallas:
         fallo = Fallo("cerrar", "; ".join(fallas))
@@ -884,12 +914,16 @@ def correr(p: Pedido, gh: canario.LectorPR, supervisor: Sequence[str] | None = N
         limpieza = tuple(b for e in (encargo, detencion) if e for b in limpiar(p, e))
         recogida = recoger(p, salvo=(encargo, detencion))
     seguimiento = (
-        Seguimiento(clave_detencion, detencion, fin_detencion, estado_detencion, otros[0])
+        Seguimiento(
+            clave_detencion, detencion, espera_detencion.fin if espera_detencion else None,
+            espera_detencion.estado if espera_detencion else "", otros[0],
+        )
         if detencion else None
     )
     return Informe(
-        maquina, version, p.corrida, clave, encargo, fin, estado, segundos, cierre,
-        filas, limpieza, fallo, recogida, seguimiento,
+        maquina, version, p.corrida, clave, encargo, espera.fin if espera else None,
+        espera.estado if espera else "", segundos, cierre, filas, limpieza, fallo, recogida,
+        seguimiento,
     )
 
 
