@@ -98,6 +98,7 @@ from .devolucion import devolver, sin_avance
 from . import instrumento
 from .instrumento import apariciones as _apariciones
 from .instrumento import entorno, fallo_juicio, impedimento_de_instrumento
+from .instrumento import causa_de_excepcion as _causa_de_excepcion
 from .inspeccion import consumir_ligada, entregada, ligar
 from .lote import Directo, Lote, excepcion, guardar, guardar_incorporado, incorporado
 from .lote import sobre, ya_incorporado
@@ -1442,14 +1443,6 @@ _SIN_REGISTRO: set[tuple[str, str]] = set()
 # proceso del supervisor: una vuelta sana la borra, y un registro de eventos no
 # distingue una vuelta sana de otra que falló antes de anotar nada.
 _RACHA_BARRIDO: dict[str, tuple[str, int]] = {}
-
-
-def _causa_de_excepcion(exc: BaseException) -> str:
-    import traceback
-    return "; causa: ".join(
-        f"{type(e).__name__}: {e} en {Path(marco.filename).name}:{marco.lineno} ({marco.name})"
-        for e in (exc, exc.__cause__) if e for marco in traceback.extract_tb(e.__traceback__, -1)
-    )[:2000]
 
 
 # Un encargo cuya historia no pliega es un estado posible. Su fallo se dice una

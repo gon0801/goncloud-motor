@@ -8,6 +8,8 @@ ya guardados.
 
 from __future__ import annotations
 
+import traceback
+from pathlib import Path
 from typing import TypeVar
 
 from .devolucion import corte_de_instrumento
@@ -24,6 +26,19 @@ _VERIFICABLES = (
     "pedido-efecto.json",
     "disputa.json",
 )
+
+
+def causa_de_excepcion(exc: BaseException) -> str:
+    """El tipo y el mensaje de la excepcion y de su causa encadenada, cada uno con su
+    ultimo marco cuando lo tiene, en 2000 caracteres como mucho."""
+    partes = []
+    for e in (exc, exc.__cause__):
+        if e is None:
+            continue
+        marcos = traceback.extract_tb(e.__traceback__, -1)
+        donde = "".join(f" en {Path(m.filename).name}:{m.lineno} ({m.name})" for m in marcos)
+        partes.append(f"{type(e).__name__}: {e}{donde}")
+    return "; causa: ".join(partes)[:2000]
 
 
 def es_verificable(clase: str) -> bool:
