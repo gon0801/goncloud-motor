@@ -12,6 +12,7 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from motor.plataforma import windows
 from tests import entorno
@@ -380,6 +381,91 @@ class WindowsTest(unittest.TestCase):
         argv = windows.argv_wsl(distro, ["sh", "-c", "exit 7"], timeout=30)
         r = _run(argv, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 7, r.stderr)
+
+
+@entorno.requiere_windows
+class EnlaceDeFlotaEnWindows(unittest.TestCase):
+    def _git(self, motor: Path, *args: str) -> str:
+        hecho = subprocess.run(
+            ["git", "-C", str(motor), *args], check=True, capture_output=True, text=True
+        )
+        return hecho.stdout.strip()
+
+    def _commit(self, motor: Path, marca: str) -> str:
+        (motor / "comprobar.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+        (motor / "marca.txt").write_text(marca + "\n", encoding="utf-8")
+        self._git(motor, "add", ".")
+        self._git(motor, "commit", "-q", "-m", marca)
+        return self._git(motor, "rev-parse", "HEAD")
+
+    def _flota(self) -> tuple[Path, str, str]:
+        tmp = Path(tempfile.mkdtemp(prefix="flota-win-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        home = tmp / "home"
+        motor = home / "motor"
+        motor.mkdir(parents=True)
+        self._git(motor, "init", "-q")
+        self._git(motor, "config", "user.email", "ensayo@local")
+        self._git(motor, "config", "user.name", "ensayo")
+        return home, self._commit(motor, "buena"), self._commit(motor, "nueva")
+
+    def _marca(self, home: Path) -> str:
+        return (home / "actual" / "marca.txt").read_text(encoding="utf-8")
+
+    def test_aplicar_reemplaza_el_enlace_actual_de_la_flota(self):  # no-roja-en-base: en Windows la base tambien cambiaba el enlace sin corte; guarda que el reemplazo sobre un enlace de directorio funcione en la PC
+        from motor.flota.control import aplicar, asignar
+
+        home, buena, nueva = self._flota()
+        self.assertEqual(aplicar(home, buena, sin_turnos=True)["accion"], "aplicada")
+        antes = sorted(os.listdir(home))
+        self.assertEqual(aplicar(home, nueva, sin_turnos=True)["accion"], "aplicada")
+        self.assertEqual(self._marca(home), "nueva\n")
+        self.assertEqual(asignar(home), nueva)
+        self.assertEqual(sorted(os.listdir(home)), antes)
+
+    def test_un_reemplazo_de_actual_que_falla_a_la_mitad_conserva_la_previa(self):
+        from motor.flota.control import aplicar, asignar, recuperar
+
+        home, buena, nueva = self._flota()
+        aplicar(home, buena, sin_turnos=True)
+        antes = sorted(os.listdir(home))
+        reemplazar = os.replace
+        sobre_actual = []
+
+        def fallar_el_segundo_intento(origen, destino, *args, **kwargs):
+            if Path(destino).name == "actual":
+                sobre_actual.append(origen)
+                if len(sobre_actual) == 2:
+                    raise PermissionError(13, "otro proceso tiene abierto el enlace")
+            return reemplazar(origen, destino, *args, **kwargs)
+
+        with mock.patch.object(os, "replace", side_effect=fallar_el_segundo_intento):
+            with self.assertRaises(PermissionError):
+                aplicar(home, nueva, sin_turnos=True)
+        self.assertEqual(self._marca(home), "buena\n")
+        self.assertEqual(asignar(home), buena)
+
+        self.assertEqual(recuperar(home, sin_turnos=True)["accion"], "completo")
+        self.assertEqual(self._marca(home), "nueva\n")
+        self.assertEqual(sorted(os.listdir(home)), antes)
+
+    def test_el_comando_que_da_asignar_sin_actual_corre_en_cmd_desde_otra_unidad(self):
+        from motor.flota.control import aplicar, asignar, revertir
+
+        home, buena, nueva = self._flota()
+        aplicar(home, buena, sin_turnos=True)
+        aplicar(home, nueva, sin_turnos=True)
+        (home / "actual").unlink()
+        con_ampersand = home.parent / "R&D"
+        con_ampersand.symlink_to(home, target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, nueva) as falla:
+            asignar(con_ampersand)
+        comando = str(falla.exception).split("`")[1]
+        # En el job windows el clon está en D: y el temporal en C:.
+        hecho = _run(comando, shell=True, cwd=home.parent, capture_output=True, text=True)
+        self.assertEqual(hecho.returncode, 0, hecho.stdout + hecho.stderr)
+        self.assertEqual(asignar(home), nueva)
+        self.assertEqual(revertir(home)["anterior"], buena)
 
 
 if __name__ == "__main__":

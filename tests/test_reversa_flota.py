@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -9,6 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
 
@@ -17,7 +21,9 @@ from motor.flota.control import (
     aplicar,
     asignar,
     leer_trabajo,
+    liberar_trabajo,
     recuperar,
+    revertir,
 )
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -163,6 +169,220 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(asignar(self.home), self.nueva)
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
         self.assertEqual(recuperar(self.home)["accion"], "nada")
+
+    def _marca_vigente(self) -> str:
+        return (self.home / "actual" / "marca.txt").read_text(encoding="utf-8")
+
+    def test_un_cambio_de_actual_que_se_corta_conserva_la_previa_y_recuperar_termina(self) -> None:
+        class Apagon(BaseException):
+            pass
+
+        reemplazar = os.replace
+
+        def apagar_al_reemplazar_actual(origen, destino, *args, **kwargs):
+            if Path(destino).name == "actual":
+                raise Apagon
+            return reemplazar(origen, destino, *args, **kwargs)
+
+        sin_privilegio = OSError(errno.EPERM, "A required privilege is not held by the client")
+        cortes = (
+            ("la PC sin token elevado", "symlink", sin_privilegio, OSError),
+            ("apagon al reemplazar", "replace", apagar_al_reemplazar_actual, Apagon),
+        )
+        for nombre, funcion, efecto, error in cortes:
+            with self.subTest(corte=nombre):
+                aplicar(self.home, self.buena, sin_turnos=True)
+                antes = sorted(os.listdir(self.home))
+                with mock.patch.object(os, funcion, side_effect=efecto):
+                    with self.assertRaises(error):
+                        aplicar(self.home, self.nueva, sin_turnos=True)
+                self.assertEqual(self._marca_vigente(), "buena\n")
+                self.assertEqual(asignar(self.home), self.buena)
+
+                self.assertEqual(recuperar(self.home, sin_turnos=True)["accion"], "completo")
+                self.assertEqual(self._marca_vigente(), "nueva\n")
+                self.assertEqual(sorted(os.listdir(self.home)), antes)
+
+    def test_el_respaldo_de_windows_no_pierde_actual_si_el_cambio_falla(self) -> None:
+        class FalloDeWindows(PermissionError):
+            def __init__(self, winerror: int) -> None:
+                super().__init__(errno.EACCES, "Access is denied")
+                self.winerror = winerror
+
+        reemplazar = os.replace
+
+        def como_windows(*winerrors: int):
+            fallos = [FalloDeWindows(codigo) for codigo in winerrors]
+
+            def reemplazo(origen, destino, *args, **kwargs):
+                if Path(destino).name == "actual" and fallos:
+                    raise fallos.pop(0)
+                return reemplazar(origen, destino, *args, **kwargs)
+
+            return reemplazo
+
+        casos = (
+            ("falla el reemplazo tras apartar el enlace", (5, 32)),
+            ("un permiso que no es el del enlace de directorio", (32,)),
+        )
+        for nombre, winerrors in casos:
+            with self.subTest(caso=nombre):
+                aplicar(self.home, self.buena, sin_turnos=True)
+                antes = sorted(os.listdir(self.home))
+                with mock.patch.object(os, "replace", side_effect=como_windows(*winerrors)):
+                    with self.assertRaises(PermissionError):
+                        aplicar(self.home, self.nueva, sin_turnos=True)
+                self.assertEqual(self._marca_vigente(), "buena\n")
+                self.assertEqual(asignar(self.home), self.buena)
+
+                self.assertEqual(recuperar(self.home, sin_turnos=True)["accion"], "completo")
+                self.assertEqual(self._marca_vigente(), "nueva\n")
+                self.assertEqual(sorted(os.listdir(self.home)), antes)
+
+    def test_sin_actual_asignar_no_cae_al_clon_y_su_comando_termina_el_enlace_sin_perder_la_reversa(self) -> None:
+        (self.tmp / "flota con espacio").symlink_to(self.home, target_is_directory=True)
+        otra = self.tmp / "otra"
+        otra.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.tmp)
+
+        def reponer(registrada: str) -> None:
+            with self.assertRaisesRegex(RuntimeError, registrada) as falla:
+                asignar(Path("flota con espacio"))
+            comandos = re.findall(r"`([^`]+)`", str(falla.exception))
+            self.assertEqual(len(comandos), 1, comandos)
+            hecho = subprocess.run(
+                comandos[0],
+                shell=True,
+                cwd=otra,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "MOTOR_HOME": str(self.tmp / "motor-home")},
+            )
+            self.assertEqual(hecho.returncode, 0, hecho.stderr)
+
+        with self.subTest(caso="instalacion completa"):
+            aplicar(self.home, self.buena, sin_turnos=True)
+            aplicar(self.home, self.nueva, sin_turnos=True)
+            (self.home / "actual").unlink()
+            reponer(self.nueva)
+            self.assertEqual(asignar(self.home), self.nueva)
+            self.assertEqual(revertir(self.home)["anterior"], self.buena)
+            self.assertEqual(asignar(self.home), self.buena)
+
+        with self.subTest(caso="corte a mitad de aplicar"):
+            aplicar(self.home, self.buena, sin_turnos=True)
+            aplicar(self.home, self.nueva, "worktree", sin_turnos=True)
+            (self.home / "actual").unlink()
+            reponer(self.buena)
+            self.assertEqual(asignar(self.home), self.nueva)
+
+    def test_revertir_la_primera_instalacion_vuelve_al_clon_y_asignar_lo_sigue(self) -> None:  # no-roja-en-base: la base ya volvia al clon; guarda que el error de asignar sin actual no alcance este estado legitimo
+        aplicar(self.home, self.nueva, sin_turnos=True)
+        self.assertEqual(revertir(self.home)["accion"], "revertido")
+        self.assertFalse((self.home / "actual").exists())
+        self.assertEqual(asignar(self.home), self.buena)
+
+    def test_un_apagon_a_mitad_de_la_reversa_al_clon_deja_asignar_en_pie_y_recuperar_la_termina(self) -> None:
+        class Apagon(BaseException):
+            pass
+
+        quitar, mover = Path.unlink, Path.replace
+
+        def apagar_al_quitar_actual(ruta: Path, *args, **kwargs):
+            if ruta.name == "actual":
+                raise Apagon
+            return quitar(ruta, *args, **kwargs)
+
+        def apagar_al_archivar_el_recibo(ruta: Path, destino, *args, **kwargs):
+            if Path(destino).parent.name == "historial":
+                raise Apagon
+            return mover(ruta, destino, *args, **kwargs)
+
+        cortes = (
+            ("al quitar actual", "unlink", apagar_al_quitar_actual, self.nueva),
+            ("al archivar el recibo", "replace", apagar_al_archivar_el_recibo, self.buena),
+        )
+        for nombre, metodo, efecto, asignada in cortes:
+            with self.subTest(corte=nombre):
+                aplicar(self.home, self.nueva, sin_turnos=True)
+                with mock.patch.object(Path, metodo, autospec=True, side_effect=efecto):
+                    with self.assertRaises(Apagon):
+                        revertir(self.home)
+                self.assertEqual(asignar(self.home), asignada)
+
+                self.assertEqual(recuperar(self.home)["accion"], "revertido")
+                self.assertFalse((self.home / "actual").exists())
+                self.assertFalse((self.home / "instalacion.json").exists())
+                self.assertEqual(asignar(self.home), self.buena)
+
+    def test_recuperar_termina_la_reversa_anotada_aunque_quede_el_pendiente_de_su_instalacion(self) -> None:
+        class Apagon(BaseException):
+            pass
+
+        quitar, mover, reemplazar = Path.unlink, Path.replace, os.replace
+
+        def apagar_al_borrar_el_pendiente(ruta: Path, *args, **kwargs):
+            if ruta.name == "instalacion-pendiente.json":
+                raise Apagon
+            return quitar(ruta, *args, **kwargs)
+
+        def apagar_al_mover_actual(origen, destino, *args, **kwargs):
+            if Path(destino).name == "actual":
+                raise Apagon
+            return reemplazar(origen, destino, *args, **kwargs)
+
+        def apagar_al_archivar_el_recibo(ruta: Path, destino, *args, **kwargs):
+            if Path(destino).parent.name == "historial":
+                raise Apagon
+            return mover(ruta, destino, *args, **kwargs)
+
+        cortes = (
+            ("al mover actual", mock.patch.object(os, "replace", side_effect=apagar_al_mover_actual)),
+            (
+                "al archivar el recibo",
+                mock.patch.object(Path, "replace", autospec=True, side_effect=apagar_al_archivar_el_recibo),
+            ),
+        )
+        for nombre, corte in cortes:
+            with self.subTest(corte=nombre):
+                aplicar(self.home, self.buena, sin_turnos=True)
+                with mock.patch.object(Path, "unlink", autospec=True, side_effect=apagar_al_borrar_el_pendiente):
+                    with self.assertRaises(Apagon):
+                        aplicar(self.home, self.nueva, sin_turnos=True)
+                with corte, self.assertRaises(Apagon):
+                    revertir(self.home)
+
+                self.assertEqual(recuperar(self.home)["accion"], "revertido")
+                self.assertEqual(self._marca_vigente(), "buena\n")
+                self.assertEqual(asignar(self.home), self.buena)
+                self.assertFalse((self.home / "instalacion.json").exists())
+                self.assertFalse((self.home / "instalacion-pendiente.json").exists())
+
+    def test_una_reversa_ocupada_no_queda_anotada_para_recuperar(self) -> None:  # no-roja-en-base: la base no anotaba la reversa; guarda que una reversa ocupada no se complete sola cuando el trabajo termina
+        aplicar(self.home, self.nueva, sin_turnos=True)
+        anotar_trabajo(self.home, "uno", self.nueva, "codex", {"reserva": True})
+        self.assertEqual(revertir(self.home)["accion"], "ocupada")
+        liberar_trabajo(self.home, "uno")
+        self.assertEqual(recuperar(self.home)["accion"], "nada")
+        self.assertEqual(asignar(self.home), self.nueva)
+
+    def test_sin_actual_una_reserva_sobre_la_instalada_frena_revertir_y_aplicar(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+        aplicar(self.home, self.nueva, sin_turnos=True)
+        anotar_trabajo(self.home, "uno", self.nueva, "codex", {"reserva": True})
+        (self.home / "actual").unlink()
+        recibo = (self.home / "instalacion.json").read_text(encoding="utf-8")
+        antes = sorted(os.listdir(self.home))
+
+        salida = revertir(self.home)
+        self.assertEqual((salida["accion"], salida.get("vigente")), ("ocupada", self.nueva))
+        self.assertEqual(sorted(os.listdir(self.home)), antes)
+        self.assertEqual((self.home / "instalacion.json").read_text(encoding="utf-8"), recibo)
+
+        self.assertEqual(aplicar(self.home, self.buena, sin_turnos=True)["accion"], "ocupada")
+        self.assertFalse((self.home / "actual").exists())
+        self.assertEqual((self.home / "instalacion.json").read_text(encoding="utf-8"), recibo)
 
     def test_recuperar_revierte_si_la_candidata_no_llego_a_instalarse(self) -> None:
         aplicar(self.home, self.buena, sin_turnos=True)

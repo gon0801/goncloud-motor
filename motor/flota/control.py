@@ -3,11 +3,14 @@ from motor.io import escribir_texto, leer_json
 
 import hashlib
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import sys
 from functools import wraps
 from pathlib import Path
+from typing import NamedTuple
 
 from .cerrojo import _cerrojo_flota
 from .manifiesto import Politica, cargar, guardar, proyectar_tabla
@@ -159,11 +162,48 @@ def leer_trabajo(home: Path, trabajo: str) -> dict | None:
     return _leer(home / "trabajos" / f"{trabajo}.json")
 
 
+class _SinEnlace(NamedTuple):
+    """Lo que vale sin actual, leído de instalacion.json."""
+
+    asignada: str
+    # Hasta que la reversa termina, sus trabajos siguen sobre la instalada.
+    instalada: str
+    exige_enlace: bool
+
+
+def _sin_enlace(home: Path) -> _SinEnlace:
+    recibo = _leer(home / "instalacion.json") or {}
+    instalada = str((recibo.get("destino") or {}).get("codigo") or "")
+    if recibo.get("etapa") == "revirtiendo":
+        anterior = str((recibo.get("anterior") or {}).get("codigo") or "")
+        return _SinEnlace(anterior, instalada, False)
+    if instalada:
+        return _SinEnlace(instalada, instalada, True)
+    clon = cabeza(home)
+    return _SinEnlace(clon, clon, False)
+
+
+def _entre_comillas(partes: list[str]) -> str:
+    return " ".join(f'"{parte}"' for parte in partes)
+
+
 def asignar(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return actual.resolve().name
-    return cabeza(home)
+    sin = _sin_enlace(home)
+    if sin.exige_enlace:
+        raiz = Path(__file__).resolve().parents[2]
+        argv = [sys.executable, "-m", "motor", "flota", "recuperar", "--home", str(home.absolute())]
+        # python -m motor busca el paquete en la carpeta actual; cmd cambia de unidad solo con
+        # /d y no corta dentro de comillas dobles, ni en un espacio ni en un &.
+        cd, unir = ("cd /d", _entre_comillas) if os.name == "nt" else ("cd", shlex.join)
+        raise RuntimeError(
+            f"falta el enlace actual; reponlo con `{cd} {unir([str(raiz)])} && {unir(argv)}`. "
+            f"instalacion.json registra la generacion {sin.asignada} y sin el enlace la "
+            "maquina correria el HEAD del clon, otra version."
+        )
+    return sin.asignada
 
 
 def _comprobar_detalle(gen: Path) -> tuple[int, str]:
@@ -389,9 +429,25 @@ def _turnos_de_activacion(
 
 def _poner_enlace(home: Path, gen: Path) -> None:
     actual = home / "actual"
-    if actual.is_symlink() or actual.exists():
-        actual.unlink()
-    actual.symlink_to(gen, target_is_directory=True)
+    temporal = home / ".actual.tmp"
+    previo = home / ".actual.previo"
+    temporal.unlink(missing_ok=True)
+    previo.unlink(missing_ok=True)
+    temporal.symlink_to(gen, target_is_directory=True)
+    try:
+        os.replace(temporal, actual)
+    except PermissionError as error:
+        if getattr(error, "winerror", None) != 5 or not actual.is_symlink():
+            raise
+        # Windows no reemplaza un enlace de directorio (WinError 5): se aparta el
+        # vigente y vuelve a su lugar si el segundo reemplazo falla.
+        os.replace(actual, previo)
+        try:
+            os.replace(temporal, actual)
+        except OSError:
+            os.replace(previo, actual)
+            raise
+        previo.unlink()
 
 
 def _enlace(home: Path, gen: Path) -> None:
@@ -402,12 +458,7 @@ def _anterior_real(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return asignar(home)
-    completo = _leer(home / "instalacion.json")
-    if completo:
-        codigo = (completo.get("destino") or {}).get("codigo")
-        if codigo:
-            return str(codigo)
-    return cabeza(home)
+    return _sin_enlace(home).asignada
 
 
 def _operacion_flota(funcion):
@@ -423,7 +474,7 @@ def _cambiar_generacion(home: Path, destino: Path | None) -> bool:
     previa = actual.resolve() if actual.is_symlink() else None
     if previa == destino:
         return True
-    vigente = asignar(home)
+    vigente = previa.name if previa is not None else _sin_enlace(home).instalada
     if _trabajos_sobre(home, vigente):
         return False
     if destino is None:
@@ -455,7 +506,8 @@ def revertir(home: Path) -> dict:
         pend_anterior = str((pend.get("anterior") or {}).get("codigo") or "")
         comp_destino = str((comp.get("destino") or {}).get("codigo") or "")
         vigente = asignar(home) if (home / "actual").is_symlink() else comp_destino
-        if pend_anterior and pend_anterior in {vigente, comp_destino}:
+        anotada = comp.get("etapa") == "revirtiendo"
+        if not anotada and pend_anterior and pend_anterior in {vigente, comp_destino}:
             recibo = pend
             usado = "pendiente"
             consumir_pendiente = True
@@ -476,8 +528,14 @@ def revertir(home: Path) -> dict:
     if not anterior:
         return {"accion": "nada"}
     previa = home / "generaciones" / anterior
+    # Un corte entre mover actual y archivar el recibo deja la reversa anotada;
+    # asignar la sigue y recuperar la termina.
+    if usado == "instalacion":
+        _atomico(inst_path, {**recibo, "etapa": "revirtiendo"})
     if not _cambiar_generacion(home, previa if previa.exists() else None):
-        return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
+        if usado == "instalacion":
+            _atomico(inst_path, recibo)
+        return {"accion": "ocupada", "vigente": _anterior_real(home), "destino": anterior}
     motor = home / "motor"
     if (motor / ".git").exists() or (motor / ".git").is_file():
         subprocess.run(
@@ -584,7 +642,7 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
             "turnos": resumen,
         }
     if not _cambiar_generacion(home, gen):
-        return {"accion": "ocupada", "vigente": asignar(home),
+        return {"accion": "ocupada", "vigente": _anterior_real(home),
                 "destino": destino, "generacion_preparada": destino,
                 "turnos": resumen}
     recibo["etapa"] = "completo"
@@ -595,33 +653,52 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
     return {"accion": "aplicada", "generacion": destino, "anterior": anterior, "turnos": resumen}
 
 
+def _recuperar_instalada(home: Path) -> dict:
+    comp = _leer(home / "instalacion.json")
+    if comp and comp.get("etapa") == "revirtiendo":
+        return revertir(home)
+    if comp and comp.get("etapa") == "completo":
+        destino_c = str((comp.get("destino") or {}).get("codigo") or "")
+        gen_c = home / "generaciones" / destino_c
+        if destino_c and gen_c.exists():
+            rc_c, _nombre_c = _comprobar_detalle(gen_c)
+            if rc_c != 0:
+                return revertir(home)
+            if (gen_c / "motor" / "__main__.py").is_file():
+                try:
+                    arranque = subprocess.run(
+                        [sys.executable, "-m", "motor", "--help"],
+                        cwd=gen_c,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if arranque.returncode != 0:
+                        return revertir(home)
+                except (OSError, subprocess.TimeoutExpired):
+                    return revertir(home)
+            if not (home / "actual").is_symlink():
+                _enlace(home, gen_c)
+                return {"accion": "enlazada", "generacion": destino_c}
+    return {"accion": "nada"}
+
+
+def _pendiente(home: Path) -> dict | None:
+    """El recibo pendiente que recuperar completa.
+
+    Una reversa anotada se termina antes; revertir consume el pendiente que quede.
+    """
+    if (_leer(home / "instalacion.json") or {}).get("etapa") == "revirtiendo":
+        return None
+    return _leer(home / "instalacion-pendiente.json")
+
+
 @_operacion_flota
 def recuperar(home: Path, sin_turnos: bool = False) -> dict:
     pend_path = home / "instalacion-pendiente.json"
-    pend = _leer(pend_path)
+    pend = _pendiente(home)
     if pend is None:
-        comp = _leer(home / "instalacion.json")
-        if comp and comp.get("etapa") == "completo":
-            destino_c = str((comp.get("destino") or {}).get("codigo") or "")
-            gen_c = home / "generaciones" / destino_c
-            if destino_c and gen_c.exists():
-                rc_c, _nombre_c = _comprobar_detalle(gen_c)
-                if rc_c != 0:
-                    return revertir(home)
-                if (gen_c / "motor" / "__main__.py").is_file():
-                    try:
-                        arranque = subprocess.run(
-                            [sys.executable, "-m", "motor", "--help"],
-                            cwd=gen_c,
-                            capture_output=True,
-                            text=True,
-                            timeout=30,
-                        )
-                        if arranque.returncode != 0:
-                            return revertir(home)
-                    except (OSError, subprocess.TimeoutExpired):
-                        return revertir(home)
-        return {"accion": "nada"}
+        return _recuperar_instalada(home)
     destino = (pend.get("destino") or {}).get("codigo") or ""
     anterior = (pend.get("anterior") or {}).get("codigo") or ""
     sin_turnos = sin_turnos or bool(pend.get("sin_turnos"))
@@ -655,7 +732,7 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
             if apunta and anterior:
                 previa = home / "generaciones" / anterior
                 if not _cambiar_generacion(home, previa if previa.exists() else None):
-                    return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
+                    return {"accion": "ocupada", "vigente": _anterior_real(home), "destino": anterior}
             pend_path.unlink(missing_ok=True)
             _atomico(
                 home / "candidata.json",
@@ -673,7 +750,7 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
                 "turnos": resumen,
             }
         if not apunta and not _cambiar_generacion(home, gen):
-            return {"accion": "ocupada", "vigente": asignar(home), "destino": destino}
+            return {"accion": "ocupada", "vigente": _anterior_real(home), "destino": destino}
         pend["etapa"] = "completo"
         pend["causa"] = ""
         pend["comprobador"] = comprobador
@@ -687,7 +764,7 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
         if apunta and anterior:
             previa = home / "generaciones" / anterior
             if not _cambiar_generacion(home, previa if previa.exists() else None):
-                return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
+                return {"accion": "ocupada", "vigente": _anterior_real(home), "destino": anterior}
         pend_path.unlink(missing_ok=True)
         _atomico(
             home / "candidata.json",
