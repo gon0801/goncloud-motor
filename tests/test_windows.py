@@ -456,8 +456,10 @@ class EnlaceDeFlotaEnWindows(unittest.TestCase):
         aplicar(home, buena, sin_turnos=True)
         aplicar(home, nueva, sin_turnos=True)
         (home / "actual").unlink()
+        con_ampersand = home.parent / "R&D"
+        con_ampersand.symlink_to(home, target_is_directory=True)
         with self.assertRaisesRegex(RuntimeError, nueva) as falla:
-            asignar(home)
+            asignar(con_ampersand)
         comando = str(falla.exception).split("`")[1]
         # En el job windows el clon está en D: y el temporal en C:.
         hecho = _run(comando, shell=True, cwd=home.parent, capture_output=True, text=True)
