@@ -359,8 +359,11 @@ def _corto(texto: str, largo: int = 160) -> str:
 def _paro_con_palabra(p: Pliegue) -> Condicion:
     """docs/modelo-centro-encargos.md, "Qué significa cada palabra del reporte": una fase
     bloqueada se reporta "entrega parcial" con cada fase que falta y su causa, y `detenido`
-    queda para sus cuatro causas. La causa de un `detenido` la juzgan `_se_paro_solo` y
-    `_dice_por_que`: el registro todavía no la guarda como dato."""
+    queda para sus cinco causas. El fallo interno, que el plegado guarda en `orden_parada`,
+    es un hecho que el motor no pudo guardar y no la parada del checklist. Las otras causas
+    las juzgan `_se_paro_solo` y `_dice_por_que`: el registro no las guarda como dato."""
+    if p.estado == "detenido" and p.orden_parada == "fallo_interno":
+        return False, "quedó detenido por fallo interno, no por el checklist"
     if p.estado == "detenido":
         return True, "quedó detenido"
     if p.estado != "terminado":

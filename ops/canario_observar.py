@@ -142,6 +142,7 @@ def vista(e: Encargo, eventos: list[dict], violaciones: tuple[str, ...] = ()) ->
         causas=tuple(dict.fromkeys(
             c for c in (e.motivo, *(i.causa for i in e.impedimentos)) if c.strip()
         )),
+        orden_parada=e.orden_parada,
     )
 
 
