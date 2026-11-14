@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from .cerrojo import _cerrojo_flota
 from .comprobador import Comprobacion, comprobar, comprobar_instalada
@@ -548,7 +548,7 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
     _atomico(home / "instalacion-pendiente.json", recibo)
     if corte == "worktree":
         return {"accion": "cortado", "etapa": "codigo", "vigente": asignar(home) if (home / "actual").exists() else anterior}
-    rc, comprobador, sin_medir = _medir(home, destino, comprobar(gen))
+    rc, comprobador, sin_medir = _medir(home, destino, comprobar(gen), "aplicar")
     recibo["comprobador"] = comprobador
     if rc != 0:
         motivo = sin_medir.causa if sin_medir else "la comprobacion fallo"
@@ -603,8 +603,12 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
     return {"accion": "aplicada", "generacion": destino, "anterior": anterior, "turnos": resumen}
 
 
-def _medir(home: Path, generacion: str, comprobacion: Comprobacion) -> Comprobacion:
+def _medir(
+    home: Path, generacion: str, comprobacion: Comprobacion, operacion: Literal["aplicar", "recuperar"]
+) -> Comprobacion:
     """Deja en sin-medir.json la ultima lectura que no termino; una que termina lo borra.
+
+    La nota dice que operacion la escribio: es la que hay que volver a correr.
 
     Con el ciclo de flota apagado nadie vuelve a medir solo: el archivo es lo que queda.
     """
@@ -616,6 +620,7 @@ def _medir(home: Path, generacion: str, comprobacion: Comprobacion) -> Comprobac
         nota,
         {
             "generacion": generacion,
+            "operacion": operacion,
             **comprobacion.sin_medir._asdict(),
             "causa": comprobacion.sin_medir.causa,
             "hora": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -632,7 +637,7 @@ def _recuperar_instalada(home: Path) -> dict:
         destino_c = str((comp.get("destino") or {}).get("codigo") or "")
         gen_c = home / "generaciones" / destino_c
         if destino_c and gen_c.exists():
-            comprobacion = _medir(home, destino_c, comprobar_instalada(gen_c))
+            comprobacion = _medir(home, destino_c, comprobar_instalada(gen_c), "recuperar")
             if comprobacion.sin_medir:
                 return {"accion": "no_medido", "generacion": destino_c, "causa": comprobacion.sin_medir.causa}
             if comprobacion.rc != 0:
@@ -677,7 +682,7 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
     if gen.exists() and actual.is_symlink():
         apunta = actual.resolve() == gen.resolve()
     rc, comprobador, sin_medir = _medir(
-        home, destino, comprobar(gen) if gen.exists() else Comprobacion(1, "ninguno")
+        home, destino, comprobar(gen) if gen.exists() else Comprobacion(1, "ninguno"), "recuperar"
     )
     if sin_medir:
         return {"accion": "no_medido", "destino": destino, "causa": sin_medir.causa}

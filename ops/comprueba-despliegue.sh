@@ -223,8 +223,8 @@ def huella_flota():
     snapshot = snapshot[:12] if re.fullmatch("[0-9a-f]{64}", snapshot) else "sin-fuente"
     return " ".join((tabla, manifiesto, snapshot, deseado))
 
-# motor flota recuperar deja sin-medir.json cuando una lectura de la generación no terminó;
-# la orden trae rutas de la máquina y no se imprime.
+# motor flota aplicar o recuperar deja sin-medir.json cuando una lectura de la generación no
+# terminó; la orden trae rutas de la máquina y no se imprime.
 def sin_medir():
     nota = leer(home_flota() / "sin-medir.json")
     if not isinstance(nota, dict) or not nota:
@@ -232,7 +232,12 @@ def sin_medir():
     gen = str(nota.get("generacion") or "")
     gen = gen[:12] if re.fullmatch("[0-9a-f]{7,64}", gen) else "#" + corto(gen.encode("utf-8"))
     tope = nota.get("tope")
-    return gen + " " + (str(tope) if isinstance(tope, (int, float)) else "?")
+    operacion = nota.get("operacion")
+    return " ".join((
+        gen,
+        str(tope) if isinstance(tope, (int, float)) else "?",
+        operacion if operacion in ("aplicar", "recuperar") else "?",
+    ))
 
 print("recibo", recibo)
 print("vivo", vivo)
@@ -354,9 +359,14 @@ for m in $maquinas; do
   if [ -n "$token" ] && [ "$token" != ok ]; then
     echo "AVISO $m: el agente arranca sin credencial de GitHub: $token" >&2
   fi
-  read -r sin_gen sin_tope <<<"$(printf '%s\n' "$estado" | awk '/^sinmedir /{ print $2, $3; exit }')"
+  read -r sin_gen sin_tope sin_op <<<"$(printf '%s\n' "$estado" | awk '/^sinmedir /{ print $2, $3, $4; exit }')"
   if [ -n "$sin_gen" ] && [ "$sin_gen" != - ]; then
-    echo "AVISO $m: la flota no midió la generación $sin_gen (tope $sin_tope s); vuelve a correr motor flota recuperar" >&2
+    case "$sin_op" in
+      aplicar) repite="vuelve a aplicar la generación $sin_gen con motor flota aplicar" ;;
+      recuperar) repite="vuelve a correr motor flota recuperar" ;;
+      *) repite="vuelve a aplicarla con motor flota aplicar o a correr motor flota recuperar" ;;
+    esac
+    echo "AVISO $m: la flota no midió la generación $sin_gen (tope $sin_tope s); $repite" >&2
   fi
   flota="$(printf '%s\n' "$estado" | awk '/^flota /{ $1=""; sub(/^ /,""); print; exit}')"
   case "$flota" in

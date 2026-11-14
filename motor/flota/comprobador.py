@@ -13,11 +13,12 @@ class SinMedir(NamedTuple):
     """La lectura que no termino a tiempo."""
 
     orden: str
-    tope: float
+    tope: float | None
 
     @property
     def causa(self) -> str:
-        return f"`{self.orden}` no respondio en {self.tope:g} s; no se midio"
+        plazo = "a tiempo" if self.tope is None else f"en {self.tope:g} s"
+        return f"`{self.orden}` no respondio {plazo}; no se midio"
 
 
 class Comprobacion(NamedTuple):
@@ -33,8 +34,10 @@ class Comprobacion(NamedTuple):
 
 def _sin_medir(exc: subprocess.TimeoutExpired) -> Comprobacion:
     orden = " ".join(map(str, exc.cmd)) if isinstance(exc.cmd, list) else str(exc.cmd)
-    # Sin tuberias, subprocess.run trae lo que quedaba del tope (119.99995 de 120).
-    return Comprobacion(1, orden, SinMedir(orden, math.ceil(exc.timeout)))
+    # Sin tuberias, subprocess.run trae lo que quedaba del tope (119.99995 de 120), y
+    # TimeoutExpired acepta cualquier tope, None incluido, aunque typeshed diga float.
+    tope = math.ceil(exc.timeout) if isinstance(exc.timeout, (int, float)) else None
+    return Comprobacion(1, orden, SinMedir(orden, tope))
 
 
 def comprobar(gen: Path) -> Comprobacion:
