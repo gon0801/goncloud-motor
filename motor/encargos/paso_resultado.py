@@ -21,11 +21,11 @@ from .cierre import componer, comprobar_destino
 from .comprobacion import JuicioValidado, validar_juicio
 from .dominio import FASE_IMPLICITA, Encargo, Hallazgo, alcance_de, bloqueantes_abiertos
 from .frontera import DestinoEnsayo
-from .registro import ClaveOcupada, Evento, EventoIlegal, Rechazo, Registro, contar_omitidos
+from .lote import Lote, Paso, Region, excepcion
+from .lote import guardar as guardar_lote
+from .registro import Evento, Registro
 
 Manifiesto = tuple[tuple[str, str], ...]
-# (huella, línea anclada, lo que la sigue) de la región que un hallazgo ancla en un SHA.
-Region = tuple[str, str, list[str] | None]
 
 
 @dataclass(frozen=True)
@@ -48,37 +48,6 @@ class Foto:
     previo: dict | None
 
 
-@dataclass(frozen=True)
-class Paso:
-    """Lo que el paso guarda en una transacción, lo que deja fuera y lo que responde.
-
-    `omitidos` son los eventos que el registro rechazaría. El paso sigue sin
-    ellos, como sigue un llamador de `anotar`, que devuelve el rechazo sin
-    lanzar: meterlos al lote rechazaría el resultado entero."""
-
-    eventos: tuple[Evento, ...]
-    omitidos: tuple[tuple[Evento, Rechazo], ...]
-    respuesta: dict
-
-
-@dataclass(frozen=True)
-class _Lote:
-    proyectar: Callable[[Sequence[Evento]], Encargo]
-    estado: Encargo
-    eventos: tuple[Evento, ...] = ()
-    omitidos: tuple[tuple[Evento, Rechazo], ...] = ()
-
-    def con(self, evento: Evento) -> _Lote:
-        try:
-            estado = self.proyectar([*self.eventos, evento])
-        except Rechazo as rechazo:
-            return replace(self, omitidos=(*self.omitidos, (evento, rechazo)))
-        return replace(self, estado=estado, eventos=(*self.eventos, evento))
-
-    def paso(self, respuesta: dict) -> Paso:
-        return Paso(self.eventos, self.omitidos, respuesta)
-
-
 def producto_de(observaciones: dict) -> tuple[str, Manifiesto]:
     version = str(observaciones.get("version") or observaciones.get("producto") or "")
     manifiesto = tuple(
@@ -87,31 +56,6 @@ def producto_de(observaciones: dict) -> tuple[str, Manifiesto]:
         if isinstance(x, (list, tuple)) and len(x) >= 2
     )
     return version, manifiesto
-
-
-def _excepcion(
-    tipo: str, sha: str, hallazgo: str, motivo: str, hora: str, clave: str,
-    ancla: str = "", region: str = "", region_ancla: str = "",
-    region_contexto: list[str] | None = None,
-) -> Evento:
-    """Los datos que arma `ciclo._anotar_excepcion`: los dos escriben la misma
-    ukey, y `ciclo._descarte_sigue_vigente` lee la región de cualquiera."""
-    datos: dict[str, object] = {
-        "tipo": tipo,
-        "sha": str(sha or ""),
-        "id": str(hallazgo or ""),
-        "motivo": " ".join(str(motivo or "").split()),
-        "hora": hora,
-    }
-    if ancla:
-        datos["ancla"] = str(ancla)
-    if region:
-        datos["region"] = str(region)
-    if region_ancla:
-        datos["region_ancla"] = str(region_ancla)
-    if region_contexto is not None:
-        datos["region_contexto"] = [str(x) for x in region_contexto]
-    return Evento("excepcion", datos, clave)
 
 
 def _crudo(juicio: dict) -> dict:
@@ -135,12 +79,12 @@ def _crudo(juicio: dict) -> dict:
 
 
 def _descartar(
-    lote: _Lote,
+    lote: Lote,
     enc: Encargo,
     foto: Foto,
     validado: JuicioValidado,
     region: Callable[[str, Hallazgo], Region],
-) -> tuple[_Lote, list[Hallazgo]]:
+) -> tuple[Lote, list[Hallazgo]]:
     """Los hallazgos de DeepSeek que el revisor descarta o deja fuera del alcance,
     con sus notas y excepciones, y la lista que la revisión guarda."""
     hallazgos = list(validado.hallazgos)
@@ -164,7 +108,7 @@ def _descartar(
             f"disputa-resuelta-autoridad:{enc.id}:{hid}",
         ))
         huella_region, texto_region, siguiente_region = region(enc.pr_sha, h)
-        lote = lote.con(_excepcion(
+        lote = lote.con(excepcion(
             "descarte", enc.pr_sha, hid, marca, foto.hora,
             f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{hid}",
             ancla=h.ancla,
@@ -185,7 +129,7 @@ def _descartar(
             {"id": hid, "titulo": h.titulo, "razon": razon, "hora": foto.hora},
             f"fuera-alcance:{enc.id}:{foto.fase}:{hid}",
         ))
-        lote = lote.con(_excepcion(
+        lote = lote.con(excepcion(
             "fuera_alcance", enc.pr_sha, hid, razon, foto.hora,
             f"excepcion:{enc.id}:fuera:{enc.pr_sha}:{hid}",
         ))
@@ -224,13 +168,13 @@ def decidir(
     proyectar: Callable[[Sequence[Evento]], Encargo],
     region: Callable[[str, Hallazgo], Region],
     destino: Callable[[], DestinoEnsayo],
-) -> Paso:
+) -> Paso[dict]:
     """El lote que guarda el resultado y la respuesta que da.
 
     Un rechazo guarda solo la asociación del conductor con la fase, y deja
     fuera lo que el registro habría rechazado del lote que abandona."""
     enc, fase, hora = foto.enc, foto.fase, foto.hora
-    asociado = _Lote(proyectar, enc)
+    asociado = Lote(proyectar, enc)
     if foto.token:
         asociado = asociado.con(Evento(
             "conductor_fase",
@@ -238,7 +182,7 @@ def decidir(
             f"conductor-fase:{enc.id}:{foto.token}",
         ))
 
-    def rechazo(motivo: str, abandonado: _Lote) -> Paso:
+    def rechazo(motivo: str, abandonado: Lote) -> Paso[dict]:
         return Paso(asociado.eventos, abandonado.omitidos, {"rechazado": True, "motivo": motivo})
 
     if foto.previo is not None:
@@ -309,22 +253,15 @@ def decidir(
     })
 
 
-def guardar(registro: Registro, encargo: str, paso: Paso) -> dict:
+def guardar(registro: Registro, encargo: str, paso: Paso[dict]) -> dict:
     """Guarda el lote del paso y devuelve lo que responde.
 
     El barrido del supervisor y `promover` escriben sin tomar `turno`: si uno
-    cambia el registro después de la última proyección, `append_many` rechaza
-    el lote entero. Entonces no se guarda nada y se responde un rechazo que
-    nombra el evento. El ejecutor vuelve a mandar el resultado en cada barrido
-    hasta que le respondan `registrado`, y `decidir` lo decide de nuevo sobre
-    el registro que encuentre."""
-    contar_omitidos(paso.omitidos)
-    try:
-        registro.append_many(encargo, paso.eventos)
-    except (ClaveOcupada, EventoIlegal) as rechazo:
-        evento = paso.eventos[rechazo.indice]
-        return {
-            "rechazado": True,
-            "motivo": f"el registro cambió antes de guardar {evento.kind} {evento.ukey}: {rechazo}",
-        }
-    return paso.respuesta
+    ocupa con otro hecho una ukey del lote, o vuelve ilegal uno de sus eventos,
+    después de la última proyección, `append_many` rechaza el lote entero.
+    Entonces no se guarda nada y se responde un rechazo que nombra el evento.
+    Un cambio que no choca se acepta. El ejecutor vuelve a mandar el resultado
+    en cada barrido hasta que le respondan `registrado`, y `decidir` lo decide
+    de nuevo sobre el registro que encuentre."""
+    motivo = guardar_lote(registro, encargo, paso)
+    return {"rechazado": True, "motivo": motivo} if motivo else paso.respuesta

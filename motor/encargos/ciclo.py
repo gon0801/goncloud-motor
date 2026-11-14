@@ -47,7 +47,6 @@ from .dominio import (
     Fase,
     FASE_IMPLICITA,
     HUELLA_DEEPSEEK_SIN_REVISION,
-    TOPE_NO_CONCLUYENTES,
     _EVENTOS_DE_MARCADOR,
     _NOTA_COPIA_SESION,
     _clase_de_fallo,
@@ -62,12 +61,10 @@ from .dominio import (
     correcciones_sin_ver,
     puede_recibir_intento,
     revision_independiente_cubre_producto,
-    _texto_normalizado,
     decision_fallo,
     decision_proceso,
     defecto_al_adoptar_fases,
     fuentes_autorizadas,
-    huella_bloqueo,
     huella_entrega,
     hubo_avance,
     id_encargo,
@@ -87,7 +84,6 @@ from .dominio import (
     recibo_de,
     RELEVO_AGOTADO as _RELEVO_AGOTADO,
     reducir,
-    siguiente_escalon,
     vista,
 )
 from .frontera import (
@@ -98,6 +94,9 @@ from .frontera import (
     turno,
 )
 from .registro import Registro
+from .devolucion import corte_de_instrumento, devolver, sin_avance
+from .lote import Directo, excepcion, incorporado
+from .paso_juicio import juicio_sin_guardar
 from .fases import adoptar as adoptar_fases
 from .sesion import (
     cerrar,
@@ -929,16 +928,7 @@ def _ultima_firma(enc: Encargo | None) -> str:
 
 
 def _marcar_incorporado(registro: Registro, enc: Encargo, hora: str) -> None:
-    """El resultado de este intento ya se incorporó. La generación identifica
-    el intento y la marca vive en el registro, no en su directorio."""
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "incorporado",
-            "data": {"generacion": enc.generacion, "hora": hora},
-        },
-        f"incorporado:{enc.id}:{enc.generacion}",
-    )
+    Directo(registro, enc).con(incorporado(enc, hora))
 
 
 def _almacen_sesion(base: Path, encargo_id: str, rol: str) -> Path:
@@ -2010,14 +2000,14 @@ def _barrer_encargos(
             )
         if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
+            if juicio_sin_guardar(enc):
+                informes.append(vista(enc))
+                continue
             arbol = observar(directorio, proc)
         if not parada:
-            enc = _refrescar_cuerpo_excepciones(
-                registro, enc, gh, espacio, hora
-            )
-        if arbol == "ausente" and enc.proc is not None:
-            _soltar_conductor(registro, enc, hora)
+            enc = _refrescar_cuerpo_excepciones(registro, enc, gh, espacio, hora)
         if enc.proc is not None and arbol == "ausente":
+            _soltar_conductor(registro, enc, hora)
             registro.anotar(
                 encargo_id,
                 {"kind": "intento_cerrado", "data": {"hora": hora}},
@@ -2070,7 +2060,7 @@ def _barrer_encargos(
                 _RESULTADOS_DE_PASO.pop(encargo_id, None)
                 enc = _paso_entrega(registro, enc, gh, hora)
                 resultado_paso = _RESULTADOS_DE_PASO.pop(
-                    encargo_id, NecesitaAgente(str(enc.rol or "responsable"))
+                    encargo_id, NecesitaAgente(enc.rol or "responsable")
                 )
                 if (
                     isinstance(resultado_paso, NecesitaAgente)
@@ -2083,7 +2073,7 @@ def _barrer_encargos(
                 _RESULTADOS_DE_PASO.pop(encargo_id, None)
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
                 resultado_paso = _RESULTADOS_DE_PASO.pop(
-                    encargo_id, NecesitaAgente(str(enc.rol or "responsable"))
+                    encargo_id, NecesitaAgente(enc.rol or "responsable")
                 )
             arbol = observar(directorio, proc)
         if enc.estado == "terminado" and enc.pr_numero and not parada:
@@ -2395,56 +2385,6 @@ def _anotar_instrumento(
     )
 
 
-def _corte_de_instrumento(
-    registro: Registro,
-    enc: Encargo,
-    causa: str,
-    hora: str,
-    serie: str,
-    rol: str,
-) -> bool:
-    """La misma causa de instrumento sobre el mismo producto en dos intentos
-    seguidos no vuelve al responsable.
-
-    Deja un hecho visible y pasa el rol a otro modelo autorizado; si el relevo
-    repite la misma causa, el relevo se agota y el encargo entrega con
-    pendientes. No es un tope de rondas: exige clase y causa idénticas y el
-    mismo producto."""
-    enc = registro.fold(enc.id) or enc
-    version = enc.producto.firma if enc.producto else ""
-    fallos = [f for f in enc.fallos_instrumento if f[0] == version]
-    if len(fallos) < 3:
-        return False
-    ultimo, previo = fallos[-1], fallos[-2]
-    if ultimo[1] != previo[1]:
-        return False
-    if _texto_normalizado(ultimo[2]) != _texto_normalizado(previo[2]):
-        return False
-    clase = ultimo[1]
-    clave = hashlib.sha256(
-        f"{clase}|{_texto_normalizado(causa)}|{version}".encode()
-    ).hexdigest()[:16]
-    diagnostico = (
-        f"el instrumento {clase or 'de comprobación'} falló dos veces seguidas "
-        f"con la misma causa sobre el mismo producto: {str(causa)[:400]}"
-    )
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "sin_progreso",
-            "data": {
-                "huella": f"instrumento:{clave}",
-                "diagnostico": diagnostico,
-                "escalar": True,
-                "rol": rol or "responsable",
-                "hora": hora,
-            },
-        },
-        f"instrumento-corte:{enc.id}:{clave}:{enc.generacion}:{serie}",
-    )
-    return True
-
-
 def _devolver(
     registro: Registro,
     enc: Encargo,
@@ -2455,24 +2395,7 @@ def _devolver(
     serie: str,
     rol: str = "responsable",
 ) -> None:
-    if estrategia == "reparar_instrumento" and _corte_de_instrumento(
-        registro, enc, motivo, hora, serie, rol
-    ):
-        return
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "estrategia",
-            "data": {
-                "estrategia": estrategia,
-                "rol": rol,
-                "motivo": motivo,
-                "siguiente": siguiente,
-                "hora": hora,
-            },
-        },
-        f"devolucion:{enc.id}:{enc.generacion}:{serie}",
-    )
+    devolver(Directo(registro, enc), enc, estrategia, motivo, siguiente, hora, serie, rol)
 
 
 def _necesita_agente(enc: Encargo) -> tuple[Encargo, Resultado]:
@@ -2494,87 +2417,7 @@ def _sin_avance(
     serie: str,
     rol: str = "responsable",
 ) -> None:
-    """Escalera de una vuelta que no cerro ningun bloqueante: la primera vuelve
-    a diagnosticar, la segunda seguida releva el mismo rol a otro modelo
-    autorizado. Si el relevo tampoco avanza en el mismo punto, el encargo
-    entrega con los pendientes abiertos. Si ya está aprobado pero la entrega
-    sigue bloqueada, pide intervención y conserva el encargo abierto.
-    `enc` ya incorpora el hallazgo de la vuelta.
-
-    Una vuelta cuenta una sola vez: si otra fuente del mismo barrido ya la
-    resolvio, esta no suma ni escala. Un bloqueante que el responsable no habia
-    visto es informacion nueva: la vuelta vuelve a el para corregir y la escalera
-    empieza de cero. No hay tope para esa serie: mientras cada vuelta traiga
-    informacion nueva, el encargo sigue hasta cerrar los bloqueantes."""
-    huella = huella_bloqueo(enc)
-    base = f"sin-progreso:{enc.id}:{huella}:{enc.generacion}:{serie}"
-    nuevos = sorted(bloqueos_nuevos(enc))
-    if not nuevos and enc.generacion and enc.vuelta_contada == enc.generacion:
-        return
-    if nuevos:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "sin_progreso",
-                "data": {
-                    "huella": huella,
-                    "nueva": True,
-                    "nuevos": nuevos,
-                    "escalar": False,
-                    "rol": rol,
-                    "hora": hora,
-                },
-            },
-            base + ":nueva",
-        )
-        _devolver(
-            registro, enc, "investigar", abierto,
-            "corregir los bloqueantes nuevos de esta vuelta (" + ", ".join(nuevos)
-            + ") junto con los que siguen abiertos; lo aprobado que no cambio se conserva",
-            hora, f"nuevos-{serie}",
-        )
-        return
-    siguiente = siguiente_escalon(enc, rol)
-    if siguiente != "diagnostico":
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "sin_progreso",
-                "data": {
-                    "huella": huella,
-                    "diagnostico": (
-                        "el mismo bloqueo sigue tras el diagnostico, sin "
-                        f"informacion nueva: {abierto}. Se intento: {intentado}"
-                    ),
-                    "escalar": True,
-                    "rol": rol,
-                    "hora": hora,
-                },
-            },
-            base + ":escalar",
-        )
-        if siguiente == "relevo":
-            _devolver(
-                registro, enc, enc.estrategia or "investigar", abierto,
-                "el mismo bloqueo sigue: sigue con otro modelo autorizado del "
-                "mismo rol; si tampoco avanza, se entrega con los pendientes abiertos",
-                hora, f"relevo-{serie}", rol=rol,
-            )
-        return
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "sin_progreso",
-            "data": {"huella": huella, "escalar": False, "rol": rol, "hora": hora},
-        },
-        base + ":diagnostico",
-    )
-    _devolver(
-        registro, enc, "diagnosticar_bloqueo", abierto,
-        "diagnosticar por que la correccion no resolvio el bloqueo; "
-        "no repetir la misma accion",
-        hora, f"diagnostico-{serie}",
-    )
+    sin_avance(Directo(registro, enc), enc, abierto, intentado, hora, serie, rol)
 
 
 def _disputas_pendientes(
@@ -3094,9 +2937,11 @@ def _impedimento_de_instrumento(
     reparación leyendo el fold anterior) y False cuando el llamador debe
     devolver el trabajo para reparar el instrumento."""
     enc = registro.fold(enc.id) or enc
-    _corte_de_instrumento(
-        registro, enc, causa, hora, f"impedimento-{clase}", str(enc.rol or "responsable")
+    corte = corte_de_instrumento(
+        enc, causa, hora, f"impedimento-{clase}", str(enc.rol or "responsable")
     )
+    if corte is not None:
+        Directo(registro, enc).con(corte)
     previas = sum(1 for f in enc.fallos_instrumento if f[1] == clase)
     if previas < 2:
         return False
@@ -3822,218 +3667,28 @@ def _cerrar_con_juicio(
             )
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
-    version_previa = enc.revision_vigente.version if enc.revision_vigente else ""
-    enc_previo = enc
-    disputa_previa = bool(_disputas_pendientes(registro, enc, interno_de(espacio)))
-    revisor = ""
-    for rol, _agente, modelo in reversed(enc.modelos):
-        if rol == "revisor":
-            revisor = modelo
-            break
-    revision_id = "rev_" + hashlib.sha256(
-        f"{enc.id}:{enc.generacion}:{juicio.version}".encode()
-    ).hexdigest()[:12]
-    abiertos_ds = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
-    hallazgos_juicio = juicio.hallazgos
-    ya_resueltos = {h.id for h in hallazgos_juicio if h.estado == "resuelto"}
-    ids_ds = [
-        hid
-        for hid in juicio.resueltos
-        if hid in abiertos_ds and hid not in ya_resueltos
-    ]
-    resueltos_ds = [
-        replace(abiertos_ds[hid], estado="resuelto")
-        for hid in ids_ds
-    ]
-    if resueltos_ds:
-        marca = juicio.evidencia or "descartado por el revisor independiente"
-        hallazgos_juicio = tuple(hallazgos_juicio) + tuple(
-            replace(h, cierre_evidencia=marca) for h in resueltos_ds
-        )
-        for h in resueltos_ds:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "nota_pr",
-                    "data": {
-                        "texto": (
-                            f"hallazgo de DeepSeek descartado por el revisor "
-                            f"independiente: {h.id} «{h.titulo}» ({marca[:400]})"
-                        ),
-                        "hora": hora,
-                    },
-                },
-                f"disputa-resuelta:{enc.id}:{h.id}",
-            )
-            huella_region, texto_region, siguiente_region = _region_del_hallazgo(
-                espacio, enc.pr_sha, h
-            )
-            _anotar_excepcion(
-                registro, enc, "descarte", enc.pr_sha, h.id, marca, hora,
-                f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{h.id}",
-                ancla=h.ancla,
-                region=huella_region,
-                region_ancla=texto_region,
-                region_contexto=siguiente_region,
-            )
-        enc = registro.fold(enc.id) or enc
-    fuera_ds = [
-        (hid, razon)
-        for hid, razon in juicio.fuera_de_alcance
-        if hid in abiertos_ds and hid not in ya_resueltos and hid not in ids_ds
-    ]
-    if fuera_ds:
-        hallazgos_juicio = tuple(hallazgos_juicio) + tuple(
-            replace(
-                abiertos_ds[hid],
-                gravedad="observacion",
-                estado="resuelto",
-                cierre_evidencia=razon,
-            )
-            for hid, razon in fuera_ds
-        )
-        for hid, razon in fuera_ds:
-            h = abiertos_ds[hid]
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "hallazgo_fuera_de_alcance",
-                    "data": {
-                        "id": hid,
-                        "titulo": h.titulo,
-                        "razon": razon,
-                        "hora": hora,
-                    },
-                },
-                f"fuera-alcance:{enc.id}:{enc.fase_activa}:{hid}",
-            )
-            _anotar_excepcion(
-                registro, enc, "fuera_alcance", enc.pr_sha, hid, razon, hora,
-                f"excepcion:{enc.id}:fuera:{enc.pr_sha}:{hid}",
-            )
-        enc = registro.fold(enc.id) or enc
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "revision",
-            "data": {
-                "revision_id": revision_id,
-                "version": juicio.version,
-                "base_version": juicio.base_version,
-                "alcance": juicio.alcance,
-                "veredicto": juicio.veredicto,
-                "revisor": revisor or enc.agente,
-                "origen": "independiente",
-                "cubre": list(juicio.cubre),
-                "hallazgos": [h.como_dict() for h in hallazgos_juicio],
-                "aprobadas": [list(x) for x in juicio.aprobadas],
-                "evidencia": juicio.evidencia,
-                "efectos_pendientes": list(juicio.efectos_pendientes),
-                "inspeccion_faltante": juicio.inspeccion_faltante,
-                "pedido": _pedido_de_inspeccion(registro.base, juicio),
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "hora": hora,
-            },
-        },
-        f"revision-dato:{enc.id}:{enc.fase_activa}:{enc.generacion}:{juicio.version}",
+    from .lote import guardar, sobre
+    from .paso_juicio import Foto, decidir
+
+    paso = decidir(
+        Foto(
+            enc, juicio, hora,
+            disputa_previa=bool(_disputas_pendientes(registro, enc, interno_de(espacio))),
+            pedido=_pedido_de_inspeccion(registro.base, juicio),
+        ),
+        sobre(registro, enc),
+        region=lambda sha, h: _region_del_hallazgo(espacio, sha, h),
     )
+    if guardar(registro, enc.id, paso):
+        # Otro escritor chocó con el lote: no se guardó nada, tampoco
+        # `incorporado`, y el barrido lo ve con `juicio_sin_guardar`.
+        return registro.fold(enc.id)
     enc = registro.fold(enc.id)
-    if (
-        juicio.veredicto == "aprobado"
-        and disputa_previa
-        and bloqueantes_abiertos(enc, "deepseek")
-    ):
-        abiertos = bloqueantes_abiertos(enc, "deepseek")
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "nota_pr",
-                "data": {
-                    "texto": (
-                        "el revisor independiente no descartó la disputa; "
-                        "el hallazgo vuelve al responsable: "
-                        + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
-                    ),
-                    "hora": hora,
-                },
-            },
-            f"disputa-rechazada:{enc.id}:{enc.generacion}",
-        )
-        _devolver(
-            registro, enc, "investigar", abiertos[0].titulo,
-            "corregir " + ", ".join(h.id for h in abiertos)
-            + "; la disputa con evidencia no fue aceptada por el revisor",
-            hora, f"disputa-rechazada-{enc.generacion}",
-        )
+    if paso.respuesta == "cerrar":
+        _intentar_cierre(registro, enc, espacio, directorio, hora)
+    elif paso.respuesta == "ligar_inspeccion":
+        _ligar_inspeccion(registro, enc, espacio, juicio, hora)
         _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
-    if juicio.veredicto == "cambios":
-        progreso = hubo_avance(enc_previo, enc)
-        abiertos = bloqueantes_abiertos(enc, "independiente")
-        primero = abiertos[0] if abiertos else None
-        motivo = primero.titulo if primero else (juicio.nota or "hay bloqueantes")
-        if not progreso:
-            _sin_avance(
-                registro, enc,
-                "; ".join(f"{h.id} {h.titulo}" for h in abiertos) or motivo,
-                (
-                    "cambio archivos del producto"
-                    if juicio.version != version_previa
-                    else "no cambio el producto"
-                ) + " y el revisor independiente sigue viendo el bloqueante abierto",
-                hora, "cambios",
-            )
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "procedimiento",
-                "data": {
-                    "nota": juicio.nota or motivo,
-                    "hora": hora,
-                },
-            },
-            f"reparacion:{enc.id}:{enc.generacion}",
-        )
-        _devolver(
-            registro, enc, "investigar", motivo,
-            "corregir " + ", ".join(h.id for h in abiertos)
-            + "; lo aprobado que no cambio se conserva",
-            hora, "cambios",
-        )
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
-    if juicio.veredicto == "no_concluyente":
-        if enc.no_concluyentes >= TOPE_NO_CONCLUYENTES:
-            # El mismo pedido sin avance N veces seguidas: la escalera ya relevó
-            # o dejó la entrega con pendientes. No se vuelve a ligar la misma
-            # inspección ni se gasta otro turno con el mismo pedido.
-            pass
-        elif juicio.inspeccion_faltante:
-            _devolver(
-                registro, enc, "inspeccionar",
-                juicio.inspeccion_faltante,
-                "obtener por el buzon la inspeccion faltante y continuar "
-                "esta misma revision; el producto aprobado no se reabre",
-                hora, "inspeccion", rol="revisor",
-            )
-            _ligar_inspeccion(registro, enc, espacio, juicio, hora)
-        else:
-            # Salida propia de las no_concluyente: el pedido del revisor vuelve
-            # al responsable y la repetición la cuenta y la corta el freno
-            # (`TOPE_NO_CONCLUYENTES`), no la escalera de los bloqueos.
-            _devolver(
-                registro, enc, "investigar",
-                juicio.nota or "evidencia insuficiente para aprobar",
-                juicio.nota or "aportar la evidencia que falta sin rebajar el pedido",
-                hora, "no-concluyente",
-            )
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
-    enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
-    _marcar_incorporado(registro, enc, hora)
     return registro.fold(enc.id)
 
 
@@ -5985,34 +5640,9 @@ def _anotar_excepcion(
     motivo: str, hora: str, clave: str, ancla: str = "", region: str = "",
     region_ancla: str = "", region_contexto: list[str] | None = None,
 ) -> None:
-    """La excepción del check de merge, estructurada y con su SHA.
-
-    El check solo acepta esta fuente; el texto del PR no autoriza nada. El
-    ancla, la huella de región, la línea anclada y lo que la sigue son
-    opcionales: los descartes del revisor los llevan para que el motor pueda
-    comprobar en SHAs posteriores si el código que el hallazgo señala sigue
-    en el archivo, sin depender de la posición de la línea.
-    """
-    datos: dict[str, object] = {
-        "tipo": tipo,
-        "sha": str(sha or ""),
-        "id": str(hallazgo or ""),
-        "motivo": " ".join(str(motivo or "").split()),
-        "hora": hora,
-    }
-    if ancla:
-        datos["ancla"] = str(ancla)
-    if region:
-        datos["region"] = str(region)
-    if region_ancla:
-        datos["region_ancla"] = str(region_ancla)
-    if region_contexto is not None:
-        datos["region_contexto"] = [str(x) for x in region_contexto]
-    registro.anotar(
-        enc.id,
-        {"kind": "excepcion", "data": datos},
-        clave,
-    )
+    Directo(registro, enc).con(excepcion(
+        tipo, sha, hallazgo, motivo, hora, clave, ancla, region, region_ancla, region_contexto
+    ))
 
 
 def _descarte_previo_por_id(excepciones, hallazgo_id: str, sha: str):

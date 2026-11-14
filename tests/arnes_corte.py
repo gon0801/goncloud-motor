@@ -1,10 +1,10 @@
 """Arnés de apagón: corta la conexión del registro antes de cada `COMMIT` de un paso.
 
 Un paso aguanta el apagón si, cortado antes de cualquiera de sus `COMMIT`, deja
-guardados cero o todos sus eventos, y si al repetirlo el registro pliega igual
-que en la corrida sin corte. Cada corrida sale de la misma foto de la escena,
-restaurada en la misma ruta para que las rutas absolutas del registro sigan
-valiendo.
+guardados cero o todos los eventos de su lote, y si lo que el sistema corre en la
+vuelta siguiente deja el registro igual que en la corrida sin corte. Cada corrida
+sale de la misma foto de la escena, restaurada en la misma ruta para que las rutas
+absolutas del registro sigan valiendo.
 """
 
 from __future__ import annotations
@@ -85,13 +85,21 @@ def cortar_en_cada_commit(
     base: Path,
     encargo: str,
     paso: Callable[[Registro], object],
+    reintento: Callable[[Registro], object] | None = None,
+    cierra_el_lote: str = "",
 ) -> int:
     """Corre `paso` sin corte y después cortado antes de cada uno de sus `COMMIT`.
 
     `escena` es el directorio entero del caso (registro, copias de git,
     destino); `base` es el home del registro dentro de ella. Nada puede tener
-    abierto el registro al llamar. Devuelve cuántos `COMMIT` hizo el paso sin
-    corte."""
+    abierto el registro al llamar.
+
+    Tras cada corte corre lo que hace el sistema en la vuelta siguiente: `paso`
+    otra vez o, si se da, `reintento`, que también corre después de la corrida
+    sin corte para comparar lo mismo. El lote del paso entra entero o nada: son
+    todos sus eventos o, con `cierra_el_lote`, los que van hasta el primero de
+    ese tipo. Lo que el paso escribe después de su lote puede quedar a medias, y
+    lo termina `reintento`. Devuelve cuántos `COMMIT` hizo el paso sin corte."""
     foto = escena.with_name(escena.name + "-foto")
     shutil.copytree(escena, foto, symlinks=True)
 
@@ -102,8 +110,15 @@ def cortar_en_cada_commit(
     previas = len(filas(base))
     commits = _correr(base, paso)
     completo = filas(base)[previas:]
-    plegado = _plegado(base, encargo)
     caso.assertTrue(completo, "el paso sin corte no escribió nada")
+    lote = [(kind, ukey) for kind, ukey, _data in completo]
+    if cierra_el_lote:
+        cierre = [kind for kind, _ukey in lote].index(cierra_el_lote)
+        lote = lote[: cierre + 1]
+    if reintento is not None:
+        _correr(base, reintento)
+    final = filas(base)[previas:]
+    plegado = _plegado(base, encargo)
     for corte in range(1, commits + 1):
         with caso.subTest(corte=corte):
             restaurar()
@@ -111,11 +126,11 @@ def cortar_en_cada_commit(
                 _correr(base, paso, corte)
             guardado = [(kind, ukey) for kind, ukey, _data in filas(base)[previas:]]
             caso.assertIn(
-                guardado,
-                ([], [(kind, ukey) for kind, ukey, _data in completo]),
-                f"el apagón antes del COMMIT {corte} dejó el paso a medias",
+                guardado[: len(lote)],
+                ([], lote),
+                f"el apagón antes del COMMIT {corte} dejó el lote a medias",
             )
-            _correr(base, paso)
-            caso.assertEqual(filas(base)[previas:], completo)
+            _correr(base, reintento or paso)
+            caso.assertEqual(filas(base)[previas:], final)
             caso.assertEqual(_plegado(base, encargo), plegado)
     return commits

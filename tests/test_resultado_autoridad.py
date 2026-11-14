@@ -15,7 +15,7 @@ from unittest import mock
 from motor.encargos import registro as modulo_registro
 from motor.encargos.ciclo import recibir_resultado
 from motor.encargos.dominio import bloqueantes_abiertos
-from motor.encargos.registro import Registro
+from motor.encargos.registro import Evento, Registro
 from tests.arnes_corte import cortar_en_cada_commit, filas
 from tests.dobles import github_con_hallazgos
 from tests.test_flujo_revisiones import _entrega_pr, sonda_sin_aislamiento_del_host
@@ -339,6 +339,33 @@ class ResultadoDeLaAutoridad(unittest.TestCase):
                 ],
             )
             self.assertEqual(bloqueantes_abiertos(r.fold(), "deepseek"), ())
+            self.assertIn(
+                "registro: rechazo=ajena kind=nota_pr ukey=disputa-resuelta-autoridad:* campos=texto veces=1",
+                errores.getvalue().splitlines(),
+            )
+
+    def test_un_lote_que_repite_una_ukey_guarda_la_primera_y_cuenta_la_otra(self):
+        from motor.encargos.lote import sobre
+        from motor.encargos.paso_resultado import guardar
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r, enc = _escena(self, Path(tmp))
+            ukey = f"disputa-resuelta-autoridad:{enc.id}:ds_Fuga"
+            nota = Evento("nota_pr", {"texto": "ds_Fuga descartado", "hora": HORA}, ukey)
+            otra = Evento("nota_pr", {"texto": "ds_Fuga descartado otra vez", "hora": HORA}, ukey)
+            lote = sobre(r.reg, enc).con(nota).con(nota).con(otra)
+            previas = len(filas(r.base))
+            errores = io.StringIO()
+
+            with mock.patch.object(modulo_registro, "_CONTEO", modulo_registro._Conteo()), \
+                    redirect_stderr(errores):
+                salida = guardar(r.reg, enc.id, lote.paso({"registrado": True}))
+
+            self.assertEqual(salida, {"registrado": True})
+            self.assertEqual(
+                filas(r.base)[previas:],
+                [("nota_pr", ukey, {"texto": "ds_Fuga descartado", "hora": HORA})],
+            )
             self.assertIn(
                 "registro: rechazo=ajena kind=nota_pr ukey=disputa-resuelta-autoridad:* campos=texto veces=1",
                 errores.getvalue().splitlines(),
