@@ -1446,10 +1446,10 @@ _RACHA_BARRIDO: dict[str, tuple[str, int]] = {}
 
 def _causa_de_excepcion(exc: BaseException) -> str:
     import traceback
-
-    marco = traceback.extract_tb(exc.__traceback__)[-1:]
-    donde = f" en {Path(marco[0].filename).name}:{marco[0].lineno} ({marco[0].name})" if marco else ""
-    return f"{type(exc).__name__}: {exc}{donde}"[:2000]
+    return "; causa: ".join(
+        f"{type(e).__name__}: {e} en {Path(marco.filename).name}:{marco.lineno} ({marco.name})"
+        for e in (exc, exc.__cause__) if e for marco in traceback.extract_tb(e.__traceback__, -1)
+    )[:2000]
 
 
 # Un encargo cuya historia no pliega es un estado posible. Su fallo se dice una
