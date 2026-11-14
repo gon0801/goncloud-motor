@@ -307,6 +307,23 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(recuperar(self.home)["accion"], "nada")
         self.assertEqual(asignar(self.home), self.nueva)
 
+    def test_sin_actual_una_reserva_sobre_la_instalada_frena_revertir_y_aplicar(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+        aplicar(self.home, self.nueva, sin_turnos=True)
+        anotar_trabajo(self.home, "uno", self.nueva, "codex", {"reserva": True})
+        (self.home / "actual").unlink()
+        recibo = (self.home / "instalacion.json").read_text(encoding="utf-8")
+        antes = sorted(os.listdir(self.home))
+
+        salida = revertir(self.home)
+        self.assertEqual((salida["accion"], salida.get("vigente")), ("ocupada", self.nueva))
+        self.assertEqual(sorted(os.listdir(self.home)), antes)
+        self.assertEqual((self.home / "instalacion.json").read_text(encoding="utf-8"), recibo)
+
+        self.assertEqual(aplicar(self.home, self.buena, sin_turnos=True)["accion"], "ocupada")
+        self.assertFalse((self.home / "actual").exists())
+        self.assertEqual((self.home / "instalacion.json").read_text(encoding="utf-8"), recibo)
+
     def test_recuperar_revierte_si_la_candidata_no_llego_a_instalarse(self) -> None:
         aplicar(self.home, self.buena, sin_turnos=True)
         self.assertEqual(aplicar(self.home, self.nueva, "pendiente")["accion"], "cortado")
