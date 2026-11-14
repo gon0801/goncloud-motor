@@ -5396,6 +5396,8 @@ def _actualizar_cuerpo_pr(
         return _publicar_cuerpo_pr(
             registro, enc, gh, numero, sha, espacio, hora, fase_id
         )
+    except Rechazo:
+        raise
     except Exception as exc:
         _anotar_instrumento(
             registro,
