@@ -21,7 +21,7 @@ from unittest import mock
 from motor.encargos import cli
 from motor.encargos import ciclo as ciclo_encargos
 from motor.encargos.ciclo import ahora_iso, recibir
-from motor.encargos.registro import Registro
+from motor.encargos.registro import EventoIlegal, Registro
 from motor.integraciones import directores
 
 ENUMERACION = (
@@ -147,19 +147,14 @@ class HistoriaQueNoPasaUnaReglaNueva(unittest.TestCase):
         encargo = recibir(
             self.reg, "pedido nuevo", "clave-nueva", ahora_iso()
         )["encargo"]
-        self.reg.append(
+        self.reg.anotar(
             encargo,
-            "ajuste",
-            {"texto": ENUMERACION, "hora": ahora_iso()},
+            {"kind": "ajuste", "data": {"texto": ENUMERACION, "hora": ahora_iso()}},
             "ajuste:nuevo",
-            ahora_iso(),
         )
 
-        resultado = self.reg.append(
-            encargo, "fases", FASES_FUERA, "fases:nueva", ahora_iso()
-        )
-
-        self.assertEqual(resultado, "ilegal")
+        with self.assertRaises(EventoIlegal):
+            self.reg.anotar(encargo, {"kind": "fases", "data": FASES_FUERA}, "fases:nueva")
 
 
 class SupervisorQueAisla(unittest.TestCase):

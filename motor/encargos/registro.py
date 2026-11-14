@@ -21,6 +21,7 @@ from .dominio import Encargo, TransicionIlegal, reducir
 _VIVO = Path.home() / ".motor"
 
 Resultado = Literal["nuevo", "igual"]
+Respuesta = Literal["nuevo", "igual", "ajena", "ilegal"]
 
 
 class BaseProhibida(RuntimeError):
@@ -35,15 +36,22 @@ class Evento:
 
 
 class Rechazo(Exception):
-    """El registro no aceptó el lote y no escribió ninguno de sus eventos."""
+    """El registro no aceptó el lote y no escribió ninguno de sus eventos.
+
+    `kind` y `ukey` son los del evento rechazado; el registro los pone siempre."""
+
+    indice: int
+    kind: str
+    ukey: str
 
 
 class EventoIlegal(Rechazo):
-    def __init__(self, indice: int, kind: str, motivo: str) -> None:
+    def __init__(self, indice: int, kind: str, motivo: str, ukey: str = "") -> None:
         super().__init__(f"el evento {indice} del lote ({kind}) es ilegal: {motivo}")
         self.indice = indice
         self.kind = kind
         self.motivo = motivo
+        self.ukey = ukey
 
 
 class ClaveOcupada(Rechazo):
@@ -51,11 +59,14 @@ class ClaveOcupada(Rechazo):
     `@encargo` o `@kind` si la ukey es de otro encargo o de otro tipo. Una clave
     de `data` que se llama como uno de esos marcadores sale como `?`."""
 
-    def __init__(self, indice: int, ukey: str, campos: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self, indice: int, ukey: str, campos: tuple[str, ...] = (), kind: str = ""
+    ) -> None:
         super().__init__(f"la ukey del evento {indice} del lote ya guarda otro hecho")
         self.indice = indice
         self.ukey = ukey
         self.campos = campos
+        self.kind = kind
 
 
 # Solo palabras con guiones y con tope: un id de encargo (`enc_` y hexadecimal)
@@ -95,7 +106,7 @@ def _escribir_linea(clave: _Clave, veces: int) -> None:
         )
         sys.stderr.flush()
     except Exception:
-        # De mejor esfuerzo: un stderr cerrado o roto no cambia lo que responde `append`.
+        # De mejor esfuerzo: un stderr cerrado o roto no cambia lo que hace `anotar`.
         pass
 
 
@@ -148,19 +159,21 @@ def _campos_visibles(campos: tuple[str, ...]) -> str:
     return ",".join(visibles[:_TOPE_DE_CAMPOS] + ([f"+{sobran}"] if sobran > 0 else []))
 
 
-def _contar_rechazo(rechazo: Rechazo, kind: str, ukey: str) -> None:
+def _clave(rechazo: Rechazo, kind: str, ukey: str) -> _Clave:
     clase, separador, _resto = ukey.partition(":")
     clase_visible = _visible(clase, _CLASE_DE_UKEY)
     ukey_visible = f"{clase_visible}:*" if separador and clase_visible != "?" else "?"
     if isinstance(rechazo, ClaveOcupada):
-        clave = _Clave("ajena", _visible(kind, _TIPO), ukey_visible, _campos_visibles(rechazo.campos))
-    else:
-        clave = _Clave("ilegal", _visible(kind, _TIPO), ukey_visible, None)
-    _CONTEO.contar(clave)
+        return _Clave("ajena", _visible(kind, _TIPO), ukey_visible, _campos_visibles(rechazo.campos))
+    return _Clave("ilegal", _visible(kind, _TIPO), ukey_visible, None)
+
+
+def _contar_rechazo(rechazo: Rechazo, kind: str, ukey: str) -> None:
+    _CONTEO.contar(_clave(rechazo, kind, ukey))
 
 
 def contar_omitidos(omitidos: Iterable[tuple[Evento, Rechazo]]) -> None:
-    """Cuenta por stderr, igual que `append`, los eventos que un paso dejó fuera de
+    """Cuenta por stderr, igual que `anotar`, los eventos que un paso dejó fuera de
     su lote porque el registro los rechazaría."""
     for evento, rechazo in omitidos:
         _contar_rechazo(rechazo, evento.kind, evento.ukey)
@@ -324,20 +337,6 @@ class Registro:
     def close(self) -> None:
         self.db.close()
 
-    def append(self, encargo: str, kind: str, data: dict, ukey: str, ts: str) -> str:
-        """Un lote de un evento que devuelve el rechazo como `ajena` o `ilegal`
-        en vez de lanzarlo. Cada rechazo deja una línea por stderr para medir
-        cuántos se callan hoy."""
-        try:
-            (resultado,) = self._escribir(encargo, [(Evento(kind, data, ukey), ts)])
-        except ClaveOcupada as rechazo:
-            _contar_rechazo(rechazo, kind, ukey)
-            return "ajena"
-        except EventoIlegal as rechazo:
-            _contar_rechazo(rechazo, kind, ukey)
-            return "ilegal"
-        return resultado
-
     def append_many(self, encargo: str, eventos: Sequence[Evento]) -> tuple[Resultado, ...]:
         """Escribe el lote entero o nada, en una sola transacción.
 
@@ -435,7 +434,7 @@ class Registro:
             try:
                 estado = reducir(estado, {"kind": evento.kind, "data": evento.data}, nuevo=True)
             except TransicionIlegal as exc:
-                raise EventoIlegal(indice, evento.kind, str(exc)) from exc
+                raise EventoIlegal(indice, evento.kind, str(exc), evento.ukey) from exc
         return estado, conteo
 
     def _cotejar(self, encargo: str, indice: int, evento: Evento) -> Resultado:
@@ -449,7 +448,7 @@ class Registro:
         )
         if not campos:
             return "igual"
-        raise ClaveOcupada(indice, evento.ukey, campos)
+        raise ClaveOcupada(indice, evento.ukey, campos, evento.kind)
 
     def por_ukey(self, ukey: str) -> dict | None:
         row = self.db.execute(
@@ -558,7 +557,7 @@ class Registro:
     def _estado_vigente(self, encargo: str) -> tuple[Encargo | None, int, int]:
         """El plegado que coincide con lo persistido, reutilizando la caché.
 
-        `fold` y `append` lo usan: dentro de `BEGIN IMMEDIATE` ningún otro
+        `fold` y `append_many` lo usan: dentro de `BEGIN IMMEDIATE` ningún otro
         escritor cambia la base entre la validación y el insert, así que lo que
         se aplica en memoria es exactamente lo que queda guardado. Un token que
         no coincide se repliega desde el último punto válido."""
@@ -566,7 +565,7 @@ class Registro:
         if ultimo == 0:
             # Sin eventos el estado es None: no se resuelve la caché de una base
             # todavía vacía, que no tiene identidad estable (firma del primer
-            # evento) hasta que el primer append confirme.
+            # evento) hasta que la primera escritura confirme.
             return None, 0, 0
         with self._cache.candado:
             guardado = self._cache.plegados.get(encargo)
@@ -600,7 +599,7 @@ class Registro:
         self, encargo: str, estado: Encargo, ultimo: int, conteo: int
     ) -> None:
         """Deja la caché en el estado que se acaba de confirmar y evita el
-        `GROUP BY` del siguiente `append` en esta conexión."""
+        `GROUP BY` de la siguiente escritura en esta conexión."""
         with self._cache.candado:
             self._cache.plegados[encargo] = _Plegado(estado, ultimo, conteo)
         if self._ultimos is not None:
@@ -612,7 +611,27 @@ class Registro:
             return self._fold_hasta(encargo, hasta)
         return self._estado_vigente(encargo)[0]
 
-    def anotar(self, encargo: str, evento: dict, ukey: str) -> str:
-        data = dict(evento["data"])
-        ts = str(data.get("hora") or "")
-        return self.append(encargo, evento["kind"], data, ukey, ts)
+    def anotar(self, encargo: str, evento: dict, ukey: str) -> Resultado:
+        """Un lote de un evento: `nuevo` o `igual`, o lanza el `Rechazo` como
+        `append_many`, con su línea por stderr. Lo atrapa la frontera, donde el
+        rechazo es la respuesta; en un paso del barrido detiene el encargo por
+        fallo interno."""
+        kind = evento["kind"]
+        try:
+            (resultado,) = self.append_many(encargo, [Evento(kind, dict(evento["data"]), ukey)])
+        except Rechazo as rechazo:
+            _contar_rechazo(rechazo, kind, ukey)
+            raise
+        return resultado
+
+    def anotar_en_frontera(self, encargo: str, evento: dict, ukey: str) -> Respuesta:
+        """`anotar` para la frontera, donde el rechazo es la respuesta a quien
+        pidió: lo devuelve como `ajena` u `ilegal` en vez de lanzarlo. Solo la
+        llaman las funciones que lista `tests/test_frontera_del_registro.py`; un
+        paso del barrido usa `anotar`."""
+        try:
+            return self.anotar(encargo, evento, ukey)
+        except ClaveOcupada:
+            return "ajena"
+        except EventoIlegal:
+            return "ilegal"

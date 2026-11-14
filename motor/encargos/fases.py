@@ -124,7 +124,7 @@ def adoptar(
     huella = hashlib.sha256(
         json.dumps(list(propuesta), sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()[:16]
-    resultado = registro.anotar(
+    resultado = registro.anotar_en_frontera(
         enc.id,
         {
             "kind": "fases",

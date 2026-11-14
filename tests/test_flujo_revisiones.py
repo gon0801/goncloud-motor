@@ -45,7 +45,7 @@ from motor.encargos.dominio import (
     relevos_de,
     vista,
 )
-from motor.encargos.registro import Registro
+from motor.encargos.registro import EventoIlegal, Rechazo, Registro
 from motor.flota.runtime import exigir_poteto
 from motor.github import FakeGitHub, GhGitHub
 from tests.dobles import github_con_hallazgos
@@ -214,22 +214,26 @@ class Recorrido:
     def fold(self):
         return self.reg.fold(self.enc)
 
+    def emular(self, evento: dict, ukey: str) -> None:
+        """El arnés hace de turno del agente. Si el registro rechaza el turno, el
+        motor tampoco lo habría lanzado: el arnés sigue sin él, como antes."""
+        try:
+            self.reg.anotar(self.enc, evento, ukey)
+        except Rechazo:
+            pass
+
     def incorporar(self):
         e = self.fold()
         n = e.generacion + 1
-        self.reg.anotar(
-            self.enc,
+        self.emular(
             {
                 "kind": "reserva",
                 "data": {"rol": e.rol or "responsable", "generacion": n},
             },
             f"t-reserva:{n}",
         )
-        self.reg.anotar(
-            self.enc, {"kind": "reserva_cerrada", "data": {}}, f"t-cerrada:{n}"
-        )
-        self.reg.anotar(
-            self.enc,
+        self.emular({"kind": "reserva_cerrada", "data": {}}, f"t-cerrada:{n}")
+        self.emular(
             {
                 "kind": "estrategia",
                 "data": {
@@ -1743,10 +1747,8 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
                 "hora": r.hora,
                 "ajustes_vistos": 0,
             }
-            self.assertEqual(
-                r.reg.anotar(r.enc, {"kind": "comprobacion", "data": cierre}, "t-cierre-nuevo"),
-                "ilegal",
-            )
+            with self.assertRaises(EventoIlegal):
+                r.reg.anotar(r.enc, {"kind": "comprobacion", "data": cierre}, "t-cierre-nuevo")
             r.reg.db.execute(
                 "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
                 (r.hora, r.enc, "comprobacion", json.dumps(cierre), "t-cierre-legado"),
@@ -1919,19 +1921,17 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
     def test_un_rechazo_guardado_con_la_clave_por_la_version_anterior_no_la_ocupa(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = self._recorrido(tmp)
-            r.reg.append(
+            r.reg.anotar(
                 r.enc,
-                "recibo",
-                {
+                {"kind": "recibo", "data": {
                     "accion": "corregir",
                     "texto": "el dato debe ser 43",
                     "recibo": "rec_viejo",
                     "resultado": "rechazada",
                     "motivo": "el encargo va por la vía directa",
                     "hora": r.hora,
-                },
+                }},
                 "ajuste:c1",
-                r.hora,
             )
             aceptada = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
             self.assertFalse(aceptada.get("rechazada"))
@@ -2319,19 +2319,17 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
     def test_un_rechazo_de_la_version_anterior_tambien_detecta_otro_texto(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = self._recorrido(tmp)
-            r.reg.append(
+            r.reg.anotar(
                 r.enc,
-                "recibo",
-                {
+                {"kind": "recibo", "data": {
                     "accion": "corregir",
                     "texto": "el dato debe ser 43",
                     "recibo": "rec_viejo",
                     "resultado": "rechazada",
                     "motivo": "el encargo va por la vía directa",
                     "hora": r.hora,
-                },
+                }},
                 "ajuste:c1",
-                r.hora,
             )
             otra = corregir(r.reg, r.enc, "usa UTF-8", "c1", ahora_iso())
             self.assertTrue(otra["conflicto"])

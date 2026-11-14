@@ -93,7 +93,7 @@ from .frontera import (
     leer_parada_local,
     turno,
 )
-from .registro import Evento, Registro
+from .registro import Evento, EventoIlegal, Registro
 from .devolucion import devolver, sin_avance
 from .contencion import (
     _RACHA_BARRIDO,
@@ -576,8 +576,8 @@ def recibir(
         "recibo": recibo,
         "hora": hora,
     }
-    reducir(None, {"kind": "entrega", "data": datos_entrega})
-    registro.append(encargo, "entrega", datos_entrega, ukey, hora)
+    reducir(None, evento := {"kind": "entrega", "data": datos_entrega})
+    registro.anotar(encargo, evento, ukey)
     _espejo_entrega(
         registro,
         encargo,
@@ -707,19 +707,17 @@ def _ordenar(
     try:
         reducir(enc, {"kind": "orden", "data": datos})
     except TransicionIlegal as exc:
-        registro.append(
+        registro.anotar_en_frontera(
             encargo_id,
-            "recibo",
-            {
+            {"kind": "recibo", "data": {
                 "accion": accion,
                 "recibo": recibo,
                 "resultado": "rechazada",
                 "motivo": str(exc),
                 "hora": hora,
                 "encargo": encargo_id,
-            },
+            }},
             ukey,
-            hora,
         )
         salida = vista(enc, recibo)
         salida["rechazada"] = True
@@ -735,7 +733,7 @@ def _ordenar(
     }
     if str(autor or ""):
         datos_orden["autor"] = str(autor)
-    resultado = registro.append(encargo_id, "orden", datos_orden, ukey, hora)
+    resultado = registro.anotar_en_frontera(encargo_id, {"kind": "orden", "data": datos_orden}, ukey)
     if resultado == "ilegal":
         motivo = "transicion ilegal"
         try:
@@ -745,19 +743,17 @@ def _ordenar(
             )
         except TransicionIlegal as exc:
             motivo = str(exc)
-        registro.append(
+        registro.anotar_en_frontera(
             encargo_id,
-            "recibo",
-            {
+            {"kind": "recibo", "data": {
                 "accion": accion,
                 "recibo": recibo,
                 "resultado": "rechazada",
                 "motivo": motivo,
                 "hora": hora,
                 "encargo": encargo_id,
-            },
+            }},
             ukey,
-            hora,
         )
         salida = vista(registro.fold(encargo_id), recibo)
         salida["rechazada"] = True
@@ -806,7 +802,7 @@ def corregir(
     enc = registro.fold(encargo_id)
     if enc is None:
         raise TransicionIlegal("no hay encargo")
-    ids = tuple(str(x) for x in (cierra or ()) if str(x).strip())
+    ids = tuple(str(x) for x in cierra or () if str(x).strip())
     datos_base = {"texto": texto, "cierra": list(ids), "evidencia": str(evidencia or "")}
 
     def _mismo(datos: dict) -> bool:
@@ -818,10 +814,8 @@ def corregir(
 
     if prev:
         salida = vista(enc, prev["data"]["recibo"])
-        if prev["encargo"] != encargo_id or not _mismo(prev["data"]):
-            salida["conflicto"] = True
-        else:
-            salida["retransmision"] = True
+        mismo = prev["encargo"] == encargo_id and _mismo(prev["data"])
+        salida["retransmision" if mismo else "conflicto"] = True
         return salida
     if rechazo and (
         rechazo["encargo"] != encargo_id or rechazo["data"].get("texto") != texto
@@ -833,19 +827,17 @@ def corregir(
     recibo = recibo_de(ukey)
 
     def rechazar(motivo: str) -> dict:
-        registro.append(
+        registro.anotar_en_frontera(
             encargo_id,
-            "recibo",
-            {
+            {"kind": "recibo", "data": {
                 "accion": "corregir",
                 "texto": texto,
                 "recibo": recibo,
                 "resultado": "rechazada",
                 "motivo": motivo,
                 "hora": hora,
-            },
+            }},
             ukey_rechazo,
-            hora,
         )
         salida = vista(registro.fold(encargo_id), recibo)
         salida["rechazada"] = True
@@ -873,7 +865,7 @@ def corregir(
             try:
                 estado_pr = str(gh.ver(enc.entrega.repo, enc.pr_numero).estado)
             except Exception:  # noqa: BLE001  sin lectura no se reabre
-                estado_pr = ""
+                pass
         if estado_pr != "abierto":
             situacion = f"está {estado_pr}" if estado_pr else "no se pudo leer en GitHub"
             return rechazar(
@@ -891,7 +883,7 @@ def corregir(
         reducir(enc, {"kind": "ajuste", "data": datos})
     except TransicionIlegal as exc:
         return rechazar(str(exc))
-    resultado = registro.append(encargo_id, "ajuste", datos, ukey, hora)
+    resultado = registro.anotar_en_frontera(encargo_id, {"kind": "ajuste", "data": datos}, ukey)
     if resultado == "ilegal":
         try:
             reducir(registro.fold(encargo_id), {"kind": "ajuste", "data": datos})
@@ -2216,22 +2208,31 @@ def _anotar_juicio(
     hora: str,
     serie: int,
     clave: str = "",
-) -> str:
+) -> bool:
+    """Falso si una corrección que entró durante el cierre lo volvió ilegal: esa
+    es la respuesta del registro y el trabajo vuelve al implementador. Cualquier
+    otro rechazo lanza."""
     sufijo = f":{clave}" if clave else ""
-    return registro.anotar(
-        enc.id,
-        {
-            "kind": "comprobacion",
-            "data": {
-                **juicio,
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "hora": hora,
+    try:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "comprobacion",
+                "data": {
+                    **juicio,
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "hora": hora,
+                },
             },
-        },
-        f"comprobacion:{enc.id}:{enc.fase_activa}:{juicio['clase']}:"
-        f"{juicio.get('firma') or juicio.get('motivo')}:{serie}{sufijo}",
-    )
+            f"comprobacion:{enc.id}:{enc.fase_activa}:{juicio['clase']}:"
+            f"{juicio.get('firma') or juicio.get('motivo')}:{serie}{sufijo}",
+        )
+    except EventoIlegal:
+        if correcciones_sin_ver(registro.fold(enc.id) or enc):
+            return False
+        raise
+    return True
 
 
 def _efecto_asentado(resultado: dict) -> bool:
@@ -3069,7 +3070,7 @@ def _intentar_cierre_paso(
         # El aviso al propietario es esta evidencia: ahí tiene que ir lo que
         # nadie recibió.
         cierre["evidencia"] += " Atención: " + " ".join(sin_recibir)
-    resultado = _anotar_juicio(
+    anotado = _anotar_juicio(
         registro,
         enc,
         {**cierre, "ajustes_vistos": ajustes_cubiertos(enc)},
@@ -3078,7 +3079,7 @@ def _intentar_cierre_paso(
         clave="global" if enc.objetivo_completo() else "",
     )
     enc = registro.fold(enc.id)
-    if resultado == "ilegal" and correcciones_sin_ver(enc):
+    if not anotado:
         _devolver_correcciones(registro, enc, hora)
         return registro.fold(enc.id) or enc, NecesitaAgente("responsable")
     if enc.estado == "terminado":
@@ -9620,7 +9621,7 @@ def _registrar_fase_desplegada(
     """
     from . import despliegue
 
-    aplicado = registro.anotar(
+    aplicado = registro.anotar_en_frontera(
         enc.id,
         {"kind": "fase_desplegada", "data": {
             "fase": fase.id, "sha": fase.integrado_sha,
@@ -10163,7 +10164,7 @@ def _lanzar_uno_en_turno(
                 sesion_modo=sesion_modo,
                 poteto_digest=poteto_digest,
             )
-            reservado = registro.anotar(
+            reservado = registro.anotar_en_frontera(
                 enc.id,
                 {
                     "kind": "reserva",
@@ -10606,7 +10607,7 @@ def conceder_conductor(
                 "concedido": enc.conductor == token and enc.host == host,
                 "conflicto": enc.conductor != token or enc.host != host,
             }
-        res = registro.anotar(
+        res = registro.anotar_en_frontera(
             enc.id,
             {
                 "kind": "reserva",
@@ -10738,7 +10739,7 @@ def observar_intento(
                 and ident.job == job
             )
             return {"ya": mismo, "conflicto": not mismo, "encargo": encargo_id}
-        resultado = registro.anotar(
+        resultado = registro.anotar_en_frontera(
             encargo_id,
             {
                 "kind": "intento_abierto",
@@ -11031,7 +11032,7 @@ def recibir_resultado(
                 comprobar_destino(cierre, DestinoEnsayo(registro.base / "destino"))
             except (ValueError, KeyError, TypeError) as exc:
                 return {"rechazado": True, "motivo": str(exc)}
-        resultado = registro.anotar(
+        resultado = registro.anotar_en_frontera(
             enc.id,
             {
                 "kind": "comprobacion",

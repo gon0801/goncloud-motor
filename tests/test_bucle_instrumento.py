@@ -25,7 +25,7 @@ from motor.encargos.aislamiento import SondaEntorno, sondear
 from motor.encargos.ciclo import _incorporar, ahora_iso, barrer, recibir
 from motor.encargos.comprobacion import firma_producto
 from motor.encargos.dominio import fuentes_autorizadas, relevos_de, vista
-from motor.encargos.registro import Registro
+from motor.encargos.registro import Rechazo, Registro
 
 IMPEDIMENTO = SondaEntorno(
     False,
@@ -66,17 +66,25 @@ class Banco:
     def anotar(self, kind: str, data: dict, clave: str) -> str:
         return self.reg.anotar(self.enc, {"kind": kind, "data": data}, clave)
 
+    def emular(self, kind: str, data: dict, clave: str) -> None:
+        """El banco hace de turno del runner. Si el registro rechaza el turno, el
+        motor tampoco lo habría lanzado: el banco sigue sin él, como antes."""
+        try:
+            self.anotar(kind, data, clave)
+        except Rechazo:
+            pass
+
     def correr(self, marca: str = "1") -> None:
         """Un intento que el runner ya cerró con código cero."""
         e = self.fold()
         generacion = e.generacion + 1
-        self.anotar(
+        self.emular(
             "reserva",
             {"rol": e.rol or "responsable", "generacion": generacion},
             f"t-reserva:{generacion}",
         )
-        self.anotar("reserva_cerrada", {}, f"t-cerrada:{generacion}")
-        self.anotar(
+        self.emular("reserva_cerrada", {}, f"t-cerrada:{generacion}")
+        self.emular(
             "estrategia",
             {
                 "rol": e.rol or "responsable",

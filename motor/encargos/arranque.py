@@ -564,7 +564,7 @@ def ejecutar(spec_path: Path) -> int:
             for clave in ("modelo", "sesion_modo", "poteto_digest", "cliente"):
                 datos_intento[clave] = spec.get(clave) or ""
             evento = {"kind": "intento_abierto", "data": datos_intento}
-            resultado = reg.anotar(enc.id, evento, f"intento:{enc.id}:{spec['token']}")
+            resultado = reg.anotar_en_frontera(enc.id, evento, f"intento:{enc.id}:{spec['token']}")
             if resultado not in ("nuevo", "igual"):
                 return 1
             from motor.encargos.ciclo import _avisar_intento

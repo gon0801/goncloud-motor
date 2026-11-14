@@ -313,7 +313,7 @@ from motor.encargos.registro import Registro
 base, encargo, anotaciones = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
 reg = Registro(Path(base))
 print(json.dumps([
-    reg.anotar(encargo, {"kind": a["kind"], "data": a["data"]}, a["ukey"])
+    reg.anotar_en_frontera(encargo, {"kind": a["kind"], "data": a["data"]}, a["ukey"])
     for a in anotaciones
 ]))
 """
@@ -407,21 +407,17 @@ class ConteoDeMejorEsfuerzo(Base):
     """Las clases de ukey son solo de esta prueba: ningún rechazo anterior del
     proceso las calla, así que el conteo sí intenta escribir."""
 
-    def test_un_stderr_roto_o_cerrado_no_cambia_lo_que_responde_append(self):
+    def test_un_stderr_roto_o_cerrado_no_cambia_el_rechazo_que_lanza_anotar(self):
         primera = nota("uno", ukey="conteo-flujo-roto:1")
         self.assertEqual(self.reg.anotar(ENCARGO, primera, primera["ukey"]), "nuevo")
         roto = _FlujoRoto()
         cerrado = io.StringIO()
         cerrado.close()
 
-        with contextlib.redirect_stderr(roto):
-            self.assertEqual(
-                self.reg.anotar(ENCARGO, nota("otro hecho"), primera["ukey"]), "ajena"
-            )
-        with contextlib.redirect_stderr(cerrado):
-            self.assertEqual(
-                self.reg.anotar(ENCARGO, entrega(), "conteo-flujo-cerrado:1"), "ilegal"
-            )
+        with contextlib.redirect_stderr(roto), self.assertRaises(registro.ClaveOcupada):
+            self.reg.anotar(ENCARGO, nota("otro hecho"), primera["ukey"])
+        with contextlib.redirect_stderr(cerrado), self.assertRaises(registro.EventoIlegal):
+            self.reg.anotar(ENCARGO, entrega(), "conteo-flujo-cerrado:1")
 
         self.assertEqual(roto.intentos, 1, "el conteo intentó escribir su línea")
 
@@ -444,7 +440,7 @@ class IntervaloDelConteo(Base):
 
         with contextlib.redirect_stderr(err):
             for _vuelta in range(31):
-                self.assertEqual(self.reg.anotar(ENCARGO, entrega(), repetida), "ilegal")
+                self.assertEqual(self.reg.anotar_en_frontera(ENCARGO, entrega(), repetida), "ilegal")
                 self.ahora += 20
 
         self.assertEqual(
@@ -462,12 +458,12 @@ class CamposDelRechazo(IntervaloDelConteo):
     otra clave junto a `nota`."""
 
     def guardar(self, ukey: str, data: dict) -> None:
-        self.assertEqual(
-            self.reg.append(ENCARGO, "procedimiento", {"nota": "n", **data}, ukey, HORA), "nuevo"
-        )
+        evento = {"kind": "procedimiento", "data": {"nota": "n", **data}}
+        self.assertEqual(self.reg.anotar_en_frontera(ENCARGO, evento, ukey), "nuevo")
 
     def rechazar(self, ukey: str, data: dict, encargo: str = ENCARGO, kind: str = "procedimiento"):
-        self.assertEqual(self.reg.append(encargo, kind, {"nota": "n", **data}, ukey, HORA), "ajena")
+        evento = {"kind": kind, "data": {"nota": "n", **data}}
+        self.assertEqual(self.reg.anotar_en_frontera(encargo, evento, ukey), "ajena")
 
     def lineas(self, accion) -> list[str]:
         err = io.StringIO()
@@ -571,7 +567,7 @@ class CamposDelRechazo(IntervaloDelConteo):
 
         def commit(intento: str, sha: str, hora: str) -> str:
             data = {"intento": intento, "paso": "commit", "sha": sha, "hora": hora}
-            return self.reg.append(ENCARGO, "entrega_externa", data, ukey, hora)
+            return self.reg.anotar_en_frontera(ENCARGO, {"kind": "entrega_externa", "data": data}, ukey)
 
         self.assertEqual(commit("uno", "a" * 40, HORA), "nuevo")
         lineas = self.lineas(
@@ -590,7 +586,7 @@ class CamposDelRechazo(IntervaloDelConteo):
             [("uno", "a" * 40)],
         )
 
-    def test_un_lote_que_omite_el_evento_cuenta_la_misma_linea_que_append(self):
+    def test_un_lote_que_omite_el_evento_cuenta_la_misma_linea_que_anotar(self):  # no-roja-en-base: solo cambia el nombre, que nombraba el append borrado
         ukey = f"entrega:{ENCARGO}:externa"
         self.guardar(ukey, {"intento": 1, "hora": HORA})
         evento = registro.Evento("procedimiento", {"nota": "n", "intento": 2, "hora": OTRA_HORA}, ukey)

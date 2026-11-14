@@ -874,7 +874,7 @@ def _solicitud(enc, sol: Solicitud, hora: str) -> Evento:
 
 def _registrar_solicitud(registro: Registro, enc, sol: Solicitud, hora: str) -> str:
     evento = _solicitud(enc, sol, hora)
-    return _anotar(registro, enc.id, {"kind": "solicitud", "data": evento.data}, evento.ukey)
+    return registro.anotar_en_frontera(enc.id, {"kind": "solicitud", "data": evento.data}, evento.ukey)
 
 
 def _atender_decision(
@@ -889,8 +889,7 @@ def _atender_decision(
             "motivo": "la decisión necesita eleccion y motivo",
             "alternativa": "volver a pedir decision.registrar con ambos campos",
         }
-    resultado = _anotar(
-        registro,
+    resultado = registro.anotar_en_frontera(
         enc.id,
         {
             "kind": "decision",
@@ -1351,8 +1350,7 @@ def atender(
                 resumen["errores"] += 1
                 continue
             if resultado == "ilegal":
-                _anotar(
-                    registro,
+                registro.anotar_en_frontera(
                     enc.id,
                     {
                         "kind": "solicitud_tardia",
@@ -1571,8 +1569,7 @@ def responder(
     if not str(texto or "").strip():
         raise TransicionIlegal("la respuesta está vacía")
     ukey = f"respuesta:{encargo_id}:{clave}"
-    resultado = _anotar(
-        registro,
+    resultado = registro.anotar_en_frontera(
         encargo_id,
         {
             "kind": "respuesta",

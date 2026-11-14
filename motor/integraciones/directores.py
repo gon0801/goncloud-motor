@@ -431,7 +431,7 @@ def _aplicar_promover_local(
     from motor.encargos.dominio import recibo_de
 
     ukey = f"via:{encargo}:durable"
-    resultado = registro.anotar(
+    resultado = registro.anotar_en_frontera(
         encargo,
         {"kind": "via", "data": {"via": "durable", "hora": hora, "clave": clave}},
         ukey,
@@ -483,7 +483,7 @@ def _anotar_resultado_local(
     from motor.encargos.dominio import recibo_de
 
     ukey = f"resultado-directo:{encargo}:{evidencia}"
-    resultado = registro.anotar(
+    resultado = registro.anotar_en_frontera(
         encargo,
         {
             "kind": "resultado_directo",

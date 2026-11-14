@@ -190,13 +190,13 @@ class BaseRecreada(Base):
                 "hora": otra_hora,
             }
             # Se escribe directo para no refrescar la cache al crear el encargo.
-            nuevo.append(ident, "entrega", entrega, "entrega:uno", otra_hora)
-            nuevo.append(
+            nuevo.anotar(ident, {"kind": "entrega", "data": entrega}, "entrega:uno")
+            nuevo.anotar(
                 ident,
-                "fases",
-                {"fases": [{"id": "A", "resultado": "fase nueva"}], "hora": otra_hora},
+                {"kind": "fases", "data": {
+                    "fases": [{"id": "A", "resultado": "fase nueva"}], "hora": otra_hora
+                }},
                 "fase-uno",
-                otra_hora,
             )
 
             actual = nuevo.fold(ident)

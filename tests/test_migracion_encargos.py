@@ -74,9 +74,14 @@ class MigracionEncargos(unittest.TestCase):
             viejo.db.close()
             reg = Registro(raiz / "nuevo")
             self.addCleanup(reg.close)
-            with patch.object(
-                Registro, "anotar", side_effect=RuntimeError("corte inyectado")
-            ):
+            anotar = Registro.anotar
+
+            def corte_tras_la_entrega(registro, encargo, evento, ukey):
+                if evento["kind"] != "entrega":
+                    raise RuntimeError("corte inyectado")
+                return anotar(registro, encargo, evento, ukey)
+
+            with patch.object(Registro, "anotar", corte_tras_la_entrega):
                 with self.assertRaises(RuntimeError):
                     importar_encargos(raiz / "viejo" / "motor.db", reg, "mac", HORA)
             enc = reg.fold(reg.ids()[0])

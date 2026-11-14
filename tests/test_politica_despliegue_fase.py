@@ -9,7 +9,7 @@ import unittest
 
 from motor.encargos import fases
 from motor.encargos.dominio import VersionProducto, con_fase, nivel_cumplido, reducir
-from motor.encargos.registro import Registro
+from motor.encargos.registro import EventoIlegal, Registro
 
 
 IDS_DESCRIPTIVOS = (
@@ -109,12 +109,12 @@ class PoliticaDeFase(unittest.TestCase):
             (enc.despliegue_archivo + ".otro", mapa),
         )):
             with self.subTest(caso=i):
-                resultado = self.reg.anotar("e", {"kind": "politica_despliegue", "data": {
-                    "fase": "propuesta", "requiere_despliegue": False,
-                    "fuente": "otra", "huella": "otra",
-                    "correspondencia": {"archivo": archivo, "fases": pares},
-                }}, f"cambio-mapa-{i}")
-                self.assertEqual(resultado, "ilegal")
+                with self.assertRaises(EventoIlegal):
+                    self.reg.anotar("e", {"kind": "politica_despliegue", "data": {
+                        "fase": "propuesta", "requiere_despliegue": False,
+                        "fuente": "otra", "huella": "otra",
+                        "correspondencia": {"archivo": archivo, "fases": pares},
+                    }}, f"cambio-mapa-{i}")
                 self.assertEqual(self.reg.fold("e").despliegue_mapa, enc.despliegue_mapa)
 
     def test_reordenar_fases_no_cambia_los_bloques_ya_asociados(self):
@@ -225,10 +225,10 @@ class PoliticaDeFase(unittest.TestCase):
         self.plan("## Bloque A — SQL\nlane: fast\n")
         adoptar(self.reg, enc, self.espacio, "h")
         self.propuesta[0]["requiere_despliegue"] = True
-        resultado = self.reg.anotar("e", {"kind": "fases", "data": {
-            "fases": self.propuesta,
-        }}, "cambio-politica")
-        self.assertEqual(resultado, "ilegal")
+        with self.assertRaises(EventoIlegal):
+            self.reg.anotar("e", {"kind": "fases", "data": {
+                "fases": self.propuesta,
+            }}, "cambio-politica")
 
     def test_metadata_booleana_no_acepta_texto_false(self):
         self.propuesta[0]["requiere_despliegue"] = "false"

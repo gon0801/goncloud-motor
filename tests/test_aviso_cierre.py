@@ -118,6 +118,10 @@ class Banco:
                 {"kind": "entrega_externa", "data": {**paso, "hora": HORA}},
                 f"paso-{ident}-{n}",
             )
+        enc = self.reg.fold(ident)
+        if enc is None or enc.via != "directa":
+            # El resultado directo solo cierra la vía directa; la durable cierra con sus pasos.
+            return
         self.reg.anotar(
             ident,
             {"kind": "resultado_directo", "data": {"evidencia": "listo", "hora": HORA}},

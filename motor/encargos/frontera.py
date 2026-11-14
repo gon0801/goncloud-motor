@@ -217,7 +217,7 @@ def _registrar_efecto(
         hora=hora,
     )
     ukey = f"efecto:{encargo_id}:{efecto_id}:{estado}"
-    resultado = registro.anotar(encargo_id, evento, ukey)
+    resultado = registro.anotar_en_frontera(encargo_id, evento, ukey)
     if resultado == "nuevo":
         return "ok"
     if resultado != "igual":
@@ -284,7 +284,7 @@ def _conceder(registro: Registro, encargo_id: str, recurso: str, hora: str) -> s
             return "ocupada"
         generacion = int(ultima.get("generacion") or 1) + 1
     ukey = f"concesion:{hashlib.sha256(recurso.encode()).hexdigest()[:16]}:{generacion}"
-    resultado = registro.anotar(
+    resultado = registro.anotar_en_frontera(
         encargo_id,
         {
             "kind": "concesion",
