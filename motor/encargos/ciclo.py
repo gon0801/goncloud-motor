@@ -8111,29 +8111,15 @@ def _entregar_con_pendientes(
                                   _reanuda_en(120), hora)
                     return registro.fold(enc.id)
                 if conteo.stdout.strip() == "0":
-                    if any(p.startswith(_RELEVO_AGOTADO) for p in pendientes):
-                        _bloquear_fase(
-                            registro, enc,
-                            "no hay commits que entregar en el PR",
-                            "no hay commits que entregar en el PR; la fase "
-                            "termina bloqueada con el motivo: "
-                            + "; ".join(pendientes),
-                            hora,
-                            f"{enc.reaperturas}:sin-commits:{len(pendientes)}",
-                        )
-                        enc = registro.fold(enc.id) or enc
-                        _marcar_incorporado(registro, enc, hora)
-                        if enc.estado == "terminado":
-                            _publicar_resultado(registro, enc, hora)
-                            _limpiar_encargo_cerrado(registro, enc, hora)
-                        return enc
+                    relevo = any(p.startswith(_RELEVO_AGOTADO) for p in pendientes)
+                    serie = "sin-commits" if relevo else "sin-commits-sin-relevo"
                     _bloquear_fase(
                         registro, enc,
                         "no hay commits que entregar en el PR",
                         "no hay commits que entregar en el PR; la fase termina "
                         "bloqueada con el motivo: " + "; ".join(pendientes),
                         hora,
-                        f"{enc.reaperturas}:sin-commits-sin-relevo:{len(pendientes)}",
+                        f"{enc.reaperturas}:{serie}:{len(pendientes)}",
                     )
                     enc = registro.fold(enc.id) or enc
                     _marcar_incorporado(registro, enc, hora)
