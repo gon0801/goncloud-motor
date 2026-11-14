@@ -48,7 +48,8 @@ class EventoIlegal(Rechazo):
 
 class ClaveOcupada(Rechazo):
     """`campos` nombra en qué difiere el hecho guardado: las claves de `data`, y
-    `@encargo` o `@kind` si la ukey es de otro encargo o de otro tipo."""
+    `@encargo` o `@kind` si la ukey es de otro encargo o de otro tipo. Una clave
+    de `data` que se llama como uno de esos marcadores sale como `?`."""
 
     def __init__(self, indice: int, ukey: str, campos: tuple[str, ...] = ()) -> None:
         super().__init__(f"la ukey del evento {indice} del lote ya guarda otro hecho")
@@ -64,6 +65,7 @@ _TOPE_DEL_NOMBRE = 64
 _CLASE_DE_UKEY = re.compile(r"[a-z]+(?:-[a-z]+)*")
 _TIPO = re.compile(r"[a-z]+(?:_[a-z]+)*")
 _TOPE_DE_CAMPOS = 5
+_OTRO_ENCARGO, _OTRO_KIND = "@encargo", "@kind"
 
 # Un rechazo de cada vuelta del supervisor (20 s) deja 144 líneas al día en vez de 4320.
 _INTERVALO_DEL_CONTEO_S = 600.0
@@ -137,7 +139,10 @@ def _campos_visibles(campos: tuple[str, ...]) -> str:
     # Solo nombres de claves, que son del código: un valor puede llevar rutas o
     # repos privados.
     visibles = sorted(
-        {campo if campo in ("@encargo", "@kind") else _visible(campo, _TIPO) for campo in campos}
+        {
+            campo if campo in (_OTRO_ENCARGO, _OTRO_KIND) else _visible(campo, _TIPO)
+            for campo in campos
+        }
     )
     sobran = len(visibles) - _TOPE_DE_CAMPOS
     return ",".join(visibles[:_TOPE_DE_CAMPOS] + ([f"+{sobran}"] if sobran > 0 else []))
@@ -181,10 +186,12 @@ def _campos_distintos(
     """En qué difieren dos hechos de la misma ukey, con la comparación de `_cotejar`."""
     (encargo, kind, data), (otro_encargo, otro_kind, otra_data) = guardado, nuevo
     a, b = _estable(data), _estable(otra_data)
+    distintas = (k for k in a.keys() | b.keys() if a.get(k, _AUSENTE) != b.get(k, _AUSENTE))
     return (
-        *(("@encargo",) if encargo != otro_encargo else ()),
-        *(("@kind",) if kind != otro_kind else ()),
-        *(k for k in a.keys() | b.keys() if a.get(k, _AUSENTE) != b.get(k, _AUSENTE)),
+        *((_OTRO_ENCARGO,) if encargo != otro_encargo else ()),
+        *((_OTRO_KIND,) if kind != otro_kind else ()),
+        # Una clave de data con el nombre de un marcador se leería como otro encargo u otro tipo.
+        *("?" if k in (_OTRO_ENCARGO, _OTRO_KIND) else k for k in distintas),
     )
 
 

@@ -266,8 +266,14 @@ class PublicacionesDeLaFlota(unittest.TestCase):
     def test_un_v3_sin_checkout_dice_que_el_publicador_no_publico_routing(self):
         resultado = importar(self.replica, self._publicar(_politica("v8")))
 
-        self.assertFalse(resultado["claw_routing"]["incluido"])
-        self.assertIn("no hubo checkout", resultado["claw_routing"]["motivo"])
+        self.assertEqual(
+            resultado["claw_routing"],
+            {
+                "incluido": False,
+                "motivo": "el publicador no publico claw-routing: no hallo un checkout "
+                "de goncloud-hermes del que pudiera leerlo",
+            },
+        )
 
     def test_un_schema_que_no_es_texto_es_un_snapshot_invalido(self):  # no-roja-en-base: el TypeError lo introdujo la tabla _EXTRA de este PR; la base comparaba con == y ya daba SnapshotInvalido
         antes, _ = self._con_numero()
@@ -289,6 +295,7 @@ class PublicacionesDeLaFlota(unittest.TestCase):
             "lista": b"[]",
             "sin hash ni origen": b'{"publicacion": 1}',
             "numero de texto": b'{"publicacion": "1", "hash": "x", "origen": "pc"}',
+            "numero nulo": b'{"publicacion": null, "hash": "x", "origen": "pc"}',
         }
         _, fuente = self._con_numero()
         nueva = self._publicar(_politica("v9"))

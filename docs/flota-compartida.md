@@ -14,7 +14,7 @@ Esquema v2: v1 más `claw_routing`, con `contenido` (el texto exacto de `claw-ro
 
 La réplica necesita el `claw-routing.json` porque `_reutilizar_config` copia `config/` de la generación vigente y de ahí derivaba `perfiles/claw/openclaw.json`: un cambio en goncloud-hermes nunca llegaba. El `claw_models.py` ya viene en esa copia, así que no se publica.
 
-Esquema v3: v2 más `publicacion`, el número de la publicación. Lo asigna el publicador y solo crece. `claw_routing` va siempre y es nulo cuando no hubo checkout. `exportar` publica solo v3.
+Esquema v3: v2 más `publicacion`, el número de la publicación. Lo asigna el publicador y solo crece. `claw_routing` va siempre y es nulo cuando el publicador no pudo leerlo de un checkout de goncloud-hermes. `exportar` publica solo v3.
 
 El código que entiende v2 sigue aceptando v1 y se comporta como antes. El código anterior a v2 rechaza un v2 entero (estructura inválida), no lo aplica a medias. Igual el anterior a v3 con un v3: se despliegan primero las réplicas o toda la flota a la vez.
 

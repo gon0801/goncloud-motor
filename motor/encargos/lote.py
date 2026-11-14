@@ -90,9 +90,14 @@ class Lote:
         return Paso(self.eventos, self.omitidos, respuesta)
 
     def seguir(self, paso: Paso) -> Lote:
-        """Este lote con lo que ya decidió `paso`, para que el mismo paso agregue más."""
-        estado = self.proyectar(paso.eventos) if paso.eventos else self.estado
-        return replace(self, estado=estado, eventos=paso.eventos, omitidos=paso.omitidos)
+        """Este lote con lo que ya decidió `paso`, para que el mismo paso agregue más.
+
+        Cada evento entra por `con`: el que otro escritor volvió inaceptable
+        después de decidir queda en `omitidos`, como en cualquier otro paso."""
+        lote = replace(self, eventos=(), omitidos=paso.omitidos)
+        for evento in paso.eventos:
+            lote = lote.con(evento)
+        return lote
 
 
 def sobre(registro: Registro, enc: Encargo) -> Lote:

@@ -20,6 +20,7 @@ from unittest import mock
 
 from motor.encargos import registro
 from motor.encargos.dominio import reducir
+from motor.encargos.lote import guardar, sobre
 from motor.encargos.registro import Registro
 
 HORA = "2026-11-13T10:00:00Z"
@@ -197,6 +198,31 @@ class Contrato(Base):
             self.reg.append_many(ENCARGO, lote(nota("uno"), repetida))
 
         self.assertEqual(self.guardados(self.reabierto()), [])
+
+
+class SeguirUnPaso(Base):
+    def test_un_evento_que_otro_escritor_ocupo_queda_fuera_y_el_paso_sigue_con_el_resto(self):
+        inicial = sobre(self.reg, self.reg.fold(ENCARGO))
+        uno, dos = lote(nota("uno"), nota("dos"))
+        paso = inicial.con(uno).con(dos).paso("seguir")
+        self.reg.anotar(ENCARGO, nota("otro hecho"), uno.ukey)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            seguido = inicial.seguir(paso)
+            self.assertEqual(guardar(self.reg, ENCARGO, seguido.paso(None)), "")
+
+        self.assertEqual(seguido.eventos, (dos,))
+        self.assertEqual(
+            [(e, type(r)) for e, r in seguido.omitidos], [(uno, registro.ClaveOcupada)]
+        )
+        self.assertEqual(
+            self.guardados(self.reabierto()),
+            [
+                ("procedimiento", {"nota": "otro hecho", "hora": HORA}),
+                ("procedimiento", {"nota": "dos", "hora": HORA}),
+            ],
+        )
+        self.assertEqual(seguido.estado, self.reg.fold(ENCARGO))
 
 
 _HIJO = """
@@ -482,6 +508,22 @@ class CamposDelRechazo(IntervaloDelConteo):
             [
                 "registro: rechazo=ajena kind=procedimiento ukey=producto:* campos=@encargo veces=1",
                 "registro: rechazo=ajena kind=producto_listo ukey=producto:* campos=@kind veces=1",
+            ],
+        )
+
+    def test_una_clave_de_data_que_se_escribe_como_un_marcador_sale_como_signo(self):
+        ukey = f"producto:{ENCARGO}:fase"
+        self.guardar(ukey, {"@encargo": 1, "@kind": 1})
+
+        lineas = self.lineas(lambda: self.rechazar(ukey, {"@encargo": 2, "@kind": 1}))
+        self.ahora += 600
+        lineas += self.lineas(lambda: self.rechazar(ukey, {"@encargo": 1, "@kind": 2}))
+
+        self.assertEqual(
+            lineas,
+            [
+                "registro: rechazo=ajena kind=procedimiento ukey=producto:* campos=? veces=1",
+                "registro: rechazo=ajena kind=procedimiento ukey=producto:* campos=? veces=1",
             ],
         )
 
