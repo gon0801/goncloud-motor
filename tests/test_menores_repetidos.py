@@ -20,7 +20,6 @@ from motor.encargos.ciclo import (
     _entregar_con_pendientes,
     ahora_iso,
 )
-from motor.encargos.contencion import contener
 from motor.encargos.registro import ClaveOcupada
 from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import _bloqueante, _entrega_pr
@@ -849,6 +848,8 @@ class EntregarConPendientesNoMienteSiElCuerpoFalla(unittest.TestCase):
             self.assertEqual(len(publicados_despues), len(publicados_antes))
 
     def test_un_cuerpo_que_el_registro_rechaza_detiene_por_fallo_interno(self):
+        from motor.encargos.contencion import contener
+
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = self._con_pr_y_pendientes_otra_vez(tmp, "pendientes-cuerpo-rechazado")
             bloqueos = len(r.eventos("bloqueo_fase"))
