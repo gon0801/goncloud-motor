@@ -514,11 +514,13 @@ def _detencion(**cambios) -> Detencion:
     return dataclasses.replace(base, **cambios)
 
 
-def _hoy() -> Pliegue:
+BLOQUEADA = FaseVista("uno", "bloqueada", "integrado", False, True, "despliegue sin verificar")
+
+
+def _parcial(*fases: FaseVista) -> Pliegue:
     """Lo que hoy deja el motor: revierte, escribe la causa y termina como entrega parcial."""
-    bloqueada = FaseVista("uno", "bloqueada", "integrado", False, True, "despliegue sin verificar")
     return _pliegue(
-        cierre="2026-01-10T10:05:00Z", completo=False, fases=(bloqueada,),
+        cierre="2026-01-10T10:05:00Z", completo=False, fases=fases or (BLOQUEADA,),
         causas=("despliegue sin verificar (salida 1); rollback salida 0",),
     )
 
@@ -536,10 +538,6 @@ class SeDetiene(unittest.TestCase):
                 "dijo por qué: «el checklist de despliegue falló»",
                 "revirtió su despliegue (rollback salida 0) y se-detiene/m.txt ya no lo trae",
                 "turnos responsable 1, revisor 1 (tope 2 por rol)",
-            )),
-            ("hoy: entrega parcial", _detencion(pliegue=_hoy()), "falla", (
-                "quedó terminado como entrega parcial, no detenido; sí se paró solo",
-                "dijo por qué: «despliegue sin verificar (salida 1); rollback salida 0»",
             )),
             ("lo paró una orden", _detencion(pliegue=dataclasses.replace(detenido, ordenes=("parar",))),
              "falla", ("no se paró solo: recibió la orden parar",)),
@@ -574,6 +572,31 @@ class SeDetiene(unittest.TestCase):
             ("registro roto", _detencion(pliegue=NoPliega(4, "orden", "TransicionIlegal")),
              "no medido", ("se rompe en el evento 4 (orden)",)),
         )
+        self.juzga(casos)
+
+    def test_para_con_una_palabra_del_modelo(self):
+        """docs/modelo-centro-encargos.md, "Qué significa cada palabra del reporte": una
+        fase bloqueada es "entrega parcial" con la fase y su causa; `detenido` queda para
+        sus cuatro causas."""
+        sin_trabajar = FaseVista("dos", "trabajo", "integrado", False, True)
+        casos: tuple[tuple[str, Detencion, str, tuple[str, ...]], ...] = (
+            ("entrega parcial que nombra su fase", _detencion(pliegue=_parcial()), "pasa", (
+                "quedó como entrega parcial: la fase uno, «despliegue sin verificar»",
+                "se paró solo en 5 min (tope 15 min)",
+                "dijo por qué: «despliegue sin verificar (salida 1); rollback salida 0»",
+            )),
+            ("entrega parcial que calla una fase",
+             _detencion(pliegue=_parcial(BLOQUEADA, sin_trabajar)),
+             "falla", ("quedó como entrega parcial sin decir por qué falta la fase dos",)),
+            ("terminó completo",
+             _detencion(pliegue=dataclasses.replace(_parcial(UNO), completo=True)),
+             "falla", ("quedó terminado completo: no dijo que algo no se pudo",)),
+            ("cancelado", _detencion(pliegue=dataclasses.replace(_parcial(), estado="cancelado")),
+             "falla", ("quedó cancelado: ni detenido ni entrega parcial",)),
+        )
+        self.juzga(casos)
+
+    def juzga(self, casos: tuple[tuple[str, Detencion, str, tuple[str, ...]], ...]) -> None:
         for nombre, detencion, resultado, textos in casos:
             with self.subTest(nombre):
                 fila = _fila(_obs(detencion=detencion), "se detiene")
@@ -663,7 +686,7 @@ class LoEsperado(unittest.TestCase):
         esperado = leer_esperado(ESPERADO)
         self.assertEqual(set(esperado.filas), set(get_args(NombreFila)))
         self.assertEqual(esperado.filas["limpio"], "falla")
-        self.assertEqual(esperado.filas["se detiene"], "falla")
+        self.assertEqual(esperado.filas["se detiene"], "pasa")
         for nombre in ("no pierde", "no repite"):
             self.assertEqual(esperado.filas[nombre], "no medido")
 

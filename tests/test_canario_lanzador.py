@@ -297,9 +297,9 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         fila = self.filas(informe)["se detiene"]
         self.assertEqual(codigo, 0, informe["tabla"])
         self.assertEqual((detencion["fin"], detencion["cierre"]["parada"]), ("terminado", ""), self.avances)
-        self.assertEqual(fila["resultado"], "falla", fila["observado"])
+        self.assertEqual(fila["resultado"], "pasa", fila["observado"])
         for texto in (
-            "quedó terminado como entrega parcial, no detenido", "sí se paró solo", "dijo por qué: «",
+            "quedó como entrega parcial: la fase uno, «", "se paró solo", "dijo por qué: «",
             "revirtió su despliegue (rollback salida 0)", "gastó turnos",
         ):
             self.assertIn(texto, fila["observado"])
