@@ -169,6 +169,17 @@ def _cambios(foto: Foto, lote: Lote, revisado: Encargo) -> Lote:
     )
 
 
+def juicio_sin_guardar(enc: Encargo) -> bool:
+    """El registro rechazó el lote del juicio que acaba de incorporarse.
+
+    `decidir` pone `incorporado` en todo lote, y la liga de una inspección lo
+    escribe justo después, así que solo un lote rechazado deja al revisor sin
+    él. El responsable sí queda sin `incorporado` mientras corren sus
+    comprobaciones. Otro turno dejaría huérfano el outcome.json del juicio: la
+    vuelta siguiente lo decide otra vez."""
+    return enc.rol == "revisor" and enc.generacion not in enc.incorporado
+
+
 def decidir(
     foto: Foto, lote: Lote, region: Callable[[str, Hallazgo], Region]
 ) -> Paso[Siguiente]:

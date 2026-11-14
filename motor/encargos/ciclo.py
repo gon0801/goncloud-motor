@@ -96,6 +96,7 @@ from .frontera import (
 from .registro import Registro
 from .devolucion import corte_de_instrumento, devolver, sin_avance
 from .lote import Directo, excepcion, incorporado
+from .paso_juicio import juicio_sin_guardar
 from .fases import adoptar as adoptar_fases
 from .sesion import (
     cerrar,
@@ -1999,14 +2000,14 @@ def _barrer_encargos(
             )
         if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
+            if juicio_sin_guardar(enc):
+                informes.append(vista(enc))
+                continue
             arbol = observar(directorio, proc)
         if not parada:
-            enc = _refrescar_cuerpo_excepciones(
-                registro, enc, gh, espacio, hora
-            )
-        if arbol == "ausente" and enc.proc is not None:
-            _soltar_conductor(registro, enc, hora)
+            enc = _refrescar_cuerpo_excepciones(registro, enc, gh, espacio, hora)
         if enc.proc is not None and arbol == "ausente":
+            _soltar_conductor(registro, enc, hora)
             registro.anotar(
                 encargo_id,
                 {"kind": "intento_cerrado", "data": {"hora": hora}},
@@ -2059,7 +2060,7 @@ def _barrer_encargos(
                 _RESULTADOS_DE_PASO.pop(encargo_id, None)
                 enc = _paso_entrega(registro, enc, gh, hora)
                 resultado_paso = _RESULTADOS_DE_PASO.pop(
-                    encargo_id, NecesitaAgente(str(enc.rol or "responsable"))
+                    encargo_id, NecesitaAgente(enc.rol or "responsable")
                 )
                 if (
                     isinstance(resultado_paso, NecesitaAgente)
@@ -2072,7 +2073,7 @@ def _barrer_encargos(
                 _RESULTADOS_DE_PASO.pop(encargo_id, None)
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
                 resultado_paso = _RESULTADOS_DE_PASO.pop(
-                    encargo_id, NecesitaAgente(str(enc.rol or "responsable"))
+                    encargo_id, NecesitaAgente(enc.rol or "responsable")
                 )
             arbol = observar(directorio, proc)
         if enc.estado == "terminado" and enc.pr_numero and not parada:
@@ -3679,8 +3680,8 @@ def _cerrar_con_juicio(
         region=lambda sha, h: _region_del_hallazgo(espacio, sha, h),
     )
     if guardar(registro, enc.id, paso):
-        # Otro escritor cambió el registro: no se guardó nada, tampoco
-        # `incorporado`, y el barrido vuelve a incorporar el juicio.
+        # Otro escritor chocó con el lote: no se guardó nada, tampoco
+        # `incorporado`, y el barrido lo ve con `juicio_sin_guardar`.
         return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     if paso.respuesta == "cerrar":
