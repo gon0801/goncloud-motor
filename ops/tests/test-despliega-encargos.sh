@@ -225,9 +225,16 @@ campo_json() { # <archivo> <expresión>
 SCRIPT="$RAIZ/ops/despliega-encargos.sh"
 COMPRUEBA="$RAIZ/ops/comprueba-despliegue.sh"
 
+# La Mac tiene el token de GitHub de los agentes; la Mini y la PC no y solo avisan.
+printf 'token-falso-de-prueba\n' >"$S/mac/.motor-encargos/github-agentes.token"
+chmod 600 "$S/mac/.motor-encargos/github-agentes.token"
 echo "# despliegue bueno en las tres"
 espera "despliega en las tres" 0 bash "$SCRIPT" --sha "$SHA"
 contiene "lo dice" "$S/salida" "desplegado en:mac mini pc"
+no_contiene "el valor del token no sale" "$S/salida" "token-falso-de-prueba"
+no_contiene "la Mac con token no avisa" "$S/salida" "AVISO mac"
+contiene "la Mini sin token avisa" "$S/salida" "AVISO mini: el agente arranca sin credencial de GitHub: falta"
+contiene "la PC sin token avisa" "$S/salida" "AVISO pc: el agente arranca sin credencial de GitHub: falta"
 for m in mac mini pc-home; do
   [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$SHA" ] || fallo "$m: el árbol no quedó en el SHA"
   [ "$(campo_json "$S/$m/.motor-encargos/instalacion.json" 'd["destino"]["codigo"]')" = "$SHA" ] \

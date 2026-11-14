@@ -129,6 +129,18 @@ espera "--ensayo no llama a ssh" 0 \
   bash "$SCRIPT" --sha "$SHA" --maquina "mac mini pc" --ensayo
 [ ! -s "$FAKE_LOG" ] || fallo "--ensayo llamó a ssh: $(cat "$FAKE_LOG")"
 
+# Sin el token de GitHub de los agentes el despliegue sigue comprobado: la máquina avisa con
+# la causa que da el motor, que nunca trae el valor.
+estado mini "$SHA" si "$SHA"
+printf 'token falta /home/mini/.motor-encargos/github-agentes.token\n' >>"$S/estado-mini"
+printf 'token ok\n' >>"$S/estado-mac"
+espera "sin el token de los agentes el despliegue sigue comprobado" 0 \
+  bash "$SCRIPT" --sha "$SHA" --maquina "mac mini"
+contiene "la mini avisa con la causa" "$S/salida" \
+  "AVISO mini: el agente arranca sin credencial de GitHub: falta /home/mini/.motor-encargos/github-agentes.token"
+no_contiene "la mac con token no avisa" "$S/salida" "AVISO mac"
+estado mac "$SHA" si "$SHA"
+
 estado mini "$SHA" si "$SHA"
 espera "repetir la comprobación es idempotente" 0 \
   bash "$SCRIPT" --sha "$SHA" --maquina mini
