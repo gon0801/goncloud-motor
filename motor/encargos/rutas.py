@@ -16,6 +16,7 @@ from motor.relevo import (
 
 from .catalogo_agentes import identidad_modelo
 from .dominio import Encargo
+from .registro import Registro
 
 
 def solicitado_de(enc: Encargo, rol: str) -> tuple[str, str] | None:
@@ -126,3 +127,17 @@ def fallo(
         "hasta": hasta.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "relevo": avanza(tipo),
     }
+
+
+def anotar_fallo(
+    registro: Registro, enc: Encargo, agente: str, mensaje: str, modelo: str, hora: str
+) -> dict:
+    """El fallo del proveedor en este intento, anotado una vez. Tras un corte el
+    intento ya lo tiene: se reusa en vez de fecharlo otra vez, así que la espera
+    que sigue es la misma que sin el corte."""
+    ukey = f"proveedor-fallo:{enc.id}:{enc.generacion}"
+    guardado = registro.por_ukey(ukey)
+    seguidas = dict(enc.fallos_proveedor).get(agente, 0) + 1
+    causa = guardado["data"] if guardado else fallo(agente, mensaje, hora, seguidas, modelo)
+    registro.anotar(enc.id, {"kind": "proveedor_fallo", "data": {**causa, "hora": hora}}, ukey)
+    return causa

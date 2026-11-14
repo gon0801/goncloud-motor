@@ -1124,11 +1124,13 @@ def _copiar_sesion_sin_caer(
     marca = ".copia-incompleta"
 
     def anotar(texto: str) -> None:
-        registro.anotar(
-            enc.id,
-            {"kind": "procedimiento", "data": {"nota": f"{_NOTA_COPIA_SESION}({sitio}): {texto}"[:2000]}},
-            f"copia-sesion:{enc.id}:{sitio}:{enc.generacion}",
-        )
+        # Una nota por sitio e intento: la primera copia que falló es la que queda.
+        if registro.por_ukey(ukey := f"copia-sesion:{enc.id}:{sitio}:{enc.generacion}") is None:
+            registro.anotar(
+                enc.id,
+                {"kind": "procedimiento", "data": {"nota": f"{_NOTA_COPIA_SESION}({sitio}): {texto}"[:2000]}},
+                ukey,
+            )
 
     def perder_sesion() -> None:
         """Apartar la sesión deja el id de sesión apuntando a archivos que ya
@@ -3376,20 +3378,10 @@ def _incorporar(
                 )
                 return _marcar_incorporado(registro, enc, hora)
         if outcome.get("fallo_runtime"):
-            from .rutas import fallo
+            from .rutas import anotar_fallo
 
-            seguidas = dict(enc.fallos_proveedor).get(agente, 0) + 1
-            causa = fallo(
-                agente,
-                outcome["fallo_runtime"],
-                hora,
-                seguidas,
-                modelo=str(spec.get("modelo") or ""),
-            )
-            registro.anotar(
-                enc.id,
-                {"kind": "proveedor_fallo", "data": {**causa, "hora": hora}},
-                f"proveedor-fallo:{enc.id}:{enc.generacion}",
+            causa = anotar_fallo(
+                registro, enc, agente, outcome["fallo_runtime"], str(spec.get("modelo") or ""), hora
             )
             if not enc.agentes:
                 marcar_espera(
@@ -4439,11 +4431,12 @@ def _fallo_de_repo(
     """El repo no quedó listo: espera y reintenta. El mismo fallo
     TOPE_FALLOS_REPO veces seguidas deja un impedimento visible y se entrega lo
     que haya con los pendientes, sin esperar a una persona."""
-    _anotar_instrumento(
-        registro, enc, "github", causa,
-        "dejar accesible el repo declarado y reintentar",
-        hora, serie,
+    fallo = instrumento.fallo(
+        enc, "github", causa, "dejar accesible el repo declarado y reintentar", hora, serie
     )
+    # La serie es del intento: los fallos siguientes del mismo intento suman en `espera`.
+    if registro.por_ukey(fallo.ukey) is None:
+        Directo(registro, enc).con(fallo)
     marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
     enc = registro.fold(enc.id) or enc
     veces = _fallos_de_repo_seguidos(enc, causa)
