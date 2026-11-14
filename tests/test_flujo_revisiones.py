@@ -1918,7 +1918,7 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertTrue(de_nuevo["retransmision"])
             self.assertEqual(len(r.fold().ajustes), 2)
 
-    def test_un_rechazo_guardado_con_la_clave_por_la_version_anterior_no_la_ocupa(self):
+    def test_un_rechazo_guardado_con_la_clave_por_la_version_anterior_no_la_ocupa(self):  # no-roja-en-base: solo cambia el append borrado por anotar
         with tempfile.TemporaryDirectory() as tmp:
             r = self._recorrido(tmp)
             r.reg.anotar(
@@ -2316,7 +2316,7 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertFalse(aceptada.get("conflicto"))
             self.assertEqual(r.fold().ajustes, ("el dato debe ser 43",))
 
-    def test_un_rechazo_de_la_version_anterior_tambien_detecta_otro_texto(self):
+    def test_un_rechazo_de_la_version_anterior_tambien_detecta_otro_texto(self):  # no-roja-en-base: solo cambia el append borrado por anotar
         with tempfile.TemporaryDirectory() as tmp:
             r = self._recorrido(tmp)
             r.reg.anotar(

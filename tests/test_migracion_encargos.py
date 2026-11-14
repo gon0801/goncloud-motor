@@ -66,7 +66,7 @@ class MigracionEncargos(unittest.TestCase):
             self.assertIn(enc06.estado, ("deteniendo", "detenido"))
             self.assertIn("bloques B y C", enc06.texto)
 
-    def test_importado_nace_detenido_aunque_se_corte_despues(self):
+    def test_importado_nace_detenido_aunque_se_corte_despues(self):  # no-roja-en-base: el arnés corta después de la entrega sin depender del método con que la escribe recibir
         with tempfile.TemporaryDirectory() as tmp:
             raiz = Path(tmp)
             viejo = Store(raiz / "viejo" / "motor.db")

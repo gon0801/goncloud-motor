@@ -155,7 +155,7 @@ class FoldHastaCacheado(Base):
 
 
 class BaseRecreada(Base):
-    def test_recrear_la_base_en_la_misma_ruta_no_reutiliza_la_cache(self):
+    def test_recrear_la_base_en_la_misma_ruta_no_reutiliza_la_cache(self):  # no-roja-en-base: solo cambia el append borrado por anotar
         # Se fuerza la misma identidad de fichero: en Linux un inodo borrado se
         # reutiliza y la prueba debe depender de la firma del primer evento.
         with mock.patch(
