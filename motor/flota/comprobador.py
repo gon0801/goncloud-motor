@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -32,7 +33,8 @@ class Comprobacion(NamedTuple):
 
 def _sin_medir(exc: subprocess.TimeoutExpired) -> Comprobacion:
     orden = " ".join(map(str, exc.cmd)) if isinstance(exc.cmd, list) else str(exc.cmd)
-    return Comprobacion(1, orden, SinMedir(orden, exc.timeout))
+    # Sin tuberias, subprocess.run trae lo que quedaba del tope (119.99995 de 120).
+    return Comprobacion(1, orden, SinMedir(orden, math.ceil(exc.timeout)))
 
 
 def comprobar(gen: Path) -> Comprobacion:
