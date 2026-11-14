@@ -47,7 +47,6 @@ from .dominio import (
     Fase,
     FASE_IMPLICITA,
     HUELLA_DEEPSEEK_SIN_REVISION,
-    TOPE_NO_CONCLUYENTES,
     _EVENTOS_DE_MARCADOR,
     _NOTA_COPIA_SESION,
     _clase_de_fallo,
@@ -3667,218 +3666,28 @@ def _cerrar_con_juicio(
             )
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
-    version_previa = enc.revision_vigente.version if enc.revision_vigente else ""
-    enc_previo = enc
-    disputa_previa = bool(_disputas_pendientes(registro, enc, interno_de(espacio)))
-    revisor = ""
-    for rol, _agente, modelo in reversed(enc.modelos):
-        if rol == "revisor":
-            revisor = modelo
-            break
-    revision_id = "rev_" + hashlib.sha256(
-        f"{enc.id}:{enc.generacion}:{juicio.version}".encode()
-    ).hexdigest()[:12]
-    abiertos_ds = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
-    hallazgos_juicio = juicio.hallazgos
-    ya_resueltos = {h.id for h in hallazgos_juicio if h.estado == "resuelto"}
-    ids_ds = [
-        hid
-        for hid in juicio.resueltos
-        if hid in abiertos_ds and hid not in ya_resueltos
-    ]
-    resueltos_ds = [
-        replace(abiertos_ds[hid], estado="resuelto")
-        for hid in ids_ds
-    ]
-    if resueltos_ds:
-        marca = juicio.evidencia or "descartado por el revisor independiente"
-        hallazgos_juicio = tuple(hallazgos_juicio) + tuple(
-            replace(h, cierre_evidencia=marca) for h in resueltos_ds
-        )
-        for h in resueltos_ds:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "nota_pr",
-                    "data": {
-                        "texto": (
-                            f"hallazgo de DeepSeek descartado por el revisor "
-                            f"independiente: {h.id} «{h.titulo}» ({marca[:400]})"
-                        ),
-                        "hora": hora,
-                    },
-                },
-                f"disputa-resuelta:{enc.id}:{h.id}",
-            )
-            huella_region, texto_region, siguiente_region = _region_del_hallazgo(
-                espacio, enc.pr_sha, h
-            )
-            _anotar_excepcion(
-                registro, enc, "descarte", enc.pr_sha, h.id, marca, hora,
-                f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{h.id}",
-                ancla=h.ancla,
-                region=huella_region,
-                region_ancla=texto_region,
-                region_contexto=siguiente_region,
-            )
-        enc = registro.fold(enc.id) or enc
-    fuera_ds = [
-        (hid, razon)
-        for hid, razon in juicio.fuera_de_alcance
-        if hid in abiertos_ds and hid not in ya_resueltos and hid not in ids_ds
-    ]
-    if fuera_ds:
-        hallazgos_juicio = tuple(hallazgos_juicio) + tuple(
-            replace(
-                abiertos_ds[hid],
-                gravedad="observacion",
-                estado="resuelto",
-                cierre_evidencia=razon,
-            )
-            for hid, razon in fuera_ds
-        )
-        for hid, razon in fuera_ds:
-            h = abiertos_ds[hid]
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "hallazgo_fuera_de_alcance",
-                    "data": {
-                        "id": hid,
-                        "titulo": h.titulo,
-                        "razon": razon,
-                        "hora": hora,
-                    },
-                },
-                f"fuera-alcance:{enc.id}:{enc.fase_activa}:{hid}",
-            )
-            _anotar_excepcion(
-                registro, enc, "fuera_alcance", enc.pr_sha, hid, razon, hora,
-                f"excepcion:{enc.id}:fuera:{enc.pr_sha}:{hid}",
-            )
-        enc = registro.fold(enc.id) or enc
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "revision",
-            "data": {
-                "revision_id": revision_id,
-                "version": juicio.version,
-                "base_version": juicio.base_version,
-                "alcance": juicio.alcance,
-                "veredicto": juicio.veredicto,
-                "revisor": revisor or enc.agente,
-                "origen": "independiente",
-                "cubre": list(juicio.cubre),
-                "hallazgos": [h.como_dict() for h in hallazgos_juicio],
-                "aprobadas": [list(x) for x in juicio.aprobadas],
-                "evidencia": juicio.evidencia,
-                "efectos_pendientes": list(juicio.efectos_pendientes),
-                "inspeccion_faltante": juicio.inspeccion_faltante,
-                "pedido": _pedido_de_inspeccion(registro.base, juicio),
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "hora": hora,
-            },
-        },
-        f"revision-dato:{enc.id}:{enc.fase_activa}:{enc.generacion}:{juicio.version}",
+    from .lote import guardar, sobre
+    from .paso_juicio import Foto, decidir
+
+    paso = decidir(
+        Foto(
+            enc, juicio, hora,
+            disputa_previa=bool(_disputas_pendientes(registro, enc, interno_de(espacio))),
+            pedido=_pedido_de_inspeccion(registro.base, juicio),
+        ),
+        sobre(registro, enc),
+        region=lambda sha, h: _region_del_hallazgo(espacio, sha, h),
     )
+    if guardar(registro, enc.id, paso):
+        # Otro escritor cambió el registro: no se guardó nada, tampoco
+        # `incorporado`, y el barrido vuelve a incorporar el juicio.
+        return registro.fold(enc.id)
     enc = registro.fold(enc.id)
-    if (
-        juicio.veredicto == "aprobado"
-        and disputa_previa
-        and bloqueantes_abiertos(enc, "deepseek")
-    ):
-        abiertos = bloqueantes_abiertos(enc, "deepseek")
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "nota_pr",
-                "data": {
-                    "texto": (
-                        "el revisor independiente no descartó la disputa; "
-                        "el hallazgo vuelve al responsable: "
-                        + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
-                    ),
-                    "hora": hora,
-                },
-            },
-            f"disputa-rechazada:{enc.id}:{enc.generacion}",
-        )
-        _devolver(
-            registro, enc, "investigar", abiertos[0].titulo,
-            "corregir " + ", ".join(h.id for h in abiertos)
-            + "; la disputa con evidencia no fue aceptada por el revisor",
-            hora, f"disputa-rechazada-{enc.generacion}",
-        )
+    if paso.respuesta == "cerrar":
+        _intentar_cierre(registro, enc, espacio, directorio, hora)
+    elif paso.respuesta == "ligar_inspeccion":
+        _ligar_inspeccion(registro, enc, espacio, juicio, hora)
         _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
-    if juicio.veredicto == "cambios":
-        progreso = hubo_avance(enc_previo, enc)
-        abiertos = bloqueantes_abiertos(enc, "independiente")
-        primero = abiertos[0] if abiertos else None
-        motivo = primero.titulo if primero else (juicio.nota or "hay bloqueantes")
-        if not progreso:
-            _sin_avance(
-                registro, enc,
-                "; ".join(f"{h.id} {h.titulo}" for h in abiertos) or motivo,
-                (
-                    "cambio archivos del producto"
-                    if juicio.version != version_previa
-                    else "no cambio el producto"
-                ) + " y el revisor independiente sigue viendo el bloqueante abierto",
-                hora, "cambios",
-            )
-            _marcar_incorporado(registro, enc, hora)
-            return registro.fold(enc.id)
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "procedimiento",
-                "data": {
-                    "nota": juicio.nota or motivo,
-                    "hora": hora,
-                },
-            },
-            f"reparacion:{enc.id}:{enc.generacion}",
-        )
-        _devolver(
-            registro, enc, "investigar", motivo,
-            "corregir " + ", ".join(h.id for h in abiertos)
-            + "; lo aprobado que no cambio se conserva",
-            hora, "cambios",
-        )
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
-    if juicio.veredicto == "no_concluyente":
-        if enc.no_concluyentes >= TOPE_NO_CONCLUYENTES:
-            # El mismo pedido sin avance N veces seguidas: la escalera ya relevó
-            # o dejó la entrega con pendientes. No se vuelve a ligar la misma
-            # inspección ni se gasta otro turno con el mismo pedido.
-            pass
-        elif juicio.inspeccion_faltante:
-            _devolver(
-                registro, enc, "inspeccionar",
-                juicio.inspeccion_faltante,
-                "obtener por el buzon la inspeccion faltante y continuar "
-                "esta misma revision; el producto aprobado no se reabre",
-                hora, "inspeccion", rol="revisor",
-            )
-            _ligar_inspeccion(registro, enc, espacio, juicio, hora)
-        else:
-            # Salida propia de las no_concluyente: el pedido del revisor vuelve
-            # al responsable y la repetición la cuenta y la corta el freno
-            # (`TOPE_NO_CONCLUYENTES`), no la escalera de los bloqueos.
-            _devolver(
-                registro, enc, "investigar",
-                juicio.nota or "evidencia insuficiente para aprobar",
-                juicio.nota or "aportar la evidencia que falta sin rebajar el pedido",
-                hora, "no-concluyente",
-            )
-        _marcar_incorporado(registro, enc, hora)
-        return registro.fold(enc.id)
-    enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
-    _marcar_incorporado(registro, enc, hora)
     return registro.fold(enc.id)
 
 

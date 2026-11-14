@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Generic, Protocol, Self, TypeVar
 
 from .dominio import Encargo
@@ -85,6 +86,11 @@ class Lote:
 
     def paso(self, respuesta: R) -> Paso[R]:
         return Paso(self.eventos, self.omitidos, respuesta)
+
+
+def sobre(registro: Registro, enc: Encargo) -> Lote:
+    """Un lote vacío sobre lo que el registro guarda ahora del encargo."""
+    return Lote(partial(registro.proyectar, enc.id), registro.fold(enc.id) or enc)
 
 
 def guardar(registro: Registro, encargo: str, paso: Paso) -> str:
