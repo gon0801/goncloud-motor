@@ -37,6 +37,15 @@ FRONTERA = {
     ("motor.integraciones.directores", "_aplicar_promover_local"): "el director pasa a durable",
 }
 
+# Un `except Exception`, `BaseException` o desnudo que no re-lanza toma el rechazo
+# de un `anotar` de su `try` por otro error y lo calla. Va antes `except Rechazo: raise`.
+CALLA_A_PROPOSITO = {
+    ("motor.encargos.contencion", "contener"): (
+        "es el último recurso del barrido: si tampoco anota el fallo, lo dice por "
+        "stderr y atiende los demás encargos"
+    ),
+}
+
 
 def _llamadores() -> set[tuple[str, str]]:
     """Cada función de `motor/` que llama a `anotar_en_frontera`, por la más interna."""
@@ -61,9 +70,56 @@ def _llamadores() -> set[tuple[str, str]]:
     return encontrados
 
 
+def _calla_el_rechazo(intento: ast.Try) -> bool:
+    """El primer manejador que atraparía un `Rechazo` es amplio y no re-lanza."""
+    for manejador in intento.handlers:
+        tipos = manejador.type.elts if isinstance(manejador.type, ast.Tuple) else [manejador.type]
+        nombres = {t.id if isinstance(t, ast.Name) else "" for t in tipos if t is not None}
+        if "Rechazo" in nombres:
+            return False
+        if manejador.type is None or nombres & {"Exception", "BaseException"}:
+            final = manejador.body[-1]
+            return not (isinstance(final, ast.Raise) and final.exc is None)
+    return False
+
+
+def _anotar_callado() -> set[tuple[str, str]]:
+    """Cada función de `motor/` con un `anotar` dentro de un `try` que calla su rechazo."""
+    encontrados: set[tuple[str, str]] = set()
+
+    def visitar(nodo: ast.AST, modulo: str, funcion: str, callado: bool) -> None:
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            funcion, callado = f"{funcion}.{nodo.name}" if funcion else nodo.name, False
+        elif isinstance(nodo, ast.Lambda):
+            callado = False
+        elif isinstance(nodo, ast.Try):
+            for hijo in nodo.body:
+                visitar(hijo, modulo, funcion, callado or _calla_el_rechazo(nodo))
+            for hijo in (*nodo.handlers, *nodo.orelse, *nodo.finalbody):
+                visitar(hijo, modulo, funcion, callado)
+            return
+        elif (
+            callado
+            and isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Attribute)
+            and nodo.func.attr == "anotar"
+        ):
+            encontrados.add((modulo, funcion))
+        for hijo in ast.iter_child_nodes(nodo):
+            visitar(hijo, modulo, funcion, callado)
+
+    for ruta in sorted((RAIZ / "motor").rglob("*.py")):
+        modulo = ".".join(ruta.relative_to(RAIZ).with_suffix("").parts)
+        visitar(ast.parse(ruta.read_text(encoding="utf-8")), modulo, "", False)
+    return encontrados
+
+
 class FronteraDelRegistro(unittest.TestCase):
     def test_solo_la_frontera_devuelve_el_rechazo_como_respuesta(self):
         self.assertEqual(_llamadores(), set(FRONTERA))
+
+    def test_ningun_except_amplio_calla_el_rechazo_de_anotar(self):
+        self.assertEqual(_anotar_callado(), set(CALLA_A_PROPOSITO))
 
     def test_no_queda_el_append_que_callaba_el_rechazo(self):
         self.assertFalse(hasattr(Registro, "append"))
