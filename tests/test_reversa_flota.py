@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -9,6 +11,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
 
@@ -18,6 +21,7 @@ from motor.flota.control import (
     asignar,
     leer_trabajo,
     recuperar,
+    revertir,
 )
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -163,6 +167,52 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(asignar(self.home), self.nueva)
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
         self.assertEqual(recuperar(self.home)["accion"], "nada")
+
+    def _marca_vigente(self) -> str:
+        return (self.home / "actual" / "marca.txt").read_text(encoding="utf-8")
+
+    def test_un_cambio_de_actual_que_se_corta_conserva_la_previa_y_recuperar_termina(self) -> None:
+        class Apagon(BaseException):
+            pass
+
+        reemplazar = os.replace
+
+        def apagar_al_reemplazar_actual(origen, destino, *args, **kwargs):
+            if Path(destino).name == "actual":
+                raise Apagon
+            return reemplazar(origen, destino, *args, **kwargs)
+
+        sin_privilegio = OSError(errno.EPERM, "A required privilege is not held by the client")
+        cortes = (
+            ("la PC sin token elevado", "symlink", sin_privilegio, OSError),
+            ("apagon al reemplazar", "replace", apagar_al_reemplazar_actual, Apagon),
+        )
+        for nombre, funcion, efecto, error in cortes:
+            with self.subTest(corte=nombre):
+                aplicar(self.home, self.buena, sin_turnos=True)
+                antes = sorted(os.listdir(self.home))
+                with mock.patch.object(os, funcion, side_effect=efecto):
+                    with self.assertRaises(error):
+                        aplicar(self.home, self.nueva, sin_turnos=True)
+                self.assertEqual(self._marca_vigente(), "buena\n")
+                self.assertEqual(asignar(self.home), self.buena)
+
+                self.assertEqual(recuperar(self.home, sin_turnos=True)["accion"], "completo")
+                self.assertEqual(self._marca_vigente(), "nueva\n")
+                self.assertEqual(sorted(os.listdir(self.home)), antes)
+
+    def test_sin_actual_con_una_instalacion_completa_asignar_no_cae_al_clon(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+        aplicar(self.home, self.nueva, sin_turnos=True)
+        (self.home / "actual").unlink()
+        with self.assertRaisesRegex(RuntimeError, self.nueva):
+            asignar(self.home)
+
+    def test_revertir_la_primera_instalacion_vuelve_al_clon_y_asignar_lo_sigue(self) -> None:  # no-roja-en-base: la base ya volvia al clon; guarda que el error de asignar sin actual no alcance este estado legitimo
+        aplicar(self.home, self.nueva, sin_turnos=True)
+        self.assertEqual(revertir(self.home)["accion"], "revertido")
+        self.assertFalse((self.home / "actual").exists())
+        self.assertEqual(asignar(self.home), self.buena)
 
     def test_recuperar_revierte_si_la_candidata_no_llego_a_instalarse(self) -> None:
         aplicar(self.home, self.buena, sin_turnos=True)

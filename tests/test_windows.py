@@ -382,5 +382,42 @@ class WindowsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 7, r.stderr)
 
 
+@entorno.requiere_windows
+class EnlaceDeFlotaEnWindows(unittest.TestCase):
+    def _git(self, motor: Path, *args: str) -> str:
+        hecho = subprocess.run(
+            ["git", "-C", str(motor), *args], check=True, capture_output=True, text=True
+        )
+        return hecho.stdout.strip()
+
+    def _commit(self, motor: Path, marca: str) -> str:
+        (motor / "comprobar.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+        (motor / "marca.txt").write_text(marca + "\n", encoding="utf-8")
+        self._git(motor, "add", ".")
+        self._git(motor, "commit", "-q", "-m", marca)
+        return self._git(motor, "rev-parse", "HEAD")
+
+    def test_aplicar_reemplaza_el_enlace_actual_de_la_flota(self):  # no-roja-en-base: en Windows la base tambien cambiaba el enlace sin corte; guarda que el reemplazo sobre un enlace de directorio funcione en la PC
+        from motor.flota.control import aplicar, asignar
+
+        tmp = Path(tempfile.mkdtemp(prefix="flota-win-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        home = tmp / "home"
+        motor = home / "motor"
+        motor.mkdir(parents=True)
+        self._git(motor, "init", "-q")
+        self._git(motor, "config", "user.email", "ensayo@local")
+        self._git(motor, "config", "user.name", "ensayo")
+        buena = self._commit(motor, "buena")
+        nueva = self._commit(motor, "nueva")
+
+        self.assertEqual(aplicar(home, buena, sin_turnos=True)["accion"], "aplicada")
+        antes = sorted(os.listdir(home))
+        self.assertEqual(aplicar(home, nueva, sin_turnos=True)["accion"], "aplicada")
+        self.assertEqual((home / "actual" / "marca.txt").read_text(encoding="utf-8"), "nueva\n")
+        self.assertEqual(asignar(home), nueva)
+        self.assertEqual(sorted(os.listdir(home)), antes)
+
+
 if __name__ == "__main__":
     unittest.main()
