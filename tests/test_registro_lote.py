@@ -511,6 +511,22 @@ class CamposDelRechazo(IntervaloDelConteo):
             ],
         )
 
+    def test_una_clave_de_data_que_se_escribe_como_un_marcador_sale_como_signo(self):
+        ukey = f"producto:{ENCARGO}:fase"
+        self.guardar(ukey, {"@encargo": 1, "@kind": 1})
+
+        lineas = self.lineas(lambda: self.rechazar(ukey, {"@encargo": 2, "@kind": 1}))
+        self.ahora += 600
+        lineas += self.lineas(lambda: self.rechazar(ukey, {"@encargo": 1, "@kind": 2}))
+
+        self.assertEqual(
+            lineas,
+            [
+                "registro: rechazo=ajena kind=procedimiento ukey=producto:* campos=? veces=1",
+                "registro: rechazo=ajena kind=procedimiento ukey=producto:* campos=? veces=1",
+            ],
+        )
+
     def test_mas_de_cinco_claves_distintas_salen_las_cinco_primeras_y_cuantas_faltan(self):
         ukey = f"entrega:{ENCARGO}:externa"
         nombres = ("uno", "dos", "tres", "cuatro", "cinco", "seis", "siete")
