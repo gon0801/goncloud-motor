@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -50,6 +51,49 @@ def _barrer(registro) -> None:
         return_value=(Path(registro.base) / "poteto.md", "digest"),
     ), mock.patch("motor.encargos.ciclo.observar", return_value="ausente"):
         ciclo.barrer(registro, HORA, EPOCH, lambda *_args: None)
+
+
+def _vuelta(base: Path) -> None:
+    """Una vuelta del supervisor con su propia conexión al registro."""
+    registro = modulo_registro.Registro(base)
+    try:
+        _barrer(registro)
+    finally:
+        registro.close()
+
+
+def _turno_del_revisor_terminado(r: flujo.Recorrido) -> None:
+    """El turno del revisor corrió y dejó su outcome.json; el barrido lo verá ausente."""
+    r.reg.anotar(
+        r.enc,
+        {
+            "kind": "intento_abierto",
+            "data": {
+                "id": "intento-revisor", "pid": 99999999, "inicio": HORA,
+                "rol": "revisor", "agente": "opencode", "host": "pc",
+            },
+        },
+        "intento-revisor",
+    )
+    (r.d / "outcome.json").write_text("{}")
+
+
+@contextmanager
+def _otro_escritor_cambia_el_registro_antes_del_juicio():
+    """El registro rechaza el primer lote del juicio, como cuando otro escritor ocupa
+    una de sus ukeys entre la proyección y la escritura; el siguiente entra. Da la
+    lista de las ukeys rechazadas."""
+    escribir = modulo_registro.Registro.append_many
+    rechazados: list[str] = []
+
+    def append_many(registro, encargo, eventos):
+        if not rechazados and any(e.kind == "revision" for e in eventos):
+            rechazados.append(eventos[0].ukey)
+            raise modulo_registro.ClaveOcupada(0, eventos[0].ukey, ("texto",))
+        return escribir(registro, encargo, eventos)
+
+    with mock.patch.object(modulo_registro.Registro, "append_many", append_many):
+        yield rechazados
 
 
 def _cambios_que_cierran_un_bloqueante(raiz: Path) -> flujo.Recorrido:
@@ -140,6 +184,33 @@ class CerrarConJuicio(unittest.TestCase):
             registro = modulo_registro.Registro(r.base)
             self.addCleanup(registro.close)
             self.assertEqual(registro.fold(r.enc).estado, "terminado")
+
+    def test_un_juicio_que_otro_escritor_deja_sin_guardar_no_gasta_otro_turno_del_revisor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            escena = Path(tmp) / "escena"
+            escena.mkdir()
+            r = _cambios_que_cierran_un_bloqueante(escena)
+            _turno_del_revisor_terminado(r)
+            r.reg.close()
+            foto = Path(tmp) / "foto"
+            shutil.copytree(escena, foto, symlinks=True)
+            previas = len(filas(r.base))
+            _vuelta(r.base)
+            sin_carrera = filas(r.base)[previas:]
+            shutil.rmtree(escena)
+            shutil.copytree(foto, escena, symlinks=True)
+
+            with _otro_escritor_cambia_el_registro_antes_del_juicio() as rechazados:
+                _vuelta(r.base)
+
+            self.assertTrue(rechazados, "el lote del juicio no llegó al registro")
+            self.assertEqual(
+                sorted(p.name for p in r.d.glob("intento-*")), [],
+                "la vuelta con el lote rechazado abrió otro turno",
+            )
+            self.assertNotIn("incorporado", [kind for kind, _ukey, _data in filas(r.base)[previas:]])
+            _vuelta(r.base)
+            self.assertEqual(filas(r.base)[previas:], sin_carrera)
 
     def test_el_juicio_guarda_las_ukeys_y_los_datos_de_siempre(self):  # no-roja-en-base: fija lo que la base ya escribe en este camino; con otra ukey u otro dato un registro viejo a medias no daría igual
         with tempfile.TemporaryDirectory() as tmp:
