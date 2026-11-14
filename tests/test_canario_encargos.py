@@ -605,10 +605,10 @@ class SeDetiene(unittest.TestCase):
         )
         self.juzga(casos)
 
-    def test_para_con_una_palabra_del_modelo(self):
+    def test_para_con_una_palabra_del_modelo(self):  # no-roja-en-base: solo cambia el docstring a cinco causas; la quinta la prueba test_un_fallo_interno_no_es_la_parada_que_se_mide
         """docs/modelo-centro-encargos.md, "Qué significa cada palabra del reporte": una
         fase bloqueada es "entrega parcial" con la fase y su causa; `detenido` queda para
-        sus cuatro causas."""
+        sus cinco causas."""
         sin_trabajar = FaseVista("dos", "trabajo", "integrado", False, True)
         casos: tuple[tuple[str, Detencion, str, tuple[str, ...]], ...] = (
             ("entrega parcial que nombra su fase", _detencion(pliegue=_parcial()), "pasa", (
@@ -649,6 +649,21 @@ class SeDetiene(unittest.TestCase):
         p = vista(e, eventos)
         self.assertEqual(p.ordenes, ("parar", "continuar"))
         self.assertEqual(p.causas, ("parada aceptada", "despliegue sin verificar"))
+
+    def test_un_fallo_interno_no_es_la_parada_que_se_mide(self):
+        """Un `detenido` por fallo interno dice su causa y no recibió órdenes, pero es un
+        error del motor: el registro no guardó un hecho. No es la parada del checklist."""
+        e = dataclasses.replace(
+            _encargo(Fase("uno", "r", evidencia="e", estado="trabajo")),
+            estado="detenido", hora_cierre="2026-01-10T10:05:00Z", orden_parada="fallo_interno",
+            motivo="fallo interno: el registro rechazó el evento plazo (plazo:*) porque su "
+            "clave ya guarda otro hecho; se reanuda con continuar",
+        )
+
+        fila = _fila(_obs(detencion=_detencion(pliegue=vista(e, RECIBIDO_EV))), "se detiene")
+
+        self.assertEqual(fila.resultado, "falla", fila.observado)
+        self.assertIn("quedó detenido por fallo interno, no por el checklist", fila.observado)
 
 
 AMBOS_CORTES = (Corte("turno", True), Corte("receta", True))

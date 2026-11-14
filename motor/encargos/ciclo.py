@@ -43,6 +43,7 @@ from .comprobacion import (
 )
 from . import capacidades, necesidades, producto_listo, trabajos_ci
 from .dominio import (
+    _CERRADOS,
     Encargo,
     Fase,
     FASE_IMPLICITA,
@@ -93,12 +94,13 @@ from .frontera import (
     leer_parada_local,
     turno,
 )
-from .registro import Evento, Registro
+from .registro import Evento, EventoIlegal, Rechazo, Registro
 from .devolucion import devolver, sin_avance
+from .contencion import _RACHA_BARRIDO, aparcado_por_barrido, contener, vista_o_minima
 from . import instrumento
 from .instrumento import apariciones as _apariciones
 from .instrumento import entorno, fallo_juicio, impedimento_de_instrumento
-from .instrumento import causa_de_excepcion as _causa_de_excepcion
+from .instrumento import causa_de_excepcion
 from .inspeccion import consumir_ligada, entregada, ligar
 from .lote import Directo, Lote, excepcion, guardar, guardar_incorporado, incorporado
 from .lote import sobre, ya_incorporado
@@ -570,8 +572,8 @@ def recibir(
         "recibo": recibo,
         "hora": hora,
     }
-    reducir(None, {"kind": "entrega", "data": datos_entrega})
-    registro.append(encargo, "entrega", datos_entrega, ukey, hora)
+    reducir(None, evento := {"kind": "entrega", "data": datos_entrega})
+    registro.anotar(encargo, evento, ukey)
     _espejo_entrega(
         registro,
         encargo,
@@ -701,19 +703,17 @@ def _ordenar(
     try:
         reducir(enc, {"kind": "orden", "data": datos})
     except TransicionIlegal as exc:
-        registro.append(
+        registro.anotar_en_frontera(
             encargo_id,
-            "recibo",
-            {
+            {"kind": "recibo", "data": {
                 "accion": accion,
                 "recibo": recibo,
                 "resultado": "rechazada",
                 "motivo": str(exc),
                 "hora": hora,
                 "encargo": encargo_id,
-            },
+            }},
             ukey,
-            hora,
         )
         salida = vista(enc, recibo)
         salida["rechazada"] = True
@@ -729,7 +729,7 @@ def _ordenar(
     }
     if str(autor or ""):
         datos_orden["autor"] = str(autor)
-    resultado = registro.append(encargo_id, "orden", datos_orden, ukey, hora)
+    resultado = registro.anotar_en_frontera(encargo_id, {"kind": "orden", "data": datos_orden}, ukey)
     if resultado == "ilegal":
         motivo = "transicion ilegal"
         try:
@@ -739,19 +739,17 @@ def _ordenar(
             )
         except TransicionIlegal as exc:
             motivo = str(exc)
-        registro.append(
+        registro.anotar_en_frontera(
             encargo_id,
-            "recibo",
-            {
+            {"kind": "recibo", "data": {
                 "accion": accion,
                 "recibo": recibo,
                 "resultado": "rechazada",
                 "motivo": motivo,
                 "hora": hora,
                 "encargo": encargo_id,
-            },
+            }},
             ukey,
-            hora,
         )
         salida = vista(registro.fold(encargo_id), recibo)
         salida["rechazada"] = True
@@ -800,7 +798,7 @@ def corregir(
     enc = registro.fold(encargo_id)
     if enc is None:
         raise TransicionIlegal("no hay encargo")
-    ids = tuple(str(x) for x in (cierra or ()) if str(x).strip())
+    ids = tuple(str(x) for x in cierra or () if str(x).strip())
     datos_base = {"texto": texto, "cierra": list(ids), "evidencia": str(evidencia or "")}
 
     def _mismo(datos: dict) -> bool:
@@ -812,10 +810,8 @@ def corregir(
 
     if prev:
         salida = vista(enc, prev["data"]["recibo"])
-        if prev["encargo"] != encargo_id or not _mismo(prev["data"]):
-            salida["conflicto"] = True
-        else:
-            salida["retransmision"] = True
+        mismo = prev["encargo"] == encargo_id and _mismo(prev["data"])
+        salida["retransmision" if mismo else "conflicto"] = True
         return salida
     if rechazo and (
         rechazo["encargo"] != encargo_id or rechazo["data"].get("texto") != texto
@@ -827,19 +823,17 @@ def corregir(
     recibo = recibo_de(ukey)
 
     def rechazar(motivo: str) -> dict:
-        registro.append(
+        registro.anotar_en_frontera(
             encargo_id,
-            "recibo",
-            {
+            {"kind": "recibo", "data": {
                 "accion": "corregir",
                 "texto": texto,
                 "recibo": recibo,
                 "resultado": "rechazada",
                 "motivo": motivo,
                 "hora": hora,
-            },
+            }},
             ukey_rechazo,
-            hora,
         )
         salida = vista(registro.fold(encargo_id), recibo)
         salida["rechazada"] = True
@@ -867,7 +861,7 @@ def corregir(
             try:
                 estado_pr = str(gh.ver(enc.entrega.repo, enc.pr_numero).estado)
             except Exception:  # noqa: BLE001  sin lectura no se reabre
-                estado_pr = ""
+                pass
         if estado_pr != "abierto":
             situacion = f"está {estado_pr}" if estado_pr else "no se pudo leer en GitHub"
             return rechazar(
@@ -885,7 +879,7 @@ def corregir(
         reducir(enc, {"kind": "ajuste", "data": datos})
     except TransicionIlegal as exc:
         return rechazar(str(exc))
-    resultado = registro.append(encargo_id, "ajuste", datos, ukey, hora)
+    resultado = registro.anotar_en_frontera(encargo_id, {"kind": "ajuste", "data": datos}, ukey)
     if resultado == "ilegal":
         try:
             reducir(registro.fold(encargo_id), {"kind": "ajuste", "data": datos})
@@ -1118,11 +1112,13 @@ def _copiar_sesion_sin_caer(
     marca = ".copia-incompleta"
 
     def anotar(texto: str) -> None:
-        registro.anotar(
-            enc.id,
-            {"kind": "procedimiento", "data": {"nota": f"{_NOTA_COPIA_SESION}({sitio}): {texto}"[:2000]}},
-            f"copia-sesion:{enc.id}:{sitio}:{enc.generacion}",
-        )
+        # Una nota por sitio e intento: la primera copia que falló es la que queda.
+        if registro.por_ukey(ukey := f"copia-sesion:{enc.id}:{sitio}:{enc.generacion}") is None:
+            registro.anotar(
+                enc.id,
+                {"kind": "procedimiento", "data": {"nota": f"{_NOTA_COPIA_SESION}({sitio}): {texto}"[:2000]}},
+                ukey,
+            )
 
     def perder_sesion() -> None:
         """Apartar la sesión deja el id de sesión apuntando a archivos que ya
@@ -1433,18 +1429,6 @@ def _aplicar(
         )
 
 
-# Veces que el mismo error al atender un encargo se anota antes de dejar de
-# atenderlo: reintentar cada vuelta lo que no cambia solo llena el registro.
-TOPE_FALLOS_BARRIDO = 3
-_FUENTE_BARRIDO = "barrido"
-_CLASE_BARRIDO = "barrido:"
-_SIN_REGISTRO: set[tuple[str, str]] = set()
-# Vueltas seguidas que falló cada encargo, con la clase del último error. Vive en el
-# proceso del supervisor: una vuelta sana la borra, y un registro de eventos no
-# distingue una vuelta sana de otra que falló antes de anotar nada.
-_RACHA_BARRIDO: dict[str, tuple[str, int]] = {}
-
-
 # Un encargo cuya historia no pliega es un estado posible. Su fallo se dice una
 # vez por encargo y clase de error, no en cada vuelta del supervisor.
 _PLEGADOS_ILEGIBLES: set[tuple[str, str]] = set()
@@ -1466,111 +1450,11 @@ def plegar_aislado(registro: Registro, encargo_id: str) -> Encargo | None:
         if clave not in _PLEGADOS_ILEGIBLES:
             _PLEGADOS_ILEGIBLES.add(clave)
             print(
-                f"no se pudo plegar {encargo_id} ({clase}): {_causa_de_excepcion(exc)}",
+                f"no se pudo plegar {encargo_id} ({clase}): {causa_de_excepcion(exc)}",
                 file=sys.stderr,
                 flush=True,
             )
         return None
-
-
-def _contener_fallo_de_barrido(
-    registro: Registro, encargo_id: str, exc: Exception, hora: str
-) -> dict | None:
-    """El error de un encargo se queda en ese encargo.
-
-    Se anota `instrumento_fallo` (fuente `barrido`, clase `barrido:<Excepción>`). La
-    TOPE_FALLOS_BARRIDO.ª vuelta seguida del supervisor con la misma clase marca esa
-    herramienta como no disponible y deja un pendiente de entrega: el encargo termina
-    con lo que haya, sin esperar a que una persona mande un ajuste. Devuelve la vista
-    del encargo, o None si no se pudo leer."""
-    import sys
-    import traceback
-
-    clase = _CLASE_BARRIDO + type(exc).__name__
-    causa = _causa_de_excepcion(exc)
-    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
-    previa, vueltas = _RACHA_BARRIDO.get(encargo_id, ("", 0))
-    seguidos = vueltas if previa == clase else 0
-    _RACHA_BARRIDO[encargo_id] = (clase, seguidos + 1)
-    try:
-        enc = registro.fold(encargo_id)
-        if enc is None:
-            return None
-        if any(i.clase == clase for i in enc.impedimentos):
-            return _vista_o_minima(enc)  # ya aparcado: no se llena el registro
-        total = enc.fallos_barrido
-        _anotar_instrumento(
-            registro, enc, _FUENTE_BARRIDO, causa,
-            "reintentar en la vuelta siguiente"
-            if seguidos + 1 < TOPE_FALLOS_BARRIDO
-            else "se sigue sin esa herramienta y se entrega con pendientes",
-            hora, str(total + 1), clase=clase,
-        )
-        if seguidos + 1 >= TOPE_FALLOS_BARRIDO:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "instrumento_no_disponible",
-                    "data": {"clase": clase, "causa": causa, "hora": hora},
-                },
-                f"instrumento-no-disponible:{enc.id}:{clase}",
-            )
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "nota_pr",
-                    "data": {
-                        "texto": (
-                            "herramienta no disponible para este encargo: "
-                            f"{clase} ({str(causa)[:200]})"
-                        ),
-                        "hora": hora,
-                    },
-                },
-                f"nota-herramienta:{enc.id}:{clase}",
-            )
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "pendiente_entrega",
-                    "data": {
-                        "texto": (
-                            "el supervisor no pudo atender ese paso tras "
-                            f"{seguidos + 1} fallos iguales: {str(causa)[:400]}"
-                        ),
-                        "hora": hora,
-                    },
-                },
-                f"pendiente-barrido:{enc.id}:{clase}",
-            )
-            _RACHA_BARRIDO.pop(encargo_id, None)
-        return _vista_o_minima(registro.fold(encargo_id) or enc)
-    except Exception as segundo:
-        if (encargo_id, clase) not in _SIN_REGISTRO:
-            _SIN_REGISTRO.add((encargo_id, clase))
-            print(
-                f"no se pudo anotar el fallo de {encargo_id} ({clase}): "
-                f"{type(segundo).__name__}: {segundo}",
-                file=sys.stderr,
-            )
-        return None
-
-
-def _vista_o_minima(enc: Encargo) -> dict:
-    try:
-        return vista(enc)
-    except TransicionIlegal:
-        return {"encargo": enc.id, "estado": enc.estado}
-
-
-def _aparcado_por_barrido(enc: Encargo | None) -> bool:
-    """Aparcado no se atiende, salvo que se esté deteniendo: parar o cancelar un
-    encargo aparcado tiene que poder cerrar su proceso."""
-    return (
-        enc is not None
-        and enc.estado != "deteniendo"
-        and any(i.clase.startswith(_CLASE_BARRIDO) for i in enc.impedimentos)
-    )
 
 
 _MARCADORES_MIGRADOS: set[tuple[str, int, int]] = set()
@@ -1736,7 +1620,7 @@ def migrar_marcadores(registro: Registro, hora: str) -> None:
                 _MIGRACION_FALLIDA.add(clave)
                 print(
                     f"no se pudo migrar {encargo_id} ({type(exc).__name__}): "
-                    f"{_causa_de_excepcion(exc)}",
+                    f"{causa_de_excepcion(exc)}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -1753,7 +1637,7 @@ def barrer(
     gh=None,
 ) -> list[dict]:
     """Un paso sobre todos los encargos. Cada uno se atiende por separado: lo que
-    lance uno no detiene a los demás ni al supervisor (ver `_contener_fallo_de_barrido`)."""
+    lance uno no detiene a los demás ni al supervisor (ver `contencion.contener`)."""
     migrar_marcadores(registro, hora)
     informes = []
     presupuesto = [CERRADOS_POR_PASADA]
@@ -1762,8 +1646,8 @@ def barrer(
             previo = plegar_aislado(registro, encargo_id)
             if previo is None:
                 continue
-            if _aparcado_por_barrido(previo):
-                informes.append(_vista_o_minima(previo))
+            if aparcado_por_barrido(previo):
+                informes.append(vista_o_minima(previo))
                 continue
             informes += _barrer_encargos(
                 registro, [encargo_id], hora, epoch, lanzador, umbral_s, gh,
@@ -1771,7 +1655,7 @@ def barrer(
             )
             _RACHA_BARRIDO.pop(encargo_id, None)
         except Exception as exc:
-            informe = _contener_fallo_de_barrido(registro, encargo_id, exc, hora)
+            informe = contener(registro, encargo_id, exc, hora)
             if informe is not None:
                 informes.append(informe)
     return informes
@@ -2320,22 +2204,31 @@ def _anotar_juicio(
     hora: str,
     serie: int,
     clave: str = "",
-) -> str:
+) -> bool:
+    """Falso si una corrección que entró durante el cierre lo volvió ilegal: esa
+    es la respuesta del registro y el trabajo vuelve al implementador. Cualquier
+    otro rechazo lanza."""
     sufijo = f":{clave}" if clave else ""
-    return registro.anotar(
-        enc.id,
-        {
-            "kind": "comprobacion",
-            "data": {
-                **juicio,
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "hora": hora,
+    try:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "comprobacion",
+                "data": {
+                    **juicio,
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "hora": hora,
+                },
             },
-        },
-        f"comprobacion:{enc.id}:{enc.fase_activa}:{juicio['clase']}:"
-        f"{juicio.get('firma') or juicio.get('motivo')}:{serie}{sufijo}",
-    )
+            f"comprobacion:{enc.id}:{enc.fase_activa}:{juicio['clase']}:"
+            f"{juicio.get('firma') or juicio.get('motivo')}:{serie}{sufijo}",
+        )
+    except EventoIlegal:
+        if correcciones_sin_ver(registro.fold(enc.id) or enc):
+            return False
+        raise
+    return True
 
 
 def _efecto_asentado(resultado: dict) -> bool:
@@ -3173,7 +3066,7 @@ def _intentar_cierre_paso(
         # El aviso al propietario es esta evidencia: ahí tiene que ir lo que
         # nadie recibió.
         cierre["evidencia"] += " Atención: " + " ".join(sin_recibir)
-    resultado = _anotar_juicio(
+    anotado = _anotar_juicio(
         registro,
         enc,
         {**cierre, "ajustes_vistos": ajustes_cubiertos(enc)},
@@ -3182,7 +3075,7 @@ def _intentar_cierre_paso(
         clave="global" if enc.objetivo_completo() else "",
     )
     enc = registro.fold(enc.id)
-    if resultado == "ilegal" and correcciones_sin_ver(enc):
+    if not anotado:
         _devolver_correcciones(registro, enc, hora)
         return registro.fold(enc.id) or enc, NecesitaAgente("responsable")
     if enc.estado == "terminado":
@@ -3482,20 +3375,10 @@ def _incorporar(
                 )
                 return _marcar_incorporado(registro, enc, hora)
         if outcome.get("fallo_runtime"):
-            from .rutas import fallo
+            from .rutas import anotar_fallo
 
-            seguidas = dict(enc.fallos_proveedor).get(agente, 0) + 1
-            causa = fallo(
-                agente,
-                outcome["fallo_runtime"],
-                hora,
-                seguidas,
-                modelo=str(spec.get("modelo") or ""),
-            )
-            registro.anotar(
-                enc.id,
-                {"kind": "proveedor_fallo", "data": {**causa, "hora": hora}},
-                f"proveedor-fallo:{enc.id}:{enc.generacion}",
+            causa = anotar_fallo(
+                registro, enc, agente, outcome["fallo_runtime"], str(spec.get("modelo") or ""), hora
             )
             if not enc.agentes:
                 marcar_espera(
@@ -4545,11 +4428,12 @@ def _fallo_de_repo(
     """El repo no quedó listo: espera y reintenta. El mismo fallo
     TOPE_FALLOS_REPO veces seguidas deja un impedimento visible y se entrega lo
     que haya con los pendientes, sin esperar a una persona."""
-    _anotar_instrumento(
-        registro, enc, "github", causa,
-        "dejar accesible el repo declarado y reintentar",
-        hora, serie,
+    fallo = instrumento.fallo(
+        enc, "github", causa, "dejar accesible el repo declarado y reintentar", hora, serie
     )
+    # La serie es del intento: los fallos siguientes del mismo intento suman en `espera`.
+    if registro.por_ukey(fallo.ukey) is None:
+        Directo(registro, enc).con(fallo)
     marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
     enc = registro.fold(enc.id) or enc
     veces = _fallos_de_repo_seguidos(enc, causa)
@@ -5513,6 +5397,8 @@ def _actualizar_cuerpo_pr(
         return _publicar_cuerpo_pr(
             registro, enc, gh, numero, sha, espacio, hora, fase_id
         )
+    except Rechazo:
+        raise
     except Exception as exc:
         _anotar_instrumento(
             registro,
@@ -5533,9 +5419,11 @@ def _refrescar_cuerpo_excepciones(
 
     Ese marcador cubre descartes del revisor, hallazgos fuera de alcance y la
     omisión de DeepSeek. El cuerpo se publica por SHA; la huella decide si hay
-    algo nuevo que publicar, así que repetir la pasada no lo reescribe.
+    algo nuevo que publicar, así que repetir la pasada no lo reescribe. Un
+    encargo cerrado o detenido no publica: espera `continuar`, y la entrega
+    refresca el cuerpo al reanudar.
     """
-    if gh is None or not getattr(enc, "pr_numero", 0):
+    if gh is None or not getattr(enc, "pr_numero", 0) or enc.estado in _CERRADOS:
         return enc
     if not _excepciones_del_registro(registro, enc, enc.pr_sha):
         return enc
@@ -8223,29 +8111,15 @@ def _entregar_con_pendientes(
                                   _reanuda_en(120), hora)
                     return registro.fold(enc.id)
                 if conteo.stdout.strip() == "0":
-                    if any(p.startswith(_RELEVO_AGOTADO) for p in pendientes):
-                        _bloquear_fase(
-                            registro, enc,
-                            "no hay commits que entregar en el PR",
-                            "no hay commits que entregar en el PR; la fase "
-                            "termina bloqueada con el motivo: "
-                            + "; ".join(pendientes),
-                            hora,
-                            f"{enc.reaperturas}:sin-commits:{len(pendientes)}",
-                        )
-                        enc = registro.fold(enc.id) or enc
-                        _marcar_incorporado(registro, enc, hora)
-                        if enc.estado == "terminado":
-                            _publicar_resultado(registro, enc, hora)
-                            _limpiar_encargo_cerrado(registro, enc, hora)
-                        return enc
+                    relevo = any(p.startswith(_RELEVO_AGOTADO) for p in pendientes)
+                    serie = "sin-commits" if relevo else "sin-commits-sin-relevo"
                     _bloquear_fase(
                         registro, enc,
                         "no hay commits que entregar en el PR",
                         "no hay commits que entregar en el PR; la fase termina "
                         "bloqueada con el motivo: " + "; ".join(pendientes),
                         hora,
-                        f"{enc.reaperturas}:sin-commits-sin-relevo:{len(pendientes)}",
+                        f"{enc.reaperturas}:{serie}:{len(pendientes)}",
                     )
                     enc = registro.fold(enc.id) or enc
                     _marcar_incorporado(registro, enc, hora)
@@ -8282,6 +8156,8 @@ def _entregar_con_pendientes(
                     sha = str(pr.head or sha)
                     if getattr(pr, "borrador", False):
                         gh.marcar_listo(enc.entrega.repo, numero)
+            except Rechazo:
+                raise
             except Exception as exc:
                 causa = f"no se pudo publicar el PR con pendientes: {exc}"
     if causa:
@@ -8906,10 +8782,10 @@ def _paso_entrega_paso(
                 vista_push = gh.ver(enc.entrega.repo, enc.pr_numero)
                 punta = str(getattr(vista_push, "head", "") or "").strip()
             except Exception:
-                punta = ""
+                pass
         if punta and sha and punta != sha:
             entregado = str(enc.pr_sha or "").strip()
-            if punta and entregado and punta != entregado:
+            if entregado and punta != entregado:
                 # F6: la punta del remoto ya no es el sha entregado: cabeza
                 # desviada de verdad, se concilia contra la punta vigente.
                 # F10: un fallo de push con la punta en el sha entregado no es
@@ -9219,9 +9095,9 @@ def _paso_entrega_paso(
                 },
                 f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
             )
-            enc = _actualizar_cuerpo_pr(
-                registro, enc, gh, numero, sha, espacio, hora
-            )
+            enc = _actualizar_cuerpo_pr(registro, enc, gh, numero, sha, espacio, hora)
+        except Rechazo:
+            raise
         except Exception as exc:
             if "no commits between" in str(exc).lower():
                 # La rama no tiene nada publicable sobre su base: no es un
@@ -9733,7 +9609,7 @@ def _registrar_fase_desplegada(
     """
     from . import despliegue
 
-    aplicado = registro.anotar(
+    aplicado = registro.anotar_en_frontera(
         enc.id,
         {"kind": "fase_desplegada", "data": {
             "fase": fase.id, "sha": fase.integrado_sha,
@@ -10276,7 +10152,7 @@ def _lanzar_uno_en_turno(
                 sesion_modo=sesion_modo,
                 poteto_digest=poteto_digest,
             )
-            reservado = registro.anotar(
+            reservado = registro.anotar_en_frontera(
                 enc.id,
                 {
                     "kind": "reserva",
@@ -10719,7 +10595,7 @@ def conceder_conductor(
                 "concedido": enc.conductor == token and enc.host == host,
                 "conflicto": enc.conductor != token or enc.host != host,
             }
-        res = registro.anotar(
+        res = registro.anotar_en_frontera(
             enc.id,
             {
                 "kind": "reserva",
@@ -10851,7 +10727,7 @@ def observar_intento(
                 and ident.job == job
             )
             return {"ya": mismo, "conflicto": not mismo, "encargo": encargo_id}
-        resultado = registro.anotar(
+        resultado = registro.anotar_en_frontera(
             encargo_id,
             {
                 "kind": "intento_abierto",
@@ -11144,7 +11020,7 @@ def recibir_resultado(
                 comprobar_destino(cierre, DestinoEnsayo(registro.base / "destino"))
             except (ValueError, KeyError, TypeError) as exc:
                 return {"rechazado": True, "motivo": str(exc)}
-        resultado = registro.anotar(
+        resultado = registro.anotar_en_frontera(
             enc.id,
             {
                 "kind": "comprobacion",

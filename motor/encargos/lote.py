@@ -43,8 +43,8 @@ class Paso(Generic[R]):
     """Lo que el paso guarda en una transacción, lo que deja fuera y lo que responde.
 
     `omitidos` son los eventos que el registro rechazaría. El paso sigue sin
-    ellos, como sigue un llamador de `anotar`, que devuelve el rechazo sin
-    lanzar: meterlos al lote rechazaría el paso entero."""
+    ellos y `guardar` los cuenta por stderr: meterlos al lote rechazaría el
+    paso entero."""
 
     eventos: tuple[Evento, ...]
     omitidos: tuple[tuple[Evento, Rechazo], ...]
@@ -55,10 +55,9 @@ class Paso(Generic[R]):
 class Lote:
     """Los eventos del paso y el estado que dejan si se guardan ahora.
 
-    `con` responde lo que respondería `Registro.anotar` después de guardar los
-    anteriores: la ukey que el lote ya lleva con el mismo hecho no cambia nada,
-    y la que lleva otro hecho, o el evento que el reductor rechaza, queda
-    fuera."""
+    `con` cuenta como `Registro.anotar` después de guardar los anteriores: la
+    ukey que el lote ya lleva con el mismo hecho no cambia nada, y la que lleva
+    otro hecho, o el evento que el reductor rechaza, queda fuera."""
 
     proyectar: Callable[[Sequence[Evento]], Encargo]
     estado: Encargo
@@ -78,7 +77,7 @@ class Lote:
             )
             if not campos:
                 return self
-            ocupada = ClaveOcupada(previo, evento.ukey, campos)
+            ocupada = ClaveOcupada(previo, evento.ukey, campos, evento.kind)
             return replace(self, omitidos=(*self.omitidos, (evento, ocupada)))
         try:
             estado = self.proyectar([*self.eventos, evento])
@@ -130,8 +129,8 @@ def guardar_incorporado(registro: Registro, enc: Encargo, lote: Lote, hora: str)
 
 
 class Directo:
-    """Escribe cada evento al momento con `Registro.anotar`, que calla y cuenta
-    el rechazo. `estado` es lo que el registro guarda ahora."""
+    """Escribe cada evento al momento con `Registro.anotar`, que lanza el
+    rechazo. `estado` es lo que el registro guarda ahora."""
 
     def __init__(self, registro: Registro, enc: Encargo) -> None:
         self._registro = registro
@@ -182,7 +181,7 @@ def ya_incorporado(registro: Registro, enc: Encargo) -> bool:
         ("", guardado["kind"], guardado["data"]), ("", marca.kind, marca.data)
     )
     if campos:
-        contar_omitidos(((marca, ClaveOcupada(0, marca.ukey, campos)),))
+        contar_omitidos(((marca, ClaveOcupada(0, marca.ukey, campos, marca.kind)),))
     return True
 
 

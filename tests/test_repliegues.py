@@ -16,7 +16,7 @@ from motor.encargos import ciclo
 from motor.encargos.ciclo import ahora_iso, recibir
 from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase
 from motor.encargos.necesidades import contexto_de
-from motor.encargos.registro import Registro
+from motor.encargos.registro import EventoIlegal, Registro
 
 HORA = "2026-11-08T12:00:00Z"
 
@@ -35,12 +35,8 @@ class Base(unittest.TestCase):
         )["encargo"]
 
     def nota(self, ident: str, texto: str) -> str:
-        return self.reg.append(
-            ident,
-            "procedimiento",
-            {"nota": texto, "hora": HORA},
-            f"nota-{texto}",
-            HORA,
+        return self.reg.anotar(
+            ident, {"kind": "procedimiento", "data": {"nota": texto, "hora": HORA}}, f"nota-{texto}"
         )
 
 
@@ -49,15 +45,10 @@ class Deduplicacion(Base):
         ident = self.encargo()
         datos = {"nota": "una", "hora": HORA}
 
-        self.assertEqual(
-            self.reg.append(ident, "procedimiento", datos, "hecho-uno", HORA),
-            "nuevo",
-        )
+        evento = {"kind": "procedimiento", "data": datos}
+        self.assertEqual(self.reg.anotar(ident, evento, "hecho-uno"), "nuevo")
         antes = self.reg.fold(ident)
-        self.assertEqual(
-            self.reg.append(ident, "procedimiento", datos, "hecho-uno", HORA),
-            "igual",
-        )
+        self.assertEqual(self.reg.anotar(ident, evento, "hecho-uno"), "igual")
 
         self.assertEqual(self.reg.fold(ident), antes)
         otro = Registro(self.base)
@@ -75,12 +66,10 @@ class OtraConexionEscribiendo(Base):
         self.reg.fold(ident)
         otro = Registro(self.base)
         self.addCleanup(otro.close)
-        otro.append(
+        otro.anotar(
             ident,
-            "procedimiento",
-            {"nota": "de fuera", "hora": HORA},
+            {"kind": "procedimiento", "data": {"nota": "de fuera", "hora": HORA}},
             "nota-de-fuera",
-            HORA,
         )
 
         self.assertIn("de fuera", self.reg.fold(ident).procedimiento)
@@ -100,21 +89,19 @@ class Rechazo(Base):
         self.reg.fold(ident)
         antes = self.reg.fold(ident)
 
-        rechazado = self.reg.append(
-            ident,
-            "entrega",
-            {
-                "id": ident,
-                "clave": "otra",
-                "huella": "otra-huella",
-                "texto": "un segundo pedido",
-                "hora": HORA,
-            },
-            "entrega-repetida",
-            HORA,
-        )
+        with self.assertRaises(EventoIlegal):
+            self.reg.anotar(
+                ident,
+                {"kind": "entrega", "data": {
+                    "id": ident,
+                    "clave": "otra",
+                    "huella": "otra-huella",
+                    "texto": "un segundo pedido",
+                    "hora": HORA,
+                }},
+                "entrega-repetida",
+            )
 
-        self.assertEqual(rechazado, "ilegal")
         self.assertEqual(self.reg.fold(ident), antes)
         otro = Registro(self.base)
         self.addCleanup(otro.close)

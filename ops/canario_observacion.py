@@ -88,6 +88,8 @@ class Pliegue:
     """La acción de cada orden que recibió (parar, cancelar, continuar...), en orden."""
     causas: tuple[str, ...] = ()
     """Lo que el encargo deja escrito como causa: su motivo y la de cada impedimento."""
+    orden_parada: str = ""
+    """`Encargo.orden_parada`: parar, cancelar o fallo_interno mientras no llegue continuar."""
 
 
 @dataclass(frozen=True)
