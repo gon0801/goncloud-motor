@@ -7,6 +7,7 @@ Uso, igual en local y en CI:
     python3 tools/calidad.py io
     python3 tools/calidad.py tamano --base origin/main
     python3 tools/calidad.py tamano --base <commit> --cabeza <commit>
+    python3 tools/calidad.py kinds --base origin/main
 
 `tipos` y `lint` comparan contra `.github/calidad/baseline.json` y fallan solo
 si el cambio agrega un error. `io` es estricto: cualquier uso fuera de
@@ -22,6 +23,13 @@ pasar del límite. No guarda nada. Sin `--cabeza` mide el árbol de trabajo; con
 así juzga un PR quien no ejecuta nada suyo. Una ruta congelada en
 `motor.encargos.politica.CONGELAMIENTOS` no recibe ninguna función nueva, por
 chica que sea.
+
+`kinds` falla si `motor/` escribe un kind de evento que el reductor de la rama
+base no sabe plegar. Desplegar ese escritor deja en el registro un evento que la
+versión anterior rechaza al plegar, y la compuerta de plegado del despliegue
+bloquea volver a ella. Solo ve los kinds escritos como literal. Ejecuta el
+reductor de la base, no el código juzgado, y con `--cabeza` lee ese commit como
+`tamano`.
 """
 
 from __future__ import annotations
@@ -36,6 +44,8 @@ import json
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import tokenize
 from pathlib import Path
 
@@ -133,6 +143,18 @@ AJENOS_DE_MOTOR = {b"120000": "es un enlace simbólico", b"160000": "es un subm�
 MENSAJE_SIN_MEDIR = (
     "Bajo motor/ solo van archivos propios del repo, en UTF-8 y que Python analice; "
     "lo demás no se puede medir."
+)
+# Los paquetes que escriben en el registro de encargos. El modo planes
+# (`motor/daemon.py`, `motor/effects.py`) escribe en otro registro, con otro reductor.
+ESCRITORES_DE_ENCARGOS = ("motor/encargos/", "motor/integraciones/")
+# Ningún reductor pliega este kind: lo que responde a él es lo que responde a uno
+# desconocido, lo redacte como lo redacte.
+KIND_INVENTADO = "kind_que_ningun_reductor_conoce"
+ENTREGA_DE_SONDEO = {"id": "sondeo", "clave": "sondeo", "huella": "sondeo", "texto": "sondeo"}
+MENSAJE_KINDS = (
+    "Una versión anterior no pliega un registro con ese evento y la marcha atrás del "
+    "despliegue queda bloqueada. Enséñale el kind al reductor en un PR propio, "
+    "despliégalo en las tres máquinas y después agrega el escritor."
 )
 
 
@@ -583,6 +605,113 @@ def _comparar_tamano(ref: str, cabeza: str | None) -> int:
     return 0
 
 
+def _literal(nodo: ast.AST | None) -> str | None:
+    if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
+        return nodo.value
+    return None
+
+
+def _kind_escrito(nodo: ast.Dict | ast.Call) -> str | None:
+    """El kind que escribe `nodo` si es literal: un dict con `kind` y `data`,
+    `Evento(kind, ...)` o `registro.append(encargo, kind, data, ukey, ...)`."""
+    if isinstance(nodo, ast.Dict):
+        valores = {_literal(k): v for k, v in zip(nodo.keys, nodo.values, strict=True)}
+        return _literal(valores["kind"]) if {"kind", "data"} <= valores.keys() else None
+    funcion = nodo.func
+    nombre = funcion.id if isinstance(funcion, ast.Name) else getattr(funcion, "attr", "")
+    if nombre == "Evento":
+        por_nombre = [k.value for k in nodo.keywords if k.arg == "kind"]
+        return _literal((nodo.args[:1] or por_nombre or [None])[0])
+    if nombre == "append" and len(nodo.args) >= 4:
+        return _literal(nodo.args[1])
+    return None
+
+
+def kinds_escritos(fuentes: list[tuple[str, bytes]]) -> dict[str, list[str]]:
+    """Cada kind que escribe el código de los encargos, con las líneas que lo escriben."""
+    escritos: dict[str, list[str]] = collections.defaultdict(list)
+    for ruta, contenido in fuentes:
+        if not ruta.startswith(ESCRITORES_DE_ENCARGOS):
+            continue
+        for nodo in ast.walk(ast.parse(contenido)):
+            if isinstance(nodo, (ast.Dict, ast.Call)) and (kind := _kind_escrito(nodo)):
+                escritos[kind].append(f"{ruta}:{nodo.lineno}")
+    return escritos
+
+
+def _plegables(raiz: Path, kinds: list[str]) -> list[str]:
+    """Los `kinds` que el reductor de `raiz` pliega sobre un encargo recién recibido.
+
+    El reductor de la base no tiene una tabla de kinds que leer: se le da cada uno
+    y se mira si responde como a uno inventado."""
+    sys.path.insert(0, str(raiz))
+    from motor.encargos import dominio
+
+    if not Path(dominio.__file__).resolve().is_relative_to(raiz.resolve()):
+        raise SystemExit(f"kinds: el reductor se cargó de {dominio.__file__}, no de {raiz}")
+    encargo = dominio.reducir(None, {"kind": "entrega", "data": ENTREGA_DE_SONDEO}, nuevo=False)
+
+    def respuesta(kind: str) -> tuple[type, str] | None:
+        try:
+            dominio.reducir(encargo, {"kind": kind, "data": {}}, nuevo=False)
+        except Exception as exc:
+            return type(exc), str(exc)
+        return None
+
+    inventado = respuesta(KIND_INVENTADO)
+    if inventado is None:
+        raise SystemExit(
+            f"kinds: el reductor de {raiz} pliega un kind inventado; no distingue uno desconocido"
+        )
+    tipo, texto = inventado
+    antes, nombrado, despues = texto.partition(KIND_INVENTADO)
+    return [
+        k for k in kinds if respuesta(k) != (tipo, antes + k + despues if nombrado else texto)
+    ]
+
+
+def _plegables_en(commit: str, kinds: list[str]) -> set[str]:
+    """`_plegables` con el `motor/` de `commit`, en otro proceso: dos versiones del
+    mismo módulo no caben en uno."""
+    archivo = io.BytesIO(_git("archive", "--format=tar", commit, "motor"))
+    with tempfile.TemporaryDirectory(prefix="kinds-base-") as tmp:
+        with tarfile.open(fileobj=archivo) as tar:
+            tar.extractall(tmp, filter="data")
+        hecho = subprocess.run(
+            [sys.executable, "-I", str(Path(__file__).resolve()), "plegables", "--raiz", tmp],
+            input=json.dumps(kinds), capture_output=True, text=True, check=False,
+        )
+    if hecho.returncode != 0:
+        raise SystemExit(f"kinds: no pude sondear el reductor de {commit[:12]}:\n{hecho.stderr}")
+    return set(json.loads(hecho.stdout))
+
+
+def _comparar_kinds(ref: str, cabeza: str | None) -> int:
+    commit = _commit(ref, "base")
+    if cabeza is None:
+        medido, lectura = "", _fuentes_del_arbol()
+    else:
+        medido, lectura = f" en {cabeza}", _fuentes_de_git(_commit(cabeza, "cabeza"))
+    escritos = kinds_escritos(lectura[0])
+    plegables = _plegables_en(commit, sorted(escritos))
+    ajenos = {kind: donde for kind, donde in escritos.items() if kind not in plegables}
+    if ajenos:
+        print(
+            f"kinds: {len(ajenos)} kind(s) escrito(s){medido} que el reductor de {ref} "
+            "no sabe plegar",
+            file=sys.stderr,
+        )
+        for kind, donde in sorted(ajenos.items()):
+            print(f"  {kind}: {', '.join(donde)}", file=sys.stderr)
+        print(MENSAJE_KINDS, file=sys.stderr)
+        return 1
+    print(
+        f"kinds: el reductor de {ref} ({commit[:12]}) pliega los {len(escritos)} kind(s) "
+        f"que escribe motor/{medido}"
+    )
+    return 0
+
+
 def _cargar() -> dict:
     if not BASE.is_file():
         return {}
@@ -694,16 +823,25 @@ def _actualizar(linea_base: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="calidad")
     ap.add_argument(
-        "modo", choices=("tipos", "lint", "io", "marcadores", "politica", "tamano")
+        "modo",
+        choices=("tipos", "lint", "io", "marcadores", "politica", "tamano", "kinds", "plegables"),
     )
     ap.add_argument("--actualizar", action="store_true")
     ap.add_argument(
-        "--base", default="origin/main", help="solo tamano: la referencia de git a comparar"
+        "--base", default="origin/main", help="tamano y kinds: la referencia de git a comparar"
     )
     ap.add_argument(
-        "--cabeza", help="solo tamano: el commit a medir en vez del árbol de trabajo"
+        "--cabeza", help="tamano y kinds: el commit a medir en vez del árbol de trabajo"
+    )
+    ap.add_argument(
+        "--raiz", type=Path, help="solo plegables (lo usa kinds): el árbol del reductor"
     )
     args = ap.parse_args(argv)
+    if args.modo == "kinds":
+        return _comparar_kinds(args.base, args.cabeza)
+    if args.modo == "plegables":
+        print(json.dumps(_plegables(args.raiz, json.load(sys.stdin))))
+        return 0
     if args.modo == "tamano":
         if args.actualizar:
             ap.error("tamano no guarda nada que actualizar: compara contra --base")

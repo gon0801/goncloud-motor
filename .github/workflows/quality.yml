@@ -38,6 +38,11 @@ jobs:
             base="HEAD^1"
           fi
           python tools/calidad.py tamano --base "$base"
+      - name: Todo kind que se escribe lo pliega el reductor de la base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python tools/calidad.py kinds --base "origin/$BASE_REF"
       - name: Marcadores que deciden, anotados como eventos
         run: python tools/calidad.py marcadores
       - name: La tabla de decisiones se genera desde su fuente única
