@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .cerrojo import _cerrojo_flota
+from .comprobador import Comprobacion, comprobar, comprobar_instalada
 from .manifiesto import Politica, cargar, guardar, proyectar_tabla
 
 
@@ -204,75 +205,6 @@ def asignar(home: Path) -> str:
             "maquina correria el HEAD del clon, otra version."
         )
     return sin.asignada
-
-
-def _comprobar_detalle(gen: Path) -> tuple[int, str]:
-    if (gen / "runtime.json").is_file():
-        try:
-            from .actualizaciones import comprobar_runtime
-
-            comprobar_runtime(gen)
-        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-            return 1, "runtime de componentes"
-    script = gen / "comprobar.py"
-    if script.is_file():
-        try:
-            rc = subprocess.run(
-                [sys.executable, str(script)], cwd=gen, timeout=120
-            ).returncode
-        except (OSError, subprocess.TimeoutExpired):
-            return 1, "comprobar.py"
-        return rc, "comprobar.py"
-    if (gen / "motor" / "__main__.py").is_file():
-        try:
-            ayuda = subprocess.run(
-                [sys.executable, "-m", "motor", "--help"],
-                cwd=gen,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if ayuda.returncode != 0:
-                return ayuda.returncode or 1, "motor --help"
-            compilado = subprocess.run(
-                [sys.executable, "-m", "compileall", "-q", str(gen / "motor")],
-                cwd=gen,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            return compilado.returncode, "motor --help y compileall"
-        except (OSError, subprocess.TimeoutExpired):
-            return 1, "motor --help y compileall"
-    if (gen / "pyproject.toml").is_file():
-        try:
-            rc = subprocess.run(
-                [sys.executable, "-m", "compileall", "-q", str(gen)],
-                cwd=gen,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            ).returncode
-        except (OSError, subprocess.TimeoutExpired):
-            return 1, "compileall"
-        return rc, "compileall"
-    if any(gen.glob("*.py")) or (gen / "motor").is_dir():
-        try:
-            rc = subprocess.run(
-                [sys.executable, "-m", "compileall", "-q", str(gen)],
-                cwd=gen,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            ).returncode
-        except (OSError, subprocess.TimeoutExpired):
-            return 1, "compileall"
-        return rc, "compileall"
-    return 1, "ninguno"
-
-
-def _comprobar(gen: Path) -> int:
-    return _comprobar_detalle(gen)[0]
 
 
 def _tiene_poteto(base: Path) -> bool:
@@ -599,15 +531,16 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
     _atomico(home / "instalacion-pendiente.json", recibo)
     if corte == "worktree":
         return {"accion": "cortado", "etapa": "codigo", "vigente": asignar(home) if (home / "actual").exists() else anterior}
-    rc, comprobador = _comprobar_detalle(gen)
+    rc, comprobador, sin_medir = comprobar(gen)
     recibo["comprobador"] = comprobador
     if rc != 0:
+        motivo = sin_medir or "la comprobacion fallo"
         (home / "instalacion-pendiente.json").unlink(missing_ok=True)
         _atomico(
             home / "candidata.json",
-            {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo", "comprobador": comprobador},
+            {"estado": "rechazada", "destino": destino, "motivo": motivo, "comprobador": comprobador},
         )
-        return {"accion": "rechazada", "vigente": anterior, "destino": destino}
+        return {"accion": "rechazada", "vigente": anterior, "destino": destino, "motivo": motivo}
     try:
         _comprobar_paquete_completo(home, gen)
     except ValueError as exc:
@@ -661,22 +594,11 @@ def _recuperar_instalada(home: Path) -> dict:
         destino_c = str((comp.get("destino") or {}).get("codigo") or "")
         gen_c = home / "generaciones" / destino_c
         if destino_c and gen_c.exists():
-            rc_c, _nombre_c = _comprobar_detalle(gen_c)
-            if rc_c != 0:
+            comprobacion = comprobar_instalada(gen_c)
+            if comprobacion.sin_medir:
+                return {"accion": "no_medido", "generacion": destino_c, "causa": comprobacion.sin_medir}
+            if comprobacion.rc != 0:
                 return revertir(home)
-            if (gen_c / "motor" / "__main__.py").is_file():
-                try:
-                    arranque = subprocess.run(
-                        [sys.executable, "-m", "motor", "--help"],
-                        cwd=gen_c,
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
-                    if arranque.returncode != 0:
-                        return revertir(home)
-                except (OSError, subprocess.TimeoutExpired):
-                    return revertir(home)
             if not (home / "actual").is_symlink():
                 _enlace(home, gen_c)
                 return {"accion": "enlazada", "generacion": destino_c}
@@ -716,7 +638,9 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
     apunta = False
     if gen.exists() and actual.is_symlink():
         apunta = actual.resolve() == gen.resolve()
-    rc, comprobador = _comprobar_detalle(gen) if gen.exists() else (1, "ninguno")
+    rc, comprobador, sin_medir = comprobar(gen) if gen.exists() else Comprobacion(1, "ninguno")
+    if sin_medir:
+        return {"accion": "no_medido", "destino": destino, "causa": sin_medir}
     if gen.exists() and rc == 0:
         try:
             _comprobar_paquete_completo(home, gen)
