@@ -190,9 +190,9 @@ def _con_pausa(
 
 CRITERIOS = ("seguridad", "datos", "comportamiento", "prueba_exigida", "operativo")
 NIVELES = ("terminado", "pr", "integrado", "desplegado")
-# Marca una fase que siguió sin la revisión externa tras el tope: no hay
-# comentario leído, pero el SHA ya no se vuelve a esperar. Una relectura
-# posterior con comentarios reales sustituye esta huella.
+# Una fase que siguió sin la revisión externa, tras el tope o sin revisor (la
+# causa va en el motivo de la excepción `omision`): el SHA ya no se vuelve a
+# esperar. Una relectura posterior con comentarios reales sustituye esta huella.
 HUELLA_DEEPSEEK_SIN_REVISION = "sin-revision"
 
 _ORDEN_NIVEL = {
@@ -1118,7 +1118,7 @@ def nivel_de(fase: Fase | None) -> str:
     - cambio de head (`commit`, `push`, `pr_abierto`, `pr_listo`): vuelve a
       `pr_abierto` aunque el SHA anterior estuviera leído;
     - lectura de DeepSeek del SHA vigente sin bloqueantes abiertos: `pr`;
-    - `deepseek_sin_revision` (omisión tras el tope): `pr` si no quedan
+    - `deepseek_sin_revision` (omisión tras el tope o sin revisor): `pr` si no quedan
       bloqueantes de DeepSeek abiertos;
     - un Critical, High o Medium de DeepSeek abierto en alcance: `pr_abierto`;
     - CI rojo de código sobre el SHA vigente: `pr_abierto` hasta corregirlo;

@@ -7,6 +7,7 @@ from .dominio import (
     HUELLA_DEEPSEEK_SIN_REVISION, Encargo, bloqueantes_abiertos,
     nivel_cumplido, revision_independiente_cubre_producto,
 )
+from .revisor_deepseek import causa_de_la_omision
 
 
 def _recibos(pedidos: list[dict], enc: Encargo) -> list[dict]:
@@ -78,13 +79,15 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
                 "revisado queda como evidencia."
             )
         elif enc.pr_numero:
-            revisado = (
-                "DeepSeek no revisó (sin revisión tras el tope)."
-                if enc.fase_actual is not None
-                and enc.fase_actual.deepseek_huella
-                == HUELLA_DEEPSEEK_SIN_REVISION
-                else "DeepSeek leído."
-            )
+            fase = enc.fase_actual
+            revisado = "DeepSeek leído."
+            if fase is not None and fase.deepseek_huella == HUELLA_DEEPSEEK_SIN_REVISION:
+                motivo = next(
+                    (x[3] for x in enc.excepciones
+                     if x[0] == "omision" and x[1] == fase.deepseek_sha),
+                    "",
+                )
+                revisado = f"DeepSeek no revisó ({causa_de_la_omision(motivo)})."
             detalle += (
                 f" Entrega {enc.nivel_alcanzado}: PR #{enc.pr_numero} "
                 f"en {enc.entrega.repo}, SHA {enc.pr_sha}, {revisado}"
