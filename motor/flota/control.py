@@ -194,9 +194,9 @@ def asignar(home: Path) -> str:
         # python -m motor busca el paquete en la carpeta actual; cmd cambia de unidad solo con /d.
         cd, unir = ("cd /d", subprocess.list2cmdline) if os.name == "nt" else ("cd", shlex.join)
         raise RuntimeError(
-            f"falta el enlace {actual.absolute()} y instalacion.json registra la generacion "
-            f"{sin.asignada}; reponlo con `{cd} {unir([str(raiz)])} && {unir(argv)}`. Sin el "
-            "enlace la maquina correria el HEAD del clon, otra version."
+            f"falta el enlace actual; reponlo con `{cd} {unir([str(raiz)])} && {unir(argv)}`. "
+            f"instalacion.json registra la generacion {sin.asignada} y sin el enlace la "
+            "maquina correria el HEAD del clon, otra version."
         )
     return sin.asignada
 
