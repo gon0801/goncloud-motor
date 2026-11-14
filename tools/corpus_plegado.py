@@ -304,7 +304,7 @@ def verificar(salida: Path, raiz: Path) -> int:
           f"rechaza {rechazos} de {esperados_rechazos}; "
           f"estado igual en {iguales} de {total}")
     return int(iguales != total or aceptados != meta.get("eventos", aceptados)
-               or rechazos_cambiados or rechazos != esperados_rechazos)
+               or rechazos_cambiados != 0 or rechazos != esperados_rechazos)
 
 
 def main() -> int:

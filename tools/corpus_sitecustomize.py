@@ -16,14 +16,11 @@ if "MOTOR_CORPUS_DIR" in os.environ:
     def _capturar(name, globals=None, locals=None, fromlist=(), level=0):
         global _instalado
         modulo = _importar(name, globals, locals, fromlist, level)
-        if _instalado or level or not (
-            name == "motor.encargos.registro"
-            or name == "motor.encargos" and fromlist and "registro" in fromlist
-        ):
+        if _instalado:
             return modulo
         real = sys.modules.get("motor.encargos.registro")
         plugin = sys.modules.get("tools.corpus_pytest")
-        if (real is not None
+        if (real is not None and hasattr(real, "Registro")
             and os.path.realpath(getattr(real, "__file__", "")) == _registro
             and (plugin is None or hasattr(plugin, "instalar"))):
             _instalado = True
