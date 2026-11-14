@@ -1,10 +1,11 @@
 """El resultado nuevo que recibe la autoridad: se decide el lote entero antes de escribir.
 
-`ciclo._recibir_resultado_nuevo` observa el plegado, el registro y git, y escribe
-lo que devuelve `decidir` con un solo `Registro.append_many`. `decidir` no
-escribe: lee el registro solo con `proyectar`, git solo con `region` y el destino
-solo con `destino`. Como `proyectar` es la cuenta que hace la escritura, lo que
-decide es lo que queda guardado, y un apagón deja el resultado entero o nada.
+`ciclo._recibir_resultado_nuevo` observa el plegado, el registro y git, y
+`guardar` escribe lo que devuelve `decidir` con un solo `Registro.append_many`.
+`decidir` no escribe: lee el registro solo con `proyectar`, git solo con `region`
+y el destino solo con `destino`. Como `proyectar` es la cuenta que hace la
+escritura, lo que decide es lo que queda guardado, y un apagón deja el resultado
+entero o nada.
 
 Las ukeys y los datos son los de los registros ya guardados: un registro viejo
 a medias da `igual` donde ya tiene un evento y pliega igual. Cambiar uno rompe
@@ -20,7 +21,7 @@ from .cierre import componer, comprobar_destino
 from .comprobacion import JuicioValidado, validar_juicio
 from .dominio import FASE_IMPLICITA, Encargo, Hallazgo, alcance_de, bloqueantes_abiertos
 from .frontera import DestinoEnsayo
-from .registro import Evento, Rechazo
+from .registro import ClaveOcupada, Evento, EventoIlegal, Rechazo, Registro, contar_omitidos
 
 Manifiesto = tuple[tuple[str, str], ...]
 # (huella, línea anclada, lo que la sigue) de la región que un hallazgo ancla en un SHA.
@@ -305,3 +306,24 @@ def decidir(
         "fase": fase,
         "recibo": recibo,
     })
+
+
+def guardar(registro: Registro, encargo: str, paso: Paso) -> dict:
+    """Guarda el lote del paso y devuelve lo que responde.
+
+    El barrido del supervisor y `promover` escriben sin tomar `turno`: si uno
+    cambia el registro después de la última proyección, `append_many` rechaza
+    el lote entero. Entonces no se guarda nada y se responde un rechazo que
+    nombra el evento. El ejecutor vuelve a mandar el resultado en cada barrido
+    hasta que le respondan `registrado`, y `decidir` lo decide de nuevo sobre
+    el registro que encuentre."""
+    contar_omitidos(paso.omitidos)
+    try:
+        registro.append_many(encargo, paso.eventos)
+    except (ClaveOcupada, EventoIlegal) as rechazo:
+        evento = paso.eventos[rechazo.indice]
+        return {
+            "rechazado": True,
+            "motivo": f"el registro cambió antes de guardar {evento.kind} {evento.ukey}: {rechazo}",
+        }
+    return paso.respuesta

@@ -97,7 +97,7 @@ from .frontera import (
     leer_parada_local,
     turno,
 )
-from .registro import Registro, contar_omitidos
+from .registro import Registro
 from .fases import adoptar as adoptar_fases
 from .sesion import (
     cerrar,
@@ -11856,7 +11856,7 @@ def _recibir_resultado_nuevo(
     juicio: dict,
     hora: str,
 ) -> dict:
-    from .paso_resultado import Foto, decidir, producto_de
+    from .paso_resultado import Foto, decidir, guardar, producto_de
 
     version, manifiesto = producto_de(observaciones)
     if not version or not manifiesto:
@@ -11886,9 +11886,7 @@ def _recibir_resultado_nuevo(
         region=lambda sha, h: _region_del_hallazgo(_espacio(registro.base, enc.id), sha, h),
         destino=lambda: DestinoEnsayo(registro.base / "destino"),
     )
-    registro.append_many(enc.id, paso.eventos)
-    contar_omitidos(paso.omitidos)
-    return paso.respuesta
+    return guardar(registro, enc.id, paso)
 
 
 def recibir_resultado(
