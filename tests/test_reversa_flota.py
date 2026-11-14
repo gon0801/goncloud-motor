@@ -410,6 +410,28 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(asignar(self.home), con_motor)
         self.assertTrue((self.home / "instalacion.json").exists())
 
+    def test_sin_actual_un_recibo_ilegible_da_su_causa_y_el_comando_que_repone(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+        aplicar(self.home, self.nueva, sin_turnos=True)
+        (self.home / "actual").unlink()
+        recibo = (self.home / "instalacion.json").read_text(encoding="utf-8")
+        (self.home / "instalacion.json").write_text("{cortado", encoding="utf-8")
+
+        with self.assertRaisesRegex(RuntimeError, "instalacion.json") as falla:
+            asignar(self.home)
+        self.assertIsInstance(falla.exception.__cause__, json.JSONDecodeError)
+        (comando,) = re.findall(r"`([^`]+)`", str(falla.exception))
+        (self.home / "instalacion.json").write_text(recibo, encoding="utf-8")
+        hecho = subprocess.run(
+            comando,
+            shell=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "MOTOR_HOME": str(self.tmp / "motor-home")},
+        )
+        self.assertEqual(hecho.returncode, 0, hecho.stderr)
+        self.assertEqual(asignar(self.home), self.nueva)
+
     def _encargo_con_trabajador(self, clave: str):
         from motor.encargos.ciclo import ahora_iso, recibir
         from motor.encargos.registro import Registro
