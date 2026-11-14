@@ -8,7 +8,7 @@ falla si los dos archivos difieren.
 | Regla | Valor | Decisión de David | Qué la hace cumplir |
 | --- | --- | --- | --- |
 | DeepSeek: 30 minutos y se sigue con omisión explícita. | 30 min | David, 6-nov | a los 29 min espera; a los 31 min omite con la causa escrita |
-| Sin el revisor de DeepSeek en el SHA ni en la base del PR no se espera su revisión. | 0 min | David, sin fecha registrada en el pedido | sin un workflow de ai-review omite enseguida con la causa escrita; lo que no se pudo leer espera el tope |
+| Sin el revisor de DeepSeek en el SHA ni en la base del PR no se espera su revisión. | 0 min | David, 2026-11-13 | sin un workflow de ai-review omite enseguida con la causa escrita; lo que no se pudo leer espera el tope |
 | Un encargo cerrado se sondea 7 días desde el cierre, con 5 consultas por pasada. | 7 días; 5 por pasada | David, 6-nov | a los 6 días sondea; a los 8 no; 5 consultas entran y la 6.ª queda para la pasada siguiente |
 | El CI no autoriza el merge, pero no frena publicar, revisar ni corregir. | no es compuerta | David, 3-nov | un CI pendiente o verde no detiene la entrega; un error de lectura nunca cuenta como verde |
 | Sin tope de rondas. | sin tope | David, 1-nov | el freno no escala por contar vueltas |

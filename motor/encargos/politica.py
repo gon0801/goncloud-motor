@@ -83,7 +83,7 @@ FILAS: tuple[Fila, ...] = (
         id="deepseek_sin_revisor",
         regla="Sin el revisor de DeepSeek en el SHA ni en la base del PR no se espera su revisión.",
         valor=f"{ESPERA_SIN_REVISOR_MIN} min",
-        decision="David, sin fecha registrada en el pedido",
+        decision="David, 2026-11-13",
         comportamiento="sin un workflow de ai-review omite enseguida con la causa escrita; lo que no se pudo leer espera el tope",
     ),
     Fila(
