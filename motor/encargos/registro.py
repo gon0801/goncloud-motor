@@ -172,6 +172,15 @@ def _contar_rechazo(rechazo: Rechazo, kind: str, ukey: str) -> None:
     _CONTEO.contar(_clave(rechazo, kind, ukey))
 
 
+def sin_valores(rechazo: Rechazo) -> dict[str, str]:
+    """El rechazo con lo mismo que dice la línea del conteo: `ajena` o `ilegal`,
+    el kind, la clase de la ukey y, si es `ajena`, los nombres de los campos que
+    difieren. Nunca un valor: se guarda en el registro y se muestra al dueño."""
+    clave = _clave(rechazo, rechazo.kind, rechazo.ukey)
+    datos = {"rechazo": clave.rechazo, "kind": clave.kind, "ukey": clave.ukey}
+    return datos if clave.campos is None else {**datos, "campos": clave.campos}
+
+
 def contar_omitidos(omitidos: Iterable[tuple[Evento, Rechazo]]) -> None:
     """Cuenta por stderr, igual que `anotar`, los eventos que un paso dejó fuera de
     su lote porque el registro los rechazaría."""
