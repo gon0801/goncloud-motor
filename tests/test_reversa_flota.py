@@ -20,6 +20,7 @@ from motor.flota.control import (
     aplicar,
     asignar,
     leer_trabajo,
+    liberar_trabajo,
     recuperar,
     revertir,
 )
@@ -246,6 +247,14 @@ class ReversaFlota(unittest.TestCase):
                 self.assertFalse((self.home / "actual").exists())
                 self.assertFalse((self.home / "instalacion.json").exists())
                 self.assertEqual(asignar(self.home), self.buena)
+
+    def test_una_reversa_ocupada_no_queda_anotada_para_recuperar(self) -> None:  # no-roja-en-base: la base no anotaba la reversa; guarda que una reversa ocupada no se complete sola cuando el trabajo termina
+        aplicar(self.home, self.nueva, sin_turnos=True)
+        anotar_trabajo(self.home, "uno", self.nueva, "codex", {"reserva": True})
+        self.assertEqual(revertir(self.home)["accion"], "ocupada")
+        liberar_trabajo(self.home, "uno")
+        self.assertEqual(recuperar(self.home)["accion"], "nada")
+        self.assertEqual(asignar(self.home), self.nueva)
 
     def test_recuperar_revierte_si_la_candidata_no_llego_a_instalarse(self) -> None:
         aplicar(self.home, self.buena, sin_turnos=True)

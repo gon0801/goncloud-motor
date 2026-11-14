@@ -160,23 +160,32 @@ def leer_trabajo(home: Path, trabajo: str) -> dict | None:
     return _leer(home / "trabajos" / f"{trabajo}.json")
 
 
-def _instalada(home: Path) -> str:
-    completo = _leer(home / "instalacion.json")
-    return str(((completo or {}).get("destino") or {}).get("codigo") or "")
+def _sin_enlace(home: Path) -> tuple[str, dict]:
+    """La generacion que vale sin actual y el recibo completo que exigia el enlace.
+
+    Una reversa a medias ya eligio la anterior de su recibo.
+    """
+    recibo = _leer(home / "instalacion.json") or {}
+    if recibo.get("etapa") == "revirtiendo":
+        return str((recibo.get("anterior") or {}).get("codigo") or ""), {}
+    instalada = str((recibo.get("destino") or {}).get("codigo") or "")
+    if instalada:
+        return instalada, recibo
+    return cabeza(home), {}
 
 
 def asignar(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return actual.resolve().name
-    instalada = _instalada(home)
-    if instalada:
+    generacion, exige_enlace = _sin_enlace(home)
+    if exige_enlace:
         raise RuntimeError(
             f"falta el enlace {actual} aunque instalacion.json registra la generacion "
-            f"{instalada}. Sin el enlace la maquina correria el HEAD del clon, otra "
-            f"version. Reponlo con `motor flota aplicar --home {home} --destino {instalada}`."
+            f"{generacion}. Sin el enlace la maquina correria el HEAD del clon, otra "
+            f"version. Reponlo con `motor flota aplicar --home {home} --destino {generacion}`."
         )
-    return cabeza(home)
+    return generacion
 
 
 def _comprobar_detalle(gen: Path) -> tuple[int, str]:
@@ -423,7 +432,7 @@ def _anterior_real(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return asignar(home)
-    return _instalada(home) or cabeza(home)
+    return _sin_enlace(home)[0]
 
 
 def _operacion_flota(funcion):
@@ -492,7 +501,13 @@ def revertir(home: Path) -> dict:
     if not anterior:
         return {"accion": "nada"}
     previa = home / "generaciones" / anterior
+    # Un corte entre mover actual y archivar el recibo deja la reversa anotada;
+    # asignar la sigue y recuperar la termina.
+    if usado == "instalacion":
+        _atomico(inst_path, {**recibo, "etapa": "revirtiendo"})
     if not _cambiar_generacion(home, previa if previa.exists() else None):
+        if usado == "instalacion":
+            _atomico(inst_path, recibo)
         return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
     motor = home / "motor"
     if (motor / ".git").exists() or (motor / ".git").is_file():
@@ -613,6 +628,8 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
 
 def _recuperar_instalada(home: Path) -> dict:
     comp = _leer(home / "instalacion.json")
+    if comp and comp.get("etapa") == "revirtiendo":
+        return revertir(home)
     if comp and comp.get("etapa") == "completo":
         destino_c = str((comp.get("destino") or {}).get("codigo") or "")
         gen_c = home / "generaciones" / destino_c
