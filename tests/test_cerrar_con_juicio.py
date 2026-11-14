@@ -153,6 +153,18 @@ def _disputa_de_deepseek(
     return r
 
 
+def _aprobado_con_deepseek_abierto(caso: unittest.TestCase, raiz: Path) -> flujo.Recorrido:
+    """El revisor aprueba sin disputa pendiente y con los dos hallazgos de DeepSeek
+    abiertos: la aprobación no deja `_revision_aprobada_vigente`."""
+    r = _disputa_de_deepseek(
+        caso, raiz, "juicio-deepseek-abierto",
+        {"veredicto": "aprobado", "evidencia": "lei saludo.txt"},
+    )
+    (flujo._interno(r) / "disputa.json").unlink()
+    (r.d / "outcome.json").write_text("{}")
+    return r
+
+
 class CerrarConJuicio(unittest.TestCase):
     def test_un_apagon_en_cualquier_commit_deja_el_juicio_entero_y_devuelve_el_trabajo(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -186,6 +198,27 @@ class CerrarConJuicio(unittest.TestCase):
             registro = modulo_registro.Registro(r.base)
             self.addCleanup(registro.close)
             self.assertEqual(registro.fold(r.enc).estado, "terminado")
+
+    def test_un_aprobado_con_deepseek_abierto_aguanta_el_apagon_sin_cerrar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            escena = Path(tmp) / "escena"
+            escena.mkdir()
+            r = _aprobado_con_deepseek_abierto(self, escena)
+            r.reg.close()
+
+            cortar_en_cada_commit(
+                self, escena, r.base, r.enc, _incorporar(r),
+                reintento=_barrer, cierra_el_lote="incorporado",
+            )
+
+            registro = modulo_registro.Registro(r.base)
+            self.addCleanup(registro.close)
+            enc = registro.fold(r.enc)
+            self.assertIn(enc.generacion, enc.incorporado)
+            self.assertEqual(
+                [h.id for h in bloqueantes_abiertos(enc, "deepseek")], ["ds_Fuga", "ds_Ajena"]
+            )
+            self.assertNotEqual(enc.estado, "terminado")
 
     def test_un_juicio_que_otro_escritor_deja_sin_guardar_no_gasta_otro_turno_del_revisor(self):
         with tempfile.TemporaryDirectory() as tmp:
