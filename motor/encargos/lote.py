@@ -89,6 +89,11 @@ class Lote:
     def paso(self, respuesta: R) -> Paso[R]:
         return Paso(self.eventos, self.omitidos, respuesta)
 
+    def seguir(self, paso: Paso) -> Lote:
+        """Este lote con lo que ya decidió `paso`, para que el mismo paso agregue más."""
+        estado = self.proyectar(paso.eventos) if paso.eventos else self.estado
+        return replace(self, estado=estado, eventos=paso.eventos, omitidos=paso.omitidos)
+
 
 def sobre(registro: Registro, enc: Encargo) -> Lote:
     """Un lote vacío sobre lo que el registro guarda ahora del encargo."""
@@ -109,6 +114,14 @@ def guardar(registro: Registro, encargo: str, paso: Paso) -> str:
         evento = paso.eventos[rechazo.indice]
         return f"el registro cambió antes de guardar {evento.kind} {evento.ukey}: {rechazo}"
     return ""
+
+
+def guardar_incorporado(registro: Registro, enc: Encargo, lote: Lote, hora: str) -> Encargo:
+    """Guarda el lote de una salida del paso con su `incorporado` al final y
+    devuelve lo que el registro guarda ahora. Si el registro rechaza el lote,
+    el intento queda sin `incorporado` y la vuelta siguiente lo decide otra vez."""
+    guardar(registro, enc.id, lote.con(incorporado(enc, hora)).paso(None))
+    return registro.fold(enc.id) or enc
 
 
 class Directo:
@@ -147,6 +160,25 @@ def incorporado(enc: Encargo, hora: str) -> Evento:
         {"generacion": enc.generacion, "hora": hora},
         f"incorporado:{enc.id}:{enc.generacion}",
     )
+
+
+def ya_incorporado(registro: Registro, enc: Encargo) -> bool:
+    """El registro ya guarda un hecho con la ukey de `incorporado` de este intento.
+
+    Casi siempre es el propio `incorporado`. Si es otro hecho, ningún lote
+    puede guardar la marca: se cuenta por stderr como `ajena` y se toma por
+    puesta, para que el barrido cierre el intento en vez de decidirlo en cada
+    vuelta."""
+    marca = incorporado(enc, "")
+    guardado = registro.por_ukey(marca.ukey)
+    if guardado is None:
+        return False
+    campos = _campos_distintos(
+        ("", guardado["kind"], guardado["data"]), ("", marca.kind, marca.data)
+    )
+    if campos:
+        contar_omitidos(((marca, ClaveOcupada(0, marca.ukey, campos)),))
+    return True
 
 
 def excepcion(

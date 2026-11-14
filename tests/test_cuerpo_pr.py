@@ -20,6 +20,7 @@ from tests.test_flujo_revisiones import (
     _entrega_pr,
     _interno,
     sonda_sin_aislamiento_del_host,
+    termina_la_espera,
 )
 
 LIMITE_GITHUB = 65_536
@@ -32,6 +33,7 @@ def setUpModule():
 def _pr_unico(gh) -> dict:
     estado = json.loads((gh.d / "github.json").read_text(encoding="utf-8"))
     return next(iter(estado["prs"].values()))
+
 
 
 class _GhCapturaCuerpo(GhGitHub):
@@ -297,7 +299,7 @@ class CuerpoDelPrAlAbrir(unittest.TestCase):
 
 
 class CuerpoDelPrAlRepublicar(unittest.TestCase):
-    def test_pr_existente_recibe_el_cuerpo_actualizado_al_publicar_otra_version(self):
+    def test_pr_existente_recibe_el_cuerpo_actualizado_al_publicar_otra_version(self):  # no-roja-en-base: la segunda versión llega en un turno nuevo, como en producción; la base ya pasaba repitiendo el intento incorporado
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "cuerpo-republica", FakeGitHub)
             (_interno(r) / "cuerpo-pr.md").write_text(
@@ -310,6 +312,7 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
             (_interno(r) / "cuerpo-pr.md").write_text(
                 "segunda version", encoding="utf-8"
             )
+            termina_la_espera(r)
             e = vuelta("dos")
 
             segundo_pr = _pr_unico(vuelta.gh)
@@ -340,7 +343,7 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
                 f"contenido\n\nEncargo {r.enc}. Fase: {e.fase_activa}.",
             )
 
-    def test_actualiza_una_vez_por_version_y_no_repite_el_mismo_sha(self):
+    def test_actualiza_una_vez_por_version_y_no_repite_el_mismo_sha(self):  # no-roja-en-base: la segunda versión llega en un turno nuevo, como en producción; la base ya pasaba repitiendo el intento incorporado
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "cuerpo-idempotente", FakeGitHub
@@ -357,6 +360,7 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
             (_interno(r) / "cuerpo-pr.md").write_text(
                 "segunda version", encoding="utf-8"
             )
+            termina_la_espera(r)
             vuelta("dos")
             self.assertEqual(vuelta.gh.actualizaciones, 2)
 
@@ -406,7 +410,7 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
                 f"primera version\n\nEncargo {r.enc}. Fase: {e.fase_activa}.",
             )
 
-    def test_fallo_al_actualizar_no_detiene_y_se_reintenta(self):
+    def test_fallo_al_actualizar_no_detiene_y_se_reintenta(self):  # no-roja-en-base: la segunda versión llega en un turno nuevo, como en producción; la base ya pasaba repitiendo el intento incorporado
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "cuerpo-republica-fallo", FakeGitHub
@@ -420,6 +424,7 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
             (_interno(r) / "cuerpo-pr.md").write_text(
                 "segunda version", encoding="utf-8"
             )
+            termina_la_espera(r)
             e = vuelta("dos")
 
             self.assertTrue(e.pr_numero)

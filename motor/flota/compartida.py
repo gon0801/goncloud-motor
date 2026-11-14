@@ -22,22 +22,31 @@ class SnapshotInvalido(ValueError):
     pass
 
 
+class PublicacionRechazada(SnapshotInvalido):
+    """El snapshot es valido pero no es mas nuevo que el que la replica ya aplica."""
+
+
 class _SinClaw(Exception):
     """La busqueda automatica no hallo claw-routing: se publica como antes."""
 
 
 SCHEMA = "goncloud.flota.compartida.v1"
 SCHEMA_V2 = "goncloud.flota.compartida.v2"
+SCHEMA_V3 = "goncloud.flota.compartida.v3"
 _CAMPOS = {"schema", "publicador", "generacion", "manifiesto", "sha256", "catalogo"}
 _CLAW = "claw_routing"
+_NUMERO = "publicacion"
+_CONTADOR = "ultima-publicacion.json"
 _CLAW_ARCHIVO = "claw-routing.json"
 _CLAW_TOPE = 1 << 20
 _REVISION = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+_EXTRA = {SCHEMA_V2: {_CLAW}, SCHEMA_V3: {_CLAW, _NUMERO}}
 
 
 def _campos(schema) -> set[str]:
-    """v1 es el snapshot de siempre; v2 es v1 más claw_routing."""
-    return _CAMPOS | {_CLAW} if schema == SCHEMA_V2 else set(_CAMPOS)
+    """v1 es el snapshot de siempre; v2 suma claw_routing; v3 suma el numero de
+    publicacion y lleva claw_routing siempre, nulo si no hubo checkout."""
+    return _CAMPOS | (_EXTRA.get(schema, set()) if isinstance(schema, str) else set())
 
 
 def _json_bytes(doc: dict) -> bytes:
@@ -201,8 +210,12 @@ def _validar_snapshot(snapshot: dict):
     schema = snapshot.get("schema")
     if set(snapshot) != _campos(schema) | {"snapshot_sha256"}:
         raise SnapshotInvalido("estructura del snapshot compartido invalida")
-    if schema not in (SCHEMA, SCHEMA_V2):
+    if schema not in (SCHEMA, SCHEMA_V2, SCHEMA_V3):
         raise SnapshotInvalido("version del snapshot compartido no admitida")
+    if schema == SCHEMA_V3 and (
+        type(snapshot[_NUMERO]) is not int or snapshot[_NUMERO] < 1
+    ):
+        raise SnapshotInvalido("el numero de publicacion debe ser un entero positivo")
     publicador = snapshot["publicador"]
     if (
         not isinstance(publicador, str)
@@ -226,7 +239,7 @@ def _validar_snapshot(snapshot: dict):
     catalogo = _catalogo(snapshot["catalogo"], politica)
     if catalogo != snapshot["catalogo"]:
         raise SnapshotInvalido("el catalogo no es una salida publica canonica")
-    if schema == SCHEMA_V2:
+    if schema == SCHEMA_V2 or snapshot.get(_CLAW) is not None:
         _claw_routing(snapshot[_CLAW])
     return politica
 
@@ -346,14 +359,66 @@ def _claw_publicable(repo_hermes: Path | None, motor_origen: Path) -> dict | Non
     raise _SinClaw("; ".join(fallos))
 
 
+def _leer_doc(path: Path) -> object:
+    try:
+        return leer_json(path)
+    except ValueError:
+        return None
+
+
+def _leer_contador(contador: Path) -> tuple[int, str] | None:
+    """(numero, contenido_sha256) de la ultima publicacion, o None si no hay."""
+    if not contador.exists():
+        return None
+    previo = _leer_doc(contador)
+    if isinstance(previo, dict):
+        numero, huella = previo.get("numero"), previo.get("contenido_sha256")
+        if type(numero) is int and isinstance(huella, str):
+            return numero, huella
+    raise SnapshotInvalido(
+        f"el contador de publicaciones no se puede leer ({contador}); renumera "
+        "con: python -m motor flota publicar --home <flota> --salida <snapshot> "
+        "--desde N, con N mayor que la publicacion que aplican las replicas"
+    )
+
+
+def _numerar(home: Path, huella: str, desde: int | None) -> int:
+    """El numero de la publicacion: sube solo si cambia el contenido canonico."""
+    try:
+        previo = _leer_contador(home / _CONTADOR)
+    except SnapshotInvalido:
+        if desde is None:
+            raise
+        previo = None
+    if desde is not None:
+        if previo is not None and desde <= previo[0]:
+            raise SnapshotInvalido(
+                f"el publicador ya va en la publicacion {previo[0]}; "
+                "--desde solo sirve para subir el numero"
+            )
+        return desde
+    if previo is None:
+        return 1
+    numero, anterior = previo
+    return numero if anterior == huella else numero + 1
+
+
 def exportar(
     home: Path,
     salida: Path,
     repo_hermes: Path | None = None,
     motor_origen: Path | None = None,
+    desde: int | None = None,
 ) -> dict:
+    """Publica el snapshot v3. El contenido canonico es todo lo que la replica
+    aplica (manifiesto, catalogo con las versiones de herramientas y
+    claw_routing) mas el publicador; ``desde`` renumera a mano."""
     home, salida = Path(home).resolve(), Path(salida).resolve()
-    if salida in (home / "manifiesto.toml", home / "fuente-compartida.json"):
+    if salida in (
+        home / "manifiesto.toml",
+        home / "fuente-compartida.json",
+        home / _CONTADOR,
+    ):
         raise SnapshotInvalido("la salida no puede reemplazar la fuente de la politica")
     motor_origen = Path(motor_origen or Path(__file__).resolve().parents[2]).resolve()
     with _cerrojo_flota(home):
@@ -367,27 +432,85 @@ def exportar(
             claw, motivo = _claw_publicable(repo_hermes, motor_origen), ""
         except _SinClaw as exc:
             claw, motivo = None, str(exc)
-        contenido = {
-            "schema": SCHEMA if claw is None else SCHEMA_V2,
+        canonico = {
             "publicador": socket.gethostname(),
             "generacion": politica.generacion,
             "manifiesto": texto,
             "sha256": _sha256(texto.encode("utf-8")),
             "catalogo": _catalogo_preparado(home, politica),
+            _CLAW: claw,
         }
-        if claw is not None:
-            contenido[_CLAW] = claw
+        huella = _sha256(_json_bytes(canonico))
+        numero = _numerar(home, huella, desde)
+        contenido = {"schema": SCHEMA_V3, _NUMERO: numero, **canonico}
         snapshot = {**contenido, "snapshot_sha256": _sha256(_json_bytes(contenido))}
         _validar_snapshot(snapshot)
+        # El contador va antes que el snapshot: si el proceso cae entre los dos,
+        # la corrida siguiente da el mismo numero al mismo contenido en vez de
+        # dar un numero ya entregado a un contenido distinto.
+        contador = {"numero": numero, "contenido_sha256": huella}
+        _escribir(home / _CONTADOR, _json_bytes(contador))
         _escribir(salida, _json_bytes(snapshot))
         return {
             "accion": "publicada",
             "salida": str(salida),
-            "origen": contenido["publicador"],
+            "origen": canonico["publicador"],
             "hash": snapshot["snapshot_sha256"],
             "generacion": politica.generacion,
+            _NUMERO: numero,
             "claw_routing": _informe_claw(claw, motivo),
         }
+
+
+def _vigente(path: Path) -> tuple[int, str, str] | None:
+    """(publicacion, hash, origen) de la fuente vigente, o None si aun no tiene
+    numero. Lee solo esos campos sin validar la fuente: una fuente que una
+    version nueva ya no acepta sigue ordenando y la cura la siguiente
+    publicacion."""
+    if not path.exists():
+        return None
+    vigente = _leer_doc(path)
+    if isinstance(vigente, dict) and vigente.get(_NUMERO) is None:
+        return None
+    if isinstance(vigente, dict):
+        numero, digest, origen = (vigente.get(k) for k in (_NUMERO, "hash", "origen"))
+        if type(numero) is int and isinstance(digest, str) and isinstance(origen, str):
+            return numero, digest, origen
+    raise SnapshotInvalido(
+        f"la fuente vigente de la replica no se puede leer ({path}); borrala y "
+        "vuelve a importar el snapshot vigente del publicador"
+    )
+
+
+def _ante_la_vigente(home: Path, snapshot: dict) -> str:
+    """La accion de importar: sincronizada si el snapshot es mas nuevo y
+    sin_cambios si es el mismo. Si es mas viejo o choca con el vigente, lanza."""
+    vigente = _vigente(home / "fuente-compartida.json")
+    if vigente is None:
+        return "sincronizada"
+    actual, digest, origen = vigente
+    numero, publicador = snapshot.get(_NUMERO), snapshot["publicador"]
+    if numero is None:
+        raise PublicacionRechazada(
+            f"la replica ya aplica la publicacion {actual} de {origen} "
+            f"y este snapshot {snapshot['schema']} no trae numero: actualiza el "
+            f"motor de {publicador} a la version de la flota y vuelve a publicar"
+        )
+    if numero > actual:
+        return "sincronizada"
+    if numero == actual and snapshot["snapshot_sha256"] == digest:
+        return "sin_cambios"
+    causa = (
+        f"{publicador} entrego otro contenido con el numero {numero}"
+        if numero == actual
+        else f"la publicacion {numero} de {publicador} es anterior a la {actual}; "
+        "si es una copia vieja, vuelve a copiar la vigente del publicador"
+    )
+    raise PublicacionRechazada(
+        f"{causa}; la replica conserva la {actual} de {origen}. Si el "
+        f"publicador perdio su {_CONTADOR}, renumera en esa maquina con: python -m "
+        f"motor flota publicar --home <flota> --salida <snapshot> --desde {actual + 1}"
+    )
 
 
 def importar(home: Path, archivo: Path) -> dict:
@@ -401,15 +524,21 @@ def importar(home: Path, archivo: Path) -> dict:
         "hash": snapshot["snapshot_sha256"],
     }
     with _cerrojo_flota(home):
-        _escribir(home / "fuente-compartida.json", _json_bytes(fuente))
+        accion = _ante_la_vigente(home, snapshot)
+        if accion == "sincronizada":
+            _escribir(home / "fuente-compartida.json", _json_bytes(fuente))
         leer_fuente(home)
     return {
-        "accion": "sincronizada",
+        "accion": accion,
+        _NUMERO: snapshot.get(_NUMERO),
         "origen": fuente["origen"],
         "hash": fuente["hash"],
         "generacion": fuente["generacion"],
         "componentes": [c["nombre"] for c in fuente["catalogo"]["componentes"]],
         "claw_routing": _informe_claw(
-            fuente.get(_CLAW), "el snapshot no lleva claw-routing"
+            fuente.get(_CLAW),
+            "el publicador no publico claw-routing: no hubo checkout"
+            if _CLAW in fuente
+            else "el snapshot no lleva claw-routing",
         ),
     }
