@@ -127,6 +127,20 @@ no_contiene "la flota movida es la misma" "$S/salida" "AVISO flota"
 rm -r "$S/home-mac/.motor-encargos/flota-home.json" "$S/home-mac/flota-movida"
 flota mac v9
 
+# recuperar deja sin-medir.json cuando una lectura de la generación no terminó a tiempo.
+for host in mini gwpc; do
+  printf '{"generacion": "%s", "orden": "/ruta/python comprobar.py", "tope": 120, "causa": "x"}\n' \
+    "$SNAPSHOT" >"$S/home-$host/flota/sin-medir.json"
+done
+espera "una flota sin medir avisa sin fallar el despliegue" 0 \
+  bash "$SCRIPT" --sha "$SHA" --maquina "mac mini pc"
+contiene "el aviso nombra la generación y el tope" "$S/salida" \
+  "AVISO mini: la flota no midió la generación ${SNAPSHOT:0:12} (tope 120 s); vuelve a correr motor flota recuperar"
+contiene "la pc avisa igual" "$S/salida" "AVISO pc: la flota no midió la generación ${SNAPSHOT:0:12} (tope 120 s);"
+no_contiene "el aviso no imprime la orden" "$S/salida" "/ruta/python"
+no_contiene "una flota medida no avisa" "$S/salida" "AVISO mac: la flota"
+rm "$S/home-mini/flota/sin-medir.json" "$S/home-gwpc/flota/sin-medir.json"
+
 rm -rf "$S/home-gwpc/flota"
 espera "una máquina sin flota no revienta la comprobación" 0 \
   bash "$SCRIPT" --sha "$SHA" --maquina "mac mini pc"
