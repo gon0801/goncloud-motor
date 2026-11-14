@@ -216,6 +216,39 @@ class ResultadoDeLaAutoridad(unittest.TestCase):
                 },
             )
 
+    def test_el_mismo_resultado_otra_vez_es_una_retransmision_sin_filas_nuevas(self):  # no-roja-en-base: la base ya respondía la retransmisión sin escribir; fija que la asociación del lote no agregue filas
+        with tempfile.TemporaryDirectory() as tmp:
+            r, enc = _escena(self, Path(tmp))
+            observaciones, juicio = _resultado()
+            self.assertTrue(_recibir(r.reg, enc, observaciones, juicio).get("registrado"))
+            guardadas = filas(r.base)
+
+            salida = _recibir(r.reg, enc, observaciones, juicio)
+
+            fase = enc.fase_activa
+            self.assertEqual(salida, {
+                "registrado": True, "encargo": enc.id, "estado": "terminado",
+                "retransmision": True, "recibo": f"resultado:{enc.id}:{fase}:tok", "fase": fase,
+            })
+            self.assertEqual(filas(r.base), guardadas)
+
+    def test_otro_resultado_con_el_mismo_token_es_un_conflicto_sin_filas_nuevas(self):  # no-roja-en-base: la base ya respondía el conflicto sin escribir; fija que la asociación del lote no agregue filas
+        with tempfile.TemporaryDirectory() as tmp:
+            r, enc = _escena(self, Path(tmp))
+            observaciones, juicio = _resultado()
+            self.assertTrue(_recibir(r.reg, enc, observaciones, juicio).get("registrado"))
+            guardadas = filas(r.base)
+
+            salida = _recibir(
+                r.reg, enc, observaciones, dict(juicio, evidencia="otra lectura del revisor")
+            )
+
+            self.assertEqual(
+                {clave: salida.get(clave) for clave in ("conflicto", "registrado", "fase")},
+                {"conflicto": True, "registrado": None, "fase": enc.fase_activa},
+            )
+            self.assertEqual(filas(r.base), guardadas)
+
     def test_un_descarte_con_su_ukey_ocupada_no_rechaza_el_resultado(self):  # no-roja-en-base: la base ya calla y cuenta ese rechazo; fija que el lote no lo vuelva un rechazo del resultado entero
         with tempfile.TemporaryDirectory() as tmp:
             r, enc = _escena(self, Path(tmp))
