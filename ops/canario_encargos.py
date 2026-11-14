@@ -179,12 +179,14 @@ class Version:
     pasada: str
 
 
+Contenido = Literal["con la marca", "sin la marca", "no existe", "ilegible"]
+
+
 @dataclass(frozen=True)
 class ArchivoDesplegado:
     ruta: str
     marca: str
-    contiene: bool | None
-    """None: el archivo no existe."""
+    contenido: Contenido
 
 
 @dataclass(frozen=True)
@@ -193,8 +195,8 @@ class Despliegue:
 
     fase: str
     estado: str
-    pasos: tuple[tuple[str, int | None], ...]
-    """Cada paso que el trabajador llegó a lanzar, con su salida."""
+    pasos: tuple[tuple[str, int], ...]
+    """Cada paso que el trabajador lanzó, con su salida."""
 
 
 @dataclass(frozen=True)
@@ -410,10 +412,13 @@ def _entregado(obs: Observacion, _topes: Topes) -> Juicio:
             + (f" ({'; '.join(rechazos)})" if rechazos else "")
         )
     if obs.archivo is not None:
-        if obs.archivo.contiene is None:
-            fallas.append(f"no existe el archivo desplegado {obs.archivo.ruta}")
-        elif not obs.archivo.contiene:
-            fallas.append(f"el archivo desplegado {obs.archivo.ruta} no trae la marca")
+        ruta = obs.archivo.ruta
+        if obs.archivo.contenido == "no existe":
+            fallas.append(f"no existe el archivo desplegado {ruta}")
+        elif obs.archivo.contenido == "sin la marca":
+            fallas.append(f"el archivo desplegado {ruta} no trae la marca")
+        elif obs.archivo.contenido == "ilegible":
+            sin_leer.append(f"el archivo desplegado {ruta}")
     if fallas:
         return "falla", "; ".join(fallas)
     if sin_leer:
@@ -584,6 +589,10 @@ def _dice_por_que(p: Pliegue) -> Condicion:
 
 
 def _no_deja_roto(d: Detencion) -> Condicion:
+    """El freno corrió (un checklist lanzado y en rojo), cada despliegue quedó revertido y
+    el destino ya no lo trae. Lo que no se pudo leer no cuenta como revertido."""
+    if d.archivo is not None and d.archivo.contenido == "con la marca":
+        return False, f"{d.archivo.ruta} todavía trae lo desplegado"
     if d.despliegues is None:
         return None, "sus recibos de despliegue"
     if any(x.estado == "aplicado" for x in d.despliegues):
@@ -598,12 +607,13 @@ def _no_deja_roto(d: Detencion) -> Condicion:
             f"el despliegue de la fase {fase} quedó sin revertir (rollback {rollback})"
             for fase, rollback in sin_revertir
         )
-    if d.archivo is not None and d.archivo.contiene:
-        return False, f"{d.archivo.ruta} todavía trae lo desplegado"
-    if not desplegados:
-        return True, "nunca desplegó"
+    rojos = [codigo for x in d.despliegues for paso, codigo in x.pasos if paso == "checklist" and codigo]
+    if not rojos:
+        return False, "el checklist no salió en rojo en ningún recibo: el freno no corrió"
+    if d.archivo is not None and d.archivo.contenido == "ilegible":
+        return None, f"el destino {d.archivo.ruta}"
     destino = f" y {d.archivo.ruta} ya no lo trae" if d.archivo is not None else ""
-    return True, f"revirtió su despliegue (rollback salida 0){destino}"
+    return True, f"el checklist salió {rojos[0]}, revirtió su despliegue (rollback salida 0){destino}"
 
 
 def _acotado(p: Pliegue, topes: Topes) -> Condicion:
@@ -919,24 +929,60 @@ def _es_del_encargo(clave: Path, encargo: str) -> bool:
     return encargo in (dueno, recibo.get("encargo"))
 
 
-def _recibos_de_despliegue(base: Path, encargo: str) -> tuple[Despliegue, ...] | None:
+def _objeto(ruta: Path) -> dict | None:
+    """El objeto JSON de `ruta`: vacío si no existe; None si existe y no se pudo leer."""
     try:
-        claves = [c for c in _claves(base) if _es_del_encargo(c, encargo)]
+        datos = leer_json(ruta)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None
+    return datos if isinstance(datos, dict) else None
+
+
+def _dueno(pedido: dict | None, recibo: dict | None) -> str:
+    """El encargo del despliegue: el de la identidad de su pedido o, si no, el de su recibo."""
+    identidad = (pedido or {}).get("identidad")
+    for dueno in (identidad.get("encargo") if isinstance(identidad, dict) else None, (recibo or {}).get("encargo")):
+        if isinstance(dueno, str) and dueno:
+            return dueno
+    return ""
+
+
+def _pasos_lanzados(recibo: dict) -> tuple[tuple[str, int], ...] | None:
+    """Los pasos que el trabajador lanzó, con su salida; None si alguno no dice si se lanzó."""
+    pasos = recibo.get("pasos")
+    if not isinstance(pasos, list):
+        return None
+    lanzados = []
+    for paso in pasos:
+        if not (isinstance(paso, dict) and isinstance(paso.get("paso"), str) and type(paso.get("enviado")) is bool):
+            return None
+        if paso["enviado"]:
+            if type(paso.get("codigo")) is not int:
+                return None
+            lanzados.append((paso["paso"], paso["codigo"]))
+    return tuple(lanzados)
+
+
+def _recibos_de_despliegue(base: Path, encargo: str) -> tuple[Despliegue, ...] | None:
+    """Los recibos de despliegue del encargo. None si alguno que puede ser suyo no se pudo
+    leer o no dice qué pasos lanzó: un recibo ilegible no es un despliegue que no corrió."""
+    try:
+        claves = _claves(base)
     except OSError:
         return None
     despliegues = []
     for clave in claves:
-        recibo = _json_o_vacio(clave / "recibo.json")
-        pasos = recibo.get("pasos")
-        despliegues.append(Despliegue(
-            fase=str(recibo.get("fase") or ""),
-            estado=str(recibo.get("estado") or ""),
-            pasos=tuple(
-                (str(paso.get("paso") or ""), paso["codigo"] if type(paso.get("codigo")) is int else None)
-                for paso in (pasos if isinstance(pasos, list) else [])
-                if isinstance(paso, dict) and paso.get("enviado") is True
-            ),
-        ))
+        pedido, recibo = _objeto(clave / "pedido.json"), _objeto(clave / "recibo.json")
+        dueno = _dueno(pedido, recibo)
+        if not dueno and (pedido is None or recibo is None):
+            return None
+        if dueno != encargo:
+            continue
+        if recibo is None or (pasos := _pasos_lanzados(recibo)) is None:
+            return None
+        despliegues.append(Despliegue(str(recibo.get("fase") or ""), str(recibo.get("estado") or ""), pasos))
     return tuple(despliegues)
 
 
@@ -996,10 +1042,12 @@ def _version_de(
 
 def _archivo(ruta: Path, marca: str) -> ArchivoDesplegado:
     try:
-        contiene: bool | None = marca in leer_texto(ruta, errors="replace")
+        texto = leer_texto(ruta, errors="replace")
+    except FileNotFoundError:
+        return ArchivoDesplegado(str(ruta), marca, "no existe")
     except OSError:
-        contiene = None
-    return ArchivoDesplegado(str(ruta), marca, contiene)
+        return ArchivoDesplegado(str(ruta), marca, "ilegible")
+    return ArchivoDesplegado(str(ruta), marca, "con la marca" if marca in texto else "sin la marca")
 
 
 def _restos(
