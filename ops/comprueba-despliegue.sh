@@ -4,7 +4,8 @@
 # al recibo del motor viejo de planes (~/.motor). Tampoco despliega ni revierte nada.
 # Para instalar el motor viejo de planes usa ops/instala-todo.sh; este comprobador no lo mira.
 # Es idempotente: solo lee y reintenta la lectura. Si el agente arrancaría sin el token de
-# GitHub de los agentes, avisa por máquina sin fallar.
+# GitHub de los agentes, avisa por máquina sin fallar. Imprime la huella de la flota de
+# cada máquina y avisa, sin fallar, si no corren la misma tabla de modelos o manifiesto.
 #
 # --sha SHA     SHA que debe estar instalado (por omisión, HEAD del repo).
 # --maquina M   Una sola máquina: mac, mini o pc.
@@ -48,7 +49,7 @@ esac
 # El registro se pliega con el mismo código y el mismo intérprete que el supervisor,
 # no con una copia de la regla. El intérprete sale del LaunchAgent (Mac y Mini) o es
 # el de motor-runtime (PC).
-PROGRAMA='import json,os,pathlib,subprocess,sys
+PROGRAMA='import hashlib,json,os,pathlib,re,subprocess,sys
 home = pathlib.Path.home()
 recibo_viejo = sys.argv[-1] == "1"
 
@@ -173,6 +174,32 @@ if arbol_ruta:
     except Exception as exc:
         token = "no se pudo comprobar: " + type(exc).__name__
 
+# Mac y Mini corren el python3 del sistema, que puede no traer tomllib: la versión de la
+# tabla se lee de la primera línea que escribe motor.flota.manifiesto.emitir.
+def huella_flota():
+    vinculo = leer(home / ".motor-encargos" / "flota-home.json")
+    destino = vinculo.get("home") if isinstance(vinculo, dict) else None
+    flota = pathlib.Path(str(destino)) if destino else home / "flota"
+    if not flota.is_dir():
+        return "sin-flota"
+    try:
+        datos = (flota / "manifiesto.toml").read_bytes().replace(b"\r\n", b"\n")
+        manifiesto = hashlib.sha256(datos).hexdigest()[:12]
+    except OSError:
+        manifiesto = "sin-manifiesto"
+    fuente = leer(flota / "fuente-compartida.json")
+    snapshot = str(fuente.get("snapshot_sha256") or "") if isinstance(fuente, dict) else ""
+    snapshot = snapshot[:12] if re.fullmatch("[0-9a-f]{64}", snapshot) else "sin-fuente"
+    tabla = "sin-tabla"
+    try:
+        texto = (flota / "actual" / "manifesto.toml").read_text(encoding="utf-8")
+        hallada = re.search("^generacion = \"([A-Za-z0-9._-]+)\"", texto, re.M)
+        if hallada:
+            tabla = hallada.group(1)
+    except (OSError, UnicodeDecodeError):
+        pass
+    return " ".join((tabla, manifiesto, snapshot))
+
 print("recibo", recibo)
 print("vivo", vivo)
 print(
@@ -185,6 +212,7 @@ print("ruta", arbol_ruta or "-")
 print("arbol", arbol)
 print("registro", registro)
 print("token", token)
+print("flota", huella_flota())
 '
 
 PROGRAMA_PC_B64="$(printf '%s' "$PROGRAMA" | _pc_b64)"
@@ -238,7 +266,33 @@ causa_de() { # causa_de <estado> -> texto vacío si el despliegue está comproba
   printf '%s' "$causa"
 }
 
+campo() { # campo <nombre> <valor>: "tabla v9" o "sin tabla"
+  case "$2" in
+    sin-*) printf 'sin %s' "$1" ;;
+    *) printf '%s %s' "$1" "$2" ;;
+  esac
+}
+
+# difiere <qué> <columna>: agrupa las máquinas de $huellas por el valor de esa columna
+# y, si hay más de un valor, avisa con cada valor y las máquinas que lo tienen.
+difiere() {
+  printf '%s' "$huellas" | awk -v que="$1" -v col="$2" '
+    !($col in maquinas) { orden[++n] = $col; maquinas[$col] = $1; next }
+    { maquinas[$col] = maquinas[$col] ", " $1 }
+    END {
+      if (n < 2) exit
+      linea = ""
+      for (i = 1; i <= n; i++) {
+        valor = orden[i]
+        sub(/^sin-/, "sin ", valor)
+        linea = linea (i > 1 ? "; " : "") valor " en " maquinas[orden[i]]
+      }
+      print "AVISO flota: las máquinas no corren " que ": " linea
+    }'
+}
+
 fallos=0
+huellas="" # una línea por máquina: <máquina> <tabla> <manifiesto>
 for m in $maquinas; do
   if [ "$ensayo" = 1 ]; then
     echo "ensayo $m: recibo con ${sha:0:12}, supervisor vivo, pasada completa y registro entero"
@@ -265,7 +319,24 @@ for m in $maquinas; do
   if [ -n "$token" ] && [ "$token" != ok ]; then
     echo "AVISO $m: el agente arranca sin credencial de GitHub: $token" >&2
   fi
+  flota="$(printf '%s\n' "$estado" | awk '/^flota /{ $1=""; sub(/^ /,""); print; exit}')"
+  case "$flota" in
+    "") ;;
+    sin-flota)
+      echo "FLOTA $m: sin flota"
+      huellas="$huellas$m sin-flota sin-flota"$'\n'
+      ;;
+    *)
+      read -r tabla manifiesto fuente <<<"$flota"
+      echo "FLOTA $m: $(campo tabla "$tabla"), $(campo manifiesto "$manifiesto"), $(campo fuente "$fuente")"
+      huellas="$huellas$m $tabla $manifiesto"$'\n'
+      ;;
+  esac
 done
+
+# Una flota distinta no hace fallar el despliegue: el código del servicio sí quedó en el SHA.
+difiere "la misma tabla de modelos" 2 >&2
+difiere "el mismo manifiesto" 3 >&2
 
 if [ "$fallos" -gt 0 ]; then
   echo "$fallos máquina(s) no comprobaron el despliegue" >&2
