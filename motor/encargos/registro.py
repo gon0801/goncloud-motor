@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -121,6 +121,15 @@ def _contar_rechazo(rechazo: Literal["ajena", "ilegal"], kind: str, ukey: str) -
     clase_visible = _visible(clase, _CLASE_DE_UKEY)
     ukey_visible = f"{clase_visible}:*" if separador and clase_visible != "?" else "?"
     _CONTEO.contar((rechazo, _visible(kind, _TIPO), ukey_visible))
+
+
+def contar_omitidos(omitidos: Iterable[tuple[Evento, Rechazo]]) -> None:
+    """Cuenta por stderr, igual que `append`, los eventos que un paso dejó fuera de
+    su lote porque el registro los rechazaría."""
+    for evento, rechazo in omitidos:
+        _contar_rechazo(
+            "ajena" if isinstance(rechazo, ClaveOcupada) else "ilegal", evento.kind, evento.ukey
+        )
 
 
 @dataclass(frozen=True)
