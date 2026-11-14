@@ -261,7 +261,7 @@ def verificar(salida: Path, raiz: Path) -> int:
                     or not _igual(presentes[encargo][k], esperados[encargo][k])
                 )
                 print(f"{registro.name}/{encargo}: difieren {', '.join(distintos)}")
-    rechazos = 0
+    rechazos = rechazos_cambiados = 0
     from motor.encargos.registro import ClaveOcupada, Evento, EventoIlegal, Registro
     with (salida / "rechazos.jsonl").open(encoding="utf-8") as archivo:
         for linea in archivo:
@@ -297,12 +297,14 @@ def verificar(salida: Path, raiz: Path) -> int:
                 if valido and antes == despues == intento["conteo"]:
                     rechazos += 1
                 else:
+                    rechazos_cambiados += 1
                     print(f"{intento['archivo']}: cambió el rechazo {intento['tipo']}")
+    esperados_rechazos = meta.get("rechazos", rechazos + rechazos_cambiados)
     print(f"acepta {aceptados} de {meta.get('eventos', aceptados)}; "
-          f"rechaza {rechazos} de {meta.get('rechazos', rechazos)}; "
+          f"rechaza {rechazos} de {esperados_rechazos}; "
           f"estado igual en {iguales} de {total}")
     return int(iguales != total or aceptados != meta.get("eventos", aceptados)
-               or rechazos != meta.get("rechazos", rechazos))
+               or rechazos_cambiados or rechazos != esperados_rechazos)
 
 
 def main() -> int:
