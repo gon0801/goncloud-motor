@@ -257,10 +257,11 @@ def guardar(registro: Registro, encargo: str, paso: Paso[dict]) -> dict:
     """Guarda el lote del paso y devuelve lo que responde.
 
     El barrido del supervisor y `promover` escriben sin tomar `turno`: si uno
-    cambia el registro después de la última proyección, `append_many` rechaza
-    el lote entero. Entonces no se guarda nada y se responde un rechazo que
-    nombra el evento. El ejecutor vuelve a mandar el resultado en cada barrido
-    hasta que le respondan `registrado`, y `decidir` lo decide de nuevo sobre
-    el registro que encuentre."""
+    ocupa con otro hecho una ukey del lote, o vuelve ilegal uno de sus eventos,
+    después de la última proyección, `append_many` rechaza el lote entero.
+    Entonces no se guarda nada y se responde un rechazo que nombra el evento.
+    Un cambio que no choca se acepta. El ejecutor vuelve a mandar el resultado
+    en cada barrido hasta que le respondan `registrado`, y `decidir` lo decide
+    de nuevo sobre el registro que encuentre."""
     motivo = guardar_lote(registro, encargo, paso)
     return {"rechazado": True, "motivo": motivo} if motivo else paso.respuesta

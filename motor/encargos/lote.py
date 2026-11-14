@@ -1,9 +1,11 @@
 """El lote de un paso del barrido: se decide entero y se guarda en una transacción.
 
 Un paso observa, arma un `Lote` con funciones puras y lo guarda con `guardar`,
-que hace un solo `Registro.append_many`. `Lote.con` decide con
-`Registro.proyectar`, la misma cuenta que hace la escritura, así que lo que el
-paso decide es lo que queda guardado, y un apagón deja el lote entero o nada.
+que hace un solo `Registro.append_many`, así que un apagón deja el lote entero
+o nada. `Lote.con` decide con `Registro.proyectar`, la misma cuenta que hace la
+escritura. Un cambio de otro escritor después de la proyección solo rechaza el
+lote si ocupa con otro hecho una de sus ukeys o vuelve ilegal uno de sus
+eventos; si no choca con el lote, se acepta.
 
 Los pasos que escriben evento por evento pasan `Directo` a los mismos
 constructores, así que cada evento tiene una sola forma. Sus ukeys y datos son
@@ -97,8 +99,9 @@ def guardar(registro: Registro, encargo: str, paso: Paso) -> str:
     """Guarda el lote del paso en una transacción; devuelve "" o el motivo del rechazo.
 
     Quien escribe sin tomar `turno` puede cambiar el registro después de la
-    última proyección. Entonces `append_many` rechaza el lote entero y no se
-    guarda nada."""
+    última proyección. `append_many` rechaza entonces el lote entero, sin
+    guardar nada, solo si ese cambio ocupa con otro hecho una ukey del lote o
+    vuelve ilegal uno de sus eventos. Un cambio que no choca se acepta."""
     contar_omitidos(paso.omitidos)
     try:
         registro.append_many(encargo, paso.eventos)
