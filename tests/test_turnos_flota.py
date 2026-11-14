@@ -1087,7 +1087,7 @@ class TurnosFlota(unittest.TestCase):
         snapshot = json.loads(
             (self.base / "origen-publica-snap.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(snapshot["schema"], "goncloud.flota.compartida.v2")
+        self.assertEqual(snapshot["schema"], "goncloud.flota.compartida.v3")
         claw = snapshot["claw_routing"]
         self.assertEqual(claw["revision"], confirmada)
         self.assertEqual(
@@ -1141,8 +1141,8 @@ class TurnosFlota(unittest.TestCase):
         snapshot = json.loads(
             (self.base / "origen-sin-hermes-snap.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(snapshot["schema"], "goncloud.flota.compartida.v1")
-        self.assertNotIn("claw_routing", snapshot)
+        self.assertEqual(snapshot["schema"], "goncloud.flota.compartida.v3")
+        self.assertIsNone(snapshot["claw_routing"])
         self.assertFalse(self.publicado["claw_routing"]["incluido"])
         self.assertIn("goncloud-hermes", self.publicado["claw_routing"]["motivo"])
 
@@ -1219,13 +1219,15 @@ class TurnosFlota(unittest.TestCase):
 
         verdadero = self._repo_hermes("hermes-true-2", thinking=True)
         snap = self.base / "segundo-snap.json"
-        # Mismo manifiesto y catalogo: se reedita solo el campo publicado.
+        # Mismo manifiesto y catalogo: se reedita solo el routing, y como es otra
+        # publicacion lleva el numero siguiente.
         previo = json.loads(
             (self.base / "origen-dos-routing-snap.json").read_text(encoding="utf-8")
         )
         from motor.flota.compartida import _json_bytes, _leer_claw_routing, _sha256 as _h
 
         previo["claw_routing"] = _leer_claw_routing(verdadero)
+        previo["publicacion"] += 1
         previo.pop("snapshot_sha256")
         previo["snapshot_sha256"] = _h(_json_bytes(previo))
         snap.write_bytes(_json_bytes(previo))
@@ -1243,11 +1245,10 @@ class TurnosFlota(unittest.TestCase):
         nueva = self.home / "generaciones" / salida["generacion"]
         runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
         self.assertNotIn("claw_routing", runtime)
-        self.assertEqual(
+        self.assertIsNone(
             json.loads(
                 (self.home / "fuente-compartida.json").read_text(encoding="utf-8")
-            )["schema"],
-            "goncloud.flota.compartida.v1",
+            )["claw_routing"]
         )
 
     def test_un_claw_routing_alterado_se_rechaza_y_conserva_la_fuente(self):
