@@ -23,8 +23,8 @@ CONSTANTS
                        \* salta las "detenida" con :reintentoN)
   Tope,                \* dominio.TOPE_NO_CONCLUYENTES: revisiones no_concluyente seguidas,
                        \* sobre la misma versión y pidiendo lo mismo, que el motor deja pasar
-  RegistraAlLigar,     \* ciclo._ligar_inspeccion llama necesidades.registrar_pedida
-  ReligaSinSolicitud,  \* ciclo._ligar_inspeccion: el "ya ligada, no hago nada" exige
+  RegistraAlLigar,     \* inspeccion.ligar deja necesidades.pedida en el lote del juicio
+  ReligaSinSolicitud,  \* inspeccion.ligar: el "ya ligada, no hago nada" exige
                        \* `previa is not None` (si no, vuelve a encolar)
   LigaHuerfanaBloquea, \* dominio.inspeccion_bloquea con `sol is None`. El código nuevo
                        \* devuelve False (una liga sin registro no puede bloquear).
@@ -235,8 +235,8 @@ Termina ==
 
 \* ciclo.barrer -> _incorporar -> _incorporar_revisor (guarda en ciclo.barrer: estado
 \* no deteniendo/detenido/terminado e intentos_nuevos). "pide" = no_concluyente
-\* con inspección: _devolver(..., "inspeccionar") y _ligar_inspeccion. Con un recurso que pide
-\* autorización, _ligar_inspeccion registra el pedido y lo deja como solicitud `pregunta`;
+\* con inspección: _devolver(..., "inspeccionar") e inspeccion.ligar. Con un recurso que pide
+\* autorización, inspeccion.ligar registra el pedido y lo deja como solicitud `pregunta`;
 \* el encargo sigue en recibido, sin esperar a una persona.
 LigarPide ==
   LET k == IdJ IN
@@ -256,7 +256,7 @@ LigarPide ==
        /\ ligaVigente' = (~RespuestaVigente /\ RegistraAlLigar)
        /\ est' = "recibido"
 
-\* ciclo._consumir_ligada: al cambiar de consulta (o al aprobar), la respuesta ya
+\* inspeccion.consumir_ligada: al cambiar de consulta (o al aprobar), la respuesta ya
 \* entregada de la solicitud ligada queda consumida.
 VistaAlCambiar ==
   IF liga /= 0 /\ ConResultado(Sol(liga)) THEN [vista EXCEPT ![liga] = TRUE] ELSE vista
