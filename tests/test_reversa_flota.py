@@ -432,6 +432,11 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(hecho.returncode, 0, hecho.stderr)
         self.assertEqual(asignar(self.home), self.nueva)
 
+    def test_en_cmd_la_barra_final_de_una_ruta_no_escapa_su_comilla(self) -> None:
+        from motor.flota.control import _entre_comillas
+
+        self.assertEqual(_entre_comillas(["C:\\", "D:\\a b"]), '"C:\\\\" "D:\\a b"')
+
     def _encargo_con_trabajador(self, clave: str):
         from motor.encargos.ciclo import ahora_iso, recibir
         from motor.encargos.registro import Registro
