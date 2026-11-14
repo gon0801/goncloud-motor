@@ -128,6 +128,7 @@ def _ordenes_compartidas(sub) -> None:
     s.add_argument("--home", required=True, type=Path)
     s.add_argument("--salida", required=True, type=Path)
     s.add_argument("--repo-hermes", type=Path)
+    s.add_argument("--desde", type=int, help="renumera la publicacion desde N")
 
     s = sub.add_parser("sincronizar")
     s.add_argument("--home", required=True, type=Path)
@@ -138,7 +139,9 @@ def _correr_compartida(args) -> int:
     from .compartida import exportar, importar
 
     if args.cmd == "publicar":
-        return _json(exportar(args.home, args.salida, args.repo_hermes))
+        return _json(
+            exportar(args.home, args.salida, args.repo_hermes, desde=args.desde)
+        )
     if str(args.archivo) == "-":
         import tempfile
 
