@@ -796,6 +796,31 @@ class JobDeLaBase(unittest.TestCase):
         self.assertEqual(corrida.returncode, 1)
         self.assertIn("actualiza la rama", corrida.stderr)
 
+    def test_un_pr_que_escribe_un_kind_que_la_base_no_pliega_y_apaga_su_calidad_falla(self):
+        for paquete in ("motor", "motor/encargos"):
+            self.origen.escribir(f"{paquete}/__init__.py", "")
+        self.origen.escribir(
+            "motor/encargos/dominio.py",
+            "def reducir(estado, evento, nuevo=True):\n"
+            '    if evento["kind"] == "entrega":\n'
+            "        return object()\n"
+            "    raise ValueError(f\"evento desconocido: {evento['kind']}\")\n",
+        )
+        self.base = self.origen.commit()
+        cabeza = self._pr(
+            {
+                "motor/encargos/contencion.py": (
+                    "def detener(registro, ident):\n"
+                    '    registro.anotar(ident, {"kind": "fallo_interno", "data": {}}, "k")\n'
+                ),
+                "tools/calidad.py": "raise SystemExit(0)\n",
+            }
+        )
+        corrida = self._job(cabeza)
+        self.assertEqual(corrida.returncode, 1, corrida.stdout + corrida.stderr)
+        self.assertIn("fallo_interno: motor/encargos/contencion.py:2", corrida.stderr)
+        self.assertIn("nada crece", corrida.stdout)
+
     def test_una_cabeza_que_no_es_un_sha_no_llega_a_git(self):
         for cabeza in ("main", "$(touch pwn)", "a" * 39):
             with self.subTest(cabeza=cabeza):

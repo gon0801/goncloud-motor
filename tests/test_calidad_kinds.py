@@ -112,6 +112,16 @@ class EscritorNuevo(unittest.TestCase):
 
         self.assertEqual(corrida.returncode, 0, corrida.stderr)
         self.assertIn(base[:12], corrida.stdout)
+        self.assertIn("motor/encargos/ y motor/integraciones/", corrida.stdout)
+
+    def test_una_base_que_no_existe_lo_dice_como_kinds(self):
+        self.repo.reductor("nota")
+        self.repo.commit()
+
+        corrida = self.repo.kinds("origin/no-existe")
+
+        self.assertEqual(corrida.returncode, 1, corrida.stdout)
+        self.assertTrue(corrida.stderr.startswith("kinds: la base origin/no-existe"), corrida.stderr)
 
     def test_ensenarlo_al_reductor_en_el_mismo_cambio_no_alcanza(self):
         self.repo.reductor("nota")
