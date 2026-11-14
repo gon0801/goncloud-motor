@@ -74,9 +74,11 @@ Un paso del barrido tiene tres partes.
 3. Escribir y ejecutar. El registro valida la lista completa y la guarda en una
    sola transacción. Después corre el efecto y guarda su recibo.
 
-`registro.anotar` falla en voz alta cuando el registro rechaza un evento. Hoy lo
-devuelve como texto y casi nadie lo lee. El caso que lo motivó: un resultado
-rechazado ya había dejado escrita una revisión aprobada.
+`registro.anotar` falla en voz alta cuando el registro rechaza un evento. Solo la
+frontera, donde el rechazo es la respuesta a quien pidió (una orden, una
+corrección, el buzón, el director), lo recibe como texto con
+`anotar_en_frontera`. El caso que lo motivó: un resultado rechazado ya había
+dejado escrita una revisión aprobada.
 
 ### Plegar un registro guardado nunca falla
 
@@ -138,13 +140,21 @@ lo que cada estado lleva consigo: un dato tipado en lugar de banderas y texto.
 | `esperando_reintento` | clase de espera, plazo y tope | el hecho que la cierra, o el tope |
 | `conciliando` | el efecto externo incierto | el recibo del efecto |
 | `deteniendo` | la orden: parar o cancelar | los procesos ya no existen |
-| `detenido` | la causa, una de las cuatro de abajo | `continuar` |
+| `detenido` | la causa, una de las cinco de abajo | `continuar` |
 | `cancelado` | nada | la limpieza |
 | `terminado` | el resultado: completo, o parcial con las fases que faltan | la limpieza |
 
-Un encargo queda `detenido` por una de estas cuatro causas y por ninguna otra:
-una orden del dueño, el tope de una espera, la falta de avance, o un PR mergeado
-en una base distinta de la pedida.
+Un encargo queda `detenido` por una de estas cinco causas y por ninguna otra:
+una orden del dueño, el tope de una espera, la falta de avance, un PR mergeado
+en una base distinta de la pedida, o un fallo interno. Fallo interno quiere decir
+que el registro rechazó un hecho que un paso del barrido tenía que guardar. Solo
+se detiene ese encargo, y los demás siguen. Su causa nombra el tipo del evento y
+la clase de su clave, sin valores, y dice que se reanuda con `continuar`.
+
+La quinta causa la decidió David el 2026-11-13, cuando respondió «ok si haz lo
+que recomiendas» a la recomendación de que el motor se detenga cuando no puede
+guardar un hecho. La confirmó después con «No, haz lo recomendado». Antes de esa
+decisión, el modelo admitía cuatro causas.
 
 Se agrega un hecho final, `limpio`. Cada recurso que el motor crea tiene una
 regla en la tabla de limpieza: unos se borran y otros se conservan. Un encargo
@@ -167,7 +177,7 @@ El motor usa estas palabras y ninguna otra para decir cómo quedó un encargo.
 | respondido | El nivel efectivo es `terminado`. El resultado llegó al director, no hay PR, y el encargo está `limpio` |
 | sin cambios | El trabajo no produjo ningún cambio que entregar. No se abrió PR y el encargo está `limpio` |
 | entrega parcial | Alguna fase quedó bloqueada, sin trabajar o cancelada por David al cerrar su PR. El reporte nombra cada fase y su causa |
-| detenido | El encargo está `detenido`. El reporte dice cuál de las cuatro causas y qué lo reanuda |
+| detenido | El encargo está `detenido`. El reporte dice cuál de las cinco causas y qué lo reanuda |
 | cancelado | David ordenó cancelar el encargo, o cerró sin mergear los PR de todas sus fases. Los PR quedaron cerrados y las ramas borradas |
 | falta limpiar | El trabajo terminó y algún recurso no cumplió su regla de limpieza. El reporte nombra lo que queda |
 
