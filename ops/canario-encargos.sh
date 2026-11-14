@@ -5,9 +5,11 @@
 # Antes lee en qué commit está el árbol de cada una: si no es el mismo, no corre en ninguna,
 # porque el canario sobre una flota mezclada no prueba nada. Una máquina que no contesta
 # falla y las demás corren igual.
-# Cada máquina corre dos encargos: el que termina y el que falla a propósito (su checklist de
-# despliegue sale rojo), que mide la fila «se detiene». Cada uno deja un PR mergeado en el
-# repo del canario; el lanzador borra lo demás.
+# Cada máquina corre tres encargos: el que termina, el que falla a propósito (su checklist de
+# despliegue sale rojo), que mide la fila «se detiene», y el del apagón, al que el lanzador le
+# corta su supervisor dos veces, que mide «no pierde» y «no repite» (en la PC no corre: ahí el
+# corte se llevaría también al turno). Cada uno deja un PR mergeado en el repo del canario;
+# el lanzador borra lo demás.
 # Si la sesión de una máquina se cae, su lanzador termina solo y deja su informe en
 # ~/.motor-canario/canario-informe.json.
 # La salida trae ids, ramas y el repo del canario: no va a un log público.
@@ -191,12 +193,12 @@ def detalle(veredicto, informe):
     cierre = informe.get("cierre") or {}
     if cierre.get("vivos") or cierre.get("fallas") or cierre.get("supervisor") != "ausente":
         lineas.append(f"cierre sin terminar: {json.dumps(cierre, ensure_ascii=False)}")
-    detencion = informe.get("detencion") or {}
-    if detencion:
-        lineas.append(
-            f"encargo que falla a propósito {detencion.get('encargo')}: {detencion.get('fin') or 'sin fin'}"
-        )
-        cierre = detencion.get("cierre") or {}
+    for clave, nombre in (("detencion", "que falla a propósito"), ("apagon", "con cortes")):
+        otro = informe.get(clave) or {}
+        if not otro:
+            continue
+        lineas.append(f"encargo {nombre} {otro.get('encargo')}: {otro.get('fin') or 'sin fin'}")
+        cierre = otro.get("cierre") or {}
         if cierre.get("vivos") or cierre.get("fallas") or cierre.get("supervisor") != "ausente":
             lineas.append(f"su cierre sin terminar: {json.dumps(cierre, ensure_ascii=False)}")
     if informe.get("error"):

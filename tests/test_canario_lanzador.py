@@ -29,11 +29,11 @@ from unittest import mock
 
 from motor import plataforma
 from motor.encargos.registro import Registro
-from motor.github import FakeGitHub
 from motor.servicio import vincular_base
-from ops import canario_encargos, canario_lanzador
-from ops.canario_encargos import Fila
+from ops import canario_apagon, canario_lanzador, canario_observar
+from ops.canario_juzgar import Fila
 from ops.canario_lanzador import Borrado, Informe, Pedido, main, preparar
+from tests.dobles import GitHubDelCanario
 from tests.test_compuerta_e2e import _git
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -47,10 +47,10 @@ _LANZADOR = (
     "import json, signal, sys\n"
     "from pathlib import Path\n"
     "signal.signal(signal.SIGHUP, signal.SIG_DFL)\n"
-    "from motor.github import FakeGitHub\n"
     "from ops.canario_lanzador import main\n"
+    "from tests.dobles import GitHubDelCanario\n"
     "argv, falso, supervisor = json.loads(sys.argv[1]), Path(sys.argv[2]), json.loads(sys.argv[3])\n"
-    "raise SystemExit(main(argv, gh=FakeGitHub(falso), supervisor=supervisor))\n"
+    "raise SystemExit(main(argv, gh=GitHubDelCanario(falso), supervisor=supervisor))\n"
 )
 
 
@@ -218,7 +218,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         salida, avances = io.StringIO(), io.StringIO()
         try:
             with contextlib.redirect_stdout(salida), contextlib.redirect_stderr(avances):
-                codigo = main(argv, gh=FakeGitHub(self.fake), supervisor=supervisor)
+                codigo = main(argv, gh=GitHubDelCanario(self.fake), supervisor=supervisor)
         finally:
             self.hijo = int(hijo.read_text(encoding="utf-8")) if hijo.is_file() else 0
             self.avances = avances.getvalue()
@@ -335,8 +335,60 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
             },
         )
 
+    def test_el_encargo_con_cortes_mide_no_pierde_y_no_repite_y_se_limpia(self):
+        """El lanzador corta su supervisor con el turno del responsable y la receta de
+        despliegue esperando su compuerta, lanza otro y la suelta. El supervisor falso barre
+        con `ciclo.barrer`, así que lo que retoma tras el corte es lo del motor."""
+        codigo, informe = self.correr()
+
+        apagon = informe["apagon"]
+        ident = apagon["encargo"]
+        filas = self.filas(informe)
+        self.assertEqual(codigo, 0, informe["tabla"])
+        self.assertEqual((apagon["fin"], apagon["cierre"]["parada"]), ("terminado", ""), self.avances)
+        for momento in ("el turno del responsable", "la receta de despliegue"):
+            self.assertIn(f"corté el supervisor durante {momento}: el que esperaba siguió vivo", self.avances)
+        self.assertEqual(filas["no pierde"]["resultado"], "pasa", filas["no pierde"]["observado"])
+        self.assertIn("llegó al mismo final que sin corte", filas["no pierde"]["observado"])
+        self.assertEqual(filas["no repite"]["resultado"], "pasa", filas["no repite"]["observado"])
+        self.assertIn(
+            "sin repetir: responsable 1, revisor 1, desplegar 1, checklist 1 y rollback 0 veces",
+            filas["no repite"]["observado"],
+        )
+        self.assertIn("1 PR y 1 merge", filas["no repite"]["observado"])
+        self.assertEqual((self.destino / "apagon" / "banco.txt").read_text(encoding="utf-8"), f"{ident}\n")
+        self.assertEqual(_git(self.repo, "show", "main:canario/apagon/banco.txt"), ident)
+        self.sin_procesos_suyos(informe)
+        self.assertEqual(
+            {b["resto"]: b["resultado"] for b in informe["limpieza"] if ident in b["resto"]},
+            {
+                f"la rama remota encargo/{ident}": "borrado",
+                f"espacio/{ident}": "borrado",
+                f"ejecucion/{ident}": "borrado",
+                f"canario-escenarios/{ident}.json": "borrado",
+                f"canario-apagon/{ident}": "borrado",
+                f"trabajos/{ident}.json de la flota": "borrado",
+            },
+        )
+
+    def test_sin_apagon_sus_filas_quedan_sin_medir_y_dicen_por_que(self):
+        codigo, informe = self.correr("--sin-apagon")
+
+        for nombre in ("no pierde", "no repite"):
+            fila = self.filas(informe)[nombre]
+            self.assertEqual(fila["resultado"], "no medido")
+            self.assertEqual(fila["observado"], "la corrida se lanzó con --sin-apagon")
+        self.assertIsNone(informe["apagon"])
+        self.assertFalse((self.base / "canario-apagon").exists())
+        self.assertEqual(codigo, 1)
+
+    def test_en_windows_no_corta_y_dice_por_que(self):
+        self.assertEqual(canario_apagon.por_que_no_corta(True, "nt"), canario_apagon.EN_WINDOWS)
+        self.assertIn("matar_proc cierra el árbol del supervisor", canario_apagon.EN_WINDOWS)
+        self.assertEqual(canario_apagon.por_que_no_corta(True, "posix"), "")
+
     def test_sin_se_detiene_la_fila_queda_sin_medir_y_la_tabla_no_coincide(self):
-        codigo, informe = self.correr("--sin-se-detiene")
+        codigo, informe = self.correr("--sin-se-detiene", "--sin-apagon")
 
         fila = self.filas(informe)["se detiene"]
         self.assertEqual((fila["resultado"], fila["discrepancia"]), ("no medido", "dejó de medirse"))
@@ -377,7 +429,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertNotIn("falló", {b["resultado"] for b in informe["limpieza"]})
 
     def test_un_supervisor_que_muere_a_media_corrida_no_deja_su_grupo(self):
-        codigo, informe = self.correr(modo=("--muere-tras", "2"))
+        codigo, informe = self.correr("--sin-apagon", modo=("--muere-tras", "2"))
 
         self.assertEqual(informe["fin"], "supervisor_muerto", self.avances)
         self.assertNotEqual(informe["estado"], "terminado")
@@ -412,7 +464,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.cambiar_repo(self.reversa_larga(f'sleep 15\ntouch "{revertido.as_posix()}"'))
         self.addCleanup(_esperar_trabajadores, self.base)
 
-        codigo, informe = self.correr("--sin-se-detiene", modo=("--muere-al-desplegar",))
+        codigo, informe = self.correr("--sin-se-detiene", "--sin-apagon", modo=("--muere-al-desplegar",))
 
         self.assertTrue(
             revertido.is_file(),
@@ -431,7 +483,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.addCleanup(suelta.touch)
 
         codigo, informe = self.correr(
-            "--tope-cierre-s", "2", "--sin-se-detiene", modo=("--muere-al-desplegar",),
+            "--tope-cierre-s", "2", "--sin-se-detiene", "--sin-apagon", modo=("--muere-al-desplegar",),
         )
 
         ident = informe["encargo"]
@@ -455,7 +507,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
             return motor(p, *argv)
 
         with mock.patch.object(canario_lanzador, "_motor", parar_falla):
-            codigo, informe = self.correr("--sin-se-detiene", modo=("--muere-tras", "2"))
+            codigo, informe = self.correr("--sin-se-detiene", "--sin-apagon", modo=("--muere-tras", "2"))
 
         self.assertEqual(codigo, 1, informe)
         (estado,) = self.estados()
@@ -544,7 +596,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         salida = io.StringIO()
         with contextlib.chdir(self.tmp), contextlib.redirect_stdout(salida), \
                 contextlib.redirect_stderr(io.StringIO()):
-            codigo = main(argv, gh=FakeGitHub(self.fake), supervisor=supervisor)
+            codigo = main(argv, gh=GitHubDelCanario(self.fake), supervisor=supervisor)
         informe = json.loads(salida.getvalue())
 
         self.assertFalse((RAIZ / aparte.name).exists(), "usó la base relativa al árbol")
@@ -580,6 +632,49 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(_git(self.repo, "branch", "--list", f"encargo/{ident}"), "")
         for tipo in ("espacio", "ejecucion"):
             self.assertFalse((self.base / tipo / ident).exists(), tipo)
+        self.no_vuelve_a_cortar(primera, segunda)
+
+    def test_repetir_la_corrida_sobre_una_base_sin_limpiar_no_reutiliza_sus_cortes(self):
+        """Lo que dejó la corrida anterior en `canario-apagon/<id>/` (una compuerta que espera
+        y ya se soltó, sus cortes y sus invocaciones) no se vuelve a cortar ni a medir."""
+        _, primera = self.correr()
+        carpeta = canario_apagon.carpeta(self.base, primera["apagon"]["encargo"])
+        carpeta.mkdir(parents=True)
+        viejos = {
+            "esperando-turno": f"{os.getpid()}\n", "suelta-turno": "",
+            "cortes.json": json.dumps([{"momento": "turno", "sobrevivio": True}]),
+            "invocaciones": "responsable\nrevisor\n",
+        }
+        for nombre, texto in viejos.items():
+            (carpeta / nombre).write_text(texto, encoding="utf-8")
+
+        _, segunda = self.correr()
+
+        self.no_vuelve_a_cortar(primera, segunda)
+        self.assertFalse(carpeta.exists(), "no limpió lo que dejó la corrida anterior")
+
+    def no_vuelve_a_cortar(self, primera: dict, segunda: dict) -> None:
+        ident = segunda["apagon"]["encargo"]
+        self.assertEqual(ident, primera["apagon"]["encargo"])
+        self.assertNotIn("corté el supervisor", self.avances)
+        for nombre in ("no pierde", "no repite"):
+            fila = self.filas(segunda)[nombre]
+            self.assertEqual(fila["resultado"], "no medido", fila["observado"])
+            self.assertIn(
+                f"la corrida prueba ya hizo el encargo con cortes {ident}, y ya cerró", fila["observado"],
+            )
+            self.assertIn("lanza otra --corrida", fila["observado"])
+
+    def test_un_encargo_con_cortes_abierto_y_con_su_carpeta_escrita_no_se_vuelve_a_cortar(self):
+        carpeta = self.tmp / "canario-apagon" / "enc_x"
+        self.assertEqual(canario_apagon.por_que_no_vuelve_a_cortar("c", carpeta, cerrado=False), "")
+        carpeta.mkdir(parents=True)
+        self.assertEqual(canario_apagon.por_que_no_vuelve_a_cortar("c", carpeta, cerrado=False), "")
+        (carpeta / "invocaciones").write_text("responsable\n", encoding="utf-8")
+        self.assertIn(
+            "la corrida c ya hizo el encargo con cortes enc_x, y su carpeta ya trae lo que anotó",
+            canario_apagon.por_que_no_vuelve_a_cortar("c", carpeta, cerrado=False),
+        )
 
     def test_una_sesion_perdida_no_corta_la_corrida(self):
         """Al caerse ssh, escribir en la sesión falla con EPIPE y puede llegar un SIGHUP."""
@@ -624,7 +719,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
 
         with contextlib.redirect_stdout(_SesionQueSeCae()), \
                 contextlib.redirect_stderr(_SesionQueSeCae("canario [lanzar]")):
-            codigo = main(self.argv(), gh=FakeGitHub(self.fake), supervisor=supervisor)
+            codigo = main(self.argv(), gh=GitHubDelCanario(self.fake), supervisor=supervisor)
 
         informe = json.loads((self.base / INFORME).read_text(encoding="utf-8"))
         self.assertEqual((codigo, informe["codigo"], informe["fin"]), (0, 0, "terminado"), informe)
@@ -927,7 +1022,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         pedido = self.pedido()
         preparar(pedido)
         _git(self.tmp / "semilla", "push", "-q", str(self.repo), "main:encargo/enc_ab")
-        resolver = canario_encargos.resolver_repositorio
+        resolver = canario_observar.resolver_repositorio
         vistas: list[str] = []
 
         def sin_respuesta_al_volver(repo):
@@ -937,7 +1032,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
             return resolver(repo)
 
         with mock.patch.object(canario_lanzador, "_ramas", return_value=["encargo/enc_ab"]), \
-                mock.patch.object(canario_encargos, "resolver_repositorio", sin_respuesta_al_volver):
+                mock.patch.object(canario_observar, "resolver_repositorio", sin_respuesta_al_volver):
             borrados = {b.resto: b for b in canario_lanzador.limpiar(pedido, "enc_ab")}
 
         rama = borrados["la rama remota encargo/enc_ab"]

@@ -9,6 +9,10 @@ Si la base del encargo trae `canario-escenarios/<encargo>.json`, ese escenario
 manda sobre el de `trabajo.sh`: así el canario hace fallar a propósito un
 encargo sin cambiar el repo que comparten todos sus encargos.
 
+Si la base trae `canario-apagon/<encargo>/`, el agente anota ahí cada vez que
+corre y el responsable, con su producto ya escrito, espera la compuerta del
+turno para que el canario corte el supervisor mientras el turno sigue vivo.
+
 Lee el turno por el protocolo normal (el prompt del turno o la revision.json
 que el lanzador deja en el intento) y escribe producto y juicio según el
 escenario. Habla el protocolo del motor, así que un cambio de protocolo lo
@@ -19,8 +23,10 @@ el intérprete del servicio sin instalar nada.
 """
 
 import json
+import os
 import re
 import sys
+import time
 import types
 from pathlib import Path
 from typing import (
@@ -37,6 +43,24 @@ from typing import (
 
 ESCENARIOS = "canario-escenarios"
 """La carpeta de la base con el escenario propio de un encargo, por su id."""
+
+APAGON = "canario-apagon"
+"""La carpeta de la base donde el canario corta el supervisor de un encargo, por su id.
+Ahí se anota una línea por invocación en `INVOCACIONES`, el lanzador deja `CORTES`, y
+cada compuerta es un par de archivos: `esperando-<momento>` con el pid del que espera
+y `suelta-<momento>`, que el lanzador crea al soltarla."""
+INVOCACIONES = "invocaciones"
+CORTES = "cortes.json"
+ESPERA_COMPUERTA_S = 600
+"""Sin canario que suelte la compuerta, quien espera sigue solo tras este tope."""
+
+
+def esperando(momento: str) -> str:
+    return f"esperando-{momento}"
+
+
+def suelta(momento: str) -> str:
+    return f"suelta-{momento}"
 
 Archivos = dict[str, str]
 """Ruta relativa al espacio y su contenido completo."""
@@ -275,6 +299,20 @@ def revisar(escenario: Escenario, espacio: Path, dir_: Path) -> None:
     )
 
 
+def _anotar(carpeta: Path, quien: str) -> None:
+    with open(carpeta / INVOCACIONES, "a", encoding="utf-8", newline="\n") as f:
+        f.write(quien + "\n")
+
+
+def _esperar_compuerta(carpeta: Path, momento: str) -> None:
+    temporal = carpeta / f".{esperando(momento)}"
+    temporal.write_text(str(os.getpid()), encoding="utf-8", newline="\n")
+    os.replace(temporal, carpeta / esperando(momento))
+    vence = time.monotonic() + ESPERA_COMPUERTA_S
+    while not (carpeta / suelta(momento)).exists() and time.monotonic() < vence:
+        time.sleep(0.2)
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         sys.exit("uso: agente_ensayo.py <escenario.json>")
@@ -282,10 +320,16 @@ def main() -> None:
     propio = espacio.parent.parent / ESCENARIOS / f"{espacio.name}.json"
     escenario = leer_escenario(propio if propio.is_file() else Path(sys.argv[1]))
     dir_ = _intento(espacio)
-    if (dir_ / "revision.json").is_file():
+    apagon = espacio.parent.parent / APAGON / espacio.name
+    revisor = (dir_ / "revision.json").is_file()
+    if apagon.is_dir():
+        _anotar(apagon, "revisor" if revisor else "responsable")
+    if revisor:
         revisar(escenario, espacio, dir_)
-    else:
-        trabajar(escenario, espacio, dir_)
+        return
+    trabajar(escenario, espacio, dir_)
+    if apagon.is_dir():
+        _esperar_compuerta(apagon, "turno")
 
 
 if __name__ == "__main__":

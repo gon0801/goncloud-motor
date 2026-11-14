@@ -3,8 +3,8 @@
   "termina": "pasa",
   "entregado": "pasa",
   "limpio": "falla",
-  "no pierde": "no medido",
-  "no repite": "no medido",
+  "no pierde": "pasa",
+  "no repite": "pasa",
   "cuesta poco": "pasa",
   "se detiene": "pasa",
   "versión": "pasa",
@@ -12,6 +12,13 @@
  },
  "razones": {
   "limpio": "el motor aún no aplica la tabla de limpieza del modelo: la rama remota y lo que queda junto al recibo del despliegue no se borran (paso 4 del orden de trabajo)"
+ },
+ "sin_medir_en_windows": {
+  "filas": [
+   "no pierde",
+   "no repite"
+  ],
+  "razon": "en Windows plataforma.matar_proc cierra el árbol del supervisor por ppid y con él al turno y al trabajador de despliegue que lanzó: el lanzador no corta ahí (ops/canario_apagon.py, EN_WINDOWS)"
  },
  "topes": {
   "minutos_termina": 90,
