@@ -14,6 +14,7 @@ from dataclasses import dataclass
 # Valores de la política. Los lee el motor; no se repiten como constantes en
 # `ciclo.py` ni en ningún otro módulo.
 TOPE_DEEPSEEK_MIN = 30
+ESPERA_SIN_REVISOR_MIN = 0
 CERRADOS_VENTANA_S = 7 * 24 * 60 * 60
 CERRADOS_POR_PASADA = 5
 # Cadencia del sondeo de cerrados: rápido la primera hora, espaciado después y
@@ -77,6 +78,13 @@ FILAS: tuple[Fila, ...] = (
         valor=f"{TOPE_DEEPSEEK_MIN} min",
         decision="David, 6-nov",
         comportamiento="a los 29 min espera; a los 31 min omite con la causa escrita",
+    ),
+    Fila(
+        id="deepseek_sin_revisor",
+        regla="Sin el revisor de DeepSeek en el SHA ni en la base del PR no se espera su revisión.",
+        valor=f"{ESPERA_SIN_REVISOR_MIN} min",
+        decision="David, sin fecha registrada en el pedido",
+        comportamiento="sin un workflow de ai-review omite enseguida con la causa escrita; lo que no se pudo leer espera el tope",
     ),
     Fila(
         id="cerrados",
