@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from .catalogo_agentes import identidad_modelo
+from .detencion import DETENCIONES
 
 ESTADOS = (
     "recibido",
@@ -29,7 +30,8 @@ ESTADOS = (
 
 _CERRADOS = ("deteniendo", "detenido", "cancelado", "terminado")
 
-OrdenParada = Literal["", "parar", "cancelar"]
+# Quién detiene el encargo: el dueño con una orden, o el motor por un fallo interno.
+OrdenParada = Literal["", "parar", "cancelar", "fallo_interno"]
 
 # Los marcadores son observaciones del motor, no hechos del encargo: no cortan
 # las series de reintentos ni cuentan como movimiento del encargo.
@@ -1988,8 +1990,6 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         return replace(
             e, conductor=d["token"], candidato="", host=d["host"], hora=hora or e.hora
         )
-    if kind == "concesion":
-        return replace(e, hora=hora or e.hora)
     if kind == "intento_abierto":
         if not e.intentos_nuevos or e.estado in _CERRADOS:
             raise TransicionIlegal("no hay autorización para otro intento")
@@ -2517,8 +2517,8 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         return _conciliacion_fase(e, d, hora)
     if kind == "fase_desplegada":
         return _fase_desplegada(e, d, hora)
-    if kind == "arbol":
-        return _arbol(e, d, hora)
+    if kind in DETENCIONES:
+        return DETENCIONES[kind](e, d, hora)
     if kind == "comprobacion":
         return _comprobacion(e, d, hora, nuevo)
     if kind == "afirmacion":
@@ -2746,6 +2746,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         return replace(e, hora=hora or e.hora)
 
     if kind in (
+        "concesion",
         "ci_producto",
         "ci_revision_rojo",
         "ci_pr_sondeo",
@@ -3834,22 +3835,6 @@ def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
         escrituras=False,
         motivo="",
         siguiente="ninguna",
-    )
-
-
-def _arbol(e: Encargo, d: dict, hora: str) -> Encargo:
-    if d.get("observacion") != "ausente" or e.estado != "deteniendo" or e.reserva:
-        return e
-    estado = "cancelado" if e.orden_parada == "cancelar" else "detenido"
-    return replace(
-        e,
-        estado=estado,
-        proc=None,
-        herramienta="",
-        hora=hora or e.hora,
-        ultimo_hecho="el árbol de procesos quedó ausente",
-        siguiente="ninguna" if estado == "cancelado" else "detenido hasta continuar",
-        motivo="" if estado == "detenido" else "cancelado",
     )
 
 
