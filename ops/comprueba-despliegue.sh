@@ -174,31 +174,50 @@ if arbol_ruta:
     except Exception as exc:
         token = "no se pudo comprobar: " + type(exc).__name__
 
+def corto(datos):
+    return hashlib.sha256(datos).hexdigest()[:12]
+
 # Mac y Mini corren el python3 del sistema, que puede no traer tomllib: la versión de la
-# tabla se lee de la primera línea que escribe motor.flota.manifiesto.emitir.
+# tabla es la línea que escribe motor.flota.manifiesto.emitir, un texto JSON.
+def tabla_de(texto):
+    hallada = re.search("^generacion = (\".*\")\\s*$", texto, re.M)
+    try:
+        nombre = json.loads(hallada.group(1)).strip() if hallada else ""
+    except ValueError:
+        nombre = ""
+    if not nombre:
+        return "sin-tabla"
+    # El motor acepta cualquier nombre: fuera de este juego, y en los sin-* que el
+    # comprobador usa para lo que falta, se imprime su huella.
+    if re.fullmatch("[A-Za-z0-9][A-Za-z0-9._-]{0,63}", nombre) and not nombre.startswith("sin-"):
+        return nombre
+    return "#" + corto(nombre.encode("utf-8"))
+
+# Se compara lo que corre, la generación activa. El manifiesto raíz es el deseado: una
+# actualización pendiente lo escribe antes de activar su generación.
 def huella_flota():
-    vinculo = leer(home / ".motor-encargos" / "flota-home.json")
+    base = home / ".motor-encargos"
+    vinculo = leer(base / "flota-home.json")
     destino = vinculo.get("home") if isinstance(vinculo, dict) else None
-    flota = pathlib.Path(str(destino)) if destino else home / "flota"
+    flota = base / str(destino) if destino else home / "flota"
     if not flota.is_dir():
         return "sin-flota"
     try:
-        datos = (flota / "manifiesto.toml").read_bytes().replace(b"\r\n", b"\n")
-        manifiesto = hashlib.sha256(datos).hexdigest()[:12]
+        activo = (flota / "actual" / "manifesto.toml").read_bytes().replace(b"\r\n", b"\n")
+        manifiesto = corto(activo)
+        tabla = tabla_de(activo.decode("utf-8"))
     except OSError:
-        manifiesto = "sin-manifiesto"
+        manifiesto, tabla = "sin-manifiesto", "sin-tabla"
+    except UnicodeDecodeError:
+        tabla = "sin-tabla"
+    try:
+        deseado = corto((flota / "manifiesto.toml").read_bytes().replace(b"\r\n", b"\n"))
+    except OSError:
+        deseado = "sin-manifiesto"
     fuente = leer(flota / "fuente-compartida.json")
     snapshot = str(fuente.get("snapshot_sha256") or "") if isinstance(fuente, dict) else ""
     snapshot = snapshot[:12] if re.fullmatch("[0-9a-f]{64}", snapshot) else "sin-fuente"
-    tabla = "sin-tabla"
-    try:
-        texto = (flota / "actual" / "manifesto.toml").read_text(encoding="utf-8")
-        hallada = re.search("^generacion = \"([A-Za-z0-9._-]+)\"", texto, re.M)
-        if hallada:
-            tabla = hallada.group(1)
-    except (OSError, UnicodeDecodeError):
-        pass
-    return " ".join((tabla, manifiesto, snapshot))
+    return " ".join((tabla, manifiesto, snapshot, deseado))
 
 print("recibo", recibo)
 print("vivo", vivo)
@@ -327,8 +346,8 @@ for m in $maquinas; do
       huellas="$huellas$m sin-flota sin-flota"$'\n'
       ;;
     *)
-      read -r tabla manifiesto fuente <<<"$flota"
-      echo "FLOTA $m: $(campo tabla "$tabla"), $(campo manifiesto "$manifiesto"), $(campo fuente "$fuente")"
+      read -r tabla manifiesto fuente deseado <<<"$flota"
+      echo "FLOTA $m: $(campo tabla "$tabla"), $(campo manifiesto "$manifiesto"), $(campo fuente "$fuente"), $(campo "manifiesto deseado" "$deseado")"
       huellas="$huellas$m $tabla $manifiesto"$'\n'
       ;;
   esac
