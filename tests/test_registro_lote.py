@@ -326,7 +326,7 @@ class ConteoEnUnProcesoNuevo(Base):
         self.assertEqual(
             lineas,
             [
-                "registro: rechazo=ajena kind=procedimiento ukey=nota:* veces=1",
+                "registro: rechazo=ajena kind=procedimiento ukey=nota:* campos=nota veces=1",
                 "registro: rechazo=ilegal kind=entrega ukey=entrega:* veces=1",
                 "registro: rechazo=ilegal kind=entrega ukey=? veces=1",
                 "registro: rechazo=ilegal kind=entrega ukey=? veces=1",
@@ -363,7 +363,7 @@ class ConteoEnUnProcesoNuevo(Base):
             lineas,
             [
                 "registro: rechazo=ilegal kind=? ukey=corta:* veces=1",
-                "registro: rechazo=ajena kind=procedimiento ukey=? veces=1",
+                "registro: rechazo=ajena kind=procedimiento ukey=? campos=nota veces=1",
             ],
         )
 
@@ -427,6 +427,115 @@ class IntervaloDelConteo(Base):
                 "registro: rechazo=ilegal kind=entrega ukey=otra-entrega:* veces=1",
                 "registro: rechazo=ilegal kind=entrega ukey=otra-entrega:* veces=30",
             ],
+        )
+
+
+class CamposDelRechazo(IntervaloDelConteo):
+    """Una ukey ocupada dice qué claves de `data` difieren, nunca sus valores.
+    Lo guardado es un `procedimiento` porque el reductor lo acepta con cualquier
+    otra clave junto a `nota`."""
+
+    def guardar(self, ukey: str, data: dict) -> None:
+        self.assertEqual(
+            self.reg.append(ENCARGO, "procedimiento", {"nota": "n", **data}, ukey, HORA), "nuevo"
+        )
+
+    def rechazar(self, ukey: str, data: dict, encargo: str = ENCARGO, kind: str = "procedimiento"):
+        self.assertEqual(self.reg.append(encargo, kind, {"nota": "n", **data}, ukey, HORA), "ajena")
+
+    def lineas(self, accion) -> list[str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            accion()
+        return err.getvalue().splitlines()
+
+    def test_nombra_las_claves_que_difieren_sin_hora_y_sin_valores(self):
+        ukey = f"producto:{ENCARGO}:fase"
+        self.guardar(ukey, {"fase": "f1", "sha_git": "a" * 40, "ruta": "/privada/uno", "hora": HORA})
+
+        lineas = self.lineas(
+            lambda: self.rechazar(
+                ukey, {"fase": "f1", "sha_git": "b" * 40, "repo": "dueno/privado", "hora": OTRA_HORA}
+            )
+        )
+
+        self.assertEqual(
+            lineas,
+            ["registro: rechazo=ajena kind=procedimiento ukey=producto:* campos=repo,ruta,sha_git veces=1"],
+        )
+        for privado in ("a" * 40, "b" * 40, "privad", "f1", ENCARGO, HORA, OTRA_HORA, "hora"):
+            self.assertNotIn(privado, lineas[0])
+
+    def test_otro_encargo_u_otro_tipo_en_la_ukey_se_nombran_aparte_de_data(self):
+        ukey = f"producto:{ENCARGO}:fase"
+        self.guardar(ukey, {"fase": "f1"})
+
+        lineas = self.lineas(
+            lambda: (
+                self.rechazar(ukey, {"fase": "f1"}, encargo="enc_otro"),
+                self.rechazar(ukey, {"fase": "f1"}, kind="producto_listo"),
+            )
+        )
+
+        self.assertEqual(
+            lineas,
+            [
+                "registro: rechazo=ajena kind=procedimiento ukey=producto:* campos=@encargo veces=1",
+                "registro: rechazo=ajena kind=producto_listo ukey=producto:* campos=@kind veces=1",
+            ],
+        )
+
+    def test_mas_de_cinco_claves_distintas_salen_las_cinco_primeras_y_cuantas_faltan(self):
+        ukey = f"entrega:{ENCARGO}:externa"
+        nombres = ("uno", "dos", "tres", "cuatro", "cinco", "seis", "siete")
+        self.guardar(ukey, {nombre: 1 for nombre in nombres})
+
+        lineas = self.lineas(lambda: self.rechazar(ukey, {nombre: 2 for nombre in nombres}))
+
+        self.assertEqual(
+            lineas,
+            ["registro: rechazo=ajena kind=procedimiento ukey=entrega:* campos=cinco,cuatro,dos,seis,siete,+2 veces=1"],
+        )
+
+    def test_cada_combinacion_de_campos_cuenta_aparte_dentro_del_intervalo(self):
+        ukey = f"entrega:{ENCARGO}:externa"
+        self.guardar(ukey, {"intento": 1, "sha_git": "a"})
+
+        def rechazar(data: dict, veces: int) -> None:
+            for _vez in range(veces):
+                self.rechazar(ukey, data)
+                self.ahora += 20
+
+        lineas = self.lineas(
+            lambda: (
+                rechazar({"intento": 2, "sha_git": "a"}, 3),
+                rechazar({"intento": 1, "sha_git": "b"}, 2),
+                registro._CONTEO.vaciar(),
+            )
+        )
+
+        self.assertEqual(
+            lineas,
+            [
+                "registro: rechazo=ajena kind=procedimiento ukey=entrega:* campos=intento veces=1",
+                "registro: rechazo=ajena kind=procedimiento ukey=entrega:* campos=sha_git veces=1",
+                "registro: rechazo=ajena kind=procedimiento ukey=entrega:* campos=intento veces=2",
+                "registro: rechazo=ajena kind=procedimiento ukey=entrega:* campos=sha_git veces=1",
+            ],
+        )
+
+    def test_un_lote_que_omite_el_evento_cuenta_la_misma_linea_que_append(self):
+        ukey = f"entrega:{ENCARGO}:externa"
+        self.guardar(ukey, {"intento": 1, "hora": HORA})
+        evento = registro.Evento("procedimiento", {"nota": "n", "intento": 2, "hora": OTRA_HORA}, ukey)
+        with self.assertRaises(registro.Rechazo) as rechazo:
+            self.reg.proyectar(ENCARGO, [evento])
+
+        lineas = self.lineas(lambda: registro.contar_omitidos([(evento, rechazo.exception)]))
+
+        self.assertEqual(
+            lineas,
+            ["registro: rechazo=ajena kind=procedimiento ukey=entrega:* campos=intento veces=1"],
         )
 
 
