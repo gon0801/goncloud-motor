@@ -20,6 +20,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
 HERRAMIENTA = RAIZ / "tools" / "calidad.py"
+POLITICA = "motor/encargos/politica.py"
 FLUJO = RAIZ / ".github" / "workflows" / "quality.yml"
 PASO_DE_TAMANO = "      - name: Ningún archivo ni función de motor/ crece por encima de su límite"
 
@@ -43,6 +44,7 @@ class Repo:
         repo = cls(raiz)
         repo.git("init", "-q", "-b", "main")
         shutil.copy(HERRAMIENTA, raiz / "tools" / "calidad.py")
+        repo.escribir(POLITICA, (RAIZ / POLITICA).read_text(encoding="utf-8"))
         return repo
 
     def clonar(self, *opciones: str, nombre: str = "clon") -> Repo:
@@ -82,6 +84,8 @@ class Repo:
 
     def enlazar(self, ruta: str, destino: str) -> None:
         enlace = self.raiz / ruta
+        if enlace.is_dir() and not enlace.is_symlink():
+            shutil.rmtree(enlace)
         enlace.unlink(missing_ok=True)
         enlace.parent.mkdir(parents=True, exist_ok=True)
         enlace.symlink_to(destino)
@@ -350,6 +354,12 @@ class CentroCongelado(unittest.TestCase):
                 corrida = self.repo.tamano("--base", self.base)
                 self.assertEqual(corrida.returncode, 1, corrida.stdout)
                 self.assertIn(f"{ruta}::{nombre}: función nueva", corrida.stderr)
+
+    def test_sin_congelamientos_en_la_politica_una_funcion_nueva_en_ciclo_pasa(self):  # no-roja-en-base: el candado del centro nace en este PR; en main no hay candado que frene
+        self.repo.escribir(POLITICA, "CONGELAMIENTOS = ()\n")
+        self.repo.escribir("motor/encargos/ciclo.py", _funcion("vieja", 3) + _funcion("nueva", 3))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
 
     def test_una_funcion_nueva_en_otro_modulo_y_quitar_una_de_ciclo_pasan(self):  # no-roja-en-base: fija que el candado del centro no frena lo que no es una función nueva en él
         self.repo.escribir("motor/encargos/ciclo.py", "x = 1\n")
