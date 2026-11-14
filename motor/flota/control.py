@@ -9,6 +9,7 @@ import subprocess
 import sys
 from functools import wraps
 from pathlib import Path
+from typing import NamedTuple
 
 from .cerrojo import _cerrojo_flota
 from .manifiesto import Politica, cargar, guardar, proyectar_tabla
@@ -160,35 +161,42 @@ def leer_trabajo(home: Path, trabajo: str) -> dict | None:
     return _leer(home / "trabajos" / f"{trabajo}.json")
 
 
-def _sin_enlace(home: Path) -> tuple[str, dict]:
-    """La generacion que vale sin actual y el recibo completo que exigia el enlace.
+class _SinEnlace(NamedTuple):
+    """Lo que vale sin actual, leído de instalacion.json."""
 
-    Una reversa a medias ya eligio la anterior de su recibo.
-    """
+    asignada: str
+    # Hasta que la reversa termina, sus trabajos siguen sobre la instalada.
+    instalada: str
+    exige_enlace: bool
+
+
+def _sin_enlace(home: Path) -> _SinEnlace:
     recibo = _leer(home / "instalacion.json") or {}
-    if recibo.get("etapa") == "revirtiendo":
-        return str((recibo.get("anterior") or {}).get("codigo") or ""), {}
     instalada = str((recibo.get("destino") or {}).get("codigo") or "")
+    if recibo.get("etapa") == "revirtiendo":
+        anterior = str((recibo.get("anterior") or {}).get("codigo") or "")
+        return _SinEnlace(anterior, instalada, False)
     if instalada:
-        return instalada, recibo
-    return cabeza(home), {}
+        return _SinEnlace(instalada, instalada, True)
+    clon = cabeza(home)
+    return _SinEnlace(clon, clon, False)
 
 
 def asignar(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return actual.resolve().name
-    generacion, exige_enlace = _sin_enlace(home)
-    if exige_enlace:
-        sin_turnos = " --sin-turnos" if exige_enlace.get("sin_turnos") else ""
+    sin = _sin_enlace(home)
+    if sin.exige_enlace:
+        sin_turnos = " --sin-turnos" if (_leer(home / "instalacion.json") or {}).get("sin_turnos") else ""
         raiz = Path(__file__).resolve().parents[2]
         raise RuntimeError(
             f"falta el enlace {actual} aunque instalacion.json registra la generacion "
-            f"{generacion}. Sin el enlace la maquina correria el HEAD del clon, otra "
+            f"{sin.asignada}. Sin el enlace la maquina correria el HEAD del clon, otra "
             f'version. Reponlo con `cd "{raiz}" && "{sys.executable}" -m motor flota '
-            f'aplicar --home "{home}" --destino {generacion}{sin_turnos}`.'
+            f'aplicar --home "{home}" --destino {sin.asignada}{sin_turnos}`.'
         )
-    return generacion
+    return sin.asignada
 
 
 def _comprobar_detalle(gen: Path) -> tuple[int, str]:
@@ -443,7 +451,7 @@ def _anterior_real(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return asignar(home)
-    return _sin_enlace(home)[0]
+    return _sin_enlace(home).asignada
 
 
 def _operacion_flota(funcion):
@@ -459,7 +467,7 @@ def _cambiar_generacion(home: Path, destino: Path | None) -> bool:
     previa = actual.resolve() if actual.is_symlink() else None
     if previa == destino:
         return True
-    vigente = _anterior_real(home)
+    vigente = previa.name if previa is not None else _sin_enlace(home).instalada
     if _trabajos_sobre(home, vigente):
         return False
     if destino is None:
@@ -519,7 +527,7 @@ def revertir(home: Path) -> dict:
     if not _cambiar_generacion(home, previa if previa.exists() else None):
         if usado == "instalacion":
             _atomico(inst_path, recibo)
-        return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
+        return {"accion": "ocupada", "vigente": _anterior_real(home), "destino": anterior}
     motor = home / "motor"
     if (motor / ".git").exists() or (motor / ".git").is_file():
         subprocess.run(
@@ -626,7 +634,7 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
             "turnos": resumen,
         }
     if not _cambiar_generacion(home, gen):
-        return {"accion": "ocupada", "vigente": asignar(home),
+        return {"accion": "ocupada", "vigente": _anterior_real(home),
                 "destino": destino, "generacion_preparada": destino,
                 "turnos": resumen}
     recibo["etapa"] = "completo"
@@ -703,7 +711,7 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
             if apunta and anterior:
                 previa = home / "generaciones" / anterior
                 if not _cambiar_generacion(home, previa if previa.exists() else None):
-                    return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
+                    return {"accion": "ocupada", "vigente": _anterior_real(home), "destino": anterior}
             pend_path.unlink(missing_ok=True)
             _atomico(
                 home / "candidata.json",
@@ -721,7 +729,7 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
                 "turnos": resumen,
             }
         if not apunta and not _cambiar_generacion(home, gen):
-            return {"accion": "ocupada", "vigente": asignar(home), "destino": destino}
+            return {"accion": "ocupada", "vigente": _anterior_real(home), "destino": destino}
         pend["etapa"] = "completo"
         pend["causa"] = ""
         pend["comprobador"] = comprobador
@@ -735,7 +743,7 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
         if apunta and anterior:
             previa = home / "generaciones" / anterior
             if not _cambiar_generacion(home, previa if previa.exists() else None):
-                return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
+                return {"accion": "ocupada", "vigente": _anterior_real(home), "destino": anterior}
         pend_path.unlink(missing_ok=True)
         _atomico(
             home / "candidata.json",
