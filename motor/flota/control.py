@@ -173,7 +173,11 @@ class _SinEnlace(NamedTuple):
 
 
 def _sin_enlace(home: Path) -> _SinEnlace:
-    recibo = _leer(home / "instalacion.json") or {}
+    recibo = _leer(home / "instalacion.json")
+    if recibo is None:
+        recibo = {}
+    elif not isinstance(recibo, dict):
+        raise ValueError(f"instalacion.json trae {type(recibo).__name__}, no un objeto")
     instalada = str((recibo.get("destino") or {}).get("codigo") or "")
     if recibo.get("etapa") == "revirtiendo":
         anterior = str((recibo.get("anterior") or {}).get("codigo") or "")
