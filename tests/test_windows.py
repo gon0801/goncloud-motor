@@ -12,6 +12,7 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from motor.plataforma import windows
 from tests import entorno
@@ -397,9 +398,7 @@ class EnlaceDeFlotaEnWindows(unittest.TestCase):
         self._git(motor, "commit", "-q", "-m", marca)
         return self._git(motor, "rev-parse", "HEAD")
 
-    def test_aplicar_reemplaza_el_enlace_actual_de_la_flota(self):  # no-roja-en-base: en Windows la base tambien cambiaba el enlace sin corte; guarda que el reemplazo sobre un enlace de directorio funcione en la PC
-        from motor.flota.control import aplicar, asignar
-
+    def _flota(self) -> tuple[Path, str, str]:
         tmp = Path(tempfile.mkdtemp(prefix="flota-win-"))
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         home = tmp / "home"
@@ -408,14 +407,46 @@ class EnlaceDeFlotaEnWindows(unittest.TestCase):
         self._git(motor, "init", "-q")
         self._git(motor, "config", "user.email", "ensayo@local")
         self._git(motor, "config", "user.name", "ensayo")
-        buena = self._commit(motor, "buena")
-        nueva = self._commit(motor, "nueva")
+        return home, self._commit(motor, "buena"), self._commit(motor, "nueva")
 
+    def _marca(self, home: Path) -> str:
+        return (home / "actual" / "marca.txt").read_text(encoding="utf-8")
+
+    def test_aplicar_reemplaza_el_enlace_actual_de_la_flota(self):  # no-roja-en-base: en Windows la base tambien cambiaba el enlace sin corte; guarda que el reemplazo sobre un enlace de directorio funcione en la PC
+        from motor.flota.control import aplicar, asignar
+
+        home, buena, nueva = self._flota()
         self.assertEqual(aplicar(home, buena, sin_turnos=True)["accion"], "aplicada")
         antes = sorted(os.listdir(home))
         self.assertEqual(aplicar(home, nueva, sin_turnos=True)["accion"], "aplicada")
-        self.assertEqual((home / "actual" / "marca.txt").read_text(encoding="utf-8"), "nueva\n")
+        self.assertEqual(self._marca(home), "nueva\n")
         self.assertEqual(asignar(home), nueva)
+        self.assertEqual(sorted(os.listdir(home)), antes)
+
+    def test_un_reemplazo_de_actual_que_falla_a_la_mitad_conserva_la_previa(self):
+        from motor.flota.control import aplicar, asignar, recuperar
+
+        home, buena, nueva = self._flota()
+        aplicar(home, buena, sin_turnos=True)
+        antes = sorted(os.listdir(home))
+        reemplazar = os.replace
+        sobre_actual = []
+
+        def fallar_el_segundo_intento(origen, destino, *args, **kwargs):
+            if Path(destino).name == "actual":
+                sobre_actual.append(origen)
+                if len(sobre_actual) == 2:
+                    raise PermissionError(13, "otro proceso tiene abierto el enlace")
+            return reemplazar(origen, destino, *args, **kwargs)
+
+        with mock.patch.object(os, "replace", side_effect=fallar_el_segundo_intento):
+            with self.assertRaises(PermissionError):
+                aplicar(home, nueva, sin_turnos=True)
+        self.assertEqual(self._marca(home), "buena\n")
+        self.assertEqual(asignar(home), buena)
+
+        self.assertEqual(recuperar(home, sin_turnos=True)["accion"], "completo")
+        self.assertEqual(self._marca(home), "nueva\n")
         self.assertEqual(sorted(os.listdir(home)), antes)
 
 
