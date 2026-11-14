@@ -4,7 +4,6 @@ import errno
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -250,8 +249,9 @@ class ReversaFlota(unittest.TestCase):
         comandos = re.findall(r"`([^`]+)`", str(falla.exception))
         self.assertEqual(len(comandos), 1, comandos)
         subprocess.run(
-            shlex.split(comandos[0]),
-            cwd=RAIZ,
+            comandos[0],
+            shell=True,
+            cwd=self.tmp,
             check=True,
             capture_output=True,
             env={**os.environ, "MOTOR_HOME": str(self.tmp / "motor-home")},
