@@ -547,6 +547,68 @@ class Comparar(_RepoFalso):
 
 
 class CorpusPlegado(unittest.TestCase):
+    def test_una_falla_ajena_de_pytest_invalida_el_corpus(self) -> None:
+        from tools.corpus_plegado import _fallos_pytest
+
+        conocido = ("tests/test_rama_fase.py::UnFalloDeGitRepetidoPideAyuda"
+                    "::test_un_ajuste_del_propietario_vuelve_a_intentarlo")
+        self.assertEqual(_fallos_pytest(1, f"FAILED {conocido}\n1 failed, 2800 passed"),
+                         [conocido])
+        with self.assertRaises(RuntimeError):
+            _fallos_pytest(1, "FAILED tests/test_otro.py::test_roto\n1 failed, 2800 passed")
+        with self.assertRaises(RuntimeError):
+            _fallos_pytest(1, "1 failed, 2800 passed")
+
+    def test_el_plugin_inyecta_el_bootstrap_en_un_hijo_sin_pythonpath(self) -> None:
+        with tempfile.TemporaryDirectory() as temporal:
+            raiz = Path(temporal)
+            arbol = raiz / "arbol"
+            (arbol / "tools").mkdir(parents=True)
+            (arbol / "tests").mkdir()
+            shutil.copytree(RAIZ / "motor", arbol / "motor")
+            shutil.copy2(RAIZ / "tools" / "corpus_pytest.py", arbol / "tools" / "corpus_pytest.py")
+            shutil.copy2(RAIZ / "tools" / "corpus_sitecustomize.py", arbol / "sitecustomize.py")
+            corpus = raiz / "corpus"
+            (corpus / "registros").mkdir(parents=True)
+            hijo = (
+                "from pathlib import Path\n"
+                "from motor.encargos.registro import Registro, Evento, ClaveOcupada\n"
+                "import sys\n"
+                "r = Registro(Path(sys.argv[1]))\n"
+                "r.append_many('hijo', [Evento('entrega', "
+                "{'id': 'hijo', 'clave': 'hijo', 'huella': 'h', 'texto': 'prueba'}, 'entrega:hijo')])\n"
+                "try:\n"
+                "    r.append_many('hijo', [Evento('procedimiento', {'nota': 'otra'}, 'entrega:hijo')])\n"
+                "except ClaveOcupada:\n"
+                "    pass\n"
+            )
+            (arbol / "tests" / "test_hijo.py").write_text(
+                "import subprocess, sys\n\n"
+                "def test_hijo():\n"
+                f"    subprocess.run([sys.executable, '-c', {hijo!r}, "
+                f"{str(raiz / 'origen')!r}], check=True)\n",
+                encoding="utf-8",
+            )
+            entorno = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+            hecho = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q", "-p", "tools.corpus_pytest",
+                 "tests/test_hijo.py"],
+                cwd=arbol, env={**entorno, "MOTOR_CORPUS_DIR": str(corpus),
+                                "MOTOR_CORPUS_REPO": str(arbol)},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(hecho.returncode, 0, hecho.stdout + hecho.stderr)
+            archivos = list((corpus / "registros").glob("*.sqlite"))
+            escritos = []
+            for archivo in archivos:
+                with sqlite3.connect(archivo) as db:
+                    escritos.append(db.execute(
+                        "SELECT COUNT(*) FROM events WHERE kind = 'entrega'"
+                    ).fetchone()[0])
+            self.assertIn(1, escritos)
+            rechazos = (corpus / "rechazos.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(rechazos), 1)
+
     def test_el_bootstrap_no_importa_el_motor_antes_del_hijo(self) -> None:
         with tempfile.TemporaryDirectory() as temporal:
             raiz = Path(temporal)
@@ -662,6 +724,13 @@ class CorpusPlegado(unittest.TestCase):
             sano = verificar(RAIZ)
             self.assertEqual(sano.returncode, 0, sano.stderr + sano.stdout)
             self.assertIn("estado igual en 1 de 1", sano.stdout)
+            ruta_meta = corpus / "meta.json"
+            meta_sana = ruta_meta.read_text(encoding="utf-8")
+            meta_rota = json.loads(meta_sana)
+            meta_rota.update(pytest_exit=1, pytest_fallos=["tests/test_otro.py::test_roto"])
+            ruta_meta.write_text(json.dumps(meta_rota), encoding="utf-8")
+            self.assertNotEqual(verificar(RAIZ).returncode, 0)
+            ruta_meta.write_text(meta_sana, encoding="utf-8")
             ruta_rechazos = corpus / "rechazos.jsonl"
             original = ruta_rechazos.read_text(encoding="utf-8")
             alterado = json.loads(original)
@@ -675,6 +744,20 @@ class CorpusPlegado(unittest.TestCase):
             self.assertNotEqual(muchos_rechazos.returncode, 0, muchos_rechazos.stdout)
             self.assertIn("rechaza 0 de 256", muchos_rechazos.stdout)
             ruta_rechazos.write_text(original, encoding="utf-8")
+            registro_corpus = corpus / "registros" / "uno.sqlite"
+            copia_sana = raiz / "uno-sano.sqlite"
+            shutil.copy2(registro_corpus, copia_sana)
+            with sqlite3.connect(corpus / "registros" / "uno.sqlite") as db:
+                db.execute(
+                    "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
+                    ("", "sin_base", "entrega", json.dumps({
+                        "id": "sin_base", "clave": "sin_base", "huella": "h", "texto": "nuevo",
+                    }), "entrega:sin_base"),
+                )
+            sin_referencia = verificar(RAIZ)
+            self.assertNotEqual(sin_referencia.returncode, 0, sin_referencia.stdout)
+            self.assertIn("sin referencia", sin_referencia.stdout)
+            shutil.copy2(copia_sana, registro_corpus)
             copia = raiz / "copia"
             shutil.copytree(RAIZ / "motor", copia / "motor")
             dominio = copia / "motor" / "encargos" / "dominio.py"
