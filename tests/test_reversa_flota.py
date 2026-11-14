@@ -239,26 +239,43 @@ class ReversaFlota(unittest.TestCase):
                 self.assertEqual(self._marca_vigente(), "nueva\n")
                 self.assertEqual(sorted(os.listdir(self.home)), antes)
 
-    def test_sin_actual_con_una_instalacion_completa_asignar_no_cae_al_clon_y_nombra_como_reponerlo(self) -> None:
-        aplicar(self.home, self.buena, sin_turnos=True)
-        aplicar(self.home, self.nueva, sin_turnos=True)
-        (self.home / "actual").unlink()
-        con_espacio = self.tmp / "flota con espacio"
-        con_espacio.symlink_to(self.home, target_is_directory=True)
-        with self.assertRaisesRegex(RuntimeError, self.nueva) as falla:
-            asignar(con_espacio)
+    def test_sin_actual_asignar_no_cae_al_clon_y_su_comando_termina_el_enlace_sin_perder_la_reversa(self) -> None:
+        (self.tmp / "flota con espacio").symlink_to(self.home, target_is_directory=True)
+        otra = self.tmp / "otra"
+        otra.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.tmp)
 
-        comandos = re.findall(r"`([^`]+)`", str(falla.exception))
-        self.assertEqual(len(comandos), 1, comandos)
-        subprocess.run(
-            comandos[0],
-            shell=True,
-            cwd=self.tmp,
-            check=True,
-            capture_output=True,
-            env={**os.environ, "MOTOR_HOME": str(self.tmp / "motor-home")},
-        )
-        self.assertEqual(asignar(self.home), self.nueva)
+        def reponer(registrada: str) -> None:
+            with self.assertRaisesRegex(RuntimeError, registrada) as falla:
+                asignar(Path("flota con espacio"))
+            comandos = re.findall(r"`([^`]+)`", str(falla.exception))
+            self.assertEqual(len(comandos), 1, comandos)
+            hecho = subprocess.run(
+                comandos[0],
+                shell=True,
+                cwd=otra,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "MOTOR_HOME": str(self.tmp / "motor-home")},
+            )
+            self.assertEqual(hecho.returncode, 0, hecho.stderr)
+
+        with self.subTest(caso="instalacion completa"):
+            aplicar(self.home, self.buena, sin_turnos=True)
+            aplicar(self.home, self.nueva, sin_turnos=True)
+            (self.home / "actual").unlink()
+            reponer(self.nueva)
+            self.assertEqual(asignar(self.home), self.nueva)
+            self.assertEqual(revertir(self.home)["anterior"], self.buena)
+            self.assertEqual(asignar(self.home), self.buena)
+
+        with self.subTest(caso="corte a mitad de aplicar"):
+            aplicar(self.home, self.buena, sin_turnos=True)
+            aplicar(self.home, self.nueva, "worktree", sin_turnos=True)
+            (self.home / "actual").unlink()
+            reponer(self.buena)
+            self.assertEqual(asignar(self.home), self.nueva)
 
     def test_revertir_la_primera_instalacion_vuelve_al_clon_y_asignar_lo_sigue(self) -> None:  # no-roja-en-base: la base ya volvia al clon; guarda que el error de asignar sin actual no alcance este estado legitimo
         aplicar(self.home, self.nueva, sin_turnos=True)

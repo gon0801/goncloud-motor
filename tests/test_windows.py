@@ -449,6 +449,22 @@ class EnlaceDeFlotaEnWindows(unittest.TestCase):
         self.assertEqual(self._marca(home), "nueva\n")
         self.assertEqual(sorted(os.listdir(home)), antes)
 
+    def test_el_comando_que_da_asignar_sin_actual_corre_en_cmd_desde_otra_unidad(self):
+        from motor.flota.control import aplicar, asignar, revertir
+
+        home, buena, nueva = self._flota()
+        aplicar(home, buena, sin_turnos=True)
+        aplicar(home, nueva, sin_turnos=True)
+        (home / "actual").unlink()
+        with self.assertRaisesRegex(RuntimeError, nueva) as falla:
+            asignar(home)
+        comando = str(falla.exception).split("`")[1]
+        # En el job windows el clon está en D: y el temporal en C:.
+        hecho = _run(comando, shell=True, cwd=home.parent, capture_output=True, text=True)
+        self.assertEqual(hecho.returncode, 0, hecho.stdout + hecho.stderr)
+        self.assertEqual(asignar(home), nueva)
+        self.assertEqual(revertir(home)["anterior"], buena)
+
 
 if __name__ == "__main__":
     unittest.main()
