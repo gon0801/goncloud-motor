@@ -117,6 +117,15 @@ class LaRespuestaUnica(unittest.TestCase):
         revisor = revisor_deepseek(repo.espacio, sha, "main")
         self.assertEqual(revisor.espera_min, TOPE_DEEPSEEK_MIN)
 
+    def test_un_fetch_roto_con_el_clon_atrasado_espera_al_revisor_de_la_base(self):
+        repo = _Repo(self.tmp, {})
+        sha = repo.sha_del_pr({"saludo.txt": "hola\n"})
+        repo.publicar_en_main({PUBLISH: "name: ai-review-publish\n"})
+        _git(repo.espacio, "remote", "set-url", "origin", str(self.tmp / "no-existe.git"))
+        revisor = revisor_deepseek(repo.espacio, sha, "main")
+        self.assertEqual(revisor.espera_min, TOPE_DEEPSEEK_MIN)
+        self.assertEqual(revisor.nota, "")
+
     def test_el_revisor_con_otro_nombre_de_archivo_espera(self):
         for ruta, texto in (
             (".github/workflows/revision.yml", "uses: gon0801/goncloud-pr-review@abc\n"),
