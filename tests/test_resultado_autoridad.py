@@ -15,7 +15,7 @@ from unittest import mock
 from motor.encargos import registro as modulo_registro
 from motor.encargos.ciclo import recibir_resultado
 from motor.encargos.dominio import bloqueantes_abiertos
-from tests.arnes_corte import filas
+from tests.arnes_corte import cortar_en_cada_commit, filas
 from tests.dobles import github_con_hallazgos
 from tests.test_flujo_revisiones import _entrega_pr, sonda_sin_aislamiento_del_host
 
@@ -65,6 +65,43 @@ def _recibir(registro, enc, observaciones: dict, juicio: dict) -> dict:
 
 
 class ResultadoDeLaAutoridad(unittest.TestCase):
+    def test_un_apagon_en_cualquier_commit_deja_el_resultado_entero_o_nada(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            escena = Path(tmp) / "escena"
+            escena.mkdir()
+            r, enc = _escena(self, escena)
+            r.reg.close()
+            observaciones, juicio = _resultado()
+
+            def paso(registro):
+                salida = _recibir(registro, enc, observaciones, juicio)
+                self.assertTrue(salida.get("registrado"), salida)
+
+            cortar_en_cada_commit(self, escena, r.base, enc.id, paso)
+
+    def test_un_cierre_que_falla_rechaza_sin_dejar_la_revision_aprobada(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r, enc = _escena(self, Path(tmp))
+            previas = len(filas(r.base))
+            observaciones, juicio = _resultado()
+            observaciones["solicitudes_efecto"] = [
+                {"id": "ef1", "operacion": "publicar", "clave": "k1", "cuerpo": "c"}
+            ]
+            juicio["efectos_pendientes"] = ["ef1"]
+
+            salida = _recibir(r.reg, enc, observaciones, juicio)
+
+            self.assertTrue(salida.get("rechazado"), salida)
+            self.assertIn("ef1", salida["motivo"])
+            self.assertEqual(
+                [kind for kind, _ukey, _data in filas(r.base)[previas:]],
+                ["conductor_fase"],
+            )
+            self.assertEqual(
+                [h.id for h in bloqueantes_abiertos(r.fold(), "deepseek")],
+                ["ds_Fuga", "ds_Ajena"],
+            )
+
     def test_el_resultado_guarda_las_ukeys_y_los_datos_de_siempre(self):  # no-roja-en-base: fija lo que la base ya escribe; con otra ukey u otro dato un registro viejo a medias no daría igual
         with tempfile.TemporaryDirectory() as tmp:
             r, enc = _escena(self, Path(tmp))
