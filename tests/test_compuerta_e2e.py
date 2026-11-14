@@ -46,6 +46,7 @@ from motor.encargos.agentes import (
 from motor.encargos.ciclo import barrer, recibir
 from motor.encargos.cli import lanzar_de_ruta, marcar_ruta
 from motor.encargos.dominio import vista
+from motor.encargos.politica import TOPE_DEEPSEEK_MIN
 from motor.encargos.registro import Registro
 from motor.encargos.rutas import elegir
 from motor.github import ChecksVerdict, FakeGitHub, PoliticaBloquea, clasificar_merge
@@ -855,6 +856,78 @@ class LasVariantesDeLaCompuerta(CompuertaReal):
         notas = [e["data"] for e in banco.eventos("nota_pr")]
         self.assertTrue(
             any("sin revisión de DeepSeek" in n.get("texto", "") for n in notas)
+        )
+
+
+_WORKER_AI_REVIEW = (
+    "name: ai-review-worker\n"
+    "on:\n"
+    "  workflow_dispatch:\n"
+    "    inputs:\n"
+    "      pr_number:\n"
+    "        required: true\n"
+    "        type: string\n"
+    "      head_sha:\n"
+    "        required: true\n"
+    "        type: string\n"
+)
+
+
+class LaEsperaDeDeepSeekSaleDelRepo(CompuertaReal):
+    """DeepSeek no comenta nunca. Con el revisor en el repo la entrega lo espera
+    hasta el tope; sin él no hay revisión que esperar y la fase sigue enseguida,
+    con la causa escrita."""
+
+    def _integrar_una_fase(self, con_revisor: bool) -> tuple[Banco, dict, float]:
+        escenario = {
+            "fases": [{"id": "uno", "resultado": "saludo.txt con hola"}],
+            "producto": {"uno": {"saludo.txt": "hola\\n"}},
+            "comprobaciones": self._comprobaciones({"uno": "hola"}),
+        }
+        banco = self.banco(escenario, nivel="integrado")
+        if con_revisor:
+            semilla = self.tmp / "semilla"
+            flujos = semilla / ".github" / "workflows"
+            flujos.mkdir(parents=True)
+            (flujos / "ai-review-worker.yml").write_text(
+                _WORKER_AI_REVIEW, encoding="utf-8", newline="\n"
+            )
+            _git(semilla, "add", "-A")
+            _git(
+                semilla, "-c", "user.name=t", "-c", "user.email=t@local",
+                "commit", "-q", "-m", "revisor",
+            )
+            _git(semilla, "push", "-q", str(self.tmp / "repo.git"), "main")
+        banco.correr(lambda: banco.fold().estado == "terminado", tope_pasos=300)
+        self.assertEqual(banco.fold().nivel_alcanzado, "integrado")
+        self.assertEqual(len(banco.pasos_entrega("integrado")), 1)
+        (omision,) = banco.pasos_entrega("deepseek_sin_revision")
+        listo = next(
+            e for e in banco.eventos("entrega_externa")
+            if e["data"].get("paso") in ("pr_listo", "commit")
+            and e["data"].get("sha") == omision["sha"]
+        )
+        minutos = _segundos(listo["data"]["hora"], omision["hora"]) / 60
+        return banco, omision, minutos
+
+    def _disparos(self, banco: Banco) -> list[dict]:
+        return json.loads(
+            (banco.tmp / "fake" / "github.json").read_text(encoding="utf-8")
+        ).get("ai_review", [])
+
+    def test_sin_revisor_en_el_repo_la_fase_se_integra_sin_esperar_a_deepseek(self):
+        banco, omision, minutos = self._integrar_una_fase(con_revisor=False)
+        self.assertLess(minutos, TOPE_DEEPSEEK_MIN)
+        self.assertIn("sin revisor", omision["evidencia"])
+        self.assertEqual(self._disparos(banco), [])
+
+    def test_con_revisor_en_el_repo_la_entrega_espera_el_tope_de_deepseek(self):  # no-roja-en-base: la espera con revisor es la de la base; la prueba fija que no cambia
+        banco, omision, minutos = self._integrar_una_fase(con_revisor=True)
+        self.assertGreaterEqual(minutos, TOPE_DEEPSEEK_MIN)
+        self.assertLess(minutos, TOPE_DEEPSEEK_MIN + 2)
+        self.assertNotIn("sin revisor", omision["evidencia"])
+        self.assertEqual(
+            [d["workflow"] for d in self._disparos(banco)], ["ai-review-worker.yml"]
         )
 
 
