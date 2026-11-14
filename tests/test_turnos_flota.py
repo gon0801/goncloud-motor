@@ -137,6 +137,21 @@ def _runtime_qwen(home: Path, gen: Path) -> None:
     _atomico(recibo, doc)
 
 
+def _version_que_responde(salida: str | None):
+    """subprocess.run con el --version de los lanzadores falseado: sin salida tarda
+    más que su tope; con salida responde eso. Lo demás corre de verdad."""
+    correr = subprocess.run
+
+    def run(argv, *args, **kwargs):
+        if list(argv)[-1:] != ["--version"]:
+            return correr(argv, *args, **kwargs)
+        if salida is None:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, salida, "")
+
+    return run
+
+
 class TurnosFlota(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="turnos-flota-")
@@ -631,6 +646,46 @@ class TurnosFlota(unittest.TestCase):
         candidata = json.loads((self.home / "candidata.json").read_text())
         self.assertEqual(candidata["estado"], "rechazada")
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
+
+    def test_un_version_lento_no_revierte_la_instalada_y_dice_que_no_se_midio(self):
+        origen, a, _gen_a = self._flota("origen-version-lenta")
+        b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
+        _config_poteto(gen_b)
+        self.assertEqual(aplicar(self.home, b, sin_turnos=True)["accion"], "aplicada")
+        _runtime_preparada(self.home, gen_b, "grok", "v1")
+        instalacion = (self.home / "instalacion.json").read_text(encoding="utf-8")
+
+        with patch("subprocess.run", side_effect=_version_que_responde(None)):
+            salida = recuperar(self.home, sin_turnos=True)
+        self.assertEqual(salida["accion"], "no_medido", salida)
+        self.assertIn("--version", salida["causa"])
+        self.assertIn("60 s", salida["causa"])
+        self.assertEqual(asignar(self.home), b)
+        self.assertEqual(
+            (self.home / "instalacion.json").read_text(encoding="utf-8"), instalacion
+        )
+
+        with patch("subprocess.run", side_effect=_version_que_responde("v9\n")):
+            self.assertEqual(recuperar(self.home, sin_turnos=True)["accion"], "revertido")
+        self.assertEqual(asignar(self.home), a)
+
+    def test_un_version_lento_deja_pendiente_la_activacion_cortada(self):
+        origen, _a, _gen_a = self._flota("origen-version-lenta-pendiente")
+        b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
+        _config_poteto(gen_b)
+        _runtime_preparada(self.home, gen_b, "grok", "v1")
+        cortado = aplicar(self.home, b, "worktree", sin_turnos=True)
+        self.assertEqual(cortado["accion"], "cortado", cortado)
+        # Activacion interrumpida: `actual` ya apunta a la candidata comprobada.
+        _poner_enlace(self.home, gen_b)
+
+        with patch("subprocess.run", side_effect=_version_que_responde(None)):
+            salida = recuperar(self.home, sin_turnos=True)
+        self.assertEqual(salida["accion"], "no_medido", salida)
+        self.assertIn("--version", salida["causa"])
+        self.assertEqual(asignar(self.home), b)
+        self.assertTrue((self.home / "instalacion-pendiente.json").exists())
+        self.assertFalse((self.home / "candidata.json").exists())
 
     def test_candidata_que_retira_un_agente_con_sesion_bloquea(self):
         origen, a, gen_a = self._flota("origen-g")

@@ -22,9 +22,13 @@ from .control import (
 from .manifiesto import cargar, guardar, misma_cadena, sembrar_tabla
 
 
+# 1 es un error y 2 lo usa argparse.
+_SALIDA_POR_ACCION = {"no_medido": 3}
+
+
 def _json(datos: dict) -> int:
     print(json.dumps(datos, ensure_ascii=False))
-    return 0
+    return _SALIDA_POR_ACCION.get(str(datos.get("accion")), 0)
 
 
 def main(argv: list[str] | None = None) -> int:

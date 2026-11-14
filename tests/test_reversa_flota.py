@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import errno
+import io
 import json
 import os
 import re
@@ -11,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -48,6 +51,21 @@ def _commit(motor: Path, archivos: dict[str, str], mensaje: str) -> str:
     _git(motor, "add", ".")
     _git(motor, "commit", "-m", mensaje)
     return _git(motor, "rev-parse", "HEAD")
+
+
+def _comprobar_py_lento(sin_tope: bool = False):
+    """subprocess.run con el comprobar.py de la generacion pasado de su tope.
+
+    Como el real sin tuberias, la excepcion trae lo que quedaba del tope, no el tope.
+    """
+    correr = subprocess.run
+
+    def run(argv, *args, **kwargs):
+        if str(list(argv)[-1]).endswith("comprobar.py"):
+            raise subprocess.TimeoutExpired(argv, None if sin_tope else kwargs["timeout"] - 0.00005)
+        return correr(argv, *args, **kwargs)
+
+    return run
 
 
 class ReversaFlota(unittest.TestCase):
@@ -391,6 +409,124 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(recuperar(self.home)["accion"], "revertido")
         self.assertEqual(asignar(self.home), self.buena)
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
+
+    def test_un_arranque_lento_no_revierte_la_instalada_y_dice_que_no_se_midio(self) -> None:
+        con_motor = _commit(self.motor, {"motor/__main__.py": "print('ayuda')\n"}, "con motor")
+        aplicar(self.home, self.buena, sin_turnos=True)
+        self.assertEqual(aplicar(self.home, con_motor, sin_turnos=True)["accion"], "aplicada")
+        correr = subprocess.run
+
+        def ayuda_lenta(argv, *args, **kwargs):
+            if list(argv)[-1:] == ["--help"]:
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            return correr(argv, *args, **kwargs)
+
+        with mock.patch("subprocess.run", side_effect=ayuda_lenta):
+            salida = recuperar(self.home)
+        self.assertEqual(salida["accion"], "no_medido", salida)
+        self.assertIn("--help", salida["causa"])
+        self.assertEqual(asignar(self.home), con_motor)
+        self.assertTrue((self.home / "instalacion.json").exists())
+
+    def test_sin_actual_un_recibo_ilegible_da_su_causa_y_el_comando_que_repone(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+        aplicar(self.home, self.nueva, sin_turnos=True)
+        (self.home / "actual").unlink()
+        recibo = (self.home / "instalacion.json").read_text(encoding="utf-8")
+        (self.home / "instalacion.json").write_text("{cortado", encoding="utf-8")
+
+        with self.assertRaisesRegex(RuntimeError, "instalacion.json") as falla:
+            asignar(self.home)
+        self.assertIsInstance(falla.exception.__cause__, json.JSONDecodeError)
+        (comando,) = re.findall(r"`([^`]+)`", str(falla.exception))
+        (self.home / "instalacion.json").write_text(recibo, encoding="utf-8")
+        hecho = subprocess.run(
+            comando,
+            shell=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "MOTOR_HOME": str(self.tmp / "motor-home")},
+        )
+        self.assertEqual(hecho.returncode, 0, hecho.stderr)
+        self.assertEqual(asignar(self.home), self.nueva)
+
+    def test_en_cmd_la_barra_final_de_una_ruta_no_escapa_su_comilla(self) -> None:
+        from motor.flota.control import _entre_comillas
+
+        self.assertEqual(_entre_comillas(["C:\\", "D:\\a b"]), '"C:\\\\" "D:\\a b"')
+
+    def test_sin_actual_un_recibo_que_no_es_un_objeto_da_su_causa_y_el_comando(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+        (self.home / "actual").unlink()
+        for texto in ("[1]", '"x"'):
+            with self.subTest(recibo=texto):
+                (self.home / "instalacion.json").write_text(texto, encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "instalacion.json") as falla:
+                    asignar(self.home)
+                self.assertIn("flota recuperar --home", str(falla.exception))
+
+    def test_un_comprobar_py_lento_no_revierte_la_instalada_y_dice_que_no_se_midio(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+        self.assertEqual(aplicar(self.home, self.nueva, sin_turnos=True)["accion"], "aplicada")
+
+        with mock.patch("subprocess.run", side_effect=_comprobar_py_lento()):
+            salida = recuperar(self.home)
+        self.assertEqual(salida["accion"], "no_medido", salida)
+        self.assertIn("comprobar.py", salida["causa"])
+        self.assertIn("120 s", salida["causa"])
+        self.assertEqual(asignar(self.home), self.nueva)
+
+    def test_aplicar_sin_medir_rechaza_y_su_motivo_dice_que_no_se_midio(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+
+        with mock.patch("subprocess.run", side_effect=_comprobar_py_lento()):
+            salida = aplicar(self.home, self.nueva, sin_turnos=True)
+        self.assertEqual(salida["accion"], "rechazada", salida)
+        self.assertIn("no se midio", salida["motivo"])
+        self.assertIn("comprobar.py", salida["motivo"])
+        candidata = json.loads((self.home / "candidata.json").read_text(encoding="utf-8"))
+        self.assertEqual(candidata["motivo"], salida["motivo"])
+        self.assertEqual(asignar(self.home), self.buena)
+        nota = json.loads((self.home / "sin-medir.json").read_text(encoding="utf-8"))
+        self.assertEqual((nota["generacion"], nota["operacion"]), (self.nueva, "aplicar"))
+
+    def test_una_espera_vencida_sin_tope_sigue_sin_medir(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+        self.assertEqual(aplicar(self.home, self.nueva, sin_turnos=True)["accion"], "aplicada")
+
+        with mock.patch("subprocess.run", side_effect=_comprobar_py_lento(sin_tope=True)):
+            salida = recuperar(self.home)
+        self.assertEqual(salida["accion"], "no_medido", salida)
+        self.assertIn("comprobar.py", salida["causa"])
+        self.assertIn("no se midio", salida["causa"])
+        self.assertIsNone(json.loads((self.home / "sin-medir.json").read_text(encoding="utf-8"))["tope"])
+        self.assertEqual(asignar(self.home), self.nueva)
+
+    def test_lo_que_no_se_midio_queda_anotado_hasta_que_se_mide(self) -> None:
+        from motor.flota.cli import main
+
+        aplicar(self.home, self.buena, sin_turnos=True)
+        self.assertEqual(aplicar(self.home, self.nueva, sin_turnos=True)["accion"], "aplicada")
+        anotado = self.home / "sin-medir.json"
+
+        with mock.patch("subprocess.run", side_effect=_comprobar_py_lento()):
+            with contextlib.redirect_stdout(io.StringIO()) as impreso:
+                codigo = main(["recuperar", "--home", str(self.home)])
+        self.assertEqual(codigo, 3, impreso.getvalue())
+        self.assertEqual(json.loads(impreso.getvalue())["accion"], "no_medido")
+        nota = json.loads(anotado.read_text(encoding="utf-8"))
+        self.assertEqual(nota["generacion"], self.nueva)
+        self.assertEqual(nota["operacion"], "recuperar")
+        self.assertIn("comprobar.py", nota["orden"])
+        self.assertEqual(nota["tope"], 120)
+        self.assertIn("no se midio", nota["causa"])
+        datetime.fromisoformat(nota["hora"])
+
+        with contextlib.redirect_stdout(io.StringIO()) as impreso:
+            codigo = main(["recuperar", "--home", str(self.home)])
+        self.assertEqual(codigo, 0, impreso.getvalue())
+        self.assertFalse(anotado.exists())
+        self.assertEqual(asignar(self.home), self.nueva)
 
     def _encargo_con_trabajador(self, clave: str):
         from motor.encargos.ciclo import ahora_iso, recibir
