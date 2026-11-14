@@ -204,6 +204,42 @@ class ReversaFlota(unittest.TestCase):
                 self.assertEqual(self._marca_vigente(), "nueva\n")
                 self.assertEqual(sorted(os.listdir(self.home)), antes)
 
+    def test_el_respaldo_de_windows_no_pierde_actual_si_el_cambio_falla(self) -> None:
+        class FalloDeWindows(PermissionError):
+            def __init__(self, winerror: int) -> None:
+                super().__init__(errno.EACCES, "Access is denied")
+                self.winerror = winerror
+
+        reemplazar = os.replace
+
+        def como_windows(*winerrors: int):
+            fallos = [FalloDeWindows(codigo) for codigo in winerrors]
+
+            def reemplazo(origen, destino, *args, **kwargs):
+                if Path(destino).name == "actual" and fallos:
+                    raise fallos.pop(0)
+                return reemplazar(origen, destino, *args, **kwargs)
+
+            return reemplazo
+
+        casos = (
+            ("falla el reemplazo tras apartar el enlace", (5, 32)),
+            ("un permiso que no es el del enlace de directorio", (32,)),
+        )
+        for nombre, winerrors in casos:
+            with self.subTest(caso=nombre):
+                aplicar(self.home, self.buena, sin_turnos=True)
+                antes = sorted(os.listdir(self.home))
+                with mock.patch.object(os, "replace", side_effect=como_windows(*winerrors)):
+                    with self.assertRaises(PermissionError):
+                        aplicar(self.home, self.nueva, sin_turnos=True)
+                self.assertEqual(self._marca_vigente(), "buena\n")
+                self.assertEqual(asignar(self.home), self.buena)
+
+                self.assertEqual(recuperar(self.home, sin_turnos=True)["accion"], "completo")
+                self.assertEqual(self._marca_vigente(), "nueva\n")
+                self.assertEqual(sorted(os.listdir(self.home)), antes)
+
     def test_sin_actual_con_una_instalacion_completa_asignar_no_cae_al_clon_y_nombra_como_reponerlo(self) -> None:
         aplicar(self.home, self.buena, sin_turnos=True)
         aplicar(self.home, self.nueva, sin_turnos=True)
