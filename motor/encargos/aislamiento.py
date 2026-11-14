@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -33,10 +34,24 @@ ENTORNO_DEL_AGENTE = "MOTOR_ENTORNO_AGENTE"
 EMPUJE_DE_RECETA = "MOTOR_EMPUJE_DE_RECETA"
 GUARDIA_GH = Path(__file__).resolve().parent.parent / "shims" / "gh_guard.py"
 TOKEN_DE_AGENTES = "github-agentes.token"
-# Lo que el supervisor puede tener y el agente nunca hereda: la salida de la receta de despliegue
-# y los tokens de GitHub, con los nombres que gh y otras herramientas toman del entorno.
+# GitHub lo rechaza con 401. Sin token de agentes va en GH_TOKEN: gh sin GH_TOKEN busca un token en
+# el llavero de la máquina aunque GH_CONFIG_DIR apunte a otra carpeta.
+TOKEN_RECHAZADO = "sin-token-de-agentes"
+# Lo que el supervisor puede tener y el agente nunca hereda: la salida de la receta de despliegue,
+# los tokens de GitHub con los nombres que gh y otras herramientas toman del entorno, los askpass
+# que git consulta antes de mirar GIT_TERMINAL_PROMPT, y los `-c` de un git padre, que git lee
+# después de GIT_CONFIG_COUNT y pisarían lo que el motor pone ahí.
 _NO_SE_HEREDA = frozenset(
-    {EMPUJE_DE_RECETA, "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
+    {
+        EMPUJE_DE_RECETA,
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_CONFIG_PARAMETERS",
+    }
 )
 # Lee GH_TOKEN al correr: el token no aparece en la línea de órdenes del sh que lo ejecuta.
 _AYUDANTE_GIT = (
@@ -53,7 +68,11 @@ def delta_de_entorno(comando: ComandoAislado) -> DeltaDeEntorno:
     """Lo que el motor añade o cambia (el temporal del intento, la suscripción, el intérprete en
     el PATH, el token de agentes) y lo que quita (`_NO_SE_HEREDA`). Viaja al wrapper en
     `ENTORNO_DEL_AGENTE`, nunca por disco: trae las llaves de las suscripciones. El resto lo
-    hereda el agente del supervisor."""
+    hereda el agente del supervisor, y por eso solo hay delta del lanzamiento directo."""
+    if comando.mecanismo != MECANISMO_DIRECTO:
+        raise ValueError(
+            f"el delta del entorno es del lanzamiento directo, no de {comando.mecanismo}"
+        )
     quitadas: DeltaDeEntorno = {
         clave: None for clave in os.environ if clave not in comando.entorno
     }
@@ -212,28 +231,54 @@ def instalar_pre_push(espacio: Path, ramas: tuple[str, ...]) -> None:
         print(f"pre-push del motor sin instalar en {ganchos}: {exc}", file=sys.stderr)
 
 
+def token_de_agentes(base: Path) -> tuple[str, str]:
+    """El token de solo lectura de los agentes en `base`, o "" y por qué no sirve, sin el valor.
+    Como `secretos.env`, en POSIX no sirve si lo pueden leer el grupo u otros."""
+    ruta = base / TOKEN_DE_AGENTES
+    try:
+        if os.name == "posix" and stat.S_IMODE(ruta.stat().st_mode) & 0o077:
+            return "", f"{ruta} tiene permisos abiertos; debe ser 600"
+        token = leer_texto(ruta).strip()
+    except FileNotFoundError:
+        return "", f"falta {ruta}"
+    except (OSError, ValueError) as exc:
+        return "", f"{ruta} no se puede leer: {type(exc).__name__}"
+    return token, "" if token else f"{ruta} está vacío"
+
+
+def _primera_entrada_libre(env: dict[str, str]) -> int:
+    """Dónde empiezan las entradas del motor en `GIT_CONFIG_*`: detrás de las que trae el
+    supervisor. git no acepta un contador que no sea número, así que el agente no lo hereda."""
+    crudo = env.get("GIT_CONFIG_COUNT", "")
+    if crudo.isdecimal():
+        return int(crudo)
+    if crudo:
+        print("GIT_CONFIG_COUNT heredado no es un número: el agente no lo hereda", file=sys.stderr)
+    return 0
+
+
 def _github_de_solo_lectura(env: dict[str, str], base: Path, runtime: Path) -> None:
     """`gh` y `git` del agente llegan a github.com con el token de solo lectura de la base y con
     nada de la sesión del usuario: `gh` lee su carpeta del runtime y `git` descarta los ayudantes
-    de credenciales heredados y pasa las URL de ssh a https. Sin token legible el agente no tiene
-    ninguna credencial de GitHub, git no pregunta, y la bitácora del supervisor dice por qué."""
-    ruta = base / TOKEN_DE_AGENTES
-    try:
-        token, causa = leer_texto(ruta).strip(), "está vacío"
-    except (OSError, ValueError) as exc:
-        token, causa = "", f"no se puede leer: {type(exc).__name__}"
+    de credenciales, el askpass y las cabeceras heredados, y pasa las URL de ssh a https. Sin token
+    que sirva, `gh` recibe uno que GitHub rechaza, `git` no da credencial ni pregunta, y la
+    bitácora del supervisor dice por qué."""
+    token, causa = token_de_agentes(base)
+    # Un valor vacío deja sin efecto lo que traen la configuración del sistema, la del usuario y
+    # el GIT_CONFIG_* del supervisor.
     git = [
-        # Un ayudante vacío descarta los que vienen de la configuración del sistema y del usuario.
         ("credential.https://github.com.helper", ""),
+        ("core.askPass", ""),
+        ("http.https://github.com/.extraHeader", ""),
         ("url.https://github.com/.insteadOf", "git@github.com:"),
         ("url.https://github.com/.insteadOf", "ssh://git@github.com/"),
     ]
     if token:
-        env["GH_TOKEN"] = env["GITHUB_TOKEN"] = token
         git.append(("credential.https://github.com.helper", _AYUDANTE_GIT))
     else:
-        print(f"el agente arranca sin credencial de GitHub: {ruta} {causa}", file=sys.stderr)
-    previas = int(env.get("GIT_CONFIG_COUNT") or 0)
+        print(f"el agente arranca sin credencial de GitHub: {causa}", file=sys.stderr)
+    env["GH_TOKEN"] = env["GITHUB_TOKEN"] = token or TOKEN_RECHAZADO
+    previas = _primera_entrada_libre(env)
     for n, (clave, valor) in enumerate(git, previas):
         env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"] = clave, valor
     carpeta = runtime / "gh"
