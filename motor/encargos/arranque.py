@@ -484,15 +484,16 @@ def crear_agente(spec: dict, d: Path, opciones: dict):
     """Crea el proceso del agente con lanzamiento directo, sin jaula.
 
     El wrapper heredó el entorno del supervisor al ser lanzado y `spec["env"]`
-    trae solo lo que el motor añade o cambia. La salida de la receta de
-    despliegue no llega al agente aunque el supervisor la tenga. En Windows el
-    Job de la plataforma es solo para cerrar el árbol al terminar: sin límites
-    de memoria, de procesos ni de permisos.
+    trae lo que el motor añade o cambia, y con None lo que quita: la salida de
+    la receta de despliegue y las credenciales de GitHub del supervisor no
+    llegan al agente. En Windows el Job de la plataforma es solo para cerrar el
+    árbol al terminar: sin límites de memoria, de procesos ni de permisos.
     """
-    from motor.encargos.aislamiento import EMPUJE_DE_RECETA
-
-    entorno = {**os.environ, **spec["env"]}
-    entorno.pop(EMPUJE_DE_RECETA, None)
+    entorno = {
+        clave: valor
+        for clave, valor in {**os.environ, **spec["env"]}.items()
+        if valor is not None
+    }
     opciones = {**opciones, "env": entorno}
     if os.name == "nt":
         return plataforma.crear_proceso(

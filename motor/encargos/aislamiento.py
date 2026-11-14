@@ -32,22 +32,39 @@ MECANISMO_DIRECTO = "directo"
 ENTORNO_DEL_AGENTE = "MOTOR_ENTORNO_AGENTE"
 EMPUJE_DE_RECETA = "MOTOR_EMPUJE_DE_RECETA"
 GUARDIA_GH = Path(__file__).resolve().parent.parent / "shims" / "gh_guard.py"
+TOKEN_DE_AGENTES = "github-agentes.token"
+# Lo que el supervisor puede tener y el agente nunca hereda: la salida de la receta de despliegue
+# y los tokens de GitHub, con los nombres que gh y otras herramientas toman del entorno.
+_NO_SE_HEREDA = frozenset(
+    {EMPUJE_DE_RECETA, "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
+)
+# Lee GH_TOKEN al correr: el token no aparece en la línea de órdenes del sh que lo ejecuta.
+_AYUDANTE_GIT = (
+    "!f() { if [ \"$1\" = get ]; then "
+    "printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; fi; }; f"
+)
+
+# Lo que el motor cambia del entorno del supervisor para el agente: un valor pone o reemplaza,
+# None quita.
+DeltaDeEntorno = dict[str, str | None]
 
 
-def delta_de_entorno(comando: ComandoAislado) -> dict[str, str]:
-    """La parte del entorno que el motor añade o cambia (el temporal del intento, la suscripción,
-    el intérprete en el PATH). Viaja al wrapper en `ENTORNO_DEL_AGENTE`, nunca por disco: trae las
-    llaves de las suscripciones. El resto lo hereda el agente del supervisor."""
-    if comando.mecanismo != MECANISMO_DIRECTO:
-        return dict(comando.entorno)
-    return {
+def delta_de_entorno(comando: ComandoAislado) -> DeltaDeEntorno:
+    """Lo que el motor añade o cambia (el temporal del intento, la suscripción, el intérprete en
+    el PATH, el token de agentes) y lo que quita (`_NO_SE_HEREDA`). Viaja al wrapper en
+    `ENTORNO_DEL_AGENTE`, nunca por disco: trae las llaves de las suscripciones. El resto lo
+    hereda el agente del supervisor."""
+    quitadas: DeltaDeEntorno = {
+        clave: None for clave in os.environ if clave not in comando.entorno
+    }
+    return quitadas | {
         clave: valor
         for clave, valor in comando.entorno.items()
         if os.environ.get(clave) != valor
     }
 
 
-def entorno_recibido() -> dict[str, str]:
+def entorno_recibido() -> DeltaDeEntorno:
     """El delta que `lanzar_administrado` dejó en el entorno del wrapper. Lo saca de ahí para que
     el agente no lo herede."""
     crudo = os.environ.pop(ENTORNO_DEL_AGENTE, None)
@@ -195,6 +212,39 @@ def instalar_pre_push(espacio: Path, ramas: tuple[str, ...]) -> None:
         print(f"pre-push del motor sin instalar en {ganchos}: {exc}", file=sys.stderr)
 
 
+def _github_de_solo_lectura(env: dict[str, str], base: Path, runtime: Path) -> None:
+    """`gh` y `git` del agente llegan a github.com con el token de solo lectura de la base y con
+    nada de la sesión del usuario: `gh` lee su carpeta del runtime y `git` descarta los ayudantes
+    de credenciales heredados y pasa las URL de ssh a https. Sin token legible el agente no tiene
+    ninguna credencial de GitHub, git no pregunta, y la bitácora del supervisor dice por qué."""
+    ruta = base / TOKEN_DE_AGENTES
+    try:
+        token, causa = leer_texto(ruta).strip(), "está vacío"
+    except (OSError, ValueError) as exc:
+        token, causa = "", f"no se puede leer: {type(exc).__name__}"
+    git = [
+        # Un ayudante vacío descarta los que vienen de la configuración del sistema y del usuario.
+        ("credential.https://github.com.helper", ""),
+        ("url.https://github.com/.insteadOf", "git@github.com:"),
+        ("url.https://github.com/.insteadOf", "ssh://git@github.com/"),
+    ]
+    if token:
+        env["GH_TOKEN"] = env["GITHUB_TOKEN"] = token
+        git.append(("credential.https://github.com.helper", _AYUDANTE_GIT))
+    else:
+        print(f"el agente arranca sin credencial de GitHub: {ruta} {causa}", file=sys.stderr)
+    previas = int(env.get("GIT_CONFIG_COUNT") or 0)
+    for n, (clave, valor) in enumerate(git, previas):
+        env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"] = clave, valor
+    carpeta = runtime / "gh"
+    carpeta.mkdir(parents=True, exist_ok=True)
+    env.update(
+        GH_CONFIG_DIR=str(carpeta),
+        GIT_CONFIG_COUNT=str(previas + len(git)),
+        GIT_TERMINAL_PROMPT="0",
+    )
+
+
 def temporal_de(runtime: Path) -> Path:
     """Temporal propio de una corrida: vacío, dentro de su runtime."""
     temporal = runtime / "tmp"
@@ -220,7 +270,7 @@ def _entorno(
     # El agente trabaja con el entorno del usuario, como él (decisión del
     # 2-nov). Solo se aparta lo que el motor necesita para darle a cada agente
     # su suscripción y su temporal, que no bloquea nada.
-    env = dict(os.environ)
+    env = {clave: valor for clave, valor in os.environ.items() if clave not in _NO_SE_HEREDA}
     if os.name == "nt":
         # El PATH conserva el intérprete del supervisor por delante.
         env["PATH"] = (
@@ -230,7 +280,6 @@ def _entorno(
         )
     # Solo el motor integra, y después de la revisión independiente.
     env["PATH"] = str(carpeta_de_guardia(runtime)) + os.pathsep + env.get("PATH", "")
-    env.pop(EMPUJE_DE_RECETA, None)
     temporal = temporal_de(runtime)
     env.update(
         TMPDIR=str(temporal),
@@ -474,6 +523,7 @@ def aislar(
         instalar_pre_push(espacio, ramas)
     nombre = agente or Path(cmd[0]).stem.lower()
     env = _entorno(runtime, suscripcion, cmd, agente=agente)
+    _github_de_solo_lectura(env, espacio.parent.parent, runtime)
     if nombre in ("antigravity", "agy"):
         # El hook que niega las herramientas de espera y agendado vive en el
         # runtime del intento. `--add-dir` lo suma a los workspaces de agy.
