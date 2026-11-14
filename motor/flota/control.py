@@ -401,10 +401,18 @@ def _turnos_de_activacion(
 
 
 def _poner_enlace(home: Path, gen: Path) -> None:
+    actual = home / "actual"
     temporal = home / ".actual.tmp"
     temporal.unlink(missing_ok=True)
     temporal.symlink_to(gen, target_is_directory=True)
-    os.replace(temporal, home / "actual")
+    try:
+        os.replace(temporal, actual)
+    except PermissionError:
+        if os.name != "nt" or not actual.is_symlink():
+            raise
+        # Windows no reemplaza un enlace de directorio (WinError 5): queda un instante sin actual.
+        actual.unlink()
+        os.replace(temporal, actual)
 
 
 def _enlace(home: Path, gen: Path) -> None:
