@@ -327,6 +327,16 @@ def _git_de_ensayo(semilla: Path, args: list[str], donde: Path | None = None) ->
         )
 
 
+def _con_revisor(semilla: Path) -> None:
+    """La semilla trae el worker de ai-review. Sin el revisor en el repo la
+    entrega no espera a DeepSeek, y estas pruebas modelan esa espera."""
+    flujos = semilla / ".github" / "workflows"
+    flujos.mkdir(parents=True)
+    (flujos / "ai-review-worker.yml").write_text(
+        "name: ai-review-worker\non:\n  workflow_dispatch:\n"
+    )
+
+
 def _entrega_pr(
     caso, tmp: str, clave: str, gh_cls, config: dict | None = None,
     nivel: str = "pr", texto: str = "agrega saludo.txt con hola",
@@ -342,6 +352,7 @@ def _entrega_pr(
     semilla = raiz / "semilla"
     semilla.mkdir()
     (semilla / "base.txt").write_text("base\n")
+    _con_revisor(semilla)
     _git_de_ensayo(semilla, ["init", "--bare", "-b", "main", "--quiet", str(bare)])
     # El receive-pack de un push local lee la config del repo, no la del
     # ambiente: sin longpaths no puede escribir objetos bajo el temporal
@@ -813,7 +824,7 @@ class FlujoRevisiones(unittest.TestCase):
             e = r.incorporar()
             self.assertEqual(e.estado, "terminado")
 
-    def test_nivel_pr_con_github_falso_hasta_deepseek(self):
+    def test_nivel_pr_con_github_falso_hasta_deepseek(self):  # no-roja-en-base: solo declara el revisor en la semilla; la espera que prueba es la de la base
         with tempfile.TemporaryDirectory() as tmp:
             raiz = Path(tmp)
             bare = raiz / "repo.git"
@@ -826,6 +837,7 @@ class FlujoRevisiones(unittest.TestCase):
                 ["git", "clone", "--quiet", str(bare), str(semilla)], check=True
             )
             (semilla / "base.txt").write_text("base\n")
+            _con_revisor(semilla)
             for args in (
                 ["add", "-A"],
                 [
@@ -2371,6 +2383,7 @@ class MedianosDeepseekFlujo(unittest.TestCase):
         semilla = raiz / "semilla"
         subprocess.run(["git", "clone", "--quiet", str(bare), str(semilla)], check=True)
         (semilla / "base.txt").write_text("base\n")
+        _con_revisor(semilla)
         for args in (
             ["add", "-A"],
             ["-c", "user.name=t", "-c", "user.email=t@l", "commit", "--quiet", "-m", "base"],
