@@ -10,7 +10,9 @@ igual y suelta la compuerta. Cada corte queda en `cortes.json`. Las filas "no
 pierde" y "no repite" salen de esa carpeta, del registro y de GitHub.
 
 El corte mata solo al supervisor: el turno y el trabajador de despliegue que lanzó
-viven en su propia sesión y siguen. Reiniciar la máquina mataría encargos reales.
+viven en su propia sesión y siguen. Mide una caída del supervisor con el proceso en
+curso vivo, no un corte de energía, que mataría también a esos dos. Reiniciar la
+máquina mataría encargos reales.
 """
 
 from __future__ import annotations
@@ -62,6 +64,22 @@ def por_que_no_corta(pedido: bool, sistema: str) -> str:
 
 def carpeta(base: Path, encargo: str) -> Path:
     return base / APAGON / encargo
+
+
+def por_que_no_vuelve_a_cortar(corrida: str, carpeta_: Path, cerrado: bool) -> str:
+    """Por qué la corrida repetida no corta otra vez el encargo con cortes que retoma; vacío
+    si es la primera vez. Lo que dejó la anterior (compuertas que esperan y ya se soltaron,
+    sus cortes y sus invocaciones) no se puede volver a medir como un corte nuevo."""
+    if cerrado:
+        que = "ya cerró"
+    elif carpeta_.is_dir() and any(carpeta_.iterdir()):
+        que = "su carpeta ya trae lo que anotó"
+    else:
+        return ""
+    return (
+        f"la corrida {corrida} ya hizo el encargo con cortes {carpeta_.name}, y {que}:"
+        " no se corta dos veces; lanza otra --corrida"
+    )
 
 
 def _receta(*, anota: str, cuerpo: str) -> str:

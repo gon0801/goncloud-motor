@@ -28,8 +28,10 @@ Una corrida da estos pasos, en este orden (`Paso`):
 2. encargar: recibe un encargo de nivel desplegado contra el repo del canario,
    con la clave canario-<versión>-<máquina>-<corrida>, el que falla con la misma
    clave más -se-detiene y el del apagón con -apagon. La misma corrida retoma los
-   mismos encargos. A cada uno de esos dos le deja en `canario-escenarios/<id>.json`
-   su escenario, con su propia receta de despliegue: la del que falla
+   mismos encargos, pero no vuelve a cortar el del apagón si ya cerró o su carpeta
+   ya trae lo que anotó: sus filas quedan sin medir y dicen por qué
+   (`canario_apagon.por_que_no_vuelve_a_cortar`). A cada uno de esos dos le deja
+   en `canario-escenarios/<id>.json` su escenario, con su propia receta de despliegue: la del que falla
    (`escenario_se_detiene`) tiene un checklist que siempre sale rojo; la del apagón
    (`canario_apagon.escenario_apagon`) espera su compuerta.
 3. lanzar: un supervisor propio con `--agente ensayo` desde el árbol, con
@@ -928,7 +930,7 @@ def correr(p: Pedido, gh: canario_observar.LectorPR, supervisor: Sequence[str] |
     encargo = encargar(p, clave)
     vencen = {encargo: vence(inicio, esperado.topes.minutos_termina)}
     claves = {encargo: clave}
-    detencion = apagon = ""
+    detencion = apagon = cortado = ""
     sin_apagon = canario_apagon.por_que_no_corta(p.apagon, os.name)
     lanzado: Supervisor | None = None
     esperas: dict[str, Espera] = {}
@@ -947,10 +949,14 @@ def correr(p: Pedido, gh: canario_observar.LectorPR, supervisor: Sequence[str] |
             apagon = encargar(p, f"{clave}-{canario_apagon.CARPETA}", canario_apagon.TEXTO)
             claves[apagon] = f"{clave}-{canario_apagon.CARPETA}"
             vencen[apagon] = vence(arranque, esperado.topes.minutos_termina)
-            dejar_escenario(
-                p, apagon, canario_apagon.escenario_apagon(maquina, apagon), canario_apagon.carpeta(p.base, apagon),
-            )
-            _avance("encargar", f"{apagon} con la clave {claves[apagon]}: le corto el supervisor dos veces")
+            cortes = canario_apagon.carpeta(p.base, apagon)
+            sin_apagon = canario_apagon.por_que_no_vuelve_a_cortar(p.corrida, cortes, apagon in _cerrados(p.base))
+            if sin_apagon:
+                _avance("encargar", f"{apagon} con la clave {claves[apagon]}: {sin_apagon}")
+            else:
+                cortado = apagon
+                dejar_escenario(p, apagon, canario_apagon.escenario_apagon(maquina, apagon), cortes)
+                _avance("encargar", f"{apagon} con la clave {claves[apagon]}: le corto el supervisor dos veces")
         lanzado = Supervisor(
             p,
             supervisor or [
@@ -959,7 +965,7 @@ def correr(p: Pedido, gh: canario_observar.LectorPR, supervisor: Sequence[str] |
             {canario_apagon.ENTORNO: str(canario_apagon.carpeta(p.base, apagon))} if apagon else {},
         )
         _avance("lanzar", f"supervisor {lanzado.proc['pid']}")
-        esperas = esperar(p, lanzado, vencen, canario_apagon.carpeta(p.base, apagon) if apagon else None)
+        esperas = esperar(p, lanzado, vencen, canario_apagon.carpeta(p.base, cortado) if cortado else None)
     except Exception as exc:
         fallo = _fallo(exc)
     finally:
@@ -975,7 +981,7 @@ def correr(p: Pedido, gh: canario_observar.LectorPR, supervisor: Sequence[str] |
     if all(c.listo for c in cierres.values()):
         if fallo is None:
             try:
-                filas = medir(p, encargo, detencion, apagon, sin_apagon, maquina, gh, esperado)
+                filas = medir(p, encargo, detencion, cortado, sin_apagon, maquina, gh, esperado)
             except Exception as exc:
                 fallo = _fallo(exc)
         limpieza = tuple(b for e in vencen for b in limpiar(p, e))
