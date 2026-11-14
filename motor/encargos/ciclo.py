@@ -117,7 +117,7 @@ from .politica import (
     CERRADOS_SONDEO_RAPIDO_S,
     CERRADOS_VENTANA_S,
 )
-from .revisor_deepseek import revisor_deepseek, texto_de_omision
+from .revisor_deepseek import omision_por_lectura_fallida, revisor_deepseek, texto_de_omision
 from .resultado import Avanzo, Devolver, Espera, NecesitaAgente, Resultado, permite_lanzar
 from .suscripciones import CuentaNoDisponible
 
@@ -10134,7 +10134,6 @@ def _paso_entrega_paso(
             hora,
         )
         minutos = _minutos_desde(primera, hora)
-        revisor = revisor_deepseek(espacio, sha, base)
         lectura_ds = _leer_deepseek(
             gh, enc.entrega.repo, numero, sha, primera
         )
@@ -10146,16 +10145,15 @@ def _paso_entrega_paso(
                 "reintentar la lectura de DeepSeek para el mismo SHA",
                 hora, f"deepseek-leer-{sha[:12]}",
             )
-            if minutos >= revisor.espera_min:
-                texto = texto_de_omision(
-                    revisor, sha, minutos, f" (no se pudo leer: {str(exc)[:200]})"
-                )
+            texto = omision_por_lectura_fallida(sha, minutos, exc)
+            if texto:
                 enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
                 if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
                     return enc, Avanzo()
                 return _paso_entrega_paso(registro, enc, gh, hora)
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return _con_espera(registro.fold(enc.id) or enc)
+        revisor = revisor_deepseek(espacio, sha, base)
         if isinstance(lectura_ds, PendienteLectura):
             leidos: list[dict] = []
             comentarios: list[dict] = []

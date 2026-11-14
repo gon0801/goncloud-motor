@@ -70,6 +70,17 @@ def texto_de_omision(
     )
 
 
+def omision_por_lectura_fallida(sha: str, minutos: float, causa: str) -> str | None:
+    """Una lectura fallida no prueba que falte el revisor: espera el tope con o
+    sin él. None mientras no pasa; después, el texto de la omisión."""
+    if minutos < TOPE_DEEPSEEK_MIN:
+        return None
+    return (
+        f"sin revisión de DeepSeek para el SHA {sha[:12]} tras {int(minutos)} min"
+        f" (no se pudo leer: {causa[:200]}); la fase sigue como si no hubiera hallazgos"
+    )
+
+
 def causa_de_la_omision(motivo: str) -> str:
     """La causa que dice el motivo de una omisión registrada."""
     if f"({CAUSA_SIN_REVISOR}:" in motivo:
