@@ -43,8 +43,8 @@ case "$2" in
     esac
     filas="[{\"nombre\": \"termina\", \"resultado\": \"$resultado\", \"esperado\": \"pasa\", \"discrepancia\": \"\", \"observado\": \"\"}]"
     if [ "$2" = sin_filas ]; then filas='[]' coincide=false tabla=''; fi
-    printf '{"maquina": "%s", "version": "%s", "encargo": "enc_%s", "fin": "terminado", "segundos": 2121, "cierre": {"estado": "terminado", "parada": "", "supervisor": "ausente", "vivos": [], "fallas": []}, "detencion": {"clave": "c", "encargo": "enc_%s_falla", "fin": "terminado", "estado": "terminado", "cierre": {"estado": "terminado", "parada": "", "supervisor": "ausente", "vivos": [], "fallas": []}}, "filas": %s, "limpieza": [{"resto": "espacio/enc_%s", "resultado": "%s", "causa": ""}], "recogida": [], "paso": "", "error": "", "coincide": %s, "tabla": "%s", "codigo": %s}\n' \
-      "$m" "$version" "$m" "$m" "$filas" "$m" "$limpieza" "$coincide" "$tabla" "$codigo"
+    printf '{"maquina": "%s", "version": "%s", "encargo": "enc_%s", "fin": "terminado", "segundos": 2121, "cierre": {"estado": "terminado", "parada": "", "supervisor": "ausente", "vivos": [], "fallas": []}, "detencion": {"clave": "c", "encargo": "enc_%s_falla", "fin": "terminado", "estado": "terminado", "cierre": {"estado": "terminado", "parada": "", "supervisor": "ausente", "vivos": [], "fallas": []}}, "apagon": {"clave": "c", "encargo": "enc_%s_corte", "fin": "terminado", "estado": "terminado", "cierre": {"estado": "terminado", "parada": "", "supervisor": "ausente", "vivos": [], "fallas": []}}, "filas": %s, "limpieza": [{"resto": "espacio/enc_%s", "resultado": "%s", "causa": ""}], "recogida": [], "paso": "", "error": "", "coincide": %s, "tabla": "%s", "codigo": %s}\n' \
+      "$m" "$version" "$m" "$m" "$m" "$filas" "$m" "$limpieza" "$coincide" "$tabla" "$codigo"
     exit "$codigo" ;;
   no_pudo)
     printf '{"paso": "encargar", "error": "motor encargar salió 1", "codigo": 2}\n'
@@ -136,6 +136,7 @@ for m in mac mini pc; do
   contiene "$m: su tabla" "$S/salida" "## $m: coincide"
   contiene "$m: su encargo" "$S/salida" "encargo enc_$m: terminado en 35 min 21 s"
   contiene "$m: el que falla a propósito" "$S/salida" "encargo que falla a propósito enc_${m}_falla: terminado"
+  contiene "$m: el del apagón" "$S/salida" "encargo con cortes enc_${m}_corte: terminado"
   contiene "$m: sus avances, con su nombre" "$S/salida" "  $m | canario [preparar] base lista; $m"
 done
 corrida="$(sed -n 's/.*corrida \(flota-[0-9TZ]*\).*/\1/p' "$S/salida" | head -n 1)"

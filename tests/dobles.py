@@ -145,3 +145,15 @@ def github_fijo(
     gh.motivo = motivo
     gh.sha = sha
     return gh
+
+
+class GitHubDelCanario(FakeGitHub):
+    """El doble más lo que solo lee el canario de encargos (`ops.canario_observar.GitHubDelCanario`):
+    cada PR de una rama, en cualquier estado."""
+
+    def prs_de_la_rama(self, repo: str, rama: str) -> tuple[tuple[int, str], ...]:
+        return tuple(
+            (int(pr["numero"]), str(pr["estado"]))
+            for clave, pr in self._cargar()["prs"].items()
+            if clave.startswith(f"{repo}#{rama}#")
+        )

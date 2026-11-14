@@ -849,12 +849,14 @@ class LoEsperado(unittest.TestCase):
             self.assertEqual(fila.discrepancia, discrepancia, (esperado, fila.resultado))
 
     def test_el_esperado_del_repo_nombra_cada_fila(self):
-        esperado = leer_esperado(ESPERADO)
+        esperado = leer_esperado(ESPERADO, windows=False)
         self.assertEqual(set(esperado.filas), set(get_args(NombreFila)))
         self.assertEqual(esperado.filas["limpio"], "falla")
         self.assertEqual(esperado.filas["se detiene"], "pasa")
+        en_windows = leer_esperado(ESPERADO, windows=True)
         for nombre in ("no pierde", "no repite"):
-            self.assertEqual(esperado.filas[nombre], "no medido")
+            self.assertEqual(esperado.filas[nombre], "pasa")
+            self.assertEqual(en_windows.filas[nombre], "no medido")
 
     def test_en_windows_las_filas_que_no_se_miden_se_esperan_sin_medir(self):
         tmp = Path(tempfile.mkdtemp(prefix="esperado-"))
