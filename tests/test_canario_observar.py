@@ -37,7 +37,7 @@ from tests.test_compuerta_e2e import (
     _trabajador_contenido,
 )
 
-TOPES = Topes(minutos_termina=90, minutos=45, turnos_por_rol=2, rondas=1)
+TOPES = Topes(minutos_termina=90, minutos=45, turnos_por_rol=2, rondas=1, minutos_se_detiene=15)
 
 
 def _ahora() -> str:
@@ -292,16 +292,21 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         filas = {f.nombre: f.resultado for f in juzgar(obs, _esperado())}
         ruta = self.tmp / "esperado.json"
         argv = [self.banco.ident, "--base", str(self.banco.base), "--esperado", str(ruta)]
-        topes = {"minutos_termina": 90, "minutos": 45, "turnos_por_rol": 2, "rondas": 1}
+        topes = {
+            "minutos_termina": 90, "minutos": 45, "turnos_por_rol": 2, "rondas": 1,
+            "minutos_se_detiene": 15,
+        }
 
-        ruta.write_text(json.dumps({"filas": filas, "topes": topes}), encoding="utf-8")
+        def esperado(filas: dict[str, str]) -> str:
+            razones = {nombre: "falla conocida" for nombre, r in filas.items() if r == "falla"}
+            return json.dumps({"filas": filas, "razones": razones, "topes": topes})
+
+        ruta.write_text(esperado(filas), encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(main(argv, gh=self.banco.gh), 0)
 
         otro = "pasa" if filas["limpio"] != "pasa" else "falla"
-        ruta.write_text(
-            json.dumps({"filas": {**filas, "limpio": otro}, "topes": topes}), encoding="utf-8",
-        )
+        ruta.write_text(esperado({**filas, "limpio": otro}), encoding="utf-8")
         salida = io.StringIO()
         with contextlib.redirect_stdout(salida):
             self.assertEqual(main(argv, gh=self.banco.gh), 1)

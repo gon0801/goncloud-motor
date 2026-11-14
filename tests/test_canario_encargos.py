@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import get_args
 
 from motor import plataforma
-from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, VersionProducto
+from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, Impedimento, VersionProducto
 from motor.encargos.politica import CERRADOS_VENTANA_S
 from ops.canario_encargos import (
     ESPERADO,
@@ -31,6 +31,8 @@ from ops.canario_encargos import (
     PR,
     TABLA,
     ArchivoDesplegado,
+    Despliegue,
+    Detencion,
     Esperado,
     FaseVista,
     NoPliega,
@@ -62,7 +64,7 @@ OTRO = "b" * 40
 RECIBIDO = "2026-01-10T10:00:00Z"
 CIERRE = "2026-01-10T10:20:00Z"
 HORA = "2026-01-10T10:30:00Z"
-TOPES = Topes(minutos_termina=90, minutos=45, turnos_por_rol=2, rondas=1)
+TOPES = Topes(minutos_termina=90, minutos=45, turnos_por_rol=2, rondas=1, minutos_se_detiene=15)
 NO_MEDIDAS = ("no pierde", "no repite", "se detiene")
 
 
@@ -493,6 +495,108 @@ class CuestaPoco(unittest.TestCase):
         self.assertIn("50 min (tope 45)", fila.observado)
 
 
+DESPLEGADO_Y_REVERTIDO = Despliegue("uno", "fallido", (("desplegar", 0), ("checklist", 1), ("rollback", 0)))
+
+
+def _detencion(**cambios) -> Detencion:
+    """El encargo cuyo checklist falla, como debe quedar: detenido solo a los 5 min,
+    con la causa escrita, el despliegue revertido y sin gastar de más."""
+    base = Detencion(
+        "enc_falla",
+        _pliegue(
+            estado="detenido", cierre="2026-01-10T10:05:00Z", completo=False,
+            fases=(FaseVista("uno", "trabajo", "integrado", False, True),),
+            causas=("el checklist de despliegue falló",),
+        ),
+        despliegues=(DESPLEGADO_Y_REVERTIDO,),
+        archivo=ArchivoDesplegado("se-detiene/m.txt", "enc_falla", None),
+    )
+    return dataclasses.replace(base, **cambios)
+
+
+def _hoy() -> Pliegue:
+    """Lo que hoy deja el motor: revierte, escribe la causa y termina como entrega parcial."""
+    bloqueada = FaseVista("uno", "bloqueada", "integrado", False, True, "despliegue sin verificar")
+    return _pliegue(
+        cierre="2026-01-10T10:05:00Z", completo=False, fases=(bloqueada,),
+        causas=("despliegue sin verificar (salida 1); rollback salida 0",),
+    )
+
+
+class SeDetiene(unittest.TestCase):
+    def test_sin_el_encargo_que_falla_no_se_mide(self):  # no-roja-en-base: la base tampoco mide la fila; la prueba fija que sin ese encargo no se inventa un resultado
+        self.assertEqual(_fila(_obs(), "se detiene").resultado, "no medido")
+
+    def test_cada_condicion_cuenta(self):
+        detenido = _detencion().pliegue
+        assert isinstance(detenido, Pliegue)
+        casos: tuple[tuple[str, Detencion, str, tuple[str, ...]], ...] = (
+            ("detenido solo, con causa, revertido y acotado", _detencion(), "pasa", (
+                "quedó detenido", "se paró solo en 5 min (tope 15 min)",
+                "dijo por qué: «el checklist de despliegue falló»",
+                "revirtió su despliegue (rollback salida 0) y se-detiene/m.txt ya no lo trae",
+                "turnos responsable 1, revisor 1 (tope 2 por rol)",
+            )),
+            ("hoy: entrega parcial", _detencion(pliegue=_hoy()), "falla", (
+                "quedó terminado como entrega parcial, no detenido; sí se paró solo",
+                "dijo por qué: «despliegue sin verificar (salida 1); rollback salida 0»",
+            )),
+            ("lo paró una orden", _detencion(pliegue=dataclasses.replace(detenido, ordenes=("parar",))),
+             "falla", ("no se paró solo: recibió la orden parar",)),
+            ("sigue trabajando", _detencion(pliegue=dataclasses.replace(detenido, estado="ejecutando")),
+             "falla", ("no se paró: sigue ejecutando",)),
+            ("se paró tarde",
+             _detencion(pliegue=dataclasses.replace(detenido, cierre="2026-01-10T10:20:00Z")),
+             "falla", ("tardó 20 min en pararse y el tope es 15 min",)),
+            ("sin causa", _detencion(pliegue=dataclasses.replace(detenido, causas=())),
+             "falla", ("no dejó escrita la causa",)),
+            ("checklist aprobado",
+             _detencion(despliegues=(Despliegue("uno", "aplicado", (("desplegar", 0), ("checklist", 0))),)),
+             "falla", ("su despliegue quedó aplicado",)),
+            ("rollback rojo",
+             _detencion(despliegues=(Despliegue("uno", "fallido", (("desplegar", 0), ("rollback", 1))),)),
+             "falla", ("el despliegue de la fase uno quedó sin revertir (rollback 1)",)),
+            ("sin rollback",
+             _detencion(despliegues=(Despliegue("uno", "incierto", (("desplegar", 0),)),)),
+             "falla", ("quedó sin revertir (rollback sin correr)",)),
+            ("el destino aún lo trae",
+             _detencion(archivo=ArchivoDesplegado("se-detiene/m.txt", "enc_falla", True)),
+             "falla", ("se-detiene/m.txt todavía trae lo desplegado",)),
+            ("gastó de más",
+             _detencion(pliegue=dataclasses.replace(detenido, turnos=(("responsable", 3),), rondas=2)),
+             "falla", ("gastó de más: turnos responsable 3 (tope 2 por rol)",)),
+            ("nunca desplegó", _detencion(despliegues=(Despliegue("uno", "esperando", ()),)),
+             "pasa", ("nunca desplegó",)),
+            ("recibos ilegibles", _detencion(despliegues=None),
+             "no medido", ("no pude leer sus recibos de despliegue",)),
+            ("fuera del registro", _detencion(pliegue=None),
+             "no medido", ("enc_falla, no está en el registro",)),
+            ("registro roto", _detencion(pliegue=NoPliega(4, "orden", "TransicionIlegal")),
+             "no medido", ("se rompe en el evento 4 (orden)",)),
+        )
+        for nombre, detencion, resultado, textos in casos:
+            with self.subTest(nombre):
+                fila = _fila(_obs(detencion=detencion), "se detiene")
+                self.assertEqual(fila.resultado, resultado, fila.observado)
+                for texto in textos:
+                    self.assertIn(texto, fila.observado)
+
+    def test_vista_trae_las_ordenes_y_las_causas_escritas(self):
+        e = _encargo(
+            Fase("uno", "r", evidencia="e", estado="bloqueada", bloqueo_causa="la receta falló"),
+            motivo="parada aceptada",
+            impedimentos=(Impedimento("despliegue:x", "despliegue sin verificar", "que se arregle"),),
+        )
+        eventos = [
+            *RECIBIDO_EV,
+            {"id": 2, "ts": RECIBIDO, "kind": "orden", "data": {"accion": "parar"}},
+            {"id": 3, "ts": RECIBIDO, "kind": "orden", "data": {"accion": "continuar"}},
+        ]
+        p = vista(e, eventos)
+        self.assertEqual(p.ordenes, ("parar", "continuar"))
+        self.assertEqual(p.causas, ("parada aceptada", "despliegue sin verificar"))
+
+
 class VersionYLegible(unittest.TestCase):
     def test_un_arbol_en_otro_sha_falla(self):
         fila = _fila(_obs(version=Version(SHA, OTRO, SHA)), "versión")
@@ -561,6 +665,23 @@ class LoEsperado(unittest.TestCase):
         self.assertEqual(esperado.filas["limpio"], "falla")
         for nombre in NO_MEDIDAS:
             self.assertEqual(esperado.filas[nombre], "no medido")
+
+    def test_una_falla_conocida_sin_su_razon_se_rechaza(self):
+        tmp = Path(tempfile.mkdtemp(prefix="esperado-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        ruta = tmp / "esperado.json"
+        for cambio in ("sin la razón", "razón vacía", "razón de una fila que no falla"):
+            datos = json.loads(ESPERADO.read_text(encoding="utf-8"))
+            if cambio == "sin la razón":
+                del datos["razones"]["limpio"]
+            elif cambio == "razón vacía":
+                datos["razones"]["limpio"] = " "
+            else:
+                datos["razones"]["termina"] = "no falla"
+            ruta.write_text(json.dumps(datos), encoding="utf-8")
+            with self.subTest(cambio), self.assertRaises(ValueError) as caso:
+                leer_esperado(ruta)
+            self.assertIn("razones", str(caso.exception))
 
     def test_un_esperado_al_que_le_falta_una_fila_se_rechaza(self):
         tmp = Path(tempfile.mkdtemp(prefix="esperado-"))
