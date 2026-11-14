@@ -178,13 +178,19 @@ def instalar_pre_push(espacio: Path, ramas: tuple[str, ...]) -> None:
         return
     try:
         ganchos.mkdir(parents=True, exist_ok=True)
-        gancho = ganchos / "pre-push"
-        if gancho.is_file() and _MARCA_PRE_PUSH.encode() not in gancho.read_bytes():
-            os.replace(gancho, ganchos / "pre-push.previo")
+        gancho, previo = ganchos / "pre-push", ganchos / "pre-push.previo"
         temporal = ganchos / ".pre-push.tmp"
         escribir_texto(temporal, _pre_push(ramas))
         temporal.chmod(0o755)
-        os.replace(temporal, gancho)
+        movido = gancho.is_file() and _MARCA_PRE_PUSH.encode() not in gancho.read_bytes()
+        if movido:
+            os.replace(gancho, previo)
+        try:
+            os.replace(temporal, gancho)
+        except OSError:
+            if movido:
+                os.replace(previo, gancho)
+            raise
     except OSError as exc:
         print(f"pre-push del motor sin instalar en {ganchos}: {exc}", file=sys.stderr)
 

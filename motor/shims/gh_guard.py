@@ -52,7 +52,14 @@ ACCIONES = (
             Rest("PUT", r"contents/.+"),
             Rest("DELETE", r"contents/.+"),
         ),
-        ("mergeBranch", "createRef", "updateRef", "updateRefs", "deleteRef"),
+        (
+            "mergeBranch",
+            "createRef",
+            "updateRef",
+            "updateRefs",
+            "deleteRef",
+            "createCommitOnBranch",
+        ),
     ),
     Accion(
         "gh pr close",
