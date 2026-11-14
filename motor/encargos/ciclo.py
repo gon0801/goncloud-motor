@@ -93,7 +93,7 @@ from .frontera import (
     leer_parada_local,
     turno,
 )
-from .registro import Evento, EventoIlegal, Registro
+from .registro import Evento, EventoIlegal, Rechazo, Registro
 from .devolucion import devolver, sin_avance
 from .contencion import _RACHA_BARRIDO, aparcado_por_barrido, contener, vista_o_minima
 from . import instrumento
@@ -8789,10 +8789,10 @@ def _paso_entrega_paso(
                 vista_push = gh.ver(enc.entrega.repo, enc.pr_numero)
                 punta = str(getattr(vista_push, "head", "") or "").strip()
             except Exception:
-                punta = ""
+                pass
         if punta and sha and punta != sha:
             entregado = str(enc.pr_sha or "").strip()
-            if punta and entregado and punta != entregado:
+            if entregado and punta != entregado:
                 # F6: la punta del remoto ya no es el sha entregado: cabeza
                 # desviada de verdad, se concilia contra la punta vigente.
                 # F10: un fallo de push con la punta en el sha entregado no es
@@ -9102,9 +9102,9 @@ def _paso_entrega_paso(
                 },
                 f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
             )
-            enc = _actualizar_cuerpo_pr(
-                registro, enc, gh, numero, sha, espacio, hora
-            )
+            enc = _actualizar_cuerpo_pr(registro, enc, gh, numero, sha, espacio, hora)
+        except Rechazo:
+            raise
         except Exception as exc:
             if "no commits between" in str(exc).lower():
                 # La rama no tiene nada publicable sobre su base: no es un
