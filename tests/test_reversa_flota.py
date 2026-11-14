@@ -3,6 +3,8 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -202,12 +204,23 @@ class ReversaFlota(unittest.TestCase):
                 self.assertEqual(self._marca_vigente(), "nueva\n")
                 self.assertEqual(sorted(os.listdir(self.home)), antes)
 
-    def test_sin_actual_con_una_instalacion_completa_asignar_no_cae_al_clon(self) -> None:
+    def test_sin_actual_con_una_instalacion_completa_asignar_no_cae_al_clon_y_nombra_como_reponerlo(self) -> None:
         aplicar(self.home, self.buena, sin_turnos=True)
         aplicar(self.home, self.nueva, sin_turnos=True)
         (self.home / "actual").unlink()
-        with self.assertRaisesRegex(RuntimeError, self.nueva):
+        with self.assertRaisesRegex(RuntimeError, self.nueva) as falla:
             asignar(self.home)
+
+        comandos = re.findall(r"`([^`]+)`", str(falla.exception))
+        self.assertEqual(len(comandos), 1, comandos)
+        subprocess.run(
+            shlex.split(comandos[0]),
+            cwd=RAIZ,
+            check=True,
+            capture_output=True,
+            env={**os.environ, "MOTOR_HOME": str(self.tmp / "motor-home")},
+        )
+        self.assertEqual(asignar(self.home), self.nueva)
 
     def test_revertir_la_primera_instalacion_vuelve_al_clon_y_asignar_lo_sigue(self) -> None:  # no-roja-en-base: la base ya volvia al clon; guarda que el error de asignar sin actual no alcance este estado legitimo
         aplicar(self.home, self.nueva, sin_turnos=True)
