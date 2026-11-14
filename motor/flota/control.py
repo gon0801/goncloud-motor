@@ -3,6 +3,7 @@ from motor.io import escribir_texto, leer_json
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -159,10 +160,22 @@ def leer_trabajo(home: Path, trabajo: str) -> dict | None:
     return _leer(home / "trabajos" / f"{trabajo}.json")
 
 
+def _instalada(home: Path) -> str:
+    completo = _leer(home / "instalacion.json")
+    return str(((completo or {}).get("destino") or {}).get("codigo") or "")
+
+
 def asignar(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return actual.resolve().name
+    instalada = _instalada(home)
+    if instalada:
+        raise RuntimeError(
+            f"falta el enlace {actual} aunque instalacion.json registra la generacion "
+            f"{instalada}. Sin el enlace la maquina correria el HEAD del clon, otra "
+            f"version. Reponlo con `motor flota aplicar --home {home} --destino {instalada}`."
+        )
     return cabeza(home)
 
 
@@ -388,10 +401,10 @@ def _turnos_de_activacion(
 
 
 def _poner_enlace(home: Path, gen: Path) -> None:
-    actual = home / "actual"
-    if actual.is_symlink() or actual.exists():
-        actual.unlink()
-    actual.symlink_to(gen, target_is_directory=True)
+    temporal = home / ".actual.tmp"
+    temporal.unlink(missing_ok=True)
+    temporal.symlink_to(gen, target_is_directory=True)
+    os.replace(temporal, home / "actual")
 
 
 def _enlace(home: Path, gen: Path) -> None:
@@ -402,12 +415,7 @@ def _anterior_real(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return asignar(home)
-    completo = _leer(home / "instalacion.json")
-    if completo:
-        codigo = (completo.get("destino") or {}).get("codigo")
-        if codigo:
-            return str(codigo)
-    return cabeza(home)
+    return _instalada(home) or cabeza(home)
 
 
 def _operacion_flota(funcion):
@@ -423,7 +431,7 @@ def _cambiar_generacion(home: Path, destino: Path | None) -> bool:
     previa = actual.resolve() if actual.is_symlink() else None
     if previa == destino:
         return True
-    vigente = asignar(home)
+    vigente = _anterior_real(home)
     if _trabajos_sobre(home, vigente):
         return False
     if destino is None:
