@@ -47,10 +47,14 @@ class EventoIlegal(Rechazo):
 
 
 class ClaveOcupada(Rechazo):
-    def __init__(self, indice: int, ukey: str) -> None:
+    """`campos` nombra en qué difiere el hecho guardado: las claves de `data`, y
+    `@encargo` o `@kind` si la ukey es de otro encargo o de otro tipo."""
+
+    def __init__(self, indice: int, ukey: str, campos: tuple[str, ...] = ()) -> None:
         super().__init__(f"la ukey del evento {indice} del lote ya guarda otro hecho")
         self.indice = indice
         self.ukey = ukey
+        self.campos = campos
 
 
 # Solo palabras con guiones y con tope: un id de encargo (`enc_` y hexadecimal)
@@ -59,11 +63,21 @@ class ClaveOcupada(Rechazo):
 _TOPE_DEL_NOMBRE = 64
 _CLASE_DE_UKEY = re.compile(r"[a-z]+(?:-[a-z]+)*")
 _TIPO = re.compile(r"[a-z]+(?:_[a-z]+)*")
+_TOPE_DE_CAMPOS = 5
 
 # Un rechazo de cada vuelta del supervisor (20 s) deja 144 líneas al día en vez de 4320.
 _INTERVALO_DEL_CONTEO_S = 600.0
 
-_Clave = tuple[str, str, str]
+
+@dataclass(frozen=True)
+class _Clave:
+    """Lo que distingue una línea del conteo. `campos` es `None` en un rechazo
+    `ilegal`, que no compara dos hechos."""
+
+    rechazo: Literal["ajena", "ilegal"]
+    kind: str
+    ukey: str
+    campos: str | None
 
 
 def _visible(nombre: str, forma: re.Pattern[str]) -> str:
@@ -71,9 +85,12 @@ def _visible(nombre: str, forma: re.Pattern[str]) -> str:
 
 
 def _escribir_linea(clave: _Clave, veces: int) -> None:
-    rechazo, kind, ukey = clave
+    campos = "" if clave.campos is None else f" campos={clave.campos}"
     try:
-        sys.stderr.write(f"registro: rechazo={rechazo} kind={kind} ukey={ukey} veces={veces}\n")
+        sys.stderr.write(
+            f"registro: rechazo={clave.rechazo} kind={clave.kind} ukey={clave.ukey}"
+            f"{campos} veces={veces}\n"
+        )
         sys.stderr.flush()
     except Exception:
         # De mejor esfuerzo: un stderr cerrado o roto no cambia lo que responde `append`.
@@ -116,20 +133,32 @@ _CONTEO = _Conteo()
 atexit.register(_CONTEO.vaciar)
 
 
-def _contar_rechazo(rechazo: Literal["ajena", "ilegal"], kind: str, ukey: str) -> None:
+def _campos_visibles(campos: tuple[str, ...]) -> str:
+    # Solo nombres de claves, que son del código: un valor puede llevar rutas o
+    # repos privados.
+    visibles = sorted(
+        {campo if campo in ("@encargo", "@kind") else _visible(campo, _TIPO) for campo in campos}
+    )
+    sobran = len(visibles) - _TOPE_DE_CAMPOS
+    return ",".join(visibles[:_TOPE_DE_CAMPOS] + ([f"+{sobran}"] if sobran > 0 else []))
+
+
+def _contar_rechazo(rechazo: Rechazo, kind: str, ukey: str) -> None:
     clase, separador, _resto = ukey.partition(":")
     clase_visible = _visible(clase, _CLASE_DE_UKEY)
     ukey_visible = f"{clase_visible}:*" if separador and clase_visible != "?" else "?"
-    _CONTEO.contar((rechazo, _visible(kind, _TIPO), ukey_visible))
+    if isinstance(rechazo, ClaveOcupada):
+        clave = _Clave("ajena", _visible(kind, _TIPO), ukey_visible, _campos_visibles(rechazo.campos))
+    else:
+        clave = _Clave("ilegal", _visible(kind, _TIPO), ukey_visible, None)
+    _CONTEO.contar(clave)
 
 
 def contar_omitidos(omitidos: Iterable[tuple[Evento, Rechazo]]) -> None:
     """Cuenta por stderr, igual que `append`, los eventos que un paso dejó fuera de
     su lote porque el registro los rechazaría."""
     for evento, rechazo in omitidos:
-        _contar_rechazo(
-            "ajena" if isinstance(rechazo, ClaveOcupada) else "ilegal", evento.kind, evento.ukey
-        )
+        _contar_rechazo(rechazo, evento.kind, evento.ukey)
 
 
 @dataclass(frozen=True)
@@ -141,6 +170,22 @@ class _Plegado:
 
 def _estable(data: Mapping[str, object]) -> dict:
     return {k: v for k, v in data.items() if k != "hora"}
+
+
+_AUSENTE = object()
+
+
+def _campos_distintos(
+    guardado: tuple[str, str, Mapping[str, object]], nuevo: tuple[str, str, Mapping[str, object]]
+) -> tuple[str, ...]:
+    """En qué difieren dos hechos de la misma ukey, con la comparación de `_cotejar`."""
+    (encargo, kind, data), (otro_encargo, otro_kind, otra_data) = guardado, nuevo
+    a, b = _estable(data), _estable(otra_data)
+    return (
+        *(("@encargo",) if encargo != otro_encargo else ()),
+        *(("@kind",) if kind != otro_kind else ()),
+        *(k for k in a.keys() | b.keys() if a.get(k, _AUSENTE) != b.get(k, _AUSENTE)),
+    )
 
 
 class _CacheDeLaBase:
@@ -271,11 +316,11 @@ class Registro:
         cuántos se callan hoy."""
         try:
             (resultado,) = self._escribir(encargo, [(Evento(kind, data, ukey), ts)])
-        except ClaveOcupada:
-            _contar_rechazo("ajena", kind, ukey)
+        except ClaveOcupada as rechazo:
+            _contar_rechazo(rechazo, kind, ukey)
             return "ajena"
-        except EventoIlegal:
-            _contar_rechazo("ilegal", kind, ukey)
+        except EventoIlegal as rechazo:
+            _contar_rechazo(rechazo, kind, ukey)
             return "ilegal"
         return resultado
 
@@ -384,13 +429,12 @@ class Registro:
         ).fetchone()
         if fila is None:
             return "nuevo"
-        if (
-            fila[0] == encargo
-            and fila[1] == evento.kind
-            and _estable(json.loads(fila[2])) == _estable(evento.data)
-        ):
+        campos = _campos_distintos(
+            (fila[0], fila[1], json.loads(fila[2])), (encargo, evento.kind, evento.data)
+        )
+        if not campos:
             return "igual"
-        raise ClaveOcupada(indice, evento.ukey)
+        raise ClaveOcupada(indice, evento.ukey, campos)
 
     def por_ukey(self, ukey: str) -> dict | None:
         row = self.db.execute(

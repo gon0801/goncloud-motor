@@ -287,7 +287,7 @@ class ResultadoDeLaAutoridad(unittest.TestCase):
                 ],
             )
 
-    def test_un_resultado_rechazado_cuenta_lo_que_el_registro_habria_rechazado(self):  # no-roja-en-base: la base anotaba la nota antes de rechazar y su rechazo ya salía por stderr; fija que el lote abandonado no lo calle
+    def test_un_resultado_rechazado_cuenta_lo_que_el_registro_habria_rechazado(self):
         with tempfile.TemporaryDirectory() as tmp:
             r, enc = _escena(self, Path(tmp))
             r.reg.anotar(
@@ -308,11 +308,11 @@ class ResultadoDeLaAutoridad(unittest.TestCase):
 
             self.assertTrue(salida.get("rechazado"), salida)
             self.assertIn(
-                "registro: rechazo=ajena kind=nota_pr ukey=disputa-resuelta-autoridad:* veces=1",
+                "registro: rechazo=ajena kind=nota_pr ukey=disputa-resuelta-autoridad:* campos=texto veces=1",
                 errores.getvalue().splitlines(),
             )
 
-    def test_un_descarte_con_su_ukey_ocupada_no_rechaza_el_resultado(self):  # no-roja-en-base: la base ya calla y cuenta ese rechazo; fija que el lote no lo vuelva un rechazo del resultado entero
+    def test_un_descarte_con_su_ukey_ocupada_no_rechaza_el_resultado(self):
         with tempfile.TemporaryDirectory() as tmp:
             r, enc = _escena(self, Path(tmp))
             ocupada = f"disputa-resuelta-autoridad:{enc.id}:ds_Fuga"
@@ -340,7 +340,7 @@ class ResultadoDeLaAutoridad(unittest.TestCase):
             )
             self.assertEqual(bloqueantes_abiertos(r.fold(), "deepseek"), ())
             self.assertIn(
-                "registro: rechazo=ajena kind=nota_pr ukey=disputa-resuelta-autoridad:* veces=1",
+                "registro: rechazo=ajena kind=nota_pr ukey=disputa-resuelta-autoridad:* campos=texto veces=1",
                 errores.getvalue().splitlines(),
             )
 
