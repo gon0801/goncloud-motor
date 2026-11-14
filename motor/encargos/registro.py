@@ -173,8 +173,15 @@ class _Plegado:
     conteo: int
 
 
-def _estable(data: Mapping[str, object]) -> dict:
-    return {k: v for k, v in data.items() if k != "hora"}
+# Campos que dicen quién observó el hecho, no cuál es. Una pasada que vuelve a
+# observar la misma entrega desde otro intento trae el mismo hecho: ya se aplicó
+# con el intento que lo observó primero, y reescribirlo no cambiaría el plegado.
+_ATRIBUCION: Mapping[str, frozenset[str]] = {"entrega_externa": frozenset({"intento"})}
+
+
+def _estable(kind: str, data: Mapping[str, object]) -> dict:
+    atribucion = _ATRIBUCION.get(kind, frozenset())
+    return {k: v for k, v in data.items() if k != "hora" and k not in atribucion}
 
 
 _AUSENTE = object()
@@ -185,7 +192,7 @@ def _campos_distintos(
 ) -> tuple[str, ...]:
     """En qué difieren dos hechos de la misma ukey, con la comparación de `_cotejar`."""
     (encargo, kind, data), (otro_encargo, otro_kind, otra_data) = guardado, nuevo
-    a, b = _estable(data), _estable(otra_data)
+    a, b = _estable(kind, data), _estable(otro_kind, otra_data)
     distintas = (k for k in a.keys() | b.keys() if a.get(k, _AUSENTE) != b.get(k, _AUSENTE))
     return (
         *((_OTRO_ENCARGO,) if encargo != otro_encargo else ()),
@@ -334,9 +341,10 @@ class Registro:
     def append_many(self, encargo: str, eventos: Sequence[Evento]) -> tuple[Resultado, ...]:
         """Escribe el lote entero o nada, en una sola transacción.
 
-        Un evento cuya ukey ya guarda el mismo hecho (sin mirar `hora`) da
-        `igual` y no se reescribe; los demás se validan sobre el estado guardado
-        y se insertan en orden, y el estado que queda es el que da `proyectar`.
+        Un evento cuya ukey ya guarda el mismo hecho (sin mirar `hora` ni la
+        atribución de `_ATRIBUCION`) da `igual` y no se reescribe; los demás se
+        validan sobre el estado guardado y se insertan en orden, y el estado que
+        queda es el que da `proyectar`.
         Una ukey que guarda otro hecho lanza `ClaveOcupada`; un evento que el
         reductor rechaza lanza `EventoIlegal`. Una ukey repetida dentro del lote
         es `ValueError`."""
