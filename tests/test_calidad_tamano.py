@@ -351,7 +351,7 @@ class CentroCongelado(unittest.TestCase):
                 self.assertEqual(corrida.returncode, 1, corrida.stdout)
                 self.assertIn(f"{ruta}::{nombre}: función nueva", corrida.stderr)
 
-    def test_una_funcion_nueva_en_otro_modulo_y_quitar_una_de_ciclo_pasan(self):
+    def test_una_funcion_nueva_en_otro_modulo_y_quitar_una_de_ciclo_pasan(self):  # no-roja-en-base: fija que el candado del centro no frena lo que no es una función nueva en él
         self.repo.escribir("motor/encargos/ciclo.py", "x = 1\n")
         self.repo.escribir("motor/encargos/revisor.py", _funcion("nueva", 3))
         corrida = self.repo.tamano("--base", self.base)
