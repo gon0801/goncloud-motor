@@ -133,10 +133,12 @@ def _aprobado(raiz: Path) -> flujo.Recorrido:
     return r
 
 
-def _disputa_de_deepseek(raiz: Path, clave: str, juicio: dict) -> flujo.Recorrido:
+def _disputa_de_deepseek(
+    caso: unittest.TestCase, raiz: Path, clave: str, juicio: dict
+) -> flujo.Recorrido:
     """Dos hallazgos de DeepSeek en disputa y el juicio del revisor que la decide."""
     vuelta, r = flujo._entrega_pr(
-        unittest.TestCase(), str(raiz), clave,
+        caso, str(raiz), clave,
         lambda d: github_con_hallazgos(d, ("Fuga", "Ajena")),
         texto="cambia el comando de encargos",
     )
@@ -254,7 +256,7 @@ class CerrarConJuicio(unittest.TestCase):
 
     def test_los_descartes_del_juicio_guardan_las_ukeys_y_los_datos_de_siempre(self):  # no-roja-en-base: fija lo que la base ya escribe en los descartes; con otra ukey u otro dato un registro viejo a medias no daría igual
         with tempfile.TemporaryDirectory() as tmp:
-            r = _disputa_de_deepseek(Path(tmp), "juicio-descartes", {
+            r = _disputa_de_deepseek(self, Path(tmp), "juicio-descartes", {
                 "veredicto": "aprobado",
                 "evidencia": DESCARTE,
                 "resueltos": ["ds_Fuga"],
@@ -314,7 +316,7 @@ class CerrarConJuicio(unittest.TestCase):
 
     def test_un_hallazgo_fuera_de_alcance_repetido_guarda_el_primero_y_cuenta_el_otro(self):  # no-roja-en-base: la base ya callaba y contaba el segundo con anotar; fija que el lote no lo vuelva un error
         with tempfile.TemporaryDirectory() as tmp:
-            r = _disputa_de_deepseek(Path(tmp), "juicio-repetido", {
+            r = _disputa_de_deepseek(self, Path(tmp), "juicio-repetido", {
                 "veredicto": "aprobado",
                 "evidencia": DESCARTE,
                 "resueltos": ["ds_Fuga"],
