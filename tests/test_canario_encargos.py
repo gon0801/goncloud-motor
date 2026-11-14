@@ -23,8 +23,10 @@ from datetime import datetime, timedelta, timezone
 from typing import get_args
 
 from motor import plataforma
+from motor.encargos.ciclo import recibir
 from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, Impedimento, VersionProducto
 from motor.encargos.politica import CERRADOS_VENTANA_S
+from motor.encargos.registro import Registro
 from ops.canario_encargos import (
     ESPERADO,
     LIMPIEZA,
@@ -130,7 +132,7 @@ def _obs(**cambios) -> Observacion:
         restos=RESTOS_LIMPIOS,
         version=Version(SHA, SHA, SHA),
         actualizado=RECIBIDO,
-        archivo=ArchivoDesplegado("corridas/m.txt", "marca", True),
+        archivo=ArchivoDesplegado("corridas/m.txt", "marca", "con la marca"),
     )
     return dataclasses.replace(base, **cambios)
 
@@ -338,12 +340,17 @@ class Entregado(unittest.TestCase):
         self.assertEqual(_fila(obs, "entregado").resultado, "no medido")
 
     def test_el_archivo_desplegado_sin_la_marca_falla(self):
-        archivo = ArchivoDesplegado("corridas/m.txt", "marca", False)
+        archivo = ArchivoDesplegado("corridas/m.txt", "marca", "sin la marca")
         self.falla(_obs(archivo=archivo), "no trae la marca")
 
     def test_el_archivo_desplegado_que_no_existe_falla(self):
-        archivo = ArchivoDesplegado("corridas/m.txt", "marca", None)
+        archivo = ArchivoDesplegado("corridas/m.txt", "marca", "no existe")
         self.falla(_obs(archivo=archivo), "no existe")
+
+    def test_el_archivo_desplegado_ilegible_no_se_mide(self):
+        fila = _fila(_obs(archivo=ArchivoDesplegado("corridas/m.txt", "marca", "ilegible")), "entregado")
+        self.assertEqual(fila.resultado, "no medido", fila.observado)
+        self.assertIn("el archivo desplegado corridas/m.txt", fila.observado)
 
     def test_si_github_no_responde_no_se_mide(self):
         fila = _fila(_obs(prs=(PR("uno", 7, None),)), "entregado")
@@ -509,7 +516,7 @@ def _detencion(**cambios) -> Detencion:
             causas=("el checklist de despliegue falló",),
         ),
         despliegues=(DESPLEGADO_Y_REVERTIDO,),
-        archivo=ArchivoDesplegado("se-detiene/m.txt", "enc_falla", None),
+        archivo=ArchivoDesplegado("se-detiene/m.txt", "enc_falla", "no existe"),
     )
     return dataclasses.replace(base, **cambios)
 
@@ -536,7 +543,8 @@ class SeDetiene(unittest.TestCase):
             ("detenido solo, con causa, revertido y acotado", _detencion(), "pasa", (
                 "quedó detenido", "se paró solo en 5 min (tope 15 min)",
                 "dijo por qué: «el checklist de despliegue falló»",
-                "revirtió su despliegue (rollback salida 0) y se-detiene/m.txt ya no lo trae",
+                "el checklist salió 1, revirtió su despliegue (rollback salida 0)"
+                " y se-detiene/m.txt ya no lo trae",
                 "turnos responsable 1, revisor 1 (tope 2 por rol)",
             )),
             ("lo paró una orden", _detencion(pliegue=dataclasses.replace(detenido, ordenes=("parar",))),
@@ -548,6 +556,21 @@ class SeDetiene(unittest.TestCase):
              "falla", ("tardó 20 min en pararse y el tope es 15 min",)),
             ("sin causa", _detencion(pliegue=dataclasses.replace(detenido, causas=())),
              "falla", ("no dejó escrita la causa",)),
+            ("gastó de más",
+             _detencion(pliegue=dataclasses.replace(detenido, turnos=(("responsable", 3),), rondas=2)),
+             "falla", ("gastó de más: turnos responsable 3 (tope 2 por rol)",)),
+            ("fuera del registro", _detencion(pliegue=None),
+             "no medido", ("enc_falla, no está en el registro",)),
+            ("registro roto", _detencion(pliegue=NoPliega(4, "orden", "TransicionIlegal")),
+             "no medido", ("se rompe en el evento 4 (orden)",)),
+        )
+        self.juzga(casos)
+
+    def test_no_deja_roto_solo_con_el_checklist_en_rojo_y_todo_leido(self):
+        """Sin un recibo que muestre el checklist lanzado y en rojo, el freno no corrió;
+        un recibo o un destino que no se pudo leer deja la fila sin medir."""
+        sin_freno = "el checklist no salió en rojo en ningún recibo: el freno no corrió"
+        casos: tuple[tuple[str, Detencion, str, tuple[str, ...]], ...] = (
             ("checklist aprobado",
              _detencion(despliegues=(Despliegue("uno", "aplicado", (("desplegar", 0), ("checklist", 0))),)),
              "falla", ("su despliegue quedó aplicado",)),
@@ -558,19 +581,22 @@ class SeDetiene(unittest.TestCase):
              _detencion(despliegues=(Despliegue("uno", "incierto", (("desplegar", 0),)),)),
              "falla", ("quedó sin revertir (rollback sin correr)",)),
             ("el destino aún lo trae",
-             _detencion(archivo=ArchivoDesplegado("se-detiene/m.txt", "enc_falla", True)),
+             _detencion(archivo=ArchivoDesplegado("se-detiene/m.txt", "enc_falla", "con la marca")),
              "falla", ("se-detiene/m.txt todavía trae lo desplegado",)),
-            ("gastó de más",
-             _detencion(pliegue=dataclasses.replace(detenido, turnos=(("responsable", 3),), rondas=2)),
-             "falla", ("gastó de más: turnos responsable 3 (tope 2 por rol)",)),
             ("nunca desplegó", _detencion(despliegues=(Despliegue("uno", "esperando", ()),)),
-             "pasa", ("nunca desplegó",)),
+             "falla", (sin_freno,)),
+            ("sin recibos", _detencion(despliegues=()), "falla", (sin_freno,)),
+            ("checklist sin lanzar",
+             _detencion(despliegues=(Despliegue("uno", "fallido", (("desplegar", 0), ("rollback", 0))),)),
+             "falla", (sin_freno,)),
             ("recibos ilegibles", _detencion(despliegues=None),
              "no medido", ("no pude leer sus recibos de despliegue",)),
-            ("fuera del registro", _detencion(pliegue=None),
-             "no medido", ("enc_falla, no está en el registro",)),
-            ("registro roto", _detencion(pliegue=NoPliega(4, "orden", "TransicionIlegal")),
-             "no medido", ("se rompe en el evento 4 (orden)",)),
+            ("destino ilegible",
+             _detencion(archivo=ArchivoDesplegado("se-detiene/m.txt", "enc_falla", "ilegible")),
+             "no medido", ("no pude leer el destino se-detiene/m.txt",)),
+            ("destino ajeno",
+             _detencion(archivo=ArchivoDesplegado("se-detiene/m.txt", "enc_falla", "sin la marca")),
+             "pasa", ("se-detiene/m.txt ya no lo trae",)),
         )
         self.juzga(casos)
 
@@ -818,6 +844,91 @@ class ObservarLaBase(unittest.TestCase):
         self.assertEqual(list(vacia.iterdir()), [])
 
 
+class LeerLaDetencion(unittest.TestCase):
+    """Los recibos de despliegue y el destino del encargo que falla, leídos del disco: lo
+    que no se pudo leer queda sin leer, nunca como un despliegue que no corrió."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix="canario-detencion-")).resolve()
+        self.addCleanup(shutil.rmtree, self.base, True)
+        reg = Registro(self.base)
+        try:
+            self.ident = recibir(reg, "falla a propósito", "clave", RECIBIDO)["encargo"]
+        finally:
+            reg.close()
+        self.destino = self.base / "destino" / "m.txt"
+
+    def despliegue(self, recibo: dict | str | None, pedido: dict | str | None = None) -> None:
+        """Una carpeta de `despliegues/` con su pedido y su recibo tal cual; None no lo deja."""
+        clave = self.base / "despliegues" / f"k{len(list(self.base.glob('despliegues/*')))}"
+        clave.mkdir(parents=True)
+        pedido = {"identidad": {"encargo": self.ident}} if pedido is None else pedido
+        for nombre, datos in (("pedido.json", pedido), ("recibo.json", recibo)):
+            if datos is not None:
+                texto = datos if isinstance(datos, str) else json.dumps(datos)
+                (clave / nombre).write_text(texto, encoding="utf-8")
+
+    def detencion(self) -> Detencion:
+        obs = observar(
+            self.base, self.ident, _GitHubCaido(), hora=HORA,
+            detencion=self.ident, archivo_detencion=self.destino,
+        )
+        assert obs.detencion is not None
+        return obs.detencion
+
+    def paso(self, paso: str, enviado: bool | None, codigo: int) -> dict:
+        return {"paso": paso, "script": f"{paso}.sh", "codigo": codigo, "enviado": enviado}
+
+    def test_cada_recibo_suyo_dice_que_pasos_lanzo_el_trabajador(self):
+        self.despliegue({"encargo": self.ident, "fase": "uno", "estado": "fallido", "pasos": [
+            self.paso("desplegar", True, 0), self.paso("checklist", True, 1), self.paso("rollback", True, 0),
+        ]})
+        self.despliegue({"encargo": self.ident, "fase": "uno", "estado": "fallido", "pasos": [
+            self.paso("desplegar", True, 0), self.paso("checklist", False, 130), self.paso("rollback", True, 0),
+        ]})
+        self.despliegue(
+            {"encargo": "enc_ajeno", "fase": "uno", "estado": "aplicado", "pasos": []},
+            {"identidad": {"encargo": "enc_ajeno"}},
+        )
+        self.assertEqual(self.detencion().despliegues, (
+            Despliegue("uno", "fallido", (("desplegar", 0), ("checklist", 1), ("rollback", 0))),
+            Despliegue("uno", "fallido", (("desplegar", 0), ("rollback", 0))),
+        ))
+
+    def test_un_recibo_que_no_dice_que_pasos_lanzo_deja_sus_recibos_sin_leer(self):
+        bueno = [self.paso("desplegar", True, 0), self.paso("checklist", True, 1)]
+        casos: tuple[tuple[str, dict | str | None, dict | str | None], ...] = (
+            ("recibo truncado", '{"encargo": "' + self.ident + '", "pasos": [', None),
+            ("sin recibo", None, None),
+            ("un paso a medias", {"encargo": self.ident, "pasos": [*bueno, self.paso("rollback", None, 125)]}, None),
+            ("pasos sin forma", {"encargo": self.ident, "pasos": ["desplegar", "checklist"]}, None),
+            ("un paso lanzado sin salida", {"encargo": self.ident, "pasos": [
+                {"paso": "checklist", "enviado": True},
+            ]}, None),
+            ("de nadie que se sepa", "{", "{"),
+        )
+        for nombre, recibo, pedido in casos:
+            with self.subTest(nombre):
+                shutil.rmtree(self.base / "despliegues", ignore_errors=True)
+                self.despliegue(recibo, pedido)
+                self.assertIsNone(self.detencion().despliegues)
+
+    def test_el_destino_ilegible_no_cuenta_como_revertido(self):
+        def contenido() -> str:
+            archivo = self.detencion().archivo
+            assert archivo is not None
+            return archivo.contenido
+
+        self.assertEqual(contenido(), "no existe")
+        self.destino.parent.mkdir()
+        for texto, esperado in ((f"{self.ident}\n", "con la marca"), ("otra corrida\n", "sin la marca")):
+            self.destino.write_text(texto, encoding="utf-8")
+            self.assertEqual(contenido(), esperado)
+        self.destino.unlink()
+        self.destino.mkdir()
+        self.assertEqual(contenido(), "ilegible")
+
+
 class ObservarUnEncargoDelBanco(unittest.TestCase):
     """El motor trabaja, mergea y despliega un encargo de una fase; la prueba lo observa."""
 
@@ -852,7 +963,7 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         )
         self.assertEqual(obs.prs, (PR("uno", pr_fake["numero"], "mergeado", "main", merge),))
         self.assertIn(Recibo("uno", "aplicado", merge), obs.recibos)
-        self.assertEqual(obs.archivo, ArchivoDesplegado(str(archivo[0]), merge, True))
+        self.assertEqual(obs.archivo, ArchivoDesplegado(str(archivo[0]), merge, "con la marca"))
 
         restos = {r.nombre: r for r in obs.restos}
         rama = pr_fake["rama"]
