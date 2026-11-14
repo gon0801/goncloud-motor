@@ -8,21 +8,31 @@ from pathlib import Path
 from typing import NamedTuple
 
 
+class SinMedir(NamedTuple):
+    """La lectura que no termino a tiempo."""
+
+    orden: str
+    tope: float
+
+    @property
+    def causa(self) -> str:
+        return f"`{self.orden}` no respondio en {self.tope:g} s; no se midio"
+
+
 class Comprobacion(NamedTuple):
     """Lo que dijo el comprobador de una generacion.
 
-    `sin_medir` trae la causa cuando la lectura no termino a tiempo: la generacion no
-    queda sana ni rota, y nadie la revierte por eso.
+    Con `sin_medir` la generacion no queda sana ni rota, y nadie la revierte por eso.
     """
 
     rc: int
     comprobador: str
-    sin_medir: str = ""
+    sin_medir: SinMedir | None = None
 
 
 def _sin_medir(exc: subprocess.TimeoutExpired) -> Comprobacion:
     orden = " ".join(map(str, exc.cmd)) if isinstance(exc.cmd, list) else str(exc.cmd)
-    return Comprobacion(1, orden, f"`{orden}` no respondio en {exc.timeout:g} s; no se midio")
+    return Comprobacion(1, orden, SinMedir(orden, exc.timeout))
 
 
 def comprobar(gen: Path) -> Comprobacion:

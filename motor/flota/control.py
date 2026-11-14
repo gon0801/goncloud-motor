@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import NamedTuple
@@ -547,10 +548,10 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
     _atomico(home / "instalacion-pendiente.json", recibo)
     if corte == "worktree":
         return {"accion": "cortado", "etapa": "codigo", "vigente": asignar(home) if (home / "actual").exists() else anterior}
-    rc, comprobador, sin_medir = comprobar(gen)
+    rc, comprobador, sin_medir = _medir(home, destino, comprobar(gen))
     recibo["comprobador"] = comprobador
     if rc != 0:
-        motivo = sin_medir or "la comprobacion fallo"
+        motivo = sin_medir.causa if sin_medir else "la comprobacion fallo"
         (home / "instalacion-pendiente.json").unlink(missing_ok=True)
         _atomico(
             home / "candidata.json",
@@ -602,6 +603,27 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
     return {"accion": "aplicada", "generacion": destino, "anterior": anterior, "turnos": resumen}
 
 
+def _medir(home: Path, generacion: str, comprobacion: Comprobacion) -> Comprobacion:
+    """Deja en sin-medir.json la ultima lectura que no termino; una que termina lo borra.
+
+    Con el ciclo de flota apagado nadie vuelve a medir solo: el archivo es lo que queda.
+    """
+    nota = home / "sin-medir.json"
+    if comprobacion.sin_medir is None:
+        nota.unlink(missing_ok=True)
+        return comprobacion
+    _atomico(
+        nota,
+        {
+            "generacion": generacion,
+            **comprobacion.sin_medir._asdict(),
+            "causa": comprobacion.sin_medir.causa,
+            "hora": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
+    )
+    return comprobacion
+
+
 def _recuperar_instalada(home: Path) -> dict:
     comp = _leer(home / "instalacion.json")
     if comp and comp.get("etapa") == "revirtiendo":
@@ -610,9 +632,9 @@ def _recuperar_instalada(home: Path) -> dict:
         destino_c = str((comp.get("destino") or {}).get("codigo") or "")
         gen_c = home / "generaciones" / destino_c
         if destino_c and gen_c.exists():
-            comprobacion = comprobar_instalada(gen_c)
+            comprobacion = _medir(home, destino_c, comprobar_instalada(gen_c))
             if comprobacion.sin_medir:
-                return {"accion": "no_medido", "generacion": destino_c, "causa": comprobacion.sin_medir}
+                return {"accion": "no_medido", "generacion": destino_c, "causa": comprobacion.sin_medir.causa}
             if comprobacion.rc != 0:
                 return revertir(home)
             if not (home / "actual").is_symlink():
@@ -654,9 +676,11 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
     apunta = False
     if gen.exists() and actual.is_symlink():
         apunta = actual.resolve() == gen.resolve()
-    rc, comprobador, sin_medir = comprobar(gen) if gen.exists() else Comprobacion(1, "ninguno")
+    rc, comprobador, sin_medir = _medir(
+        home, destino, comprobar(gen) if gen.exists() else Comprobacion(1, "ninguno")
+    )
     if sin_medir:
-        return {"accion": "no_medido", "destino": destino, "causa": sin_medir}
+        return {"accion": "no_medido", "destino": destino, "causa": sin_medir.causa}
     if gen.exists() and rc == 0:
         try:
             _comprobar_paquete_completo(home, gen)
