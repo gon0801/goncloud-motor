@@ -17,7 +17,7 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast, get_args
 
 RAIZ = Path(__file__).resolve().parents[1]
 if str(RAIZ) not in sys.path:
@@ -33,18 +33,23 @@ from motor.encargos.dominio import (  # noqa: E402
     nivel_de,
     nivel_objetivo,
 )
-from motor.github import PrView  # noqa: E402
+from motor.github import GhGitHub, PrView  # noqa: E402
 from motor.io import leer_json, leer_texto  # noqa: E402
 from motor.repositorios import resolver_repositorio  # noqa: E402
+from ops.agente_ensayo import APAGON, CORTES, INVOCACIONES  # noqa: E402
 from ops.canario_observacion import (  # noqa: E402
     PR,
+    Apagon,
     ArchivoDesplegado,
+    Corte,
     Despliegue,
     Detencion,
     FaseVista,
+    Momento,
     NoPliega,
     Observacion,
     Pliegue,
+    Quien,
     Recibo,
     Resto,
     Version,
@@ -56,6 +61,25 @@ ESPERA_GIT_S = 30
 
 class LectorPR(Protocol):
     def ver(self, repo: str, numero: int) -> PrView: ...
+
+    def prs_de_la_rama(self, repo: str, rama: str) -> tuple[tuple[int, str], ...]:
+        """El número y el estado (abierto, mergeado o cerrado) de cada PR de `rama`."""
+        ...
+
+
+class GitHubDelCanario(GhGitHub):
+    """El GitHub del motor más lo que solo lee el canario: cada PR de una rama, en cualquier
+    estado, para contar si un corte hizo abrir o mergear otro."""
+
+    def prs_de_la_rama(self, repo: str, rama: str) -> tuple[tuple[int, str], ...]:
+        filas = json.loads(self._gh(
+            "pr", "list", "-R", self.nombre(repo), "--head", rama, "--state", "all",
+            "--json", "number,state",
+        ))
+        return tuple(
+            (int(f["number"]), {"OPEN": "abierto", "MERGED": "mergeado"}.get(f["state"], "cerrado"))
+            for f in filas
+        )
 
 
 def _eventos(registro: Path, encargo: str) -> list[dict]:
@@ -450,6 +474,70 @@ def _detencion(base: Path, encargo: str, archivo: Path | None) -> Detencion:
     return Detencion(encargo, plegada[0], _recibos_de_despliegue(base, encargo), desplegado)
 
 
+def _cortes(carpeta: Path) -> tuple[Corte, ...] | None:
+    """Lo que el lanzador anotó de cada corte; vacío si no cortó, None si no se pudo leer."""
+    try:
+        datos = leer_json(carpeta / CORTES)
+    except FileNotFoundError:
+        return ()
+    except (OSError, ValueError):
+        return None
+    if not isinstance(datos, list):
+        return None
+    cortes = []
+    for d in datos:
+        if (
+            not isinstance(d, dict) or d.get("momento") not in get_args(Momento)
+            or d.get("sobrevivio") not in (True, False, None)
+        ):
+            return None
+        cortes.append(Corte(d["momento"], d["sobrevivio"]))
+    return tuple(cortes)
+
+
+def _invocaciones(carpeta: Path) -> tuple[tuple[Quien, int], ...] | None:
+    """Cuántas veces anotó cada rol del agente y cada paso de la receta; None si el archivo
+    no se pudo leer o trae una línea que no es de nadie."""
+    try:
+        lineas = leer_texto(carpeta / INVOCACIONES).splitlines()
+    except FileNotFoundError:
+        return ()
+    except OSError:
+        return None
+    if any(linea not in get_args(Quien) for linea in lineas):
+        return None
+    return tuple(sorted(Counter(cast(list[Quien], lineas)).items()))
+
+
+def _prs_de_sus_ramas(gh: LectorPR, e: Encargo) -> tuple[PR, ...] | None:
+    ramas = {f.rama: f.id for f in e.fases if f.rama}
+    if not e.entrega.repo:
+        return ()
+    try:
+        return tuple(
+            PR(fase, numero, estado)
+            for rama, fase in ramas.items()
+            for numero, estado in gh.prs_de_la_rama(e.entrega.repo, rama)
+        )
+    except Exception:  # un GitHub caído es un dato: la fila queda sin medir
+        return None
+
+
+def _apagon(base: Path, encargo: str, gh: LectorPR, archivo: Path | None) -> Apagon:
+    desplegado = _archivo(archivo, encargo) if archivo else None
+    eventos = _eventos(base / "registro.sqlite", encargo)
+    if not eventos:
+        return Apagon(encargo, None, archivo=desplegado)
+    plegada = _plegar(eventos)
+    if isinstance(plegada, NoPliega):
+        return Apagon(encargo, plegada, archivo=desplegado)
+    pliegue, e = plegada
+    carpeta = base / APAGON / encargo
+    return Apagon(
+        encargo, pliegue, _cortes(carpeta), _invocaciones(carpeta), _prs_de_sus_ramas(gh, e), desplegado,
+    )
+
+
 def observar(
     base: Path,
     encargo: str,
@@ -461,6 +549,9 @@ def observar(
     archivo: tuple[Path, str] | None = None,
     detencion: str = "",
     archivo_detencion: Path | None = None,
+    apagon: str = "",
+    archivo_apagon: Path | None = None,
+    sin_apagon: str = "",
 ) -> Observacion:
     eventos = _eventos(base / "registro.sqlite", encargo)
     pasada = _json_o_vacio(base / "supervisor-pasada.json")
@@ -472,6 +563,8 @@ def observar(
         actualizado=str(instalacion.get("hora") or ""),
         archivo=_archivo(*archivo) if archivo else None,
         detencion=_detencion(base, detencion, archivo_detencion) if detencion else None,
+        apagon=_apagon(base, apagon, gh, archivo_apagon) if apagon else None,
+        sin_apagon=sin_apagon,
     )
     if not eventos:
         return comunes

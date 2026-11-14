@@ -27,6 +27,7 @@ from motor.encargos.ciclo import recibir
 from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, Impedimento, VersionProducto
 from motor.encargos.politica import CERRADOS_VENTANA_S
 from motor.encargos.registro import Registro
+from ops.agente_ensayo import APAGON, CORTES, INVOCACIONES
 from ops.canario_encargos import main
 from ops.canario_juzgar import (
     ESPERADO,
@@ -40,13 +41,16 @@ from ops.canario_juzgar import (
 )
 from ops.canario_observacion import (
     PR,
+    Apagon,
     ArchivoDesplegado,
+    Corte,
     Despliegue,
     Detencion,
     FaseVista,
     NoPliega,
     Observacion,
     Pliegue,
+    Quien,
     Recibo,
     Resto,
     Version,
@@ -647,6 +651,141 @@ class SeDetiene(unittest.TestCase):
         self.assertEqual(p.causas, ("parada aceptada", "despliegue sin verificar"))
 
 
+AMBOS_CORTES = (Corte("turno", True), Corte("receta", True))
+UNA_VEZ: tuple[tuple[Quien, int], ...] = (
+    ("checklist", 1), ("desplegar", 1), ("responsable", 1), ("revisor", 1),
+)
+
+
+def _apagon(**cambios) -> Apagon:
+    """El encargo con cortes como debe quedar: dos cortes con el proceso vivo, el mismo
+    final que sin corte, su archivo desplegado y cada cosa una vez."""
+    base = Apagon(
+        "enc_corte",
+        _pliegue(),
+        cortes=AMBOS_CORTES,
+        invocaciones=UNA_VEZ,
+        prs=(PR("uno", 8, "mergeado"),),
+        archivo=ArchivoDesplegado("apagon/m.txt", "enc_corte", "con la marca"),
+    )
+    return dataclasses.replace(base, **cambios)
+
+
+class NoPierdeNiRepite(unittest.TestCase):
+    """docs/modelo-centro-encargos.md, punto 3: aguanta un apagón sin perder trabajo y sin
+    repetirlo. El corte mata solo al supervisor del canario."""
+
+    def test_sin_el_encargo_con_cortes_no_se_mide_y_dice_por_que(self):
+        for nombre in ("no pierde", "no repite"):
+            with self.subTest(nombre):
+                fila = _fila(_obs(), nombre)
+                self.assertEqual(fila.resultado, "no medido")
+                self.assertIn("esta corrida no hizo el encargo con cortes", fila.observado)
+                fila = _fila(_obs(sin_apagon="en Windows no se corta"), nombre)
+                self.assertEqual((fila.resultado, fila.observado), ("no medido", "en Windows no se corta"))
+
+    def test_sin_un_corte_valido_no_se_juzga(self):
+        """Lo que no es el corte que se mide deja las dos filas sin medir, aunque el encargo
+        haya quedado mal: sin corte, o con un corte que mató también al proceso, no hay
+        apagón que juzgar."""
+        mal = _pliegue(estado="detenido")
+        casos: tuple[tuple[str, Apagon, str], ...] = (
+            ("fuera del registro", _apagon(pliegue=None), "enc_corte, no está en el registro"),
+            ("registro roto", _apagon(pliegue=NoPliega(4, "orden", "TransicionIlegal")),
+             "se rompe en el evento 4 (orden)"),
+            ("cortes ilegibles", _apagon(cortes=None, pliegue=mal),
+             "no pude leer lo que el canario anotó de sus cortes"),
+            ("sin cortes", _apagon(cortes=(), pliegue=mal),
+             "el canario no llegó a cortar: ningún proceso esperó su compuerta"),
+            ("el corte mató al turno", _apagon(cortes=(Corte("turno", False),), pliegue=mal),
+             "el corte durante el turno del responsable mató también al proceso que esperaba"),
+            ("sin mirar al proceso", _apagon(cortes=(Corte("turno", True), Corte("receta", None))),
+             "no pude ver si el proceso que esperaba durante la receta de despliegue sobrevivió"),
+        )
+        for nombre, apagon, texto in casos:
+            for fila_nombre in ("no pierde", "no repite"):
+                with self.subTest(nombre, fila=fila_nombre):
+                    fila = _fila(_obs(apagon=apagon), fila_nombre)
+                    self.assertEqual(fila.resultado, "no medido", fila.observado)
+                    self.assertIn(texto, fila.observado)
+
+    def test_no_pierde_con_el_mismo_final_y_el_producto_previo_desplegado(self):
+        casos: tuple[tuple[str, Apagon, str, tuple[str, ...]], ...] = (
+            ("como sin corte", _apagon(), "pasa", (
+                "cortó su supervisor durante el turno del responsable y durante la receta de"
+                " despliegue, con el proceso que esperaba vivo",
+                "llegó al mismo final que sin corte: terminado, su fase en desplegado",
+                "apagon/m.txt trae lo que el responsable escribió antes del corte",
+            )),
+            ("quedó detenido", _apagon(pliegue=_pliegue(estado="detenido")), "falla",
+             ("quedó detenido, no terminado",)),
+            ("entrega parcial",
+             _apagon(pliegue=_pliegue(completo=False, fases=(BLOQUEADA,))), "falla",
+             ("quedó como entrega parcial: la fase uno quedó bloqueada (despliegue sin verificar)",)),
+            ("por debajo",
+             _apagon(pliegue=_pliegue(fases=(dataclasses.replace(UNO, nivel="integrado", cumplido=False),))),
+             "falla", ("la fase uno quedó en integrado, por debajo de lo que el motor exige",)),
+            ("bajó el objetivo",
+             _apagon(pliegue=_pliegue(nivel_efectivo="integrado", motivo_efectivo="no puede desplegar")),
+             "falla", ("el motor bajó el objetivo de desplegado a integrado: no puede desplegar",)),
+            ("producto perdido",
+             _apagon(archivo=ArchivoDesplegado("apagon/m.txt", "enc_corte", "sin la marca")),
+             "falla", ("apagon/m.txt no trae lo que el responsable escribió antes del corte",)),
+            ("sin desplegar",
+             _apagon(archivo=ArchivoDesplegado("apagon/m.txt", "enc_corte", "no existe")),
+             "falla", ("no existe apagon/m.txt, que deja su despliegue",)),
+            ("destino ilegible",
+             _apagon(archivo=ArchivoDesplegado("apagon/m.txt", "enc_corte", "ilegible")),
+             "no medido", ("no pude leer apagon/m.txt",)),
+            ("tras el corte del turno no llegó a la receta",
+             _apagon(cortes=(Corte("turno", True),), pliegue=_pliegue(estado="ejecutando"), archivo=None),
+             "falla", ("quedó ejecutando, no terminado",)),
+            ("la receta no esperó su compuerta", _apagon(cortes=(Corte("turno", True),)), "no medido",
+             ("no hubo corte durante la receta de despliegue",)),
+        )
+        self.juzga("no pierde", casos)
+
+    def test_no_repite_ni_un_turno_ni_la_receta_ni_el_pr_ni_el_merge(self):
+        dos_fases = _pliegue(fases=(UNO, dataclasses.replace(UNO, id="dos")))
+        casos: tuple[tuple[str, Apagon, str, tuple[str, ...]], ...] = (
+            ("cada cosa una vez", _apagon(), "pasa", (
+                "sin repetir: responsable 1, revisor 1, desplegar 1, checklist 1 y rollback 0"
+                " veces (acepto 1, 1, 1, 1 y 0)",
+                "1 PR y 1 merge (acepto 1 y 1)",
+            )),
+            ("otro turno del responsable",
+             _apagon(invocaciones=(("responsable", 2), ("revisor", 1), ("desplegar", 1), ("checklist", 1))),
+             "falla", ("repitió responsable: 2 veces (acepto 1)",)),
+            ("la receta otra vez",
+             _apagon(invocaciones=(("responsable", 1), ("revisor", 1), ("desplegar", 2), ("checklist", 2))),
+             "falla", ("repitió desplegar: 2 veces (acepto 1); checklist: 2 veces (acepto 1)",)),
+            ("una reversa", _apagon(invocaciones=(*UNA_VEZ, ("rollback", 1))), "falla",
+             ("repitió rollback: 1 vez (acepto 0)",)),
+            ("otro PR", _apagon(prs=(PR("uno", 8, "mergeado"), PR("uno", 9, "abierto"))), "falla",
+             ("2 PR (acepto 1)",)),
+            ("otro merge", _apagon(prs=(PR("uno", 8, "mergeado"), PR("uno", 9, "mergeado"))), "falla",
+             ("2 PR (acepto 1); 2 merges (acepto 1)",)),
+            ("menos no es repetir", _apagon(invocaciones=(("responsable", 1),), prs=()), "pasa",
+             ("revisor 0", "0 PR y 0 merges")),
+            ("dos fases aceptan el doble",
+             _apagon(pliegue=dos_fases, invocaciones=tuple((q, 2 * n) for q, n in UNA_VEZ),
+                     prs=(PR("uno", 8, "mergeado"), PR("dos", 9, "mergeado"))),
+             "pasa", ("(acepto 2, 2, 2, 2 y 0)", "2 PR y 2 merges (acepto 2 y 2)")),
+            ("invocaciones ilegibles", _apagon(invocaciones=None), "no medido",
+             ("no pude leer las invocaciones que anotan su agente y su receta",)),
+            ("GitHub caído", _apagon(prs=None), "no medido", ("no pude leer sus PR de GitHub",)),
+        )
+        self.juzga("no repite", casos)
+
+    def juzga(self, fila_nombre: str, casos: tuple[tuple[str, Apagon, str, tuple[str, ...]], ...]) -> None:
+        for nombre, apagon, resultado, textos in casos:
+            with self.subTest(nombre):
+                fila = _fila(_obs(apagon=apagon), fila_nombre)
+                self.assertEqual(fila.resultado, resultado, fila.observado)
+                for texto in textos:
+                    self.assertIn(texto, fila.observado)
+
+
 class VersionYLegible(unittest.TestCase):
     def test_un_arbol_en_otro_sha_falla(self):
         fila = _fila(_obs(version=Version(SHA, OTRO, SHA)), "versión")
@@ -716,6 +855,36 @@ class LoEsperado(unittest.TestCase):
         self.assertEqual(esperado.filas["se detiene"], "pasa")
         for nombre in ("no pierde", "no repite"):
             self.assertEqual(esperado.filas[nombre], "no medido")
+
+    def test_en_windows_las_filas_que_no_se_miden_se_esperan_sin_medir(self):
+        tmp = Path(tempfile.mkdtemp(prefix="esperado-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        ruta = tmp / "esperado.json"
+        datos = json.loads(ESPERADO.read_text(encoding="utf-8"))
+        datos["sin_medir_en_windows"] = {"filas": ["termina"], "razon": "en Windows no termina igual"}
+        ruta.write_text(json.dumps(datos), encoding="utf-8")
+
+        self.assertEqual(leer_esperado(ruta, windows=True).filas["termina"], "no medido")
+        self.assertEqual(leer_esperado(ruta, windows=False).filas["termina"], "pasa")
+        del datos["sin_medir_en_windows"]
+        ruta.write_text(json.dumps(datos), encoding="utf-8")
+        self.assertEqual(leer_esperado(ruta, windows=True).filas["termina"], "pasa")
+
+    def test_una_lista_de_windows_mal_escrita_se_rechaza(self):
+        tmp = Path(tempfile.mkdtemp(prefix="esperado-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        ruta = tmp / "esperado.json"
+        datos = json.loads(ESPERADO.read_text(encoding="utf-8"))
+        for valor in (
+            ["no pierde"], {"filas": ["no pierde"]}, {"filas": ["intrusa"], "razon": "x"},
+            {"filas": [], "razon": "x"}, {"filas": ["no pierde", "no pierde"], "razon": "x"},
+            {"filas": ["no pierde"], "razon": " "}, {"filas": ["no pierde"], "razon": "x", "otra": 1},
+        ):
+            datos["sin_medir_en_windows"] = valor
+            ruta.write_text(json.dumps(datos), encoding="utf-8")
+            with self.subTest(valor=valor), self.assertRaises(ValueError) as caso:
+                leer_esperado(ruta)
+            self.assertIn("sin_medir_en_windows", str(caso.exception))
 
     def test_una_falla_conocida_sin_su_razon_se_rechaza(self):
         tmp = Path(tempfile.mkdtemp(prefix="esperado-"))
@@ -928,6 +1097,61 @@ class LeerLaDetencion(unittest.TestCase):
         self.destino.unlink()
         self.destino.mkdir()
         self.assertEqual(contenido(), "ilegible")
+
+
+class LeerElApagon(unittest.TestCase):
+    """Lo que el lanzador y el agente anotan en `canario-apagon/<encargo>/`, leído del
+    disco: lo ilegible o ajeno queda sin leer, nunca como cero cortes o cero invocaciones."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix="canario-apagon-")).resolve()
+        self.addCleanup(shutil.rmtree, self.base, True)
+        reg = Registro(self.base)
+        try:
+            self.ident = recibir(reg, "con cortes", "clave", RECIBIDO)["encargo"]
+        finally:
+            reg.close()
+        self.carpeta = self.base / APAGON / self.ident
+        self.carpeta.mkdir(parents=True)
+
+    def apagon(self) -> Apagon:
+        obs = observar(self.base, self.ident, _GitHubCaido(), hora=HORA, apagon=self.ident)
+        assert obs.apagon is not None
+        return obs.apagon
+
+    def test_lee_cada_corte_y_cuenta_cada_invocacion(self):
+        (self.carpeta / CORTES).write_text(json.dumps([
+            {"momento": "turno", "sobrevivio": True}, {"momento": "receta", "sobrevivio": None},
+        ]), encoding="utf-8")
+        (self.carpeta / INVOCACIONES).write_text(
+            "responsable\nrevisor\ndesplegar\nresponsable\n", encoding="utf-8",
+        )
+
+        apagon = self.apagon()
+
+        self.assertEqual(apagon.cortes, (Corte("turno", True), Corte("receta", None)))
+        self.assertEqual(apagon.invocaciones, (("desplegar", 1), ("responsable", 2), ("revisor", 1)))
+        self.assertEqual(apagon.prs, ())
+
+    def test_sin_anotar_nada_no_hubo_cortes_ni_invocaciones(self):  # no-roja-en-base: sin cortes la fila tampoco se mide en la base; fija que la ausencia no se lea como ilegible
+        apagon = self.apagon()
+        self.assertEqual((apagon.cortes, apagon.invocaciones), ((), ()))
+
+    def test_lo_ilegible_o_ajeno_queda_sin_leer(self):
+        casos = (
+            ("cortes que no son lista", CORTES, json.dumps({"momento": "turno"}), "cortes"),
+            ("un corte de otro momento", CORTES, json.dumps([{"momento": "luz", "sobrevivio": True}]), "cortes"),
+            ("un sobrevivió que no es booleano", CORTES,
+             json.dumps([{"momento": "turno", "sobrevivio": "sí"}]), "cortes"),
+            ("cortes que no son JSON", CORTES, "{", "cortes"),
+            ("una invocación de nadie", INVOCACIONES, "responsable\nintruso\n", "invocaciones"),
+        )
+        for nombre, archivo, texto, campo in casos:
+            with self.subTest(nombre):
+                for viejo in self.carpeta.iterdir():
+                    viejo.unlink()
+                (self.carpeta / archivo).write_text(texto, encoding="utf-8")
+                self.assertIsNone(getattr(self.apagon(), campo))
 
 
 class ObservarUnEncargoDelBanco(unittest.TestCase):

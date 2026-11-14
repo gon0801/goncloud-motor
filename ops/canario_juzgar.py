@@ -11,6 +11,7 @@ actualizar el archivo.
 from __future__ import annotations
 
 import dataclasses
+import os
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -25,10 +26,13 @@ if str(RAIZ) not in sys.path:
 from motor.encargos.politica import CERRADOS_VENTANA_S  # noqa: E402
 from motor.io import leer_json  # noqa: E402
 from ops.canario_observacion import (  # noqa: E402
+    Apagon,
     Detencion,
+    Momento,
     NoPliega,
     Observacion,
     Pliegue,
+    Quien,
     TipoResto,
 )
 from tools import plegado  # noqa: E402
@@ -463,8 +467,160 @@ def _se_detiene(obs: Observacion, topes: Topes) -> Juicio:
     return "pasa", "; ".join(cumple)
 
 
-def _sin_medicion(motivo: str) -> Callable[[Observacion, Topes], Juicio]:
-    return lambda _obs, _topes: ("no medido", motivo)
+MOMENTOS: dict[Momento, str] = {
+    "turno": "el turno del responsable",
+    "receta": "la receta de despliegue",
+}
+
+# Lo que corre una fase sin corte: cada rol del agente una vez y su receta una vez, con
+# el checklist en verde. El corte mata solo al supervisor y deja vivo al proceso que
+# esperaba la compuerta, así que no justifica repetir nada: el modelo concilia el efecto
+# en curso con su recibo (estado `conciliando`) y no lo relanza.
+ACEPTADAS: tuple[tuple[Quien, int], ...] = (
+    ("responsable", 1), ("revisor", 1), ("desplegar", 1), ("checklist", 1), ("rollback", 0),
+)
+
+
+def _y(partes: list[str]) -> str:
+    return " y ".join(filter(None, (", ".join(partes[:-1]), partes[-1])))
+
+
+def _sin_corte(obs: Observacion) -> Juicio | None:
+    """Sin el corte que se mide no hay apagón que juzgar: ni sin cortes, ni con un corte
+    que mató también al proceso que esperaba la compuerta."""
+    a = obs.apagon
+    if a is None:
+        return "no medido", obs.sin_apagon or "esta corrida no hizo el encargo con cortes"
+    if a.pliegue is None:
+        return "no medido", f"el encargo con cortes, {a.encargo}, no está en el registro"
+    if isinstance(a.pliegue, NoPliega):
+        return "no medido", (
+            f"el registro de {a.encargo} se rompe en el evento {a.pliegue.evento}"
+            f" ({a.pliegue.tipo}): {a.pliegue.excepcion}"
+        )
+    if a.cortes is None:
+        return "no medido", "no pude leer lo que el canario anotó de sus cortes"
+    if not a.cortes:
+        return "no medido", "el canario no llegó a cortar: ningún proceso esperó su compuerta"
+    for c in a.cortes:
+        if c.sobrevivio is False:
+            return "no medido", (
+                f"el corte durante {MOMENTOS[c.momento]} mató también al proceso que esperaba:"
+                " no es el corte que se mide"
+            )
+        if c.sobrevivio is None:
+            return "no medido", (
+                f"no pude ver si el proceso que esperaba durante {MOMENTOS[c.momento]}"
+                " sobrevivió al corte"
+            )
+    return None
+
+
+def _cortes(a: Apagon) -> Condicion:
+    hechos = {c.momento for c in a.cortes or ()}
+    faltan = [texto for momento, texto in MOMENTOS.items() if momento not in hechos]
+    if faltan:
+        return None, "no hubo corte durante " + " ni durante ".join(faltan)
+    return True, (
+        f"cortó su supervisor durante {' y durante '.join(MOMENTOS.values())}, con el proceso que"
+        " esperaba vivo"
+    )
+
+
+def _mismo_final(p: Pliegue) -> Condicion:
+    """El final de un encargo sin corte: terminado, completo, cada fase en el nivel que el
+    motor exige y sin bajar el objetivo."""
+    if p.estado != "terminado":
+        return False, f"quedó {p.estado}, no terminado"
+    if not p.fases:
+        return False, "terminó sin fases"
+    if not p.completo:
+        return False, "quedó como entrega parcial: " + "; ".join(
+            f"la fase {f.id} quedó {f.estado}" + (f" ({f.causa})" if f.causa else "")
+            for f in p.fases if f.estado != "preparada"
+        )
+    debajo = [f"la fase {f.id} quedó en {f.nivel}" for f in p.fases if not f.cumplido]
+    if debajo:
+        return False, "; ".join(debajo) + ", por debajo de lo que el motor exige"
+    if bajado := _bajado(p):
+        return False, bajado
+    fases = "su fase" if len(p.fases) == 1 else f"sus {len(p.fases)} fases"
+    return True, (
+        f"llegó al mismo final que sin corte: terminado, {fases} en"
+        f" {_y(sorted({f.nivel for f in p.fases}))}"
+    )
+
+
+def _producto_previo(a: Apagon) -> Condicion:
+    """El responsable escribe su producto antes de esperar la compuerta del turno: lo que
+    llega al destino es el trabajo de antes del corte."""
+    if a.archivo is None:
+        return None, "nadie pidió revisar lo que deja su despliegue"
+    ruta, contenido = a.archivo.ruta, a.archivo.contenido
+    if contenido == "ilegible":
+        return None, f"no pude leer {ruta}"
+    if contenido == "no existe":
+        return False, f"no existe {ruta}, que deja su despliegue"
+    trae = "trae" if contenido == "con la marca" else "no trae"
+    return contenido == "con la marca", f"{ruta} {trae} lo que el responsable escribió antes del corte"
+
+
+def _una_vez(a: Apagon, fases: int) -> Condicion:
+    if a.invocaciones is None:
+        return None, "no pude leer las invocaciones que anotan su agente y su receta"
+    corridas = dict(a.invocaciones)
+    de_mas = [
+        f"{quien}: {corridas[quien]} {'vez' if corridas[quien] == 1 else 'veces'} (acepto {n * fases})"
+        for quien, n in ACEPTADAS if corridas.get(quien, 0) > n * fases
+    ]
+    if de_mas:
+        return False, "repitió " + "; ".join(de_mas)
+    return True, (
+        f"sin repetir: {_y([f'{quien} {corridas.get(quien, 0)}' for quien, _ in ACEPTADAS])} veces"
+        f" (acepto {_y([str(n * fases) for _, n in ACEPTADAS])})"
+    )
+
+
+def _un_pr_un_merge(a: Apagon, fases: int) -> Condicion:
+    if a.prs is None:
+        return None, "no pude leer sus PR de GitHub"
+    prs, merges = len(a.prs), sum(1 for pr in a.prs if pr.estado == "mergeado")
+    de_mas = [
+        texto for texto, n in ((f"{prs} PR", prs), (f"{merges} merges", merges)) if n > fases
+    ]
+    if de_mas:
+        return False, "repitió en GitHub: " + "; ".join(f"{texto} (acepto {fases})" for texto in de_mas)
+    return True, f"{prs} PR y {merges} merge{'' if merges == 1 else 's'} (acepto {fases} y {fases})"
+
+
+def _juntar(condiciones: tuple[Condicion, ...]) -> Juicio:
+    fallas = [texto for ok, texto in condiciones if ok is False]
+    sin_mirar = [texto for ok, texto in condiciones if ok is None]
+    cumple = [texto for ok, texto in condiciones if ok]
+    if fallas:
+        return "falla", "; ".join(fallas) + (f"; sí {'; '.join(cumple)}" if cumple else "")
+    if sin_mirar:
+        return "no medido", "; ".join(sin_mirar)
+    return "pasa", "; ".join(cumple)
+
+
+def _no_pierde(obs: Observacion, _topes: Topes) -> Juicio:
+    """Tras los cortes llega al mismo final que sin ellos y despliega lo que el
+    responsable escribió antes del primero."""
+    if (fuera := _sin_corte(obs)) is not None:
+        return fuera
+    a = cast(Apagon, obs.apagon)
+    return _juntar((_cortes(a), _mismo_final(cast(Pliegue, a.pliegue)), _producto_previo(a)))
+
+
+def _no_repite(obs: Observacion, _topes: Topes) -> Juicio:
+    """Tras los cortes, cada rol del agente, cada paso de la receta, el PR y el merge corren
+    las veces que corren sin corte (`ACEPTADAS`, por fase)."""
+    if (fuera := _sin_corte(obs)) is not None:
+        return fuera
+    a = cast(Apagon, obs.apagon)
+    fases = max(len(cast(Pliegue, a.pliegue).fases), 1)
+    return _juntar((_cortes(a), _una_vez(a, fases), _un_pr_un_merge(a, fases)))
 
 
 Juez = Callable[[Observacion, Topes], Juicio]
@@ -475,10 +631,10 @@ TABLA: tuple[tuple[NombreFila, str, str, Juez], ...] = (
      _entregado),
     ("limpio", "2", "la tabla Limpieza del modelo: GitHub, la base, el clon del servicio"
      " y los procesos", _limpio),
-    ("no pierde", "3", "sin fuente todavía",
-     _sin_medicion("necesita los cortes de energía del canario, que aún no existen")),
-    ("no repite", "3", "sin fuente todavía",
-     _sin_medicion("necesita contar PR, merges, recetas e invocaciones tras un corte")),
+    ("no pierde", "3", "el encargo con cortes: registro, lo que el canario anotó de cada corte"
+     " y su destino", _no_pierde),
+    ("no repite", "3", "el encargo con cortes: las invocaciones que anotan su agente y su receta,"
+     " y GitHub (gh pr list de sus ramas)", _no_repite),
     ("cuesta poco", "4", "registro: turnos, revisiones y horas", _cuesta_poco),
     ("se detiene", "5", "el encargo cuyo checklist falla a propósito: registro, sus recibos"
      " de despliegue y su destino", _se_detiene),
@@ -497,7 +653,26 @@ def juzgar(obs: Observacion, esperado: Esperado) -> tuple[Fila, ...]:
     return tuple(filas)
 
 
-def leer_esperado(ruta: Path) -> Esperado:
+def _sin_medir_en_windows(ruta: Path, datos: dict, nombres: set[str]) -> list[str]:
+    """Las filas que en Windows no se miden, y por eso ahí se esperan "no medido"."""
+    if "sin_medir_en_windows" not in datos:
+        return []
+    sin_medir = datos["sin_medir_en_windows"]
+    filas = sin_medir.get("filas") if isinstance(sin_medir, dict) else None
+    if (
+        not isinstance(sin_medir, dict) or set(sin_medir) != {"filas", "razon"}
+        or not isinstance(filas, list) or not filas or len(set(filas)) != len(filas)
+        or not set(filas) <= nombres
+        or not isinstance(sin_medir["razon"], str) or not sin_medir["razon"].strip()
+    ):
+        raise ValueError(
+            f"{ruta}: 'sin_medir_en_windows' lleva 'filas', una lista de filas de la tabla,"
+            " y 'razon', por qué en Windows no se miden"
+        )
+    return filas
+
+
+def leer_esperado(ruta: Path, windows: bool = os.name == "nt") -> Esperado:
     datos = leer_json(ruta)
     nombres = {nombre for nombre, *_ in TABLA}
     filas = datos.get("filas") if isinstance(datos, dict) else None
@@ -527,4 +702,7 @@ def leer_esperado(ruta: Path) -> Esperado:
         or any(not isinstance(v, str) or not v.strip() for v in razones.values())
     ):
         raise ValueError(f"{ruta}: 'razones' debe explicar cada fila que se espera falla: {conocidas}")
+    sin_medir = _sin_medir_en_windows(ruta, datos, nombres)
+    if windows:
+        filas = {**filas, **dict.fromkeys(sin_medir, "no medido")}
     return Esperado(filas=cast(Mapping[NombreFila, Resultado], filas), topes=Topes(**topes))

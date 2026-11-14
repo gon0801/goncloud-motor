@@ -6,10 +6,16 @@ Uso, siempre en solo lectura:
         [--esperado ops/canario_encargos.esperado.json] [--arbol <ruta>]
         [--sha-desplegado <sha>] [--archivo-desplegado <ruta> --marca <texto>]
         [--detencion <encargo> [--archivo-detencion <ruta>]]
+        [--apagon <encargo> [--archivo-apagon <ruta>]]
 
 `--detencion` nombra el encargo cuyo checklist de despliegue falla a propósito:
 de él sale la fila "se detiene". `--archivo-detencion` es el archivo que su
 despliegue deja y su rollback quita; su marca es el id de ese encargo.
+
+`--apagon` nombra el encargo al que el lanzador le cortó el supervisor: de él
+salen las filas "no pierde" y "no repite", con lo que el lanzador y su agente
+anotaron en `canario-apagon/<encargo>/`. `--archivo-apagon` es el archivo que su
+despliegue deja; su marca es el id de ese encargo.
 
 Tres capas, cada una en su módulo:
 
@@ -41,9 +47,8 @@ RAIZ = Path(__file__).resolve().parents[1]
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
-from motor.github import GhGitHub  # noqa: E402
 from ops.canario_juzgar import ESPERADO, Fila, juzgar, leer_esperado  # noqa: E402
-from ops.canario_observar import LectorPR, observar  # noqa: E402
+from ops.canario_observar import GitHubDelCanario, LectorPR, observar  # noqa: E402
 
 
 def tabla(filas: tuple[Fila, ...]) -> str:
@@ -87,11 +92,15 @@ def main(argv: list[str] | None = None, gh: LectorPR | None = None) -> int:
     p.add_argument("--marca", default="")
     p.add_argument("--detencion", default="", help="el encargo cuyo checklist falla a propósito")
     p.add_argument("--archivo-detencion", type=Path)
+    p.add_argument("--apagon", default="", help="el encargo al que el lanzador le cortó el supervisor")
+    p.add_argument("--archivo-apagon", type=Path)
     args = p.parse_args(argv)
     if (args.archivo_desplegado is None) != (not args.marca):
         p.error("--archivo-desplegado y --marca van juntos")
     if args.archivo_detencion is not None and not args.detencion:
         p.error("--archivo-detencion pide --detencion")
+    if args.archivo_apagon is not None and not args.apagon:
+        p.error("--archivo-apagon pide --apagon")
     try:
         esperado = leer_esperado(args.esperado)
     except (OSError, ValueError) as exc:
@@ -101,13 +110,15 @@ def main(argv: list[str] | None = None, gh: LectorPR | None = None) -> int:
         print(f"canario: no existe {args.base / 'registro.sqlite'}", file=sys.stderr)
         return 2
     obs = observar(
-        args.base, args.encargo, gh or GhGitHub(),
+        args.base, args.encargo, gh or GitHubDelCanario(),
         hora=_ahora(),
         arbol=args.arbol,
         sha_desplegado=args.sha_desplegado,
         archivo=(args.archivo_desplegado, args.marca) if args.archivo_desplegado else None,
         detencion=args.detencion,
         archivo_detencion=args.archivo_detencion,
+        apagon=args.apagon,
+        archivo_apagon=args.archivo_apagon,
     )
     if obs.pliegue is None:
         print(f"canario: el encargo {args.encargo} no está en el registro", file=sys.stderr)

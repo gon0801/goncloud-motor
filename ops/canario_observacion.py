@@ -139,6 +139,39 @@ class Detencion:
     """Lo que su despliegue deja y su rollback quita; None: nadie pidió revisarlo."""
 
 
+Momento = Literal["turno", "receta"]
+"""Dónde cae cada corte: durante el turno del responsable o durante la receta de despliegue."""
+
+Quien = Literal["responsable", "revisor", "desplegar", "checklist", "rollback"]
+"""Lo que se anota cada vez que corre: un rol del agente o un paso de la receta."""
+
+
+@dataclass(frozen=True)
+class Corte:
+    """El canario mató su supervisor mientras un proceso esperaba la compuerta de `momento`."""
+
+    momento: Momento
+    sobrevivio: bool | None
+    """El proceso que esperaba siguió vivo al morir el supervisor; None: no se pudo mirar."""
+
+
+@dataclass(frozen=True)
+class Apagon:
+    """El encargo al que el canario le corta el supervisor."""
+
+    encargo: str
+    pliegue: Pliegue | NoPliega | None
+    """None: el encargo no está en el registro."""
+    cortes: tuple[Corte, ...] | None = ()
+    """None: no se pudo leer lo que el canario anotó."""
+    invocaciones: tuple[tuple[Quien, int], ...] | None = ()
+    """Cuántas veces corrió cada rol de su agente y cada paso de su receta; None: no se pudo leer."""
+    prs: tuple[PR, ...] | None = ()
+    """Cada PR de sus ramas en GitHub, en cualquier estado; None: GitHub no respondió."""
+    archivo: ArchivoDesplegado | None = None
+    """Lo que su despliegue deja, con su id como marca; None: nadie pidió revisarlo."""
+
+
 @dataclass(frozen=True)
 class Observacion:
     hora: str
@@ -154,3 +187,7 @@ class Observacion:
     """None: nadie pidió revisar un archivo desplegado."""
     detencion: Detencion | None = None
     """None: esta corrida no hizo el encargo que falla a propósito."""
+    apagon: Apagon | None = None
+    """None: esta corrida no hizo el encargo con cortes."""
+    sin_apagon: str = ""
+    """Por qué esta corrida no hizo el encargo con cortes, si lo sabe."""
