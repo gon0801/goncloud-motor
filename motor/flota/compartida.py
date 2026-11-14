@@ -470,7 +470,7 @@ def _vigente(path: Path) -> tuple[int, str, str] | None:
     if not path.exists():
         return None
     vigente = _leer_doc(path)
-    if isinstance(vigente, dict) and vigente.get(_NUMERO) is None:
+    if isinstance(vigente, dict) and _NUMERO not in vigente:
         return None
     if isinstance(vigente, dict):
         numero, digest, origen = (vigente.get(k) for k in (_NUMERO, "hash", "origen"))
