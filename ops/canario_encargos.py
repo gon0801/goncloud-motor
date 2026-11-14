@@ -607,7 +607,7 @@ def _no_deja_roto(d: Detencion) -> Condicion:
             f"el despliegue de la fase {fase} quedó sin revertir (rollback {rollback})"
             for fase, rollback in sin_revertir
         )
-    rojos = [codigo for x in d.despliegues for paso, codigo in x.pasos if paso == "checklist" and codigo]
+    rojos = [codigo for x in d.despliegues for paso, codigo in x.pasos if paso == "checklist" and codigo != 0]
     if not rojos:
         return False, "el checklist no salió en rojo en ningún recibo: el freno no corrió"
     if d.archivo is not None and d.archivo.contenido == "ilegible":
@@ -943,7 +943,8 @@ def _objeto(ruta: Path) -> dict | None:
 def _dueno(pedido: dict | None, recibo: dict | None) -> str:
     """El encargo del despliegue: el de la identidad de su pedido o, si no, el de su recibo."""
     identidad = (pedido or {}).get("identidad")
-    for dueno in (identidad.get("encargo") if isinstance(identidad, dict) else None, (recibo or {}).get("encargo")):
+    del_pedido = identidad.get("encargo") if isinstance(identidad, dict) else None
+    for dueno in (del_pedido, (recibo or {}).get("encargo")):
         if isinstance(dueno, str) and dueno:
             return dueno
     return ""
@@ -956,11 +957,11 @@ def _pasos_lanzados(recibo: dict) -> tuple[tuple[str, int], ...] | None:
         return None
     lanzados = []
     for paso in pasos:
-        if not (isinstance(paso, dict) and isinstance(paso.get("paso"), str) and type(paso.get("enviado")) is bool):
+        if not isinstance(paso, dict) or not isinstance(paso.get("paso"), str):
+            return None
+        if type(paso.get("enviado")) is not bool or (paso["enviado"] and type(paso.get("codigo")) is not int):
             return None
         if paso["enviado"]:
-            if type(paso.get("codigo")) is not int:
-                return None
             lanzados.append((paso["paso"], paso["codigo"]))
     return tuple(lanzados)
 
