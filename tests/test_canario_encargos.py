@@ -605,7 +605,7 @@ class SeDetiene(unittest.TestCase):
         )
         self.juzga(casos)
 
-    def test_para_con_una_palabra_del_modelo(self):
+    def test_para_con_una_palabra_del_modelo(self):  # no-roja-en-base: solo cambia el docstring a cinco causas; la quinta la prueba test_un_fallo_interno_no_es_la_parada_que_se_mide
         """docs/modelo-centro-encargos.md, "Qué significa cada palabra del reporte": una
         fase bloqueada es "entrega parcial" con la fase y su causa; `detenido` queda para
         sus cinco causas."""
