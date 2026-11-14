@@ -1,8 +1,4 @@
-"""Comprobar una generacion antes de activarla o al recuperarla.
-
-Una comprobacion tiene tres resultados: sana, rota o sin medir. Sin medir es una
-lectura que no termino a tiempo; no dice nada de la generacion.
-"""
+"""Comprobar una generacion antes de activarla o al recuperarla."""
 
 from __future__ import annotations
 
