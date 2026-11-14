@@ -183,6 +183,10 @@ def _sin_enlace(home: Path) -> _SinEnlace:
     return _SinEnlace(clon, clon, False)
 
 
+def _entre_comillas(partes: list[str]) -> str:
+    return " ".join(f'"{parte}"' for parte in partes)
+
+
 def asignar(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
@@ -191,8 +195,9 @@ def asignar(home: Path) -> str:
     if sin.exige_enlace:
         raiz = Path(__file__).resolve().parents[2]
         argv = [sys.executable, "-m", "motor", "flota", "recuperar", "--home", str(home.absolute())]
-        # python -m motor busca el paquete en la carpeta actual; cmd cambia de unidad solo con /d.
-        cd, unir = ("cd /d", subprocess.list2cmdline) if os.name == "nt" else ("cd", shlex.join)
+        # python -m motor busca el paquete en la carpeta actual; cmd cambia de unidad solo con
+        # /d y no corta dentro de comillas dobles, ni en un espacio ni en un &.
+        cd, unir = ("cd /d", _entre_comillas) if os.name == "nt" else ("cd", shlex.join)
         raise RuntimeError(
             f"falta el enlace actual; reponlo con `{cd} {unir([str(raiz)])} && {unir(argv)}`. "
             f"instalacion.json registra la generacion {sin.asignada} y sin el enlace la "
