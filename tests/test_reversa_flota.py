@@ -53,7 +53,7 @@ def _commit(motor: Path, archivos: dict[str, str], mensaje: str) -> str:
     return _git(motor, "rev-parse", "HEAD")
 
 
-def _comprobar_py_lento():
+def _comprobar_py_lento(sin_tope: bool = False):
     """subprocess.run con el comprobar.py de la generacion pasado de su tope.
 
     Como el real sin tuberias, la excepcion trae lo que quedaba del tope, no el tope.
@@ -62,7 +62,7 @@ def _comprobar_py_lento():
 
     def run(argv, *args, **kwargs):
         if str(list(argv)[-1]).endswith("comprobar.py"):
-            raise subprocess.TimeoutExpired(argv, kwargs["timeout"] - 0.00005)
+            raise subprocess.TimeoutExpired(argv, None if sin_tope else kwargs["timeout"] - 0.00005)
         return correr(argv, *args, **kwargs)
 
     return run
@@ -487,6 +487,20 @@ class ReversaFlota(unittest.TestCase):
         candidata = json.loads((self.home / "candidata.json").read_text(encoding="utf-8"))
         self.assertEqual(candidata["motivo"], salida["motivo"])
         self.assertEqual(asignar(self.home), self.buena)
+        nota = json.loads((self.home / "sin-medir.json").read_text(encoding="utf-8"))
+        self.assertEqual((nota["generacion"], nota["operacion"]), (self.nueva, "aplicar"))
+
+    def test_una_espera_vencida_sin_tope_sigue_sin_medir(self) -> None:
+        aplicar(self.home, self.buena, sin_turnos=True)
+        self.assertEqual(aplicar(self.home, self.nueva, sin_turnos=True)["accion"], "aplicada")
+
+        with mock.patch("subprocess.run", side_effect=_comprobar_py_lento(sin_tope=True)):
+            salida = recuperar(self.home)
+        self.assertEqual(salida["accion"], "no_medido", salida)
+        self.assertIn("comprobar.py", salida["causa"])
+        self.assertIn("no se midio", salida["causa"])
+        self.assertIsNone(json.loads((self.home / "sin-medir.json").read_text(encoding="utf-8"))["tope"])
+        self.assertEqual(asignar(self.home), self.nueva)
 
     def test_lo_que_no_se_midio_queda_anotado_hasta_que_se_mide(self) -> None:
         from motor.flota.cli import main
@@ -502,6 +516,7 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(json.loads(impreso.getvalue())["accion"], "no_medido")
         nota = json.loads(anotado.read_text(encoding="utf-8"))
         self.assertEqual(nota["generacion"], self.nueva)
+        self.assertEqual(nota["operacion"], "recuperar")
         self.assertIn("comprobar.py", nota["orden"])
         self.assertEqual(nota["tope"], 120)
         self.assertIn("no se midio", nota["causa"])
