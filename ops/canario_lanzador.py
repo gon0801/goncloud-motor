@@ -87,6 +87,7 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 from motor import plataforma  # noqa: E402
+from motor.encargos.aislamiento import TOKEN_DE_AGENTES  # noqa: E402
 from motor.encargos.copiar import _quitar as quitar  # noqa: E402
 from motor.encargos.registro import Registro  # noqa: E402
 from motor.github import GhGitHub  # noqa: E402
@@ -122,6 +123,11 @@ COMPARTIDOS = (
     Compartido(Path("maquina.toml"), "enlace duro", _SOLO_LO_LEE),
     Compartido(Path("github.json"), "enlace duro", _SOLO_LO_LEE),
     Compartido(Path("capacidades.json"), "enlace duro", _SOLO_LO_LEE),
+    Compartido(
+        Path(TOKEN_DE_AGENTES), "enlace duro",
+        _SOLO_LO_LEE + "; sin él, el agente del canario solo ejercería el caso sin token",
+        obligatorio=False,
+    ),
     Compartido(
         Path("flota-home.json"), "copia",
         "servicio.vincular_base lo escribe en sitio: por un enlace, esa escritura caería en la"
@@ -351,12 +357,16 @@ def _enlazar(fuente: Path, enlace: Path) -> None:
     os.link(fuente, enlace)
 
 
-def _copiar(fuente: Path, copia: Path) -> None:
+def _soltar(propio: Path) -> None:
     # Un archivo se desenlaza sin tocar sus permisos: puede ser un enlace duro al vivo.
-    if copia.is_dir() and not copia.is_symlink():
-        quitar(copia)
-    elif os.path.lexists(copia):
-        copia.unlink()
+    if propio.is_dir() and not propio.is_symlink():
+        quitar(propio)
+    elif os.path.lexists(propio):
+        propio.unlink()
+
+
+def _copiar(fuente: Path, copia: Path) -> None:
+    _soltar(copia)
     if fuente.is_dir():
         shutil.copytree(fuente, copia)
     elif fuente.is_file():
@@ -382,7 +392,12 @@ def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
         if c.obligatorio and not fuente.is_file():
             raise NoSePuede("preparar", f"falta {fuente}")
         try:
-            (_enlazar if c.forma == "enlace duro" else _copiar)(fuente, propio)
+            if not os.path.lexists(fuente):
+                _soltar(propio)
+            elif c.forma == "enlace duro":
+                _enlazar(fuente, propio)
+            else:
+                _copiar(fuente, propio)
         except OSError as exc:
             raise NoSePuede("preparar", f"no pude dejar {propio} como {c.forma}: {exc}") from exc
     try:
