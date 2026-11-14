@@ -116,8 +116,8 @@ from .politica import (
     CERRADOS_RELECTURA_S,
     CERRADOS_SONDEO_RAPIDO_S,
     CERRADOS_VENTANA_S,
-    TOPE_DEEPSEEK_MIN,
 )
+from .revisor_deepseek import omision_por_lectura_fallida, revisor_deepseek, texto_de_omision
 from .resultado import Avanzo, Devolver, Espera, NecesitaAgente, Resultado, permite_lanzar
 from .suscripciones import CuentaNoDisponible
 
@@ -5683,7 +5683,7 @@ def _leer_deepseek(
 def _omitir_deepseek(
     registro: Registro, enc: Encargo, numero: int, sha: str, texto: str, hora: str
 ) -> Encargo:
-    """Tras el tope, la fase sigue sin la revisión externa.
+    """La fase sigue sin la revisión externa: tras el tope o sin revisor.
 
     La nota queda en el PR y la huella `sin-revision` libera el SHA para
     integrar o desplegar. Una relectura posterior con comentarios reales
@@ -5728,21 +5728,16 @@ def _omitir_deepseek(
     return registro.fold(enc.id) or enc
 
 
-def _disparar_deepseek(gh, enc: Encargo, espacio: Path, sha: str) -> None:
+def _disparar_deepseek(
+    gh, enc: Encargo, espacio: Path, sha: str, disparo: tuple[str, str]
+) -> None:
     """Recuperacion por dispatch, como en el motor por planes. Best effort:
-    si el workflow no existe en el SHA o el disparo falla, la espera sigue
-    su curso; nunca se finge una revision leida."""
+    si el disparo falla, la espera sigue su curso; nunca se finge una
+    revision leida."""
     try:
         from motor.effects import inputs_de_workflow
 
-        worker = _git(espacio, "show", f"{sha}:.github/workflows/ai-review-worker.yml")
-        if worker.returncode != 0:
-            return
-        publish = _git(espacio, "show", f"{sha}:.github/workflows/ai-review-publish.yml")
-        if publish.returncode == 0:
-            archivo, texto = "ai-review-publish.yml", publish.stdout
-        else:
-            archivo, texto = "ai-review-worker.yml", worker.stdout
+        archivo, texto = disparo
         base = _git(espacio, "rev-parse", f"origin/{_base_fase(enc)}").stdout.strip()
         valores = {
             "pr_number": str(enc.pr_numero),
@@ -7265,7 +7260,7 @@ def _veredicto_antes_de_cerrar(
             )
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return registro.fold(enc.id)
-        # La fase siguió sin revisión tras el tope: una relectura fallida no
+        # La fase siguió sin revisión: una relectura fallida no
         # vuelve a frenar el cierre. Si llega un comentario, el siguiente
         # barrido lo lee y lo trata como tardío.
         return None
@@ -10150,19 +10145,15 @@ def _paso_entrega_paso(
                 "reintentar la lectura de DeepSeek para el mismo SHA",
                 hora, f"deepseek-leer-{sha[:12]}",
             )
-            if minutos >= TOPE_DEEPSEEK_MIN:
-                texto = (
-                    "sin revisión de DeepSeek para el SHA "
-                    f"{sha[:12]} tras {int(minutos)} min (no se pudo leer: "
-                    f"{str(exc)[:200]}); la fase sigue como si no hubiera "
-                    "hallazgos"
-                )
+            texto = omision_por_lectura_fallida(sha, minutos, exc)
+            if texto:
                 enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
                 if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
                     return enc, Avanzo()
                 return _paso_entrega_paso(registro, enc, gh, hora)
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return _con_espera(registro.fold(enc.id) or enc)
+        revisor = revisor_deepseek(espacio, sha, base)
         if isinstance(lectura_ds, PendienteLectura):
             leidos: list[dict] = []
             comentarios: list[dict] = []
@@ -10190,8 +10181,8 @@ def _paso_entrega_paso(
                 and ev["data"].get("sha") == sha
                 for ev in eventos
             )
-            if not disparado and minutos >= 2:
-                _disparar_deepseek(gh, enc, espacio, sha)
+            if revisor.disparo and not disparado and minutos >= 2:
+                _disparar_deepseek(gh, enc, espacio, sha, revisor.disparo)
                 registro.anotar(
                     enc.id,
                     {
@@ -10208,12 +10199,8 @@ def _paso_entrega_paso(
                     },
                     f"entrega:{enc.id}:{enc.fase_activa}:deepseek_disparado:{sha}",
                 )
-            if minutos >= TOPE_DEEPSEEK_MIN:
-                texto = (
-                    "sin revisión de DeepSeek para el SHA "
-                    f"{sha[:12]} tras {int(minutos)} min; la fase sigue como "
-                    "si no hubiera hallazgos"
-                )
+            if minutos >= revisor.espera_min:
+                texto = texto_de_omision(revisor, sha, minutos)
                 enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
                 if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
                     return enc, Avanzo()

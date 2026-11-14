@@ -460,10 +460,16 @@ reabren: si el comentario de DeepSeek sobre su PR trae un High o un Medium
 abierto al cerrar la última fase, el motor deja la nota en el PR de esa fase y
 el aviso al director; el encargo sigue su cierre sin cambiar de estado.
 
-Un repo sin los workflows `ai-review-worker.yml` / `ai-review-publish.yml` o
-sin secretos no finge una revisión leída. La espera de DeepSeek no vence:
-el encargo sigue esperando ese SHA, con la recuperación por dispatch del
-workflow, sin escalar a `necesita_usuario` por tiempo.
+Si el repo tiene el revisor lo contesta una sola función,
+`motor/encargos/revisor_deepseek.py`, que usan la espera y la recuperación por
+dispatch. Mira el SHA y la base del PR, porque `pull_request_target` corre el
+workflow de la base. Si ninguno trae un workflow que nombre a `ai-review`, a
+`goncloud-pr-review` o a `deepseek`, por su nombre o por su texto, no hay
+revisión que esperar. El motor deja la nota «sin revisión de DeepSeek … (sin
+revisor: …)» y sigue la fase en la misma pasada, sin fingir una revisión
+leída. Lo que no puede leer (el SHA, la base o su fetch) cuenta como revisor y
+espera el tope. Un repo con el revisor pero sin secretos también espera el
+tope, con la recuperación por dispatch del workflow.
 
 El puerto GitHub del supervisor se configura en `github.json` de la base:
 `{"real": true}` usa `gh` de verdad; `{"falso": "/ruta"}` usa `FakeGitHub`

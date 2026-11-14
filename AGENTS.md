@@ -8,6 +8,7 @@ falla si los dos archivos difieren.
 | Regla | Valor | Decisión de David | Qué la hace cumplir |
 | --- | --- | --- | --- |
 | DeepSeek: 30 minutos y se sigue con omisión explícita. | 30 min | David, 6-nov | a los 29 min espera; a los 31 min omite con la causa escrita |
+| Sin el revisor de DeepSeek en el SHA ni en la base del PR no se espera su revisión. | 0 min | David, 2026-11-13 | sin un workflow de ai-review omite enseguida con la causa escrita; lo que no se pudo leer espera el tope |
 | Un encargo cerrado se sondea 7 días desde el cierre, con 5 consultas por pasada. | 7 días; 5 por pasada | David, 6-nov | a los 6 días sondea; a los 8 no; 5 consultas entran y la 6.ª queda para la pasada siguiente |
 | El CI no autoriza el merge, pero no frena publicar, revisar ni corregir. | no es compuerta | David, 3-nov | un CI pendiente o verde no detiene la entrega; un error de lectura nunca cuenta como verde |
 | Sin tope de rondas. | sin tope | David, 1-nov | el freno no escala por contar vueltas |
@@ -36,11 +37,12 @@ Los mismos comandos corren en local y en el job `gate` de `.github/workflows/qua
   de 1,000 líneas o una función de más de 100 mide más que en la base, en líneas o en tokens
   de código, o si uno que en la base no existe o cabe pasa del límite. Borrar comentarios o
   líneas en blanco no deja espacio. Los tamaños se leen de git; no hay línea base que editar.
-  Se arregla sacando código de ahí. En un PR también lo juzga el job `tamano-desde-la-base`
-  (`pull_request_target`), que corre el `calidad.py` de la punta de la base con `--cabeza` sobre
-  la unión del PR con esa punta, leída de git: editar la herramienta o el workflow en el PR no
-  lo apaga. Cada push a `main` lo repite en los PR abiertos contra `main`
-  (`tamano-al-avanzar-la-base.yml`).
+  En una ruta de `CONGELAMIENTOS` de `motor/encargos/politica.py` falla también cualquier
+  función nueva, aunque sea chica. Se arregla sacando código de ahí. En un PR también lo
+  juzga el job `tamano-desde-la-base` (`pull_request_target`), que corre el `calidad.py` de la
+  punta de la base con `--cabeza` sobre la unión del PR con esa punta, leída de git: editar la
+  herramienta o el workflow en el PR no lo apaga. Cada push a `main` lo repite en los PR
+  abiertos contra `main` (`tamano-al-avanzar-la-base.yml`).
 - `python3 tools/pruebas_nuevas.py --base origin/main` falla si una prueba nueva o cambiada
   pasa con el código de la base, salvo que lleve `# no-roja-en-base: <razón>`.
 

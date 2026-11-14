@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 
 from .comprobacion import hallazgos_deepseek
+from .revisor_deepseek import causa_de_la_omision
 
 MARCA_EXCEPCIONES = "motor:excepciones="
 MARCA_STICKY = "<!-- ai-review:sticky -->"
@@ -99,18 +100,19 @@ def decidir(comentarios, cuerpo: str, sha: str) -> dict:
         comentarios = ()
     excepciones = excepciones_para(excepciones_del_cuerpo(cuerpo), objetivo)
     ids = {e["id"] for e in excepciones if e.get("id")}
-    omision = any(e.get("tipo") == "omision" for e in excepciones)
+    omisiones = [e for e in excepciones if e.get("tipo") == "omision"]
     autenticos = [
         c
         for c in comentarios or ()
         if es_sticky_autentico(c) and str(c.get("sha") or objetivo) == objetivo
     ]
     if not autenticos:
-        if omision:
+        if omisiones:
+            causa = causa_de_la_omision(omisiones[-1]["motivo"])
             return {
                 "estado": PASA,
                 "sha": objetivo,
-                "nota": "DeepSeek se omitió después del tope y no hay sticky: pasa con la omisión registrada",
+                "nota": f"DeepSeek se omitió ({causa}) y no hay sticky: pasa con la omisión registrada",
                 "abiertos": [],
                 "exceptuados": sorted(ids),
             }
