@@ -35,7 +35,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from motor import plataforma
-from motor.encargos import aislamiento, ciclo, despliegue
+from motor.encargos import aislamiento, check_merge, ciclo, despliegue
 from motor.encargos.agentes import (
     _bash_de_ensayo,
     _disponible,
@@ -915,11 +915,28 @@ class LaEsperaDeDeepSeekSaleDelRepo(CompuertaReal):
             (banco.tmp / "fake" / "github.json").read_text(encoding="utf-8")
         ).get("ai_review", [])
 
+    def _lo_que_reporta(self, banco: Banco, sha: str) -> tuple[str, str]:
+        """La evidencia del cierre y la nota del check de merge sobre el cuerpo
+        que el motor dejó en el PR."""
+        (cierre,) = [
+            e["data"]["evidencia"]
+            for e in banco.eventos("comprobacion")
+            if e["data"].get("clase") == "cierre_comprobado"
+        ]
+        (pr,) = json.loads(
+            (banco.tmp / "fake" / "github.json").read_text(encoding="utf-8")
+        )["prs"].values()
+        return cierre, check_merge.decidir([], pr["cuerpo"], sha)["nota"]
+
     def test_sin_revisor_en_el_repo_la_fase_se_integra_sin_esperar_a_deepseek(self):
         banco, omision, minutos = self._integrar_una_fase(con_revisor=False)
         self.assertLess(minutos, TOPE_DEEPSEEK_MIN)
         self.assertIn("sin revisor", omision["evidencia"])
         self.assertEqual(self._disparos(banco), [])
+        cierre, nota = self._lo_que_reporta(banco, omision["sha"])
+        self.assertIn("DeepSeek no revisó (sin revisor en el repo).", cierre)
+        self.assertIn("sin revisor en el repo", nota)
+        self.assertNotIn("tope", cierre + nota)
 
     def test_con_revisor_en_el_repo_la_entrega_espera_el_tope_de_deepseek(self):  # no-roja-en-base: la espera con revisor es la de la base; la prueba fija que no cambia
         banco, omision, minutos = self._integrar_una_fase(con_revisor=True)
@@ -929,6 +946,10 @@ class LaEsperaDeDeepSeekSaleDelRepo(CompuertaReal):
         self.assertEqual(
             [d["workflow"] for d in self._disparos(banco)], ["ai-review-worker.yml"]
         )
+        cierre, nota = self._lo_que_reporta(banco, omision["sha"])
+        self.assertIn("DeepSeek no revisó (sin revisión tras el tope).", cierre)
+        self.assertIn("tras el tope", nota)
+        self.assertNotIn("sin revisor", cierre + nota)
 
 
 class LosTropiezosDelMerge(CompuertaReal):
