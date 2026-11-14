@@ -133,6 +133,18 @@ class Comprobar(unittest.TestCase):
         self.assertEqual((fallo["encargo"], fallo["evento"], fallo["tipo"]), ("enc_a", 2, "orden"))
         self.assertIn("TransicionIlegal", fallo["error"])
 
+    def test_un_fallo_interno_que_guardo_la_version_siguiente_pliega(self):
+        fallo = ("fallo_interno", {"rechazo": "ilegal", "kind": "estrategia",
+                                   "ukey": "estrategia:*", "hora": "t2"})
+        _armar(self.registro, {
+            "quieto": [_ENTREGA, fallo],
+            "vivo": [_ENTREGA, *_intento("hostA"), fallo,
+                     ("arbol", {"observacion": "ausente", "hora": "t3"})],
+        })
+        codigo, salida = _correr("comprobar", "--json", self.registro)
+        (reg,) = salida["registros"]
+        self.assertEqual((codigo, reg["pliegan"], reg["fallos"], reg["violaciones"]), (0, 2, [], []))
+
     def test_un_evento_sin_host_viola_la_invariante_de_nombre_de_maquina(self):
         _armar(self.registro, {"sin_host": [_ENTREGA, *_intento(None)],
                                "con_host": [_ENTREGA, *_intento("hostA")]})

@@ -43,6 +43,12 @@ Los mismos comandos corren en local y en el job `gate` de `.github/workflows/qua
   punta de la base con `--cabeza` sobre la unión del PR con esa punta, leída de git: editar la
   herramienta o el workflow en el PR no lo apaga. Cada push a `main` lo repite en los PR
   abiertos contra `main` (`tamano-al-avanzar-la-base.yml`).
+- `python3 tools/calidad.py kinds --base origin/main` falla si `motor/encargos/` o
+  `motor/integraciones/` escriben un kind de evento que el reductor de la base no sabe plegar:
+  desplegarlo bloquearía volver a la versión anterior. Se arregla en dos PR: el primero solo
+  enseña el kind al reductor y se despliega; el segundo agrega el escritor. En un PR lo juzga
+  también el job `tamano-desde-la-base`, igual que `tamano`: editar la herramienta en el PR no
+  lo apaga.
 - `python3 tools/pruebas_nuevas.py --base origin/main` falla si una prueba nueva o cambiada
   pasa con el código de la base, salvo que lleve `# no-roja-en-base: <razón>`.
 
