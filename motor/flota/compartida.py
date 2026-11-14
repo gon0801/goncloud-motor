@@ -46,7 +46,7 @@ _EXTRA = {SCHEMA_V2: {_CLAW}, SCHEMA_V3: {_CLAW, _NUMERO}}
 def _campos(schema) -> set[str]:
     """v1 es el snapshot de siempre; v2 suma claw_routing; v3 suma el numero de
     publicacion y lleva claw_routing siempre, nulo si no hubo checkout."""
-    return _CAMPOS | _EXTRA.get(schema, set())
+    return _CAMPOS | (_EXTRA.get(schema, set()) if isinstance(schema, str) else set())
 
 
 def _json_bytes(doc: dict) -> bytes:
@@ -359,22 +359,48 @@ def _claw_publicable(repo_hermes: Path | None, motor_origen: Path) -> dict | Non
     raise _SinClaw("; ".join(fallos))
 
 
+def _leer_doc(path: Path) -> object:
+    try:
+        return leer_json(path)
+    except ValueError:
+        return None
+
+
+def _leer_contador(contador: Path) -> tuple[int, str] | None:
+    """(numero, contenido_sha256) de la ultima publicacion, o None si no hay."""
+    if not contador.exists():
+        return None
+    previo = _leer_doc(contador)
+    if isinstance(previo, dict):
+        numero, huella = previo.get("numero"), previo.get("contenido_sha256")
+        if type(numero) is int and isinstance(huella, str):
+            return numero, huella
+    raise SnapshotInvalido(
+        f"el contador de publicaciones no se puede leer ({contador}); renumera "
+        "con: python -m motor flota publicar --home <flota> --salida <snapshot> "
+        "--desde N, con N mayor que la publicacion que aplican las replicas"
+    )
+
+
 def _numerar(home: Path, huella: str, desde: int | None) -> int:
     """El numero de la publicacion: sube solo si cambia el contenido canonico."""
-    contador = home / _CONTADOR
-    previo = leer_json(contador) if contador.exists() else None
+    try:
+        previo = _leer_contador(home / _CONTADOR)
+    except SnapshotInvalido:
+        if desde is None:
+            raise
+        previo = None
     if desde is not None:
-        if previo is not None and desde <= previo["numero"]:
+        if previo is not None and desde <= previo[0]:
             raise SnapshotInvalido(
-                f"el publicador ya va en la publicacion {previo['numero']}; "
+                f"el publicador ya va en la publicacion {previo[0]}; "
                 "--desde solo sirve para subir el numero"
             )
         return desde
     if previo is None:
         return 1
-    if previo["contenido_sha256"] == huella:
-        return previo["numero"]
-    return previo["numero"] + 1
+    numero, anterior = previo
+    return numero if anterior == huella else numero + 1
 
 
 def exportar(
@@ -436,27 +462,43 @@ def exportar(
         }
 
 
+def _vigente(path: Path) -> tuple[int, str, str] | None:
+    """(publicacion, hash, origen) de la fuente vigente, o None si aun no tiene
+    numero. Lee solo esos campos sin validar la fuente: una fuente que una
+    version nueva ya no acepta sigue ordenando y la cura la siguiente
+    publicacion."""
+    if not path.exists():
+        return None
+    vigente = _leer_doc(path)
+    if isinstance(vigente, dict) and vigente.get(_NUMERO) is None:
+        return None
+    if isinstance(vigente, dict):
+        numero, digest, origen = (vigente.get(k) for k in (_NUMERO, "hash", "origen"))
+        if type(numero) is int and isinstance(digest, str) and isinstance(origen, str):
+            return numero, digest, origen
+    raise SnapshotInvalido(
+        f"la fuente vigente de la replica no se puede leer ({path}); borrala y "
+        "vuelve a importar el snapshot vigente del publicador"
+    )
+
+
 def _ante_la_vigente(home: Path, snapshot: dict) -> str:
     """La accion de importar: sincronizada si el snapshot es mas nuevo y
-    sin_cambios si es el mismo. Si es mas viejo o choca con el vigente, lanza.
-
-    Lee el numero vigente sin validar la fuente: una fuente que una version
-    nueva ya no acepta sigue ordenando y la cura la siguiente publicacion."""
-    path = home / "fuente-compartida.json"
-    vigente = leer_json(path) if path.exists() else {}
-    actual = vigente.get(_NUMERO)
-    if actual is None:
+    sin_cambios si es el mismo. Si es mas viejo o choca con el vigente, lanza."""
+    vigente = _vigente(home / "fuente-compartida.json")
+    if vigente is None:
         return "sincronizada"
+    actual, digest, origen = vigente
     numero, publicador = snapshot.get(_NUMERO), snapshot["publicador"]
     if numero is None:
         raise PublicacionRechazada(
-            f"la replica ya aplica la publicacion {actual} de {vigente['origen']} "
+            f"la replica ya aplica la publicacion {actual} de {origen} "
             f"y este snapshot {snapshot['schema']} no trae numero: actualiza el "
             f"motor de {publicador} a la version de la flota y vuelve a publicar"
         )
     if numero > actual:
         return "sincronizada"
-    if numero == actual and snapshot["snapshot_sha256"] == vigente["hash"]:
+    if numero == actual and snapshot["snapshot_sha256"] == digest:
         return "sin_cambios"
     causa = (
         f"{publicador} entrego otro contenido con el numero {numero}"
@@ -465,7 +507,7 @@ def _ante_la_vigente(home: Path, snapshot: dict) -> str:
         "si es una copia vieja, vuelve a copiar la vigente del publicador"
     )
     raise PublicacionRechazada(
-        f"{causa}; la replica conserva la {actual} de {vigente['origen']}. Si el "
+        f"{causa}; la replica conserva la {actual} de {origen}. Si el "
         f"publicador perdio su {_CONTADOR}, renumera en esa maquina con: python -m "
         f"motor flota publicar --home <flota> --salida <snapshot> --desde {actual + 1}"
     )
@@ -494,6 +536,9 @@ def importar(home: Path, archivo: Path) -> dict:
         "generacion": fuente["generacion"],
         "componentes": [c["nombre"] for c in fuente["catalogo"]["componentes"]],
         "claw_routing": _informe_claw(
-            fuente.get(_CLAW), "el snapshot no lleva claw-routing"
+            fuente.get(_CLAW),
+            "el publicador no publico claw-routing: no hubo checkout"
+            if _CLAW in fuente
+            else "el snapshot no lleva claw-routing",
         ),
     }
