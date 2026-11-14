@@ -663,7 +663,8 @@ class LoEsperado(unittest.TestCase):
         esperado = leer_esperado(ESPERADO)
         self.assertEqual(set(esperado.filas), set(get_args(NombreFila)))
         self.assertEqual(esperado.filas["limpio"], "falla")
-        for nombre in NO_MEDIDAS:
+        self.assertEqual(esperado.filas["se detiene"], "falla")
+        for nombre in ("no pierde", "no repite"):
             self.assertEqual(esperado.filas[nombre], "no medido")
 
     def test_una_falla_conocida_sin_su_razon_se_rechaza(self):
