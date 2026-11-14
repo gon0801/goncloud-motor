@@ -116,6 +116,73 @@ class LaGuardiaDeGhEnElPath(unittest.TestCase):
             self.assertEqual(llamadas.read_text(encoding="utf-8").split(), ["pr", "view", "5"])
 
 
+TOKEN_FALSO = "token-falso-de-prueba"
+CREDENCIALES_DEL_SUPERVISOR = {
+    "GH_TOKEN": "del-supervisor",
+    "GITHUB_TOKEN": "del-supervisor",
+    "GH_ENTERPRISE_TOKEN": "del-supervisor",
+}
+TOKENS = tuple(CREDENCIALES_DEL_SUPERVISOR)
+MIRA_GITHUB = (
+    "import json, os; print(json.dumps({k: os.environ.get(k) for k in "
+    f"{(*TOKENS, 'GH_CONFIG_DIR')!r}}}))"
+)
+
+
+@unittest.skipUnless(ES_POSIX, "el wrapper del intento es de la rama POSIX")
+class ElGitHubDelAgenteEsDeSoloLectura(unittest.TestCase):
+    """El agente usa el token de solo lectura de su base, nunca la sesión de `gh` del usuario ni
+    otra credencial de GitHub del supervisor. Sin ese token arranca sin ninguna y la bitácora del
+    supervisor lo dice."""
+
+    def lanzar(self, base: Path) -> tuple[dict, str]:
+        """Lo que ve el agente que lanza el wrapper: el entorno que heredó del supervisor más el
+        delta que el motor le manda."""
+        from motor.encargos import arranque
+
+        espacio, runtime = _coincidencia(base)
+        with (
+            mock.patch.dict(os.environ, CREDENCIALES_DEL_SUPERVISOR),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as bitacora,
+        ):
+            comando = aislar([sys.executable, "-c", MIRA_GITHUB], espacio, runtime)
+            transporte = json.dumps(aislamiento.delta_de_entorno(comando))
+            with mock.patch.dict(os.environ, {aislamiento.ENTORNO_DEL_AGENTE: transporte}):
+                spec = {"cmd": comando.argv, "env": aislamiento.entorno_recibido()}
+                creado = arranque.crear_agente(
+                    spec, base, {"cwd": espacio, "stdout": subprocess.PIPE, "text": True}
+                )
+                salida, _ = creado.proceso.communicate(timeout=60)
+        return json.loads(salida), bitacora.getvalue()
+
+    def test_gh_usa_el_token_de_la_base_con_una_carpeta_propia(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            (base / "github-agentes.token").write_text(TOKEN_FALSO + "\n", encoding="utf-8")
+            visto, _ = self.lanzar(base)
+        self.assertEqual(
+            {k: visto[k] for k in TOKENS},
+            {"GH_TOKEN": TOKEN_FALSO, "GITHUB_TOKEN": TOKEN_FALSO, "GH_ENTERPRISE_TOKEN": None},
+        )
+        self.assertTrue(Path(visto["GH_CONFIG_DIR"]).is_relative_to(base / "runtime"))
+
+    def test_sin_token_legible_arranca_sin_credencial_de_github_y_lo_anota(self):
+        for caso in ("ausente", "vacio", "ilegible"):
+            with self.subTest(caso=caso), tempfile.TemporaryDirectory(
+                ignore_cleanup_errors=True
+            ) as tmp:
+                base = Path(tmp).resolve()
+                token = base / "github-agentes.token"
+                if caso == "vacio":
+                    token.write_text("\n", encoding="utf-8")
+                if caso == "ilegible":
+                    token.mkdir()
+                visto, bitacora = self.lanzar(base)
+                self.assertEqual({k: visto[k] for k in TOKENS}, dict.fromkeys(TOKENS))
+                self.assertTrue(Path(visto["GH_CONFIG_DIR"]).is_relative_to(base / "runtime"))
+                self.assertIn(str(token), bitacora)
+
+
 RAMAS = ("encargo/enc_x",)
 
 
