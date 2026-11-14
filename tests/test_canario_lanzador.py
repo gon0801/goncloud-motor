@@ -651,7 +651,10 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertFalse((self.base / "registro.sqlite").exists(), "no recibió el encargo")
 
     def enlazados(self) -> list[Path]:
-        return [c.ruta for c in canario_lanzador.COMPARTIDOS if c.forma == "enlace duro"]
+        return [
+            c.ruta for c in canario_lanzador.COMPARTIDOS
+            if c.forma == "enlace duro" and c.obligatorio
+        ]
 
     def test_preparar_converge_a_los_mismos_enlaces(self):  # no-roja-en-base: la base ya enlazaba; la prueba ahora mira que sea el mismo archivo que el vivo y no la clase de enlace, que pasa a ser duro
         pedido = self.pedido()
@@ -718,6 +721,17 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         shutil.rmtree(self.viva / "politica")
         preparar(self.pedido())
         self.assertFalse((self.base / "politica" / "poteto").exists())
+
+    def test_preparar_enlaza_el_token_de_los_agentes_si_la_base_viva_lo_tiene_y_sigue_sin_el(self):
+        viva = self.viva / "github-agentes.token"
+        viva.write_text("token-falso-de-prueba\n", encoding="utf-8")
+        viva.chmod(0o600)
+        preparar(self.pedido())
+        self.assertTrue(os.path.samefile(self.base / "github-agentes.token", viva))
+
+        viva.unlink()
+        self.assertEqual(preparar(self.pedido())[0], "banco")
+        self.assertFalse(os.path.lexists(self.base / "github-agentes.token"))
 
     def test_una_base_donde_no_se_puede_enlazar_se_niega_en_preparar(self):
         if os.geteuid() == 0:
