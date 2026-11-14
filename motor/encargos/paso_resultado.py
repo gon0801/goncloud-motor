@@ -227,7 +227,8 @@ def decidir(
 ) -> Paso:
     """El lote que guarda el resultado y la respuesta que da.
 
-    Un rechazo guarda solo la asociación del conductor con la fase."""
+    Un rechazo guarda solo la asociación del conductor con la fase, y deja
+    fuera lo que el registro habría rechazado del lote que abandona."""
     enc, fase, hora = foto.enc, foto.fase, foto.hora
     asociado = _Lote(proyectar, enc)
     if foto.token:
@@ -237,19 +238,19 @@ def decidir(
             f"conductor-fase:{enc.id}:{foto.token}",
         ))
 
-    def rechazo(motivo: str) -> Paso:
-        return asociado.paso({"rechazado": True, "motivo": motivo})
+    def rechazo(motivo: str, abandonado: _Lote) -> Paso:
+        return Paso(asociado.eventos, abandonado.omitidos, {"rechazado": True, "motivo": motivo})
 
     if foto.previo is not None:
         return asociado.paso(foto.previo)
     activa = enc.fase_activa or (FASE_IMPLICITA if not enc.fases else "")
     if fase != activa:
-        return rechazo("el resultado pertenece a otra fase")
+        return rechazo("el resultado pertenece a otra fase", asociado)
     if foto.fase_del_intento and foto.fase_del_intento != fase:
-        return rechazo("el intento pertenece a otra fase")
+        return rechazo("el intento pertenece a otra fase", asociado)
     actual = next((f for f in enc.fases if f.id == fase), None)
     if actual is not None and actual.estado == "preparada":
-        return rechazo("la fase ya está preparada")
+        return rechazo("la fase ya está preparada", asociado)
     lote = asociado
     if enc.producto is None or enc.producto.firma != foto.version:
         lote = lote.con(Evento(
@@ -269,14 +270,14 @@ def decidir(
             _crudo(foto.juicio), alcance_de(enc), externos=bloqueantes_abiertos(enc, "deepseek")
         )
     except (ValueError, KeyError, TypeError) as exc:
-        return rechazo(str(exc))
+        return rechazo(str(exc), lote)
     if validado.veredicto != "aprobado":
-        return rechazo("el resultado no fue comprobado")
+        return rechazo("el resultado no fue comprobado", lote)
     if any(e.estado in ("intencion", "incierto") for e in enc.efectos):
-        return rechazo("la autoridad conserva efectos sin recibo")
+        return rechazo("la autoridad conserva efectos sin recibo", lote)
     pedidos = list(foto.observaciones.get("solicitudes_efecto") or [])
     if pedidos and set(validado.efectos_pendientes) != {str(p["id"]) for p in pedidos}:
-        return rechazo("la aprobacion no enumera los efectos solicitados")
+        return rechazo("la aprobacion no enumera los efectos solicitados", lote)
     lote, hallazgos = _descartar(lote, enc, foto, validado, region)
     lote = lote.con(_revision(foto, enc, validado, hallazgos))
     enc = lote.estado
@@ -285,7 +286,7 @@ def decidir(
         if pedidos:
             comprobar_destino(cierre, destino())
     except (ValueError, KeyError, TypeError) as exc:
-        return rechazo(str(exc))
+        return rechazo(str(exc), lote)
     recibo = f"resultado:{enc.id}:{fase}:{foto.token}"
     lote = lote.con(Evento(
         "comprobacion",
