@@ -148,6 +148,16 @@ class FalloInterno(unittest.TestCase):
         self.assertIn(self.b.bueno, {i["encargo"] for i in informes})
 
 
+class _CuentaEdiciones(FakeGitHub):
+    def __init__(self, d):
+        super().__init__(d)
+        self.ediciones: list[int] = []
+
+    def actualizar_cuerpo(self, repo, numero, cuerpo):
+        self.ediciones.append(numero)
+        super().actualizar_cuerpo(repo, numero, cuerpo)
+
+
 class UnHechoDeLaEntregaRechazado(unittest.TestCase):
     """GitHub hizo su parte y el registro rechaza el hecho que la guarda: no es un fallo de GitHub."""
 
@@ -157,13 +167,46 @@ class UnHechoDeLaEntregaRechazado(unittest.TestCase):
     def test_el_cuerpo_del_pr_detiene_y_continuar_lo_publica(self):
         self.detiene_y_continuar_lo_guarda("pr_cuerpo")
 
+    def test_detenido_no_vuelve_a_escribir_el_cuerpo_que_el_registro_rechaza(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self.aprobado(tmp, "cuerpo-rechazado", _CuentaEdiciones)
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "excepcion",
+                    "data": {"tipo": "descarte", "sha": "abc", "id": "F1", "motivo": "m", "hora": HORA},
+                },
+                "excepcion-del-cuerpo",
+            )
+            anotar = r.reg.anotar
+
+            def rechaza_el_cuerpo(encargo, evento, ukey):
+                if evento["data"].get("paso") == "pr_cuerpo":
+                    raise ClaveOcupada(0, ukey, ("sha",), evento["kind"])
+                return anotar(encargo, evento, ukey)
+
+            with mock.patch.object(r.reg, "anotar", side_effect=rechaza_el_cuerpo):
+                barrer(r.reg, ciclo.ahora_iso(), time.time(), None, gh=vuelta.gh)
+                detenido = len(r.reg.eventos(r.enc))
+                for _ in range(3):
+                    barrer(r.reg, ciclo.ahora_iso(), time.time(), None, gh=vuelta.gh)
+
+            self.assertEqual(r.fold().estado, "detenido")
+            self.assertEqual(vuelta.gh.ediciones, [1])
+            self.assertEqual(len(r.reg.eventos(r.enc)), detenido)
+            self.assertEqual(r.eventos("instrumento_fallo"), [])
+
+    def aprobado(self, tmp: str, clave: str, gh_cls: type[FakeGitHub]):
+        vuelta, r = _entrega_pr(self, tmp, clave, gh_cls)
+        (r.espacio / "saludo.txt").write_text("hola")
+        r.incorporar()
+        r.juicio({"veredicto": "aprobado", "evidencia": "lei saludo.txt"})
+        r.incorporar()
+        return vuelta, r
+
     def detiene_y_continuar_lo_guarda(self, paso: str) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, f"rechazado-{paso}", FakeGitHub)
-            (r.espacio / "saludo.txt").write_text("hola")
-            r.incorporar()
-            r.juicio({"veredicto": "aprobado", "evidencia": "lei saludo.txt"})
-            r.incorporar()
+            vuelta, r = self.aprobado(tmp, f"rechazado-{paso}", FakeGitHub)
             anotar = r.reg.anotar
             rechazos = []
 
