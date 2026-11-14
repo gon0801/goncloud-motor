@@ -43,7 +43,7 @@ Una corrida da estos pasos, en este orden (`Paso`):
    y cada uno de sus pasos se intenta aunque otro falle o lo corte un Ctrl-C. Lo
    que falló queda en `Cierre.fallas`; un Ctrl-C se vuelve a lanzar al terminar
    el cierre.
-6. medir: `canario_encargos.observar` y `juzgar`.
+6. medir: `canario_observar.observar` y `canario_juzgar.juzgar`.
 7. limpiar: borra de cada encargo su rama remota encargo/<id>, espacio/<id>,
    ejecucion/<id>, trabajos/<id>.json de la flota y su escenario propio. Con algo
    que no es un id no borra nada, ni tampoco por una carpeta de la base que lleve
@@ -106,7 +106,8 @@ from motor.encargos.registro import Registro  # noqa: E402
 from motor.github import GhGitHub  # noqa: E402
 from motor.io import escribir_texto, leer_texto  # noqa: E402
 from motor.repositorios import resolver_repositorio  # noqa: E402
-from ops import canario_encargos as canario  # noqa: E402
+from ops import canario_juzgar, canario_observar  # noqa: E402
+from ops.canario_encargos import tabla  # noqa: E402
 from ops.agente_ensayo import ESCENARIOS, Escenario  # noqa: E402
 
 Paso = Literal["preparar", "encargar", "lanzar", "esperar", "cerrar", "medir", "limpiar"]
@@ -276,7 +277,7 @@ class Informe:
     segundos: int
     """Desde que se pidió el encargo hasta que terminó la espera."""
     cierre: Cierre
-    filas: tuple[canario.Fila, ...]
+    filas: tuple[canario_juzgar.Fila, ...]
     """Vacío si no se midió: un cierre no quedó listo o un paso anterior falló."""
     limpieza: tuple[Borrado, ...]
     """Lo que se borró de los dos encargos; vacío si no se borró: un cierre no quedó listo."""
@@ -315,7 +316,7 @@ class Informe:
             "limpieza": [asdict(b) for b in self.limpieza],
             "coincide": self.coincide,
             "codigo": self.codigo,
-            "tabla": canario.tabla(self.filas) if self.filas else "",
+            "tabla": tabla(self.filas) if self.filas else "",
         }
 
 
@@ -425,7 +426,7 @@ def _copiar(fuente: Path, copia: Path) -> None:
         shutil.copyfile(fuente, copia)
 
 
-def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
+def preparar(p: Pedido) -> tuple[str, canario_juzgar.Esperado]:
     if not _aparte(p.base, p.base_viva):
         raise NoSePuede("preparar", f"{p.base} no está aparte de la base viva {p.base_viva}")
     base, viva = p.base.expanduser().resolve(), p.base_viva.expanduser().resolve()
@@ -454,7 +455,7 @@ def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
             raise NoSePuede("preparar", f"no pude dejar {propio} como {c.forma}: {exc}") from exc
     try:
         nombre = str(tomllib.loads(leer_texto(base / "maquina.toml")).get("nombre") or "")
-        esperado = canario.leer_esperado(p.esperado)
+        esperado = canario_juzgar.leer_esperado(p.esperado)
     except (OSError, ValueError) as exc:
         raise NoSePuede("preparar", str(exc)) from exc
     if not nombre:
@@ -598,7 +599,7 @@ def _parar(p: Pedido, encargo: str) -> str:
 
 def _vivos(base: Path, encargo: str) -> tuple[str, ...]:
     try:
-        restos = canario.procesos(base, encargo)
+        restos = canario_observar.procesos(base, encargo)
     except (OSError, ValueError, sqlite3.Error) as exc:
         return (f"los procesos del encargo, que no pude mirar ({type(exc).__name__}: {exc})",)
     return tuple(
@@ -669,15 +670,15 @@ def cerrar(p: Pedido, paradas: Mapping[str, str], supervisor: dict | None) -> tu
 
 
 def _sha_desplegado(viva: Path) -> str:
-    destino = canario._json_o_vacio(viva / "instalacion.json").get("destino")
+    destino = canario_observar._json_o_vacio(viva / "instalacion.json").get("destino")
     return str(destino.get("codigo") or "") if isinstance(destino, dict) else ""
 
 
 def medir(
-    p: Pedido, encargo: str, detencion: str, maquina: str, gh: canario.LectorPR,
-    esperado: canario.Esperado,
-) -> tuple[canario.Fila, ...]:
-    obs = canario.observar(
+    p: Pedido, encargo: str, detencion: str, maquina: str, gh: canario_observar.LectorPR,
+    esperado: canario_juzgar.Esperado,
+) -> tuple[canario_juzgar.Fila, ...]:
+    obs = canario_observar.observar(
         p.base, encargo, gh,
         hora=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         arbol=RAIZ,
@@ -688,13 +689,13 @@ def medir(
     )
     if obs.pliegue is None:
         raise NoSePuede("medir", f"el encargo {encargo} no está en el registro")
-    return canario.juzgar(obs, esperado)
+    return canario_juzgar.juzgar(obs, esperado)
 
 
 def _borrar_rama(repo: str, rama: str) -> Borrado:
     nombre = f"la rama remota {rama}"
     try:
-        if canario._rama_existe(repo, rama) is False:
+        if canario_observar._rama_existe(repo, rama) is False:
             return Borrado(nombre, "no estaba")
         remoto = resolver_repositorio(repo).remoto
         with tempfile.TemporaryDirectory() as vacio:
@@ -705,11 +706,11 @@ def _borrar_rama(repo: str, rama: str) -> Borrado:
             ):
                 hecho = subprocess.run(
                     argv, capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                    timeout=2 * canario.ESPERA_GIT_S, check=False,
+                    timeout=2 * canario_observar.ESPERA_GIT_S, check=False,
                 )
                 if hecho.returncode:
                     return Borrado(nombre, "falló", hecho.stderr.strip()[-300:])
-        queda = canario._rama_existe(repo, rama)
+        queda = canario_observar._rama_existe(repo, rama)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return Borrado(nombre, "falló", f"{type(exc).__name__}: {exc}")
     if queda is None:
@@ -739,7 +740,7 @@ def _ramas(base: Path, encargo: str) -> list[str]:
 
 
 def _flota(base: Path) -> Path | None:
-    home = str(canario._json_o_vacio(base / "flota-home.json").get("home") or "")
+    home = str(canario_observar._json_o_vacio(base / "flota-home.json").get("home") or "")
     return Path(home) if home else None
 
 
@@ -757,8 +758,8 @@ def _ramas_remotas(repo: str) -> frozenset[str] | None:
         remoto = resolver_repositorio(repo).remoto
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
-    salida = canario._git(
-        "ls-remote", "--heads", "--", remoto, "refs/heads/encargo/*", espera=2 * canario.ESPERA_GIT_S,
+    salida = canario_observar._git(
+        "ls-remote", "--heads", "--", remoto, "refs/heads/encargo/*", espera=2 * canario_observar.ESPERA_GIT_S,
     )
     if salida is None:
         return None
@@ -859,9 +860,9 @@ def _fallo(exc: Exception) -> Fallo:
     return fallo
 
 
-def correr(p: Pedido, gh: canario.LectorPR, supervisor: Sequence[str] | None = None) -> Informe:
+def correr(p: Pedido, gh: canario_observar.LectorPR, supervisor: Sequence[str] | None = None) -> Informe:
     maquina, esperado = preparar(p)
-    version = canario._git_head(RAIZ)
+    version = canario_observar._git_head(RAIZ)
     if not version:
         raise NoSePuede("encargar", f"no pude leer el SHA de {RAIZ}")
     clave = f"canario-{version[:12]}-{maquina}-{p.corrida}"
@@ -902,7 +903,7 @@ def correr(p: Pedido, gh: canario.LectorPR, supervisor: Sequence[str] | None = N
     fallas = tuple(dict.fromkeys(f for c in cierres for f in c.fallas))
     if fallo is None and fallas:
         fallo = Fallo("cerrar", "; ".join(fallas))
-    filas: tuple[canario.Fila, ...] = ()
+    filas: tuple[canario_juzgar.Fila, ...] = ()
     limpieza: tuple[Borrado, ...] = ()
     recogida: tuple[Borrado, ...] = ()
     if all(c.listo for c in cierres):
@@ -965,7 +966,7 @@ def _no_negativo(texto: str) -> float:
 
 
 def main(
-    argv: list[str] | None = None, gh: canario.LectorPR | None = None,
+    argv: list[str] | None = None, gh: canario_observar.LectorPR | None = None,
     supervisor: Sequence[str] | None = None,
 ) -> int:
     for flujo in (sys.stdout, sys.stderr):
@@ -985,7 +986,7 @@ def main(
     a.add_argument("--tope-min", type=_no_negativo)
     a.add_argument("--tope-cierre-s", type=_no_negativo, default=120.0)
     a.add_argument("--intervalo-s", type=_positivo, default=60.0)
-    a.add_argument("--esperado", type=_ruta, default=str(canario.ESPERADO))
+    a.add_argument("--esperado", type=_ruta, default=str(canario_juzgar.ESPERADO))
     a.add_argument(
         "--sin-se-detiene", action="store_true",
         help="no corre el encargo cuyo checklist falla a propósito; la fila se detiene queda sin medir",
@@ -1005,7 +1006,7 @@ def main(
             informe = correr(p, gh or GhGitHub(), supervisor)
             salida = informe.json()
             if informe.filas:
-                _decir(canario.tabla(informe.filas), sys.stderr)
+                _decir(tabla(informe.filas), sys.stderr)
         except NoSePuede as exc:
             _avance(exc.paso, f"no pude seguir: {exc.causa}")
             salida = {"corrida": p.corrida, "paso": exc.paso, "error": exc.causa, "codigo": 2}

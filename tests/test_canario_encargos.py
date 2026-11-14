@@ -27,30 +27,31 @@ from motor.encargos.ciclo import recibir
 from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, Impedimento, VersionProducto
 from motor.encargos.politica import CERRADOS_VENTANA_S
 from motor.encargos.registro import Registro
-from ops.canario_encargos import (
+from ops.canario_encargos import main
+from ops.canario_juzgar import (
     ESPERADO,
     LIMPIEZA,
-    PR,
     TABLA,
+    Esperado,
+    NombreFila,
+    Topes,
+    juzgar,
+    leer_esperado,
+)
+from ops.canario_observacion import (
+    PR,
     ArchivoDesplegado,
     Despliegue,
     Detencion,
-    Esperado,
     FaseVista,
     NoPliega,
-    NombreFila,
     Observacion,
     Pliegue,
     Recibo,
     Resto,
-    Topes,
     Version,
-    juzgar,
-    leer_esperado,
-    main,
-    observar,
-    vista,
 )
+from ops.canario_observar import observar, vista
 from tests import git_env_limpio
 from tests.test_compuerta_e2e import (
     SEPARA_TRABAJADOR,

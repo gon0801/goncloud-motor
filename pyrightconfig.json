@@ -1,5 +1,5 @@
 {
-  "include": ["motor", "ops/agente_ensayo.py", "ops/canario_encargos.py", "tests/dobles.py", "tests/test_github_contrato.py"],
+  "include": ["motor", "ops/agente_ensayo.py", "ops/canario_encargos.py", "ops/canario_juzgar.py", "ops/canario_observacion.py", "ops/canario_observar.py", "tests/dobles.py", "tests/test_github_contrato.py"],
   "exclude": ["**/__pycache__"],
   "typeCheckingMode": "basic",
   "pythonVersion": "3.12"

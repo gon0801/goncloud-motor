@@ -24,10 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-import ops.canario_encargos as canario
+import ops.canario_observar as canario
 from motor import plataforma
 from motor.encargos import sesion
-from ops.canario_encargos import TABLA, Esperado, Topes, juzgar, main, observar
+from ops.canario_encargos import main
+from ops.canario_juzgar import TABLA, Esperado, Topes, juzgar
+from ops.canario_observar import observar
 from tests.test_compuerta_e2e import (
     SEPARA_TRABAJADOR,
     Banco,

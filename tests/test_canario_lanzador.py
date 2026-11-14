@@ -31,8 +31,8 @@ from motor import plataforma
 from motor.encargos.registro import Registro
 from motor.github import FakeGitHub
 from motor.servicio import vincular_base
-from ops import canario_encargos, canario_lanzador
-from ops.canario_encargos import Fila
+from ops import canario_lanzador, canario_observar
+from ops.canario_juzgar import Fila
 from ops.canario_lanzador import Borrado, Informe, Pedido, main, preparar
 from tests.test_compuerta_e2e import _git
 
@@ -927,7 +927,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         pedido = self.pedido()
         preparar(pedido)
         _git(self.tmp / "semilla", "push", "-q", str(self.repo), "main:encargo/enc_ab")
-        resolver = canario_encargos.resolver_repositorio
+        resolver = canario_observar.resolver_repositorio
         vistas: list[str] = []
 
         def sin_respuesta_al_volver(repo):
@@ -937,7 +937,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
             return resolver(repo)
 
         with mock.patch.object(canario_lanzador, "_ramas", return_value=["encargo/enc_ab"]), \
-                mock.patch.object(canario_encargos, "resolver_repositorio", sin_respuesta_al_volver):
+                mock.patch.object(canario_observar, "resolver_repositorio", sin_respuesta_al_volver):
             borrados = {b.resto: b for b in canario_lanzador.limpiar(pedido, "enc_ab")}
 
         rama = borrados["la rama remota encargo/enc_ab"]
