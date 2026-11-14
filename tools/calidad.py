@@ -24,12 +24,12 @@ así juzga un PR quien no ejecuta nada suyo. Una ruta congelada en
 `motor.encargos.politica.CONGELAMIENTOS` no recibe ninguna función nueva, por
 chica que sea.
 
-`kinds` falla si `motor/` escribe un kind de evento que el reductor de la rama
-base no sabe plegar. Desplegar ese escritor deja en el registro un evento que la
-versión anterior rechaza al plegar, y la compuerta de plegado del despliegue
-bloquea volver a ella. Solo ve los kinds escritos como literal. Ejecuta el
-reductor de la base, no el código juzgado, y con `--cabeza` lee ese commit como
-`tamano`.
+`kinds` falla si `motor/encargos/` o `motor/integraciones/` escriben un kind de
+evento que el reductor de la rama base no sabe plegar. Desplegar ese escritor
+deja en el registro un evento que la versión anterior rechaza al plegar, y la
+compuerta de plegado del despliegue bloquea volver a ella. Solo ve los kinds
+escritos como literal. Ejecuta el reductor de la base, no el código juzgado, y
+con `--cabeza` lee ese commit como `tamano`.
 """
 
 from __future__ import annotations
@@ -487,12 +487,12 @@ def _git(*args: str, entrada: bytes | None = None) -> bytes:
     ).stdout
 
 
-def _commit(ref: str, papel: str) -> str:
+def _commit(modo: str, ref: str, papel: str) -> str:
     try:
         return _git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").decode().strip()
     except subprocess.CalledProcessError:
         raise SystemExit(
-            f"tamano: la {papel} {ref} no existe en este clon; {_como_traer(ref)}"
+            f"{modo}: la {papel} {ref} no existe en este clon; {_como_traer(ref)}"
         ) from None
 
 
@@ -576,11 +576,11 @@ def _excesos_de_tamano(
 
 
 def _comparar_tamano(ref: str, cabeza: str | None) -> int:
-    commit = _commit(ref, "base")
+    commit = _commit("tamano", ref, "base")
     if cabeza is None:
         medido, lectura = "", _fuentes_del_arbol()
     else:
-        medido, lectura = f" en {cabeza}", _fuentes_de_git(_commit(cabeza, "cabeza"))
+        medido, lectura = f" en {cabeza}", _fuentes_de_git(_commit("tamano", cabeza, "cabeza"))
     hoy = _medir_lo_juzgado(lectura, medido)
     excesos = _excesos_de_tamano(hoy, _medir_la_base(_fuentes_de_git(commit), ref), ref)
     if excesos:
@@ -687,12 +687,16 @@ def _plegables_en(commit: str, kinds: list[str]) -> set[str]:
 
 
 def _comparar_kinds(ref: str, cabeza: str | None) -> int:
-    commit = _commit(ref, "base")
+    commit = _commit("kinds", ref, "base")
     if cabeza is None:
         medido, lectura = "", _fuentes_del_arbol()
     else:
-        medido, lectura = f" en {cabeza}", _fuentes_de_git(_commit(cabeza, "cabeza"))
+        medido, lectura = f" en {cabeza}", _fuentes_de_git(_commit("kinds", cabeza, "cabeza"))
+    escritores = " y ".join(ESCRITORES_DE_ENCARGOS)
     escritos = kinds_escritos(lectura[0])
+    if not escritos:
+        print(f"kinds: {escritores}{medido} no escriben ningún kind literal; nada que plegar")
+        return 0
     plegables = _plegables_en(commit, sorted(escritos))
     ajenos = {kind: donde for kind, donde in escritos.items() if kind not in plegables}
     if ajenos:
@@ -707,7 +711,7 @@ def _comparar_kinds(ref: str, cabeza: str | None) -> int:
         return 1
     print(
         f"kinds: el reductor de {ref} ({commit[:12]}) pliega los {len(escritos)} kind(s) "
-        f"que escribe motor/{medido}"
+        f"que escriben {escritores}{medido}"
     )
     return 0
 
