@@ -632,6 +632,49 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(_git(self.repo, "branch", "--list", f"encargo/{ident}"), "")
         for tipo in ("espacio", "ejecucion"):
             self.assertFalse((self.base / tipo / ident).exists(), tipo)
+        self.no_vuelve_a_cortar(primera, segunda)
+
+    def test_repetir_la_corrida_sobre_una_base_sin_limpiar_no_reutiliza_sus_cortes(self):
+        """Lo que dejó la corrida anterior en `canario-apagon/<id>/` (una compuerta que espera
+        y ya se soltó, sus cortes y sus invocaciones) no se vuelve a cortar ni a medir."""
+        _, primera = self.correr()
+        carpeta = canario_apagon.carpeta(self.base, primera["apagon"]["encargo"])
+        carpeta.mkdir(parents=True)
+        viejos = {
+            "esperando-turno": f"{os.getpid()}\n", "suelta-turno": "",
+            "cortes.json": json.dumps([{"momento": "turno", "sobrevivio": True}]),
+            "invocaciones": "responsable\nrevisor\n",
+        }
+        for nombre, texto in viejos.items():
+            (carpeta / nombre).write_text(texto, encoding="utf-8")
+
+        _, segunda = self.correr()
+
+        self.no_vuelve_a_cortar(primera, segunda)
+        self.assertFalse(carpeta.exists(), "no limpió lo que dejó la corrida anterior")
+
+    def no_vuelve_a_cortar(self, primera: dict, segunda: dict) -> None:
+        ident = segunda["apagon"]["encargo"]
+        self.assertEqual(ident, primera["apagon"]["encargo"])
+        self.assertNotIn("corté el supervisor", self.avances)
+        for nombre in ("no pierde", "no repite"):
+            fila = self.filas(segunda)[nombre]
+            self.assertEqual(fila["resultado"], "no medido", fila["observado"])
+            self.assertIn(
+                f"la corrida prueba ya hizo el encargo con cortes {ident}, y ya cerró", fila["observado"],
+            )
+            self.assertIn("lanza otra --corrida", fila["observado"])
+
+    def test_un_encargo_con_cortes_abierto_y_con_su_carpeta_escrita_no_se_vuelve_a_cortar(self):
+        carpeta = self.tmp / "canario-apagon" / "enc_x"
+        self.assertEqual(canario_apagon.por_que_no_vuelve_a_cortar("c", carpeta, cerrado=False), "")
+        carpeta.mkdir(parents=True)
+        self.assertEqual(canario_apagon.por_que_no_vuelve_a_cortar("c", carpeta, cerrado=False), "")
+        (carpeta / "invocaciones").write_text("responsable\n", encoding="utf-8")
+        self.assertIn(
+            "la corrida c ya hizo el encargo con cortes enc_x, y su carpeta ya trae lo que anotó",
+            canario_apagon.por_que_no_vuelve_a_cortar("c", carpeta, cerrado=False),
+        )
 
     def test_una_sesion_perdida_no_corta_la_corrida(self):
         """Al caerse ssh, escribir en la sesión falla con EPIPE y puede llegar un SIGHUP."""

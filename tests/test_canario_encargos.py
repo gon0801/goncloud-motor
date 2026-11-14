@@ -712,8 +712,9 @@ class NoPierdeNiRepite(unittest.TestCase):
     def test_no_pierde_con_el_mismo_final_y_el_producto_previo_desplegado(self):
         casos: tuple[tuple[str, Apagon, str, tuple[str, ...]], ...] = (
             ("como sin corte", _apagon(), "pasa", (
-                "cortó su supervisor durante el turno del responsable y durante la receta de"
-                " despliegue, con el proceso que esperaba vivo",
+                "tiró su supervisor durante el turno del responsable y durante la receta de"
+                " despliegue, con el proceso que esperaba vivo: aguanta una caída del supervisor"
+                " con el proceso en curso vivo; no mide un corte de energía",
                 "llegó al mismo final que sin corte: terminado, su fase en desplegado",
                 "apagon/m.txt trae lo que el responsable escribió antes del corte",
             )),
@@ -765,8 +766,12 @@ class NoPierdeNiRepite(unittest.TestCase):
              ("2 PR (acepto 1)",)),
             ("otro merge", _apagon(prs=(PR("uno", 8, "mergeado"), PR("uno", 9, "mergeado"))), "falla",
              ("2 PR (acepto 1); 2 merges (acepto 1)",)),
-            ("menos no es repetir", _apagon(invocaciones=(("responsable", 1),), prs=()), "pasa",
-             ("revisor 0", "0 PR y 0 merges")),
+            ("menos no es repetir", _apagon(invocaciones=(("responsable", 1),)), "pasa",
+             ("revisor 0", "1 PR y 1 merge")),
+            ("sin turno del responsable", _apagon(invocaciones=()), "no medido",
+             ("su responsable no anotó ningún turno: no hay qué contar",)),
+            ("sin PR", _apagon(prs=()), "no medido",
+             ("GitHub no trae ningún PR de sus ramas: no hay qué contar",)),
             ("dos fases aceptan el doble",
              _apagon(pliegue=dos_fases, invocaciones=tuple((q, 2 * n) for q, n in UNA_VEZ),
                      prs=(PR("uno", 8, "mergeado"), PR("dos", 9, "mergeado"))),
@@ -776,6 +781,28 @@ class NoPierdeNiRepite(unittest.TestCase):
             ("GitHub caído", _apagon(prs=None), "no medido", ("no pude leer sus PR de GitHub",)),
         )
         self.juzga("no repite", casos)
+
+    def test_dos_pr_o_dos_merges_fallan_aunque_el_corte_no_se_mida(self):
+        """Un PR o un merge de más es repetir, con el corte que se mide o sin él."""
+        dos = (PR("uno", 8, "mergeado"), PR("uno", 9, "mergeado"))
+        casos: tuple[tuple[str, Apagon, str, tuple[str, ...]], ...] = (
+            ("el corte mató al turno, dos PR",
+             _apagon(cortes=(Corte("turno", False),), prs=(PR("uno", 8, "mergeado"), PR("uno", 9, "abierto"))),
+             "falla", ("repitió en GitHub: 2 PR (acepto 1)", "mató también al proceso que esperaba")),
+            ("el corte mató al turno, dos merges", _apagon(cortes=(Corte("turno", False),), prs=dos),
+             "falla", ("2 PR (acepto 1); 2 merges (acepto 1)",)),
+            ("sin mirar al proceso, dos merges",
+             _apagon(cortes=(Corte("turno", True), Corte("receta", None)), prs=dos),
+             "falla", ("2 merges (acepto 1)", "no pude ver si el proceso que esperaba")),
+            ("sin cortes, dos merges", _apagon(cortes=(), prs=dos), "falla", ("2 merges (acepto 1)",)),
+            ("el corte mató al turno, un PR", _apagon(cortes=(Corte("turno", False),)), "no medido",
+             ("mató también al proceso que esperaba",)),
+            ("fuera del registro, dos merges", _apagon(pliegue=None, prs=dos), "no medido",
+             ("no está en el registro",)),
+        )
+        self.juzga("no repite", casos)
+        fila = _fila(_obs(apagon=_apagon(cortes=(Corte("turno", False),), prs=dos)), "no pierde")
+        self.assertEqual(fila.resultado, "no medido", fila.observado)
 
     def juzga(self, fila_nombre: str, casos: tuple[tuple[str, Apagon, str, tuple[str, ...]], ...]) -> None:
         for nombre, apagon, resultado, textos in casos:
@@ -881,6 +908,7 @@ class LoEsperado(unittest.TestCase):
             ["no pierde"], {"filas": ["no pierde"]}, {"filas": ["intrusa"], "razon": "x"},
             {"filas": [], "razon": "x"}, {"filas": ["no pierde", "no pierde"], "razon": "x"},
             {"filas": ["no pierde"], "razon": " "}, {"filas": ["no pierde"], "razon": "x", "otra": 1},
+            {"filas": [["no pierde"]], "razon": "x"}, {"filas": [{"no pierde": 1}], "razon": "x"},
         ):
             datos["sin_medir_en_windows"] = valor
             ruta.write_text(json.dumps(datos), encoding="utf-8")
