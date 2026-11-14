@@ -243,8 +243,10 @@ class ReversaFlota(unittest.TestCase):
         aplicar(self.home, self.buena, sin_turnos=True)
         aplicar(self.home, self.nueva, sin_turnos=True)
         (self.home / "actual").unlink()
+        con_espacio = self.tmp / "flota con espacio"
+        con_espacio.symlink_to(self.home, target_is_directory=True)
         with self.assertRaisesRegex(RuntimeError, self.nueva) as falla:
-            asignar(self.home)
+            asignar(con_espacio)
 
         comandos = re.findall(r"`([^`]+)`", str(falla.exception))
         self.assertEqual(len(comandos), 1, comandos)
