@@ -188,19 +188,30 @@ def _entre_comillas(partes: list[str]) -> str:
     return " ".join(f'"{parte}"' for parte in partes)
 
 
+def _orden_recuperar(home: Path) -> str:
+    raiz = Path(__file__).resolve().parents[2]
+    argv = [sys.executable, "-m", "motor", "flota", "recuperar", "--home", str(home.absolute())]
+    # python -m motor busca el paquete en la carpeta actual; cmd cambia de unidad solo con
+    # /d y no corta dentro de comillas dobles, ni en un espacio ni en un &.
+    cd, unir = ("cd /d", _entre_comillas) if os.name == "nt" else ("cd", shlex.join)
+    return f"{cd} {unir([str(raiz)])} && {unir(argv)}"
+
+
 def asignar(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return actual.resolve().name
-    sin = _sin_enlace(home)
-    if sin.exige_enlace:
-        raiz = Path(__file__).resolve().parents[2]
-        argv = [sys.executable, "-m", "motor", "flota", "recuperar", "--home", str(home.absolute())]
-        # python -m motor busca el paquete en la carpeta actual; cmd cambia de unidad solo con
-        # /d y no corta dentro de comillas dobles, ni en un espacio ni en un &.
-        cd, unir = ("cd /d", _entre_comillas) if os.name == "nt" else ("cd", shlex.join)
+    try:
+        sin = _sin_enlace(home)
+    except ValueError as exc:
         raise RuntimeError(
-            f"falta el enlace actual; reponlo con `{cd} {unir([str(raiz)])} && {unir(argv)}`. "
+            f"falta el enlace actual e instalacion.json no se puede leer ({type(exc).__name__}: "
+            f"{exc}); corrigelo y reponlo con `{_orden_recuperar(home)}`. Sin ese recibo la "
+            "maquina no sabe que generacion tiene instalada."
+        ) from exc
+    if sin.exige_enlace:
+        raise RuntimeError(
+            f"falta el enlace actual; reponlo con `{_orden_recuperar(home)}`. "
             f"instalacion.json registra la generacion {sin.asignada} y sin el enlace la "
             "maquina correria el HEAD del clon, otra version."
         )
