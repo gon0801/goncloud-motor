@@ -19,7 +19,8 @@ PR que se está revisando).
 líneas ni en tokens de código, y lo que en la base no existe o cabe no puede
 pasar del límite. No guarda nada. Sin `--cabeza` mide el árbol de trabajo; con
 `--cabeza` mide ese commit, leído de git igual que la base, y el árbol no cuenta:
-así juzga un PR quien no ejecuta nada suyo.
+así juzga un PR quien no ejecuta nada suyo. Mientras dure la reconstrucción,
+`ciclo.py` y `dominio.py` no reciben ninguna función nueva, por chica que sea.
 """
 
 from __future__ import annotations
@@ -105,6 +106,9 @@ MIGRACION = {"_migrar_un_marcador", "migrar_marcadores"}
 JSON_EXCEPCIONES = {("_texto_inspeccion_resuelta", ".json")}
 MENSAJE_MARCADORES = "anótalo como evento y derívalo en dominio"
 LIMITES_DE_TAMANO = {"archivo": 1000, "funcion": 100}
+# Decisión 6 de la reconstrucción (docs/modelo-centro-encargos.md): el centro
+# no crece ni con funciones chicas; lo nuevo va a un módulo propio.
+CENTRO_CONGELADO = frozenset({"motor/encargos/ciclo.py", "motor/encargos/dominio.py"})
 # Lo que pasa del límite de líneas no puede superar a la base en ninguna de estas
 # medidas. Las líneas solas dejan cambiar un comentario o una línea en blanco por
 # código; los tokens no cambian al borrar un comentario y sí suben con una lista
@@ -512,6 +516,12 @@ def _excesos_de_tamano(
 ) -> list[str]:
     excesos = []
     for clave, medidas in sorted(hoy.items()):
+        if clave[0] == "funcion" and clave[1] in CENTRO_CONGELADO and clave not in base:
+            excesos.append(
+                f"  {_nombre_de_tamano(clave)}: función nueva; no existe en {ref} y la "
+                "reconstrucción no deja crecer ciclo.py ni dominio.py"
+            )
+            continue
         limite = LIMITES_DE_TAMANO[clave[0]]
         lineas = medidas["líneas"]
         if lineas <= limite:
