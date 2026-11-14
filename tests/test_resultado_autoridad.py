@@ -15,6 +15,7 @@ from unittest import mock
 from motor.encargos import registro as modulo_registro
 from motor.encargos.ciclo import recibir_resultado
 from motor.encargos.dominio import bloqueantes_abiertos
+from motor.encargos.registro import Registro
 from tests.arnes_corte import cortar_en_cada_commit, filas
 from tests.dobles import github_con_hallazgos
 from tests.test_flujo_revisiones import _entrega_pr, sonda_sin_aislamiento_del_host
@@ -248,6 +249,43 @@ class ResultadoDeLaAutoridad(unittest.TestCase):
                 {"conflicto": True, "registrado": None, "fase": enc.fase_activa},
             )
             self.assertEqual(filas(r.base), guardadas)
+
+    def test_otro_escritor_antes_del_lote_rechaza_sin_escribir_y_el_reintento_lo_guarda(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r, enc = _escena(self, Path(tmp))
+            ocupada = f"disputa-resuelta-autoridad:{enc.id}:ds_Fuga"
+            escribir = r.reg.append_many
+
+            def tras_otro_escritor(encargo, eventos):
+                otro = Registro(r.base)
+                try:
+                    otro.anotar(
+                        encargo,
+                        {"kind": "nota_pr", "data": {"texto": "nota de otro escritor", "hora": HORA}},
+                        ocupada,
+                    )
+                finally:
+                    otro.close()
+                return escribir(encargo, eventos)
+
+            previas = len(filas(r.base))
+            observaciones, juicio = _resultado()
+
+            with mock.patch.object(r.reg, "append_many", tras_otro_escritor):
+                salida = _recibir(r.reg, enc, observaciones, juicio)
+
+            self.assertTrue(salida.get("rechazado"), salida)
+            self.assertIn(ocupada, salida["motivo"])
+            self.assertEqual([ukey for _kind, ukey, _data in filas(r.base)[previas:]], [ocupada])
+            reintento = _recibir(r.reg, enc, observaciones, juicio)
+            self.assertTrue(reintento.get("registrado"), reintento)
+            self.assertEqual(
+                [kind for kind, _ukey, _data in filas(r.base)[previas:]],
+                [
+                    "nota_pr", "conductor_fase", "producto_listo", "excepcion",
+                    "hallazgo_fuera_de_alcance", "excepcion", "revision", "comprobacion",
+                ],
+            )
 
     def test_un_descarte_con_su_ukey_ocupada_no_rechaza_el_resultado(self):  # no-roja-en-base: la base ya calla y cuenta ese rechazo; fija que el lote no lo vuelva un rechazo del resultado entero
         with tempfile.TemporaryDirectory() as tmp:
