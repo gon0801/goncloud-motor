@@ -12,10 +12,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from ops.agente_ensayo import leer_escenario
+from ops.agente_ensayo import APAGON, INVOCACIONES, esperando, leer_escenario, suelta
 
 AGENTE = Path(__file__).resolve().parents[1] / "ops" / "agente_ensayo.py"
 ESCENARIOS = "canario-escenarios"
@@ -182,6 +183,68 @@ class EscenarioPropio(unittest.TestCase):
         self.assertEqual((espacio / "falla.txt").read_text(encoding="utf-8"), "falla\n")
         self.assertFalse((espacio / "saludo.txt").exists(), "escribió el producto del escenario común")
         self.assertEqual((otro / "saludo.txt").read_text(encoding="utf-8"), "hola\n")
+
+
+class CompuertaDelApagon(unittest.TestCase):
+    """Con `canario-apagon/<encargo>/` en la base, el agente anota cada vez que corre y el
+    responsable espera, con su producto ya escrito, a que el canario suelte el turno."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix="agente-")).resolve()
+        self.addCleanup(shutil.rmtree, self.base, True)
+        self.comun = self.base / "comun.json"
+        self.comun.write_text(json.dumps(_base()), encoding="utf-8")
+
+    def lanzar(self, encargo: str, *, revisor: bool = False) -> tuple[subprocess.Popen, Path]:
+        espacio = self.base / "espacio" / encargo
+        (espacio / ".interno").mkdir(parents=True, exist_ok=True)
+        intento = self.base / "ejecucion" / encargo / ("intento-2" if revisor else "intento-1")
+        intento.mkdir(parents=True)
+        (intento.parent / "actual").write_text(intento.name, encoding="utf-8")
+        (intento / "arranque.json").write_text(json.dumps({"token": intento.name}), encoding="utf-8")
+        prompt = self.base / "runtime" / encargo / intento.name / "prompt.md"
+        prompt.parent.mkdir(parents=True)
+        if revisor:
+            prompt.write_text("Revisa: cubre solo la fase uno:\n", encoding="utf-8")
+            (intento / "revision.json").write_text(
+                json.dumps({"version": 1, "resultado": str(intento / "juicio.json")}), encoding="utf-8",
+            )
+        else:
+            prompt.write_text("primer turno\n", encoding="utf-8")
+        proceso = subprocess.Popen([sys.executable, str(AGENTE), str(self.comun)], cwd=espacio)
+        self.addCleanup(proceso.kill)
+        return proceso, espacio
+
+    def test_el_responsable_espera_la_compuerta_del_turno_con_su_producto_escrito(self):
+        carpeta = self.base / APAGON / "enc_corte"
+        carpeta.mkdir(parents=True)
+
+        proceso, espacio = self.lanzar("enc_corte")
+        marca = carpeta / esperando("turno")
+        vence = time.monotonic() + 20
+        while not marca.is_file() and time.monotonic() < vence:
+            time.sleep(0.05)
+
+        self.assertEqual(marca.read_text(encoding="utf-8"), str(proceso.pid))
+        self.assertIsNone(proceso.poll(), "el responsable no esperó la compuerta")
+        self.assertEqual((espacio / "saludo.txt").read_text(encoding="utf-8"), "hola\n")
+        (carpeta / suelta("turno")).touch()
+        self.assertEqual(proceso.wait(timeout=20), 0)
+        self.assertEqual((carpeta / INVOCACIONES).read_text(encoding="utf-8"), "responsable\n")
+
+        revisor, _ = self.lanzar("enc_corte", revisor=True)
+        self.assertEqual(revisor.wait(timeout=20), 0)
+        self.assertEqual((carpeta / INVOCACIONES).read_text(encoding="utf-8"), "responsable\nrevisor\n")
+
+    def test_sin_su_carpeta_el_agente_ni_anota_ni_espera(self):
+        (self.base / APAGON / "enc_otro").mkdir(parents=True)
+
+        proceso, espacio = self.lanzar("enc_propio")
+
+        self.assertEqual(proceso.wait(timeout=20), 0)
+        self.assertEqual((espacio / "saludo.txt").read_text(encoding="utf-8"), "hola\n")
+        self.assertFalse((self.base / APAGON / "enc_propio").exists())
+        self.assertEqual(list((self.base / APAGON / "enc_otro").iterdir()), [])
 
 
 if __name__ == "__main__":
