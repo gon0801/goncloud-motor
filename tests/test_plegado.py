@@ -547,6 +547,21 @@ class Comparar(_RepoFalso):
 
 
 class CorpusPlegado(unittest.TestCase):
+    def test_el_bootstrap_no_importa_el_motor_antes_del_hijo(self) -> None:
+        with tempfile.TemporaryDirectory() as temporal:
+            raiz = Path(temporal)
+            (raiz / "registros").mkdir()
+            shutil.copy2(RAIZ / "tools" / "corpus_sitecustomize.py", raiz / "sitecustomize.py")
+            hecho = subprocess.run(
+                [sys.executable, "-c", "import sys; print('motor' in sys.modules)"],
+                cwd=RAIZ, capture_output=True, text=True, check=False,
+                env={**os.environ, "MOTOR_CORPUS_DIR": str(raiz),
+                     "MOTOR_CORPUS_REPO": str(RAIZ),
+                     "PYTHONPATH": str(raiz) + os.pathsep + str(RAIZ)},
+            )
+            self.assertEqual(hecho.returncode, 0, hecho.stderr)
+            self.assertEqual(hecho.stdout.strip(), "False")
+
     def test_captura_el_registro_y_el_rechazo_de_un_hijo_python(self) -> None:
         with tempfile.TemporaryDirectory() as temporal:
             raiz = Path(temporal)
@@ -580,6 +595,7 @@ class CorpusPlegado(unittest.TestCase):
                 [sys.executable, "-c", padre, str(raiz / "origen")],
                 cwd=RAIZ, capture_output=True, text=True, check=False,
                 env={**os.environ, "MOTOR_CORPUS_DIR": str(corpus),
+                     "MOTOR_CORPUS_REPO": str(RAIZ),
                      "PYTHONPATH": str(raiz) + os.pathsep + str(RAIZ)},
             )
             self.assertEqual(hecho.returncode, 0, hecho.stderr)
