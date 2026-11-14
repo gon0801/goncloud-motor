@@ -289,6 +289,7 @@ class PublicacionesDeLaFlota(unittest.TestCase):
             "lista": b"[]",
             "sin hash ni origen": b'{"publicacion": 1}',
             "numero de texto": b'{"publicacion": "1", "hash": "x", "origen": "pc"}',
+            "numero nulo": b'{"publicacion": null, "hash": "x", "origen": "pc"}',
         }
         _, fuente = self._con_numero()
         nueva = self._publicar(_politica("v9"))
