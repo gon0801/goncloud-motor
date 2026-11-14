@@ -569,14 +569,15 @@ class CorpusPlegado(unittest.TestCase):
             (corpus / "registros").mkdir(parents=True)
             shutil.copy2(RAIZ / "tools" / "corpus_sitecustomize.py", raiz / "sitecustomize.py")
             hijo = (
+                "from motor.encargos.cli import main\n"
                 "from pathlib import Path\n"
-                "from motor.encargos.registro import Registro, Evento, ClaveOcupada\n"
                 "import sys\n"
-                "r = Registro(Path(sys.argv[1]))\n"
-                "r.append_many('hijo', [Evento('procedimiento', {'nota': 'uno'}, 'nota:hijo')])\n"
+                "registro = sys.modules['motor.encargos.registro']\n"
+                "r = registro.Registro(Path(sys.argv[1]))\n"
+                "r.append_many('hijo', [registro.Evento('procedimiento', {'nota': 'uno'}, 'nota:hijo')])\n"
                 "try:\n"
-                "    r.append_many('hijo', [Evento('procedimiento', {'nota': 'otro'}, 'nota:hijo')])\n"
-                "except ClaveOcupada:\n"
+                "    r.append_many('hijo', [registro.Evento('procedimiento', {'nota': 'otro'}, 'nota:hijo')])\n"
+                "except registro.ClaveOcupada:\n"
                 "    pass\n"
                 "r.close()\n"
             )
@@ -669,6 +670,10 @@ class CorpusPlegado(unittest.TestCase):
             mal_rechazo = verificar(RAIZ)
             self.assertNotEqual(mal_rechazo.returncode, 0, mal_rechazo.stdout)
             self.assertIn("cambió el rechazo", mal_rechazo.stdout)
+            ruta_rechazos.write_text((json.dumps(alterado) + "\n") * 256, encoding="utf-8")
+            muchos_rechazos = verificar(RAIZ)
+            self.assertNotEqual(muchos_rechazos.returncode, 0, muchos_rechazos.stdout)
+            self.assertIn("rechaza 0 de 256", muchos_rechazos.stdout)
             ruta_rechazos.write_text(original, encoding="utf-8")
             copia = raiz / "copia"
             shutil.copytree(RAIZ / "motor", copia / "motor")
