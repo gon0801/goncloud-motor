@@ -180,10 +180,12 @@ def asignar(home: Path) -> str:
         return actual.resolve().name
     generacion, exige_enlace = _sin_enlace(home)
     if exige_enlace:
+        sin_turnos = " --sin-turnos" if exige_enlace.get("sin_turnos") else ""
         raise RuntimeError(
             f"falta el enlace {actual} aunque instalacion.json registra la generacion "
             f"{generacion}. Sin el enlace la maquina correria el HEAD del clon, otra "
-            f"version. Reponlo con `motor flota aplicar --home {home} --destino {generacion}`."
+            f"version. Reponlo con `{sys.executable} -m motor flota aplicar --home {home} "
+            f"--destino {generacion}{sin_turnos}`."
         )
     return generacion
 
