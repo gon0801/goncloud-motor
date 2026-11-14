@@ -325,6 +325,39 @@ class LimiteDeFuncion(unittest.TestCase):
         self.assertIn("motor/m.py::larga: función de 170 líneas", corrida.stderr)
 
 
+class CentroCongelado(unittest.TestCase):
+    """Decisión 6 de la reconstrucción: ninguna función nueva en `ciclo.py` ni
+    en `dominio.py`, por chica que sea."""
+
+    def setUp(self):
+        self.repo = _repo(self)
+        self.repo.escribir("motor/encargos/ciclo.py", _funcion("vieja", 3))
+        self.repo.escribir("motor/encargos/dominio.py", "class Fase:\n" + _funcion("a", 3, "    "))
+        self.base = self.repo.commit()
+
+    def test_una_funcion_nueva_en_ciclo_o_en_dominio_falla(self):
+        for ruta, texto, nombre in (
+            ("motor/encargos/ciclo.py", _funcion("vieja", 3) + _funcion("nueva", 3), "nueva"),
+            (
+                "motor/encargos/dominio.py",
+                "class Fase:\n" + _funcion("a", 3, "    ") + _funcion("b", 3, "    "),
+                "Fase.b",
+            ),
+        ):
+            with self.subTest(ruta=ruta):
+                self.repo.git("checkout", "-q", "--", ".")
+                self.repo.escribir(ruta, texto)
+                corrida = self.repo.tamano("--base", self.base)
+                self.assertEqual(corrida.returncode, 1, corrida.stdout)
+                self.assertIn(f"{ruta}::{nombre}: función nueva", corrida.stderr)
+
+    def test_una_funcion_nueva_en_otro_modulo_y_quitar_una_de_ciclo_pasan(self):
+        self.repo.escribir("motor/encargos/ciclo.py", "x = 1\n")
+        self.repo.escribir("motor/encargos/revisor.py", _funcion("nueva", 3))
+        corrida = self.repo.tamano("--base", self.base)
+        self.assertEqual(corrida.returncode, 0, corrida.stderr)
+
+
 GRANDE = (
     _relleno(1100)
     + "\n"
