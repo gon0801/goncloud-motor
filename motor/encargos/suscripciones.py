@@ -38,6 +38,22 @@ def _guardar(path: Path, datos: dict) -> None:
     path.chmod(0o600)
 
 
+def _config_opencode(runtime: Path, **campos) -> str:
+    """La configuración de OpenCode del intento. Deja leer sin preguntar la guía poteto-mode que
+    `exigir_poteto` copia al runtime, también a los ayudantes: `opencode run --auto` contesta
+    solo a la sesión raíz hasta la v1.17 y una pregunta sin respuesta deja el turno colgado.
+    Lo demás del runtime, que guarda las credenciales del intento, sigue preguntando."""
+    guia = {(runtime / c).as_posix() + "/**": "allow" for c in ("poteto", "skills")}
+    return json.dumps(
+        {
+            **campos,
+            "share": "disabled",
+            "autoupdate": False,
+            "permission": {"external_directory": guia},
+        }
+    )
+
+
 def _sin_elemento(detalle: str) -> bool:
     bajo = detalle.lower()
     return "could not be found" in bajo or "not be found" in bajo
@@ -349,9 +365,7 @@ def preparar(agente: str, runtime: Path, cmd: list[str], env: dict[str, str]) ->
             OPENCODE_DISABLE_LSP_DOWNLOAD="1",
             OPENCODE_DISABLE_MCP="1",
         )
-        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
-            {"enabled_providers": [proveedor], "share": "disabled", "autoupdate": False}
-        )
+        env["OPENCODE_CONFIG_CONTENT"] = _config_opencode(runtime, enabled_providers=[proveedor])
 
 
 def preparar_kimi_opencode(runtime: Path, env: dict[str, str]) -> None:
@@ -380,29 +394,26 @@ def preparar_kimi_opencode(runtime: Path, env: dict[str, str]) -> None:
                 "max_output_size", 131072 if api_modelo == "k3" else 0
             ),
         }
-    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
-        {
-            "enabled_providers": ["motor-kimi"],
-            "autoupdate": False,
-            "share": "disabled",
-            "provider": {
-                "motor-kimi": {
-                    "npm": "@ai-sdk/openai-compatible",
-                    "name": "Kimi Code OAuth",
-                    "options": {
-                        "baseURL": proveedor["base_url"],
-                        "apiKey": proveedor["api_key"],
-                        "headers": {
-                            "User-Agent": "opencode/1.19.4",
-                            "X-Msh-Platform": "kimi_code_cli",
-                            "X-Msh-Version": "2.3.3",
-                            "X-Msh-Device-Id": device,
-                        },
+    env["OPENCODE_CONFIG_CONTENT"] = _config_opencode(
+        runtime,
+        enabled_providers=["motor-kimi"],
+        provider={
+            "motor-kimi": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Kimi Code OAuth",
+                "options": {
+                    "baseURL": proveedor["base_url"],
+                    "apiKey": proveedor["api_key"],
+                    "headers": {
+                        "User-Agent": "opencode/1.19.4",
+                        "X-Msh-Platform": "kimi_code_cli",
+                        "X-Msh-Version": "2.3.3",
+                        "X-Msh-Device-Id": device,
                     },
-                    "models": {api_modelo: modelo_cliente},
-                }
-            },
-        }
+                },
+                "models": {api_modelo: modelo_cliente},
+            }
+        },
     )
     env.update(
         OPENCODE_DISABLE_AUTOUPDATE="1",

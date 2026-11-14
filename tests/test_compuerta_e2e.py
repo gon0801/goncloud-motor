@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -34,7 +35,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from motor import plataforma
-from motor.encargos import ciclo, despliegue
+from motor.encargos import aislamiento, ciclo, despliegue
 from motor.encargos.agentes import (
     _bash_de_ensayo,
     _disponible,
@@ -268,7 +269,7 @@ class _LaBaseSeMueveCuatroVecesPorPR(_DeepSeekAprueba):
 # --------------------------------------------------------------------------- agente de ensayo
 
 _TRABAJO_SH = """#!/bin/bash
-exec "@PY@" "@AGENTE@" "$(dirname "$0")/escenario.json"
+@PREVIO@exec "@PY@" "@AGENTE@" "$(dirname "$0")/escenario.json"
 """
 
 _GITATTRS = "* -text\n"
@@ -361,11 +362,12 @@ class Banco:
         gh_cls=FakeGitHub,
         escenario: Escenario,
         pedido: str = "banco compuerta: deja el producto de cada fase con su despliegue local",
+        previo: str = "",
     ):
         self.tmp = tmp
         self.destino = tmp / "destino"
         self.destino.mkdir()
-        self._semilla(tmp, escenario)
+        self._semilla(tmp, escenario, previo)
         fake = tmp / "fake"
         fake.mkdir()
         if config:
@@ -396,13 +398,15 @@ class Banco:
         self.ident = salida["encargo"]
         self.espacio = self.base / "espacio" / self.ident
 
-    def _semilla(self, tmp: Path, escenario: Escenario) -> None:
+    def _semilla(self, tmp: Path, escenario: Escenario, previo: str) -> None:
         semilla = tmp / "semilla"
         semilla.mkdir()
         (semilla / ".gitattributes").write_text(_GITATTRS, encoding="utf-8")
         (semilla / "base.txt").write_text("base\n", encoding="utf-8")
         (semilla / "trabajo.sh").write_text(
-            _TRABAJO_SH.replace("@PY@", PY).replace("@AGENTE@", AGENTE.as_posix()),
+            _TRABAJO_SH.replace("@PREVIO@", previo)
+            .replace("@PY@", PY)
+            .replace("@AGENTE@", AGENTE.as_posix()),
             encoding="utf-8",
             newline="\n",
         )
@@ -1023,3 +1027,86 @@ class ElPasoTrasIntegrarDiceSuResultado(CompuertaReal):
             ["uno", "dos"],
         )
         self.assertEqual(banco.fold().fases[2].estado, "pendiente")
+
+
+def _gh_de_la_maquina(carpeta: Path, llamadas: Path) -> None:
+    """El `gh` real del banco: anota cada llamada que le llega."""
+    carpeta.mkdir()
+    if os.name == "nt":
+        (carpeta / "gh.cmd").write_text(
+            f'@echo off\r\n>>"{llamadas}" echo %*\r\n', encoding="utf-8", newline=""
+        )
+        return
+    (carpeta / "gh").write_text(
+        f'#!/bin/sh\necho "$@" >> {shlex.quote(str(llamadas))}\n', encoding="utf-8"
+    )
+    (carpeta / "gh").chmod(0o755)
+
+
+_INTENTOS_GH = """if [ ! -e "@INTENTOS@" ]; then {
+gh pr merge 5 --squash; echo "merge=$?"
+gh api -X PUT repos/o/r/pulls/5/merge; echo "api=$?"
+gh pr create --base main --title t --body b; echo "create=$?"
+gh pr view 5; echo "view=$?"
+} > "@INTENTOS@" 2>&1; fi
+"""
+
+_INTENTOS_PUSH = """if [ ! -e "@INTENTOS@" ]; then {
+git -c user.name=a -c user.email=a@local commit -q --allow-empty -m intento
+git push -q origin HEAD:refs/heads/main; echo "base=$?"
+MOTOR_GUARDIA= git push -q origin HEAD:refs/heads/main; echo "vacia=$?"
+env -u MOTOR_GUARDIA git push -q origin HEAD:refs/heads/main; echo "sin=$?"
+git push -q origin HEAD:refs/heads/otra; echo "otra=$?"
+git push -q origin HEAD; echo "propia=$?"
+} > "@INTENTOS@" 2>&1; fi
+"""
+
+
+class ElAgenteNoIntegra(CompuertaReal):
+    """El agente que lanza el motor no integra por su cuenta: ni por gh ni
+    empujando a la rama base. En el incidente de la PC el implementador mergeó
+    su PR con `gh pr merge` antes de que empezara el revisor."""
+
+    def _primer_turno(self, intentos: str) -> tuple[str, Banco]:
+        """Los intentos corren solo en el primer turno: el del revisor arranca
+        en el mismo barrido que cierra al responsable."""
+        registro = self.tmp / "intentos.txt"
+        banco = self.banco(
+            _escenario_tres_fases(False, self.tmp / "destino"),
+            previo=intentos.replace("@INTENTOS@", registro.as_posix()),
+        )
+        banco.correr(lambda: bool(banco.eventos("intento_cerrado")))
+        return registro.read_text(encoding="utf-8", errors="replace"), banco
+
+    def test_el_gh_del_agente_niega_el_merge_y_el_pr_y_lo_demas_llega_al_gh_real(self):
+        llamadas = self.tmp / "gh-llamadas.txt"
+        _gh_de_la_maquina(self.tmp / "gh-real", llamadas)
+        path = os.pathsep.join([str(self.tmp / "gh-real"), os.environ.get("PATH", "")])
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            salida, _ = self._primer_turno(_INTENTOS_GH)
+        for intento in ("merge=3", "api=3", "create=3", "view=0"):
+            self.assertIn(intento, salida.splitlines(), salida)
+        self.assertIn("gh pr merge", salida)
+        self.assertIn("gh pr create", salida)
+        self.assertIn("prohibido", salida)
+        self.assertEqual(
+            [linea.split() for linea in llamadas.read_text(encoding="utf-8").splitlines()],
+            [["pr", "view", "5"]],
+        )
+
+    def test_el_agente_empuja_su_rama_y_no_la_base_ni_otra(self):
+        """Ni con la salida de la receta en el entorno del supervisor, que el wrapper hereda."""
+        with mock.patch.dict(os.environ, {aislamiento.EMPUJE_DE_RECETA: "1"}):
+            salida, banco = self._primer_turno(_INTENTOS_PUSH)
+        lineas = salida.splitlines()
+        for intento in ("propia=0", "base=1", "vacia=1", "sin=1", "otra=1"):
+            self.assertIn(intento, lineas, salida)
+        self.assertIn("la integra el motor", salida)
+        remoto = self.tmp / "repo.git"
+        self.assertEqual(
+            _git(remoto, "rev-parse", "main"), _git(self.tmp / "semilla", "rev-parse", "HEAD")
+        )
+        self.assertEqual(
+            _git(remoto, "for-each-ref", "--format=%(refname:short)", "refs/heads").split(),
+            sorted(["main", banco.fold().entrega.rama]),
+        )

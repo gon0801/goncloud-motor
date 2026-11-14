@@ -10,8 +10,11 @@ deja de falsearse.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
+import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -22,7 +25,9 @@ from unittest import mock
 
 from motor.encargos import aislamiento
 from motor.encargos.aislamiento import aislar
-from motor.encargos.suscripciones import CuentaNoDisponible
+from motor.encargos.suscripciones import CuentaNoDisponible, preparar_kimi_opencode
+from motor.flota.runtime import exigir_poteto
+from tests import git_env_limpio
 
 SANDBOX = "/usr/bin/sandbox-exec"
 ES_POSIX = os.name != "nt"
@@ -77,6 +82,238 @@ class SinSandboxExec(unittest.TestCase):
             )
         self.assertEqual(hecho.returncode, 0, hecho.stderr)
         self.assertEqual(hecho.stdout, "lanzado\n")
+
+
+@unittest.skipUnless(ES_POSIX, "el lanzamiento directo es de la rama POSIX")
+class LaGuardiaDeGhEnElPath(unittest.TestCase):
+    def test_el_comando_lanzado_no_mergea_y_lo_demas_llega_al_gh_real(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            espacio, runtime = _coincidencia(base)
+            real, llamadas = base / "gh-real", base / "llamadas"
+            real.mkdir()
+            (real / "gh").write_text(
+                f'#!/bin/sh\necho "$@" >> {shlex.quote(str(llamadas))}\n', encoding="utf-8"
+            )
+            (real / "gh").chmod(0o755)
+            guion = (
+                'gh pr merge 5 --squash; echo "merge=$?"; '
+                'gh api -X PUT repos/o/r/pulls/5/merge; echo "api=$?"; '
+                'gh pr view 5; echo "view=$?"'
+            )
+            path = os.pathsep.join([str(real), os.environ.get("PATH", "")])
+            with mock.patch.dict(os.environ, {"PATH": path}):
+                comando = aislar(["/bin/sh", "-c", guion], espacio, runtime, interprete=True)
+            hecho = subprocess.run(
+                comando.argv,
+                cwd=espacio,
+                env=comando.entorno,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(hecho.stdout.split(), ["merge=3", "api=3", "view=0"], hecho.stderr)
+            self.assertEqual(llamadas.read_text(encoding="utf-8").split(), ["pr", "view", "5"])
+
+
+RAMAS = ("encargo/enc_x",)
+
+
+class _EspacioConRemoto(unittest.TestCase):
+    """El clon del espacio con su remoto desnudo y un commit sin publicar."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name).resolve()
+        self.remoto = self.base / "remoto.git"
+        self.espacio, self.runtime = _coincidencia(self.base)
+        self.git("init", "-q", "--bare", "-b", "main", str(self.remoto))
+        self.git("clone", "-q", str(self.remoto), str(self.espacio))
+        self.git("-C", str(self.espacio), "-c", "user.name=t", "-c", "user.email=t@local",
+                 "commit", "-q", "--allow-empty", "-m", "producto")
+
+    def git(self, *args: str, entorno: dict | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args], env={**git_env_limpio(), **(entorno or {})}, capture_output=True,
+            text=True, timeout=60,
+        )
+
+    def lanzar(self, argv: list[str], entorno: dict | None = None) -> subprocess.CompletedProcess:
+        """`argv` como el motor lo lanza para el agente, desde un supervisor con `entorno`."""
+        with mock.patch.dict(os.environ, {**git_env_limpio(), **(entorno or {})}, clear=True):
+            comando = aislar(argv, self.espacio, self.runtime, ramas=RAMAS)
+        return subprocess.run(
+            comando.argv, cwd=self.espacio, env=comando.entorno, capture_output=True,
+            text=True, timeout=60,
+        )
+
+    def empuja(self, destino: str, entorno: dict | None = None) -> int:
+        """Un push desde el espacio que no lanzó el motor para el agente: el del motor o una
+        receta de despliegue."""
+        return self.git(
+            "-C", str(self.espacio), "push", "-q", "origin", f"HEAD:{destino}", entorno=entorno
+        ).returncode
+
+    def refs_del_remoto(self) -> list[str]:
+        return self.git(
+            "-C", str(self.remoto), "for-each-ref", "--format=%(refname)"
+        ).stdout.split()
+
+
+class ElPrePushDelEspacio(_EspacioConRemoto):
+    """Desde el espacio solo salen las ramas del encargo, con cualquier entorno: el motor no empuja
+    otra cosa y la receta de despliegue, que sí, trae su propia salida."""
+
+    def test_salen_las_ramas_del_encargo_y_solo_la_receta_empuja_otra_cosa(self):
+        def empuja_el_agente(destino: str) -> int:
+            argv = ["git", "push", "-q", "origin", f"HEAD:refs/heads/{destino}"]
+            return self.lanzar(argv).returncode
+
+        esperado = {"encargo/enc_x": 0, "encargo/enc_x-dos": 0, "encargo/enc_xy": 1, "main": 1}
+        self.assertEqual({d: empuja_el_agente(d) for d in esperado}, esperado)
+        self.assertEqual(self.empuja("refs/heads/main"), 1)
+        self.assertEqual(self.empuja("refs/tags/v1"), 1)
+        self.assertEqual(self.empuja("refs/tags/v1", {aislamiento.EMPUJE_DE_RECETA: "1"}), 0)
+        self.assertNotIn("refs/heads/main", self.refs_del_remoto())
+
+    @unittest.skipUnless(ES_POSIX, "el guion del agente es de sh")
+    def test_el_agente_no_desarma_el_hook_ni_hereda_la_salida_de_la_receta(self):
+        guion = (
+            'git push -q origin HEAD:refs/heads/main; echo "base=$?"; '
+            'MOTOR_GUARDIA= git push -q origin HEAD:refs/heads/main; echo "vacia=$?"; '
+            'env -u MOTOR_GUARDIA git push -q origin HEAD:refs/heads/main; echo "sin=$?"; '
+            'git push -q origin HEAD:refs/tags/v1; echo "etiqueta=$?"'
+        )
+        hecho = self.lanzar(["/bin/sh", "-c", guion], {aislamiento.EMPUJE_DE_RECETA: "1"})
+        self.assertEqual(
+            hecho.stdout.split(), ["base=1", "vacia=1", "sin=1", "etiqueta=1"], hecho.stderr
+        )
+        self.assertEqual(self.refs_del_remoto(), [])
+
+
+NADA = [sys.executable, "-c", "pass"]
+
+
+class ElPrePushDelProducto(_EspacioConRemoto):
+    """El pre-push que ya tenía el espacio, como el de Git LFS, sigue corriendo detrás del del
+    motor y decide con su código. El del motor va donde git busca los hooks, nunca dentro del
+    producto ni en una carpeta de hooks de otros repos."""
+
+    def producto(self, ganchos: Path) -> Path:
+        """Un pre-push del producto que anota su remoto y lo que lee, y sale con el código que
+        diga el archivo `codigo`."""
+        visto, codigo = self.base / "visto", self.base / "codigo"
+        codigo.write_text("7", encoding="utf-8")
+        ganchos.mkdir(parents=True, exist_ok=True)
+        (ganchos / "pre-push").write_text(
+            f'#!/bin/sh\n{{ echo "$1"; cat; }} >> {shlex.quote(visto.as_posix())}\n'
+            f'exit "$(cat {shlex.quote(codigo.as_posix())})"\n',
+            encoding="utf-8", newline="\n",
+        )
+        (ganchos / "pre-push").chmod(0o755)
+        return codigo
+
+    def comprobar_cadena(self, codigo: Path) -> None:
+        self.assertEqual(self.empuja("refs/heads/main"), 1)
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x"), 1)
+        codigo.write_text("0", encoding="utf-8")
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x"), 0)
+        self.assertEqual(self.refs_del_remoto(), ["refs/heads/encargo/enc_x"])
+        visto = (self.base / "visto").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(visto[::2], ["origin", "origin"], visto)
+        for linea in visto[1::2]:
+            self.assertRegex(linea, r"^\S+ [0-9a-f]+ refs/heads/encargo/enc_x [0-9a-f]+$")
+
+    def test_el_del_producto_corre_detras_del_motor_en_cada_turno(self):
+        codigo = self.producto(self.espacio / ".git" / "hooks")
+        self.lanzar(NADA)
+        self.lanzar(NADA)
+        self.comprobar_cadena(codigo)
+
+    def test_el_que_el_producto_pone_entre_turnos_queda_detras_del_motor(self):
+        self.lanzar(NADA)
+        codigo = self.producto(self.espacio / ".git" / "hooks")
+        self.lanzar(NADA)
+        self.comprobar_cadena(codigo)
+
+    def test_si_el_del_motor_no_se_instala_el_del_producto_sigue_en_su_lugar(self):
+        ganchos = self.espacio / ".git" / "hooks"
+        self.producto(ganchos)
+        replace = os.replace
+
+        def falla_al_poner_el_del_motor(origen, destino):
+            if Path(origen).name == ".pre-push.tmp":
+                raise OSError("disco lleno")
+            replace(origen, destino)
+
+        with (
+            mock.patch.dict(os.environ, git_env_limpio(), clear=True),
+            mock.patch.object(aislamiento.os, "replace", falla_al_poner_el_del_motor),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as bitacora,
+        ):
+            aislamiento.instalar_pre_push(self.espacio, RAMAS)
+        self.assertIn("disco lleno", bitacora.getvalue())
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x"), 1)
+        visto = (self.base / "visto").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(visto[0], "origin", "el pre-push del producto corrió")
+
+    def test_un_espacio_sin_clonar_no_toca_el_repo_que_lo_contiene(self):
+        de_afuera = self.base / "de-afuera"
+        self.git("init", "-q", str(de_afuera))
+        espacio, runtime = _coincidencia(de_afuera)
+        with mock.patch.dict(os.environ, git_env_limpio(), clear=True):
+            aislar(NADA, espacio, runtime, ramas=RAMAS)
+        self.assertFalse((de_afuera / ".git" / "hooks" / "pre-push").exists())
+
+    def test_con_git_como_archivo_va_a_los_hooks_del_directorio_real(self):
+        (self.espacio / ".git").rename(self.base / "git-real")
+        (self.espacio / ".git").write_text(
+            f"gitdir: {(self.base / 'git-real').as_posix()}\n", encoding="utf-8"
+        )
+        self.lanzar(NADA)
+        self.assertEqual(self.empuja("refs/heads/main"), 1)
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x"), 0)
+
+    def test_va_al_core_hooks_path_del_repo_y_no_al_global_ni_dentro_del_producto(self):
+        global_, config = self.base / "hooks-de-todos", self.base / "gitconfig"
+        config.write_text(f"[core]\n\thooksPath = {global_.as_posix()}\n", encoding="utf-8")
+        entorno = {"GIT_CONFIG_GLOBAL": str(config)}
+        self.lanzar(NADA, entorno)
+        self.assertFalse(global_.exists(), "el motor escribió en los hooks de todos los repos")
+
+        del_repo = self.base / "hooks-del-repo"
+        self.git("-C", str(self.espacio), "config", "core.hooksPath", del_repo.as_posix())
+        self.lanzar(NADA, entorno)
+        self.assertEqual(self.empuja("refs/heads/main", entorno), 1)
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x", entorno), 0)
+
+        husky = self.espacio / ".husky"
+        husky.mkdir()
+        (husky / "pre-push").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+        self.git("-C", str(self.espacio), "add", ".husky")
+        self.git("-C", str(self.espacio), "-c", "user.name=t", "-c", "user.email=t@local",
+                 "commit", "-q", "-m", "husky")
+        self.git("-C", str(self.espacio), "config", "core.hooksPath", ".husky")
+        self.lanzar(NADA, entorno)
+        estado = self.git("-C", str(self.espacio), "status", "--porcelain", "--ignored")
+        self.assertEqual(estado.stdout, "", "el hook del motor no entra en el commit del producto")
+
+    @unittest.skipUnless(ES_POSIX and os.geteuid() != 0, "permisos y /dev/null de POSIX")
+    def test_una_carpeta_de_hooks_inutilizable_no_impide_arrancar(self):
+        archivo, cerrada = self.base / "un-archivo", self.base / "sin-permiso"
+        archivo.write_text("", encoding="utf-8")
+        cerrada.mkdir(mode=0o500)
+        self.addCleanup(cerrada.chmod, 0o700)
+        for ganchos in (Path("/dev/null"), archivo, cerrada):
+            with self.subTest(ganchos=ganchos):
+                self.git("-C", str(self.espacio), "config", "core.hooksPath", str(ganchos))
+                with mock.patch("sys.stderr", new_callable=io.StringIO) as bitacora:
+                    hecho = self.lanzar(NADA)
+                self.assertEqual(hecho.returncode, 0, hecho.stderr)
+                self.assertIn(str(ganchos), bitacora.getvalue())
+        self.assertEqual(archivo.read_text(encoding="utf-8"), "")
+        self.assertEqual(list(cerrada.iterdir()), [])
 
 
 @unittest.skipUnless(ES_POSIX, "el entorno del usuario es de la rama POSIX")
@@ -371,6 +608,81 @@ class MuseUsaLaConfiguracionReal(unittest.TestCase):
             self.assertFalse((runtime / ".config" / "muse" / "auth.json").exists())
             self.assertTrue((Path(env["HOME"]) / ".config/muse/auth.json").is_file())
             self.assertEqual(auth.read_text(encoding="utf-8"), contenido)
+
+
+def _efecto_en_opencode(config: dict, ruta: Path) -> str:
+    """Lo que OpenCode v1 decide en `external_directory` al leer `ruta` fuera del espacio: pide
+    permiso sobre `<carpeta>/*` y gana la última regla que lo cubre, después de su `"*": "ask"`
+    (packages/opencode/src/tool/external-directory.ts, util/wildcard.ts y agent/agent.ts en
+    v1.18.35). Las reglas de `permission` valen para la sesión raíz y para cada ayudante."""
+    pedido = (ruta.parent / "*").as_posix()
+    efecto = "ask"
+    for patron, valor in config.get("permission", {}).get("external_directory", {}).items():
+        regex = re.escape(patron.replace("\\", "/")).replace(r"\*", ".*").replace(r"\?", ".")
+        if re.fullmatch(regex, pedido, re.S):
+            efecto = valor
+    return efecto
+
+
+class LaGuiaDelRuntimeEnOpenCode(unittest.TestCase):
+    """En un encargo de la PC un ayudante de OpenCode pidió `external_directory` para leer la
+    guía que el motor copia al runtime. `opencode run --auto` contesta solo a la sesión raíz
+    hasta la v1.17 y el encargo esperó 40 minutos a una respuesta que nadie iba a dar."""
+
+    def _guia(self, base: Path, runtime: Path, *, en_la_politica: bool) -> Path:
+        if en_la_politica:
+            fuente = base / "politica" / "poteto" / "skills" / "poteto-mode"
+        else:
+            fuente = base / "home" / ".agents" / "skills" / "poteto-mode"
+        fuente.mkdir(parents=True)
+        (fuente / "SKILL.md").write_text("# poteto-mode\n", encoding="utf-8")
+        with mock.patch.object(Path, "home", return_value=base / "home"):
+            skill, _ = exigir_poteto(None, base, runtime)
+        return skill
+
+    def _configs(self, runtime: Path) -> dict[str, dict]:
+        with mock.patch(
+            "motor.encargos.suscripciones.leer_cuenta",
+            return_value={"zai-coding-plan": {"type": "api", "key": "clave-prueba"}},
+        ):
+            directo = aislamiento._entorno(
+                runtime, True, ["opencode", "--model", "zai-coding-plan/glm-4.6"],
+                agente="opencode",
+            )
+        kimi = runtime / ".kimi-code"
+        kimi.mkdir(parents=True)
+        (kimi / "device_id").write_text("equipo\n", encoding="utf-8")
+        (kimi / "config.toml").write_text(
+            'default_model = "kimi-code/k3"\n'
+            '[providers."managed:kimi-code"]\n'
+            'api_key = "clave-prueba"\nbase_url = "https://api.kimi.com/coding/v1"\n'
+            '[models."kimi-code/k3"]\nprovider = "managed:kimi-code"\nmodel = "k3"\n',
+            encoding="utf-8",
+        )
+        por_kimi: dict[str, str] = {}
+        preparar_kimi_opencode(runtime, por_kimi)
+        return {
+            "opencode": json.loads(directo["OPENCODE_CONFIG_CONTENT"]),
+            "kimi por opencode": json.loads(por_kimi["OPENCODE_CONFIG_CONTENT"]),
+        }
+
+    def test_los_ayudantes_leen_la_guia_y_lo_demas_del_runtime_sigue_pidiendo_permiso(self):
+        for en_la_politica in (True, False):
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                base = Path(tmp).resolve()
+                _, runtime = _coincidencia(base)
+                skill = self._guia(base, runtime, en_la_politica=en_la_politica)
+                for cliente, config in self._configs(runtime).items():
+                    with self.subTest(cliente=cliente, en_la_politica=en_la_politica):
+                        for guia in (skill, skill.parent / "references" / "detalle.md"):
+                            self.assertEqual(_efecto_en_opencode(config, guia), "allow", guia)
+                        for ajena in (
+                            runtime / ".local" / "share" / "opencode" / "auth.json",
+                            runtime / ".kimi-code" / "config.toml",
+                            runtime / "prompt.md",
+                            base / "otra" / "SKILL.md",
+                        ):
+                            self.assertEqual(_efecto_en_opencode(config, ajena), "ask", ajena)
 
 
 class CredencialPropiaDeDeepSeek(unittest.TestCase):

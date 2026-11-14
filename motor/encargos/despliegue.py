@@ -24,6 +24,7 @@ from motor.io import leer_json, leer_texto
 
 from motor import plataforma
 from motor.effects import _lock_despliegue, _posix, con_python_de_comando, entorno_maquina
+from motor.encargos.aislamiento import EMPUJE_DE_RECETA
 from motor.encargos.maquina import de_base
 from motor.encargos.frontera import _atomico, _autorizado_ahora, autoridad_ausente, turno
 from motor.encargos.registro import Registro
@@ -371,7 +372,7 @@ def reabrir_ventana(registro, enc, continuadas: int) -> None:
 
 def _correr(reg, encargo: str, paso: str, script: str, copia: Path, env: dict, bash: str):
     argv, shell, exe = _posix("bash " + shlex.quote(script), bash)
-    env = con_python_de_comando(env)
+    env = {**con_python_de_comando(env), EMPUJE_DE_RECETA: "1"}
     vigente = lambda: _autorizado_ahora(reg, encargo, not autoridad_ausente(reg.base))
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         with turno(reg.base):

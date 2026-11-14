@@ -25,7 +25,10 @@ PRUEBA = "import sys, tomllib, encodings; print(sys.version)"
 
 
 def _encargo(rol: str) -> SimpleNamespace:
-    return SimpleNamespace(id="enc_x", rol=rol, conductor="token", adjuntos=())
+    return SimpleNamespace(
+        id="enc_x", rol=rol, conductor="token", adjuntos=(),
+        entrega=SimpleNamespace(rama=""), fases=(),
+    )
 
 
 def _preparar(tmp: Path, rol: str, cmd: list[str]) -> dict:

@@ -30,6 +30,8 @@ class ComandoAislado:
 
 MECANISMO_DIRECTO = "directo"
 ENTORNO_DEL_AGENTE = "MOTOR_ENTORNO_AGENTE"
+EMPUJE_DE_RECETA = "MOTOR_EMPUJE_DE_RECETA"
+GUARDIA_GH = Path(__file__).resolve().parent.parent / "shims" / "gh_guard.py"
 
 
 def delta_de_entorno(comando: ComandoAislado) -> dict[str, str]:
@@ -80,6 +82,119 @@ def path_con_interprete(path: str, runtime: Path) -> str:
     return os.pathsep.join(partes)
 
 
+def carpeta_de_guardia(runtime: Path) -> Path:
+    """El `gh` del agente: la guardia que niega integrar y sus lanzadores con el intérprete del
+    supervisor, `gh` para sh y el bash de Git, `gh.cmd` para cmd. La guardia va copiada junto a
+    ellos porque busca el `gh` real quitando su propia carpeta del PATH."""
+    carpeta = runtime / "guardia"
+    carpeta.mkdir(parents=True, exist_ok=True)
+    python = Path(sys.executable)
+    archivos = {
+        "gh_guard.py": GUARDIA_GH.read_bytes(),
+        "gh": (
+            f'#!/bin/sh\nexec {shlex.quote(python.as_posix())} '
+            '"$(dirname "$0")/gh_guard.py" "$@"\n'
+        ).encode(),
+        "gh.cmd": f'@echo off\r\n"{python}" "%~dp0gh_guard.py" %*\r\n'.encode(),
+    }
+    for nombre, contenido in archivos.items():
+        temporal = carpeta / f".{nombre}.tmp"
+        temporal.write_bytes(contenido)
+        os.chmod(temporal, 0o755)
+        os.replace(temporal, carpeta / nombre)
+    return carpeta
+
+
+_MARCA_PRE_PUSH = "# pre-push del motor de encargos"
+
+
+def _pre_push(ramas: tuple[str, ...]) -> str:
+    """Niega empujar fuera de cada `rama` y `rama-<fase>`, salvo con `EMPUJE_DE_RECETA`, y después
+    le pasa la misma entrada al `pre-push.previo` del producto, cuyo código decide."""
+    permitidas = " | ".join(
+        f"{shlex.quote('refs/heads/' + r)} | {shlex.quote('refs/heads/' + r + '-')}*"
+        for r in ramas
+    )
+    aviso = shlex.quote(
+        f"solo empujas {', '.join(ramas)} y sus fases; la rama base la integra el motor "
+        "después de la revisión independiente"
+    )
+    return f"""#!/bin/sh
+{_MARCA_PRE_PUSH}
+refs=$(cat)
+if [ "${{{EMPUJE_DE_RECETA}:-}}" != 1 ]; then
+  while read -r _ _ destino _; do
+    case "$destino" in
+      ''|{permitidas}) ;;
+      *) printf '%s: %s\\n' "$destino" {aviso} >&2; exit 1 ;;
+    esac
+  done <<FIN
+$refs
+FIN
+fi
+previo="$(dirname "$0")/pre-push.previo"
+[ -x "$previo" ] || exit 0
+{{ [ -z "$refs" ] || printf '%s\\n' "$refs"; }} | "$previo" "$@"
+"""
+
+
+def _carpeta_de_ganchos(espacio: Path) -> Path | None:
+    """Donde git busca los hooks del espacio: el `core.hooksPath` del propio repo o, sin él, el
+    directorio git común, también cuando `.git` es un archivo. Un `core.hooksPath` global es de
+    todos los repos del usuario y no cuenta. None si el espacio no es un clon, aunque esté dentro
+    de otro repo, o si la carpeta cae dentro del producto, como la de husky: el hook del motor
+    entraría en el commit del encargo."""
+
+    def git(*args: str) -> str:
+        r = subprocess.run(
+            ["git", "-C", str(espacio), *args], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=60,
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+    salida = git("rev-parse", "--git-common-dir") if (espacio / ".git").exists() else ""
+    if not salida:
+        return None
+    comun = (espacio / salida).resolve()
+    if git("config", "--local", "--get", "core.hooksPath"):
+        ganchos = (espacio / git("rev-parse", "--git-path", "hooks")).resolve()
+    else:
+        ganchos = comun / "hooks"
+    if ganchos.is_relative_to(espacio) and not ganchos.is_relative_to(comun):
+        return None
+    return ganchos
+
+
+def instalar_pre_push(espacio: Path, ramas: tuple[str, ...]) -> None:
+    """Desde el espacio solo salen cada `rama` y `rama-<fase>`: la rama base la integra el motor
+    después de la revisión. El hook actúa con cualquier entorno, porque el del agente es suyo. El
+    motor solo empuja esas ramas; la receta de despliegue, que corre en un worktree del espacio y
+    comparte sus hooks, trae `EMPUJE_DE_RECETA` y el agente no la hereda. Un pre-push que no sea
+    del motor, como el de Git LFS, pasa a `pre-push.previo` y sigue corriendo detrás. Es la
+    segunda red, detrás de la guardia de gh: `--no-verify` lo salta. Una carpeta de hooks donde no
+    se puede escribir, como `core.hooksPath=/dev/null`, no impide arrancar: queda la nota."""
+    ganchos = _carpeta_de_ganchos(espacio)
+    if ganchos is None:
+        return
+    try:
+        ganchos.mkdir(parents=True, exist_ok=True)
+        gancho, previo = ganchos / "pre-push", ganchos / "pre-push.previo"
+        temporal = ganchos / ".pre-push.tmp"
+        escribir_texto(temporal, _pre_push(ramas))
+        temporal.chmod(0o755)
+        movido = gancho.is_file() and _MARCA_PRE_PUSH.encode() not in gancho.read_bytes()
+        if movido:
+            os.replace(gancho, previo)
+        try:
+            os.replace(temporal, gancho)
+        except OSError:
+            if movido:
+                os.replace(previo, gancho)
+            raise
+    except OSError as exc:
+        print(f"pre-push del motor sin instalar en {ganchos}: {exc}", file=sys.stderr)
+
+
 def temporal_de(runtime: Path) -> Path:
     """Temporal propio de una corrida: vacío, dentro de su runtime."""
     temporal = runtime / "tmp"
@@ -113,6 +228,9 @@ def _entorno(
             + os.pathsep
             + env.get("PATH", "")
         )
+    # Solo el motor integra, y después de la revisión independiente.
+    env["PATH"] = str(carpeta_de_guardia(runtime)) + os.pathsep + env.get("PATH", "")
+    env.pop(EMPUJE_DE_RECETA, None)
     temporal = temporal_de(runtime)
     env.update(
         TMPDIR=str(temporal),
@@ -345,12 +463,15 @@ def aislar(
     lecturas_extra: tuple[Path, ...] = (),
     agente: str | None = None,
     interprete: bool = False,
+    ramas: tuple[str, ...] = (),
 ) -> ComandoAislado:
     espacio, runtime = espacio.resolve(), runtime.resolve()
     if espacio.parent.name != "espacio" or runtime.is_relative_to(espacio):
         raise RuntimeError("el lanzamiento necesita espacio concedido y runtime separado")
     runtime.mkdir(parents=True, exist_ok=True)
     runtime.chmod(0o700)
+    if ramas:
+        instalar_pre_push(espacio, ramas)
     nombre = agente or Path(cmd[0]).stem.lower()
     env = _entorno(runtime, suscripcion, cmd, agente=agente)
     if nombre in ("antigravity", "agy"):

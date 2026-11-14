@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from motor import plataforma
-from motor.encargos import ciclo
+from motor.encargos import aislamiento, ciclo
 from motor.encargos.dominio import relevos_de
 from motor.encargos.registro import Registro
 from motor.encargos.resultado import Espera
@@ -148,6 +148,26 @@ class DespliegueReal(unittest.TestCase):
         parche = mock.patch.object(objeto, atributo, valor)
         self.addCleanup(parche.stop)
         parche.start()
+
+    def test_la_receta_empuja_una_etiqueta_con_el_pre_push_del_agente_puesto(self):
+        """La receta corre en un worktree del espacio y comparte su pre-push. `ops/instala-todo.sh`,
+        receta de PSTACK 01, empuja una etiqueta."""
+        reg, ident, espacio, destino, integrar = self.despliegue
+        remoto = destino.parent / "remoto.git"
+        git(destino.parent, "init", "-q", "--bare", str(remoto))
+        git(espacio, "remote", "add", "origin", str(remoto))
+        aislamiento.instalar_pre_push(espacio, ("encargo/" + ident,))
+        with (espacio / "d.sh").open("a") as f:
+            f.write("git push -q origin HEAD:refs/tags/desplegado\n")
+        sha = integrar()
+        final = paso(self.despliegue)
+        assert final.nivel_alcanzado == "desplegado", final.motivo
+        assert git(remoto, "rev-parse", "refs/tags/desplegado") == sha
+        sin_salida = subprocess.run(
+            ["git", "-C", str(espacio), "push", "-q", "origin", "HEAD:refs/tags/sin-salida"],
+            capture_output=True, text=True,
+        )
+        assert sin_salida.returncode != 0, "el pre-push del espacio está puesto"
 
     def test_ejecuta_sha_mergeado_y_guarda_salidas_sin_repetir(self):  # no-roja-en-base: sobre la base el despliegue feliz tambien llega a desplegado; la prueba caracteriza el camino que la fase conserva y agrega el motivo al fallo
         despliegue = self.despliegue
