@@ -88,6 +88,27 @@ class ContencionDelBarrido(unittest.TestCase):
             self.assertIn("Permission denied", fallo["data"]["causa"])
             self.assertEqual(b.eventos(b.bueno, "instrumento_fallo"), [])
 
+    def test_la_causa_anotada_trae_la_causa_encadenada_y_queda_acotada(self):
+        def reservar(*_):
+            try:
+                raise RuntimeError("falta el enlace; reponlo con motor flota recuperar " + "x" * 3000)
+            except RuntimeError as exc:
+                raise RuntimeError("no se pudo reservar la generacion de flota") from exc
+
+        with Banco(self.tmp) as b:
+            b.error = reservar
+            for _ in range(TOPE_FALLOS_BARRIDO):
+                b.vuelta()
+            causas = [e["data"]["causa"] for e in b.eventos(b.malo, "instrumento_fallo")]
+            (pendiente,) = b.eventos(b.malo, "pendiente_entrega")
+
+        self.assertEqual(len(causas), TOPE_FALLOS_BARRIDO)
+        for causa in causas:
+            self.assertTrue(causa.startswith("RuntimeError: no se pudo reservar"), causa[:200])
+            self.assertIn("reponlo con motor flota recuperar", causa)
+            self.assertLessEqual(len(causa), 2000)
+        self.assertIn("reponlo con motor flota recuperar", pendiente["data"]["texto"])
+
     def test_el_mismo_error_no_se_repite_sin_fin(self):
         with Banco(self.tmp) as b:
             for _ in range(TOPE_FALLOS_BARRIDO + 4):
