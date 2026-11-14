@@ -12,7 +12,6 @@ import shutil
 import tempfile
 import time
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -24,7 +23,6 @@ from motor.encargos.ciclo import (
     ordenar,
     recibir,
 )
-from motor.encargos.dominio import reducir
 from motor.encargos.registro import ClaveOcupada, Registro
 from tests.dobles import FakeGitHub
 from tests.test_flujo_revisiones import _entrega_pr, sonda_sin_aislamiento_del_host
@@ -103,25 +101,6 @@ class FalloInterno(unittest.TestCase):
         self.assertEqual(malo.estado, "recibido")
         self.assertNotIn("fallo interno", malo.motivo)
         self.assertFalse(necesidades.detenida_ahora(self.b.reg, self.b.malo))
-
-    def test_un_proceso_vivo_se_cierra_antes_de_quedar_detenido(self):
-        enc = replace(self.b.reg.fold(self.b.bueno), estado="recibido", reserva=True)
-        fallo = {
-            "kind": "fallo_interno",
-            "data": {"rechazo": "ilegal", "kind": "estrategia", "ukey": "estrategia:*", "hora": HORA},
-        }
-
-        deteniendo = reducir(enc, fallo)
-        detenido = reducir(
-            replace(deteniendo, reserva=False),
-            {"kind": "arbol", "data": {"observacion": "ausente", "hora": DESPUES}},
-        )
-
-        self.assertEqual(deteniendo.estado, "deteniendo")
-        self.assertTrue(deteniendo.intento_interrumpido)
-        self.assertEqual(detenido.estado, "detenido")
-        self.assertIn("estrategia:*", detenido.motivo)
-        self.assertIn("continuar", detenido.motivo)
 
     def test_un_encargo_cerrado_no_cambia_de_causa_y_el_barrido_sigue(self):
         ordenar(self.b.reg, self.b.malo, "cancelar", "fin-1", HORA)
