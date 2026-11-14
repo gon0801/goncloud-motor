@@ -547,6 +547,56 @@ class Comparar(_RepoFalso):
 
 
 class CorpusPlegado(unittest.TestCase):
+    def test_captura_el_registro_y_el_rechazo_de_un_hijo_python(self) -> None:
+        with tempfile.TemporaryDirectory() as temporal:
+            raiz = Path(temporal)
+            corpus = raiz / "corpus"
+            (corpus / "registros").mkdir(parents=True)
+            shutil.copy2(RAIZ / "tools" / "corpus_sitecustomize.py", raiz / "sitecustomize.py")
+            hijo = (
+                "from pathlib import Path\n"
+                "from motor.encargos.registro import Registro, Evento, ClaveOcupada\n"
+                "import sys\n"
+                "r = Registro(Path(sys.argv[1]))\n"
+                "r.append_many('hijo', [Evento('procedimiento', {'nota': 'uno'}, 'nota:hijo')])\n"
+                "try:\n"
+                "    r.append_many('hijo', [Evento('procedimiento', {'nota': 'otro'}, 'nota:hijo')])\n"
+                "except ClaveOcupada:\n"
+                "    pass\n"
+                "r.close()\n"
+            )
+            padre = (
+                "from pathlib import Path\n"
+                "from motor.encargos.registro import Registro, Evento\n"
+                "import subprocess, sys\n"
+                "r = Registro(Path(sys.argv[1]))\n"
+                "r.append_many('hijo', [Evento('entrega', "
+                "{'id': 'hijo', 'clave': 'hijo', 'huella': 'h', 'texto': 'prueba'}, "
+                "'entrega:hijo')])\n"
+                "r.close()\n"
+                f"subprocess.run([sys.executable, '-c', {hijo!r}, sys.argv[1]], check=True)\n"
+            )
+            hecho = subprocess.run(
+                [sys.executable, "-c", padre, str(raiz / "origen")],
+                cwd=RAIZ, capture_output=True, text=True, check=False,
+                env={**os.environ, "MOTOR_CORPUS_DIR": str(corpus),
+                     "PYTHONPATH": str(raiz) + os.pathsep + str(RAIZ)},
+            )
+            self.assertEqual(hecho.returncode, 0, hecho.stderr)
+            archivos = list((corpus / "registros").glob("*.sqlite"))
+            self.assertEqual(len(archivos), 2)
+            historias = []
+            for archivo in archivos:
+                with sqlite3.connect(archivo) as db:
+                    historias.append([kind for (kind,) in db.execute(
+                        "SELECT kind FROM events ORDER BY id"
+                    )])
+            self.assertIn(["entrega", "procedimiento"], historias)
+            rechazos = [json.loads(linea) for linea in
+                        (corpus / "rechazos.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([(r["tipo"], r["indice"], len(r["lote"]))
+                              for r in rechazos], [("ClaveOcupada", 0, 1)])
+
     def test_verificar_detecta_un_cambio_invisible_en_la_vista(self) -> None:
         with tempfile.TemporaryDirectory() as temporal:
             raiz = Path(temporal)
