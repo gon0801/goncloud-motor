@@ -661,6 +661,15 @@ class CorpusPlegado(unittest.TestCase):
             sano = verificar(RAIZ)
             self.assertEqual(sano.returncode, 0, sano.stderr + sano.stdout)
             self.assertIn("estado igual en 1 de 1", sano.stdout)
+            ruta_rechazos = corpus / "rechazos.jsonl"
+            original = ruta_rechazos.read_text(encoding="utf-8")
+            alterado = json.loads(original)
+            alterado["indice"] += 1
+            ruta_rechazos.write_text(json.dumps(alterado) + "\n", encoding="utf-8")
+            mal_rechazo = verificar(RAIZ)
+            self.assertNotEqual(mal_rechazo.returncode, 0, mal_rechazo.stdout)
+            self.assertIn("cambió el rechazo", mal_rechazo.stdout)
+            ruta_rechazos.write_text(original, encoding="utf-8")
             copia = raiz / "copia"
             shutil.copytree(RAIZ / "motor", copia / "motor")
             dominio = copia / "motor" / "encargos" / "dominio.py"
