@@ -8156,6 +8156,8 @@ def _entregar_con_pendientes(
                     sha = str(pr.head or sha)
                     if getattr(pr, "borrador", False):
                         gh.marcar_listo(enc.entrega.repo, numero)
+            except Rechazo:
+                raise
             except Exception as exc:
                 causa = f"no se pudo publicar el PR con pendientes: {exc}"
     if causa:
