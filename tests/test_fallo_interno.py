@@ -148,12 +148,18 @@ class FalloInterno(unittest.TestCase):
         self.assertIn(self.b.bueno, {i["encargo"] for i in informes})
 
 
-class ElPrAbiertoRechazado(unittest.TestCase):
-    """GitHub abrió el PR y el registro rechaza el hecho que lo guarda: no es un fallo de GitHub."""
+class UnHechoDeLaEntregaRechazado(unittest.TestCase):
+    """GitHub hizo su parte y el registro rechaza el hecho que la guarda: no es un fallo de GitHub."""
 
-    def test_detiene_el_encargo_y_continuar_sigue_con_el_mismo_pr(self):
+    def test_el_pr_abierto_detiene_y_continuar_sigue_con_el_mismo_pr(self):
+        self.detiene_y_continuar_lo_guarda("pr_abierto")
+
+    def test_el_cuerpo_del_pr_detiene_y_continuar_lo_publica(self):
+        self.detiene_y_continuar_lo_guarda("pr_cuerpo")
+
+    def detiene_y_continuar_lo_guarda(self, paso: str) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "pr-rechazado", FakeGitHub)
+            vuelta, r = _entrega_pr(self, tmp, f"rechazado-{paso}", FakeGitHub)
             (r.espacio / "saludo.txt").write_text("hola")
             r.incorporar()
             r.juicio({"veredicto": "aprobado", "evidencia": "lei saludo.txt"})
@@ -161,13 +167,13 @@ class ElPrAbiertoRechazado(unittest.TestCase):
             anotar = r.reg.anotar
             rechazos = []
 
-            def rechaza_el_pr_abierto(encargo, evento, ukey):
-                if evento["data"].get("paso") == "pr_abierto" and not rechazos:
+            def rechaza_una_vez(encargo, evento, ukey):
+                if evento["data"].get("paso") == paso and not rechazos:
                     rechazos.append(ClaveOcupada(0, ukey, ("sha",), evento["kind"]))
                     raise rechazos[-1]
                 return anotar(encargo, evento, ukey)
 
-            with mock.patch.object(r.reg, "anotar", side_effect=rechaza_el_pr_abierto):
+            with mock.patch.object(r.reg, "anotar", side_effect=rechaza_una_vez):
                 for _ in range(2):
                     barrer(r.reg, ciclo.ahora_iso(), time.time(), None, gh=vuelta.gh)
 
@@ -191,6 +197,7 @@ class ElPrAbiertoRechazado(unittest.TestCase):
             self.assertEqual(r.fold().pr_numero, 1)
             self.assertEqual(pasos[:4], ["commit", "push", "pr_abierto", "pr_listo"])
             self.assertEqual(pasos.count("pr_abierto"), 1)
+            self.assertEqual(pasos.count(paso), 1)
             self.assertEqual(r.eventos("instrumento_fallo"), [])
 
 
