@@ -17,6 +17,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from motor.fallas import es_sesion_local
+from motor.github import Conflicto, MergeRechazado, PoliticaBloquea
+from motor.respuestas_merge import motivo_del_merge, tras_el_rechazo
 
 from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .comprobacion import (
@@ -10311,8 +10313,6 @@ def _paso_entrega_paso(
                     f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
                     )
         except Exception as exc:
-            from motor.github import Conflicto, MergeRechazado, PoliticaBloquea
-
             if isinstance(exc, Conflicto) and (
                 enc.estado in ("recibido", "ejecutando")
                 and enc.proc is None
@@ -10321,9 +10321,8 @@ def _paso_entrega_paso(
                 # El merge chocó aunque la lectura previa dijera limpio (la
                 # base se movió en medio): el mismo camino que un choque leído.
                 return _traer_la_base_al_pr(registro, enc, gh, hora)
-            causa = f"no se pudo integrar el PR #{enc.pr_numero}: {exc}"
-            checks = None
-            lectura_fallida = False
+            causa = motivo_del_merge(enc.pr_numero, exc)
+            checks = lectura = None
             if isinstance(exc, PoliticaBloquea):
                 try:
                     checks = gh.checks_requeridos(
@@ -10331,25 +10330,24 @@ def _paso_entrega_paso(
                     )
                 except MergeRechazado as rechazo:
                     causa += f"; {rechazo}"
-                except Exception as lectura:
-                    lectura_fallida = True
-                    causa += f"; no se pudieron leer los checks requeridos: {lectura}"
-            if lectura_fallida:
-                # No saber el estado de los checks no es un rechazo de la
-                # política: se reintenta, sin preguntar a nadie.
-                marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-                return _con_espera(registro.fold(enc.id) or enc)
+                except Exception as error:
+                    lectura = error
+                    causa = motivo_del_merge(enc.pr_numero, exc, lectura)
+            # Ni una respuesta pasajera de GitHub ni unos checks sin leer o en
+            # marcha son un rechazo de la política: se reintenta sin preguntar.
+            espera, causa = tras_el_rechazo(
+                exc, lectura, causa, _fallos_de_repo_seguidos(enc, causa)
+            )
             if checks is not None and (
                 checks.en_marcha
                 and not checks.fallas
                 and set(checks.faltan) <= set(checks.en_marcha)
             ):
-                marcar_espera(
-                    registro, enc.id,
-                    f"esperando checks requeridos del PR #{enc.pr_numero}: "
-                    + ", ".join(checks.en_marcha),
-                    _reanuda_desde(hora, 120), hora,
+                espera = f"esperando checks requeridos del PR #{enc.pr_numero}: " + ", ".join(
+                    checks.en_marcha
                 )
+            if espera:
+                marcar_espera(registro, enc.id, espera, _reanuda_desde(hora, 120), hora)
                 return _con_espera(registro.fold(enc.id) or enc)
             if checks is not None and checks.fallas:
                 # El CI rojo explica por qué no hubo merge: vuelve al responsable

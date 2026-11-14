@@ -25,6 +25,20 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .repositorios import resolver_repositorio
+from .respuestas_merge import (
+    BaseMovida,
+    Borrador,
+    Conflicto,
+    ErrorDeGitHub,
+    MergeRechazado,
+    MergeSinConfirmar,
+    MergeSinRespuesta,
+    PoliticaBloquea,
+    PrSinAsentar,
+    PrSinLeer,
+    PuntaMovida,
+    clasificar_merge,
+)
 from .workspace import git
 
 
@@ -96,10 +110,6 @@ class CheckRequerido:
 @dataclass(frozen=True)
 class PoliticaConocida:
     requeridos: tuple
-
-@dataclass(frozen=True)
-class PoliticaDesconocida:
-    causa: str
 
 
 def _contextos(raw) -> list[str]:
@@ -314,50 +324,6 @@ def _salto_del_borrador(
         or listo_desde is None
         or (listo_desde != "" and (run.get("completed_at") or "") <= listo_desde)
     )
-
-
-class MergeRechazado(RuntimeError):
-    pass
-
-
-class PuntaMovida(MergeRechazado):
-    """La punta de la rama del PR ya no es el SHA revisado."""
-
-
-class Conflicto(MergeRechazado):
-    """La rama choca con la base y no se puede crear el merge."""
-
-
-class PoliticaBloquea(MergeRechazado):
-    """La política de la rama (protección, revisiones, checks) no deja mergear."""
-
-
-class Borrador(MergeRechazado):
-    """El PR sigue en borrador."""
-
-
-def clasificar_merge(error: BaseException) -> MergeRechazado:
-    """El texto de GitHub se lee solo aquí, en la frontera: fuera solo viajan tipos."""
-    if isinstance(error, (PuntaMovida, Conflicto, PoliticaBloquea, Borrador)):
-        return error  # type: ignore[return-value]
-    texto = str(error)
-    bajo = texto.lower()
-    if "draft" in bajo or "borrador" in bajo:
-        return Borrador(texto)
-    if any(
-        x in bajo
-        for x in (
-            "head branch was modified",
-            "does not match",
-            "match-head",
-            "expected head",
-            "head commit",
-        )
-    ):
-        return PuntaMovida(texto)
-    if any(x in bajo for x in ("cannot be cleanly created", "conflict", "conflicto")):
-        return Conflicto(texto)
-    return PoliticaBloquea(texto)
 
 
 def _causa_corta(e: BaseException) -> str:
@@ -884,11 +850,29 @@ class GhGitHub:
                 mensaje.splitlines()[0],
             )
         except RuntimeError as e:
-            raise clasificar_merge(e) from None
-        v = self._vista(repo, numero)
+            rechazo = clasificar_merge(e)
+            if isinstance(rechazo, PuntaMovida) and self._punta_del_pr(repo, numero) == sha:
+                raise PrSinAsentar(str(rechazo)) from None
+            raise rechazo from None
+        except subprocess.TimeoutExpired as e:
+            raise MergeSinRespuesta(
+                f"gh pr merge {numero}: GitHub no contestó en {e.timeout:g} s"
+            ) from None
+        try:
+            v = self._vista(repo, numero)
+        except Exception as e:  # noqa: BLE001  el merge pudo entrar; el reintento lo lee antes
+            raise PrSinLeer(
+                f"gh pr merge salió bien, pero el PR no se pudo leer: {_causa_corta(e)}"
+            ) from None
         if v.estado != "mergeado":
-            raise PoliticaBloquea("GitHub no lo marcó como mergeado")
+            raise MergeSinConfirmar("GitHub no lo marcó como mergeado")
         return v
+
+    def _punta_del_pr(self, repo, numero) -> str:
+        try:
+            return self._vista(repo, numero).head
+        except Exception:  # noqa: BLE001  sin leer la punta queda el rechazo tal como lo dio GitHub
+            return ""
 
     def ver(self, repo, numero):
         return self._vista(repo, numero)
@@ -1406,7 +1390,7 @@ class FakeGitHub:
         if self.responde_merge is not None:
             return self.responde_merge(repo, numero, sha, metodo, mensaje)
         if self.fijo:
-            raise MergeRechazado(self.motivo)
+            raise clasificar_merge(RuntimeError(self.motivo))
         self.intentos.append(sha)
         if self.bloquea:
             raise PoliticaBloquea("the base branch policy prohibits the merge")
@@ -1433,23 +1417,18 @@ class FakeGitHub:
             )
         with tempfile.TemporaryDirectory() as t:
             w = Path(t) / "w"
-            git("clone", "-q", "-b", pr["base"], repo, str(w))
+            # La identidad va en la copia: sin ella, en una máquina que no la
+            # tiene, el merge de una base que avanzó falla como si chocara.
+            git(
+                "clone", "-q", "-c", "user.name=github", "-c", "user.email=gh@local",
+                "-b", pr["base"], repo, str(w),
+            )
             r = git("merge", "--squash", sha, cwd=w)
             if r.returncode != 0:
                 raise Conflicto("conflicto con la rama base")
-            git(
-                "-c",
-                "user.name=github",
-                "-c",
-                "user.email=gh@local",
-                "commit",
-                "-q",
-                "-m",
-                mensaje,
-                cwd=w,
-            )
+            git("commit", "-q", "-m", mensaje, cwd=w)
             if git("push", "-q", "origin", pr["base"], cwd=w).returncode != 0:
-                raise PuntaMovida("la rama base se movió; reintenta")
+                raise BaseMovida("la rama base se movió; reintenta")
             commit = git("rev-parse", "HEAD", cwd=w).stdout.strip()
         s = self._cargar()
         pr = self._pr(s, repo, numero)
@@ -1479,16 +1458,22 @@ def para(maquina_github: str, env: dict | None = None) -> GitHubPort:
 
 
 __all__ = [
+    "BaseMovida",
     "Borrador",
     "CapacidadRemota",
     "ChecksVerdict",
     "Conflicto",
+    "ErrorDeGitHub",
     "EstadoMerge",
     "FakeGitHub",
     "GhGitHub",
     "GitHubPort",
     "MergeRechazado",
+    "MergeSinConfirmar",
+    "MergeSinRespuesta",
     "PoliticaBloquea",
+    "PrSinAsentar",
+    "PrSinLeer",
     "PrView",
     "PuntaMovida",
     "asdict",

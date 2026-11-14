@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import time
 import unittest
@@ -71,6 +72,332 @@ def _politica_con_checks(directorio):
     _merge = gh.merge
     gh.merge = merge
     return gh
+
+
+_BASE_MODIFICADA = (
+    "gh pr merge 1: GraphQL: Base branch was modified. Review and try the merge "
+    "again. (mergePullRequest)"
+)
+
+
+def _pr_abierto(punta):
+    return json.dumps({
+        "number": 1, "headRefName": "f", "baseRefName": "main", "isDraft": False,
+        "headRefOid": punta, "state": "OPEN", "mergeCommit": None, "body": "",
+    })
+
+
+def _cli_sin_marcar(*args):
+    """`gh pr merge` sale bien, pero el PR todavía se ve abierto."""
+    return "" if args[:2] == ("pr", "merge") else _pr_abierto("a" * 40)
+
+
+def _cli_head_modificada(movida):
+    """GitHub dice que la rama del PR cambió. El PR muestra después la punta que
+    se pidió mergear o, si `movida`, otra."""
+    pedidas = []
+
+    def cli(*args):
+        if args[:2] == ("pr", "merge"):
+            pedidas.append(args[args.index("--match-head-commit") + 1])
+            raise RuntimeError(
+                "gh pr merge 1: GraphQL: Head branch was modified. Review and try "
+                "the merge again. (mergePullRequest)"
+            )
+        return _pr_abierto("b" * 40 if movida else pedidas[-1])
+
+    return cli
+
+
+def _cli_sin_leer(*args):
+    """`gh pr merge` sale bien, pero el PR no se puede leer para confirmarlo."""
+    if args[:2] == ("pr", "merge"):
+        return ""
+    raise RuntimeError("gh pr view 1: HTTP 502: Bad Gateway (https://api.github.com/graphql)")
+
+
+def _cli_sin_respuesta(*args):
+    raise subprocess.TimeoutExpired(["gh", *args], 60)
+
+
+# Lo que contesta el CLI de GitHub al merge y el pedazo de la causa que lo
+# nombra. La punta del PR sigue en el SHA revisado en todas.
+_PASAJERAS = {
+    "5xx": (
+        RuntimeError("gh pr merge 1: HTTP 502: Bad Gateway (https://api.github.com/graphql)"),
+        "HTTP 502",
+    ),
+    "sin respuesta": (subprocess.TimeoutExpired(["gh", "pr", "merge"], 60), "no contestó"),
+    "sin marcar": (_cli_sin_marcar, "no lo marcó como mergeado"),
+    "head modificada": (_cli_head_modificada(movida=False), "Head branch was modified"),
+    "sin leer": (_cli_sin_leer, "el PR no se pudo leer"),
+}
+
+
+def _github_contesta(cli, veces):
+    """Los primeros `veces` merges pasan por el adaptador real con `cli` en lugar
+    del CLI de GitHub; después mergea el doble."""
+
+    def fabrica(directorio):
+        gh = github_con_corridas(directorio)
+        mergear = gh.merge
+        adaptador = GhGitHub()
+
+        def merge(repo, numero, sha, metodo, mensaje):
+            if len(gh.intentos) >= veces:
+                return mergear(repo, numero, sha, metodo, mensaje)
+            gh.intentos.append(sha)
+            with mock.patch.object(adaptador, "_gh", side_effect=cli):
+                return adaptador.merge("o/r", numero, sha, metodo, mensaje)
+
+        gh.merge = merge
+        return gh
+
+    return fabrica
+
+
+def _el_merge_entra(cli):
+    """`gh pr merge` sí integra el PR en el doble, y después el CLI contesta con
+    `cli` como si no se supiera."""
+
+    def fabrica(directorio):
+        gh = github_con_corridas(directorio)
+        mergear = gh.merge
+        adaptador = GhGitHub()
+
+        def merge(repo, numero, sha, metodo, mensaje):
+            def integra_y_contesta(*args):
+                if args[:2] == ("pr", "merge"):
+                    mergear(repo, numero, sha, metodo, mensaje)
+                return cli(*args)
+
+            with mock.patch.object(adaptador, "_gh", side_effect=integra_y_contesta):
+                return adaptador.merge("o/r", numero, sha, metodo, mensaje)
+
+        gh.merge = merge
+        return gh
+
+    return fabrica
+
+
+def _base_modificada(veces):
+    """GitHub contesta que la base cambió mientras mergeaba, como pasa cuando
+    otra máquina integra en el mismo repo."""
+    return _github_contesta(RuntimeError(_BASE_MODIFICADA), veces)
+
+
+def _hasta_dejar_de_esperar(vuelta, r, e, vueltas=10):
+    for _ in range(vueltas):
+        if e.estado != "esperando_reintento":
+            break
+        epoch = datetime.fromisoformat(e.reanuda_en.replace("Z", "+00:00")).timestamp()
+        barrer(r.reg, e.reanuda_en, epoch, None, gh=vuelta.gh)
+        e = r.fold()
+    return e
+
+
+class BaseModificadaAlMergear(unittest.TestCase):
+    def preparar(self, veces):
+        tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+        return _entrega_pr(
+            self, tmp, "merge-base-modificada", _base_modificada(veces),
+            nivel="integrado",
+        )
+
+    def test_la_base_modificada_espera_y_el_reintento_integra(self):
+        vuelta, r = self.preparar(veces=1)
+        e = vuelta("hola")
+        self.assertEqual(e.estado, "esperando_reintento")
+        self.assertEqual(e.nivel_alcanzado, "pr")
+        self.assertEqual(e.pendientes_entrega, ())
+        self.assertEqual(e.impedimentos, ())
+
+        final = _hasta_dejar_de_esperar(vuelta, r, e)
+        self.assertEqual(final.estado, "terminado")
+        self.assertEqual(final.nivel_alcanzado, "integrado")
+        self.assertEqual(final.pendientes_entrega, ())
+        self.assertEqual(final.impedimentos, ())
+        self.assertEqual(vuelta.gh.intentos, [e.pr_sha, e.pr_sha])
+        self.assertEqual(r.eventos("pregunta"), [])
+
+    def test_la_base_que_sigue_modificada_se_detiene_al_quinto_intento_con_la_causa(self):
+        vuelta, r = self.preparar(veces=99)
+        e = _hasta_dejar_de_esperar(vuelta, r, vuelta("hola"))
+        self.assertNotEqual(e.estado, "esperando_reintento")
+        self.assertEqual(len(vuelta.gh.intentos), 5)
+
+        barrer(r.reg, ahora_iso(), time.time(), None, gh=vuelta.gh)
+        e = r.fold()
+        self.assertEqual(len(vuelta.gh.intentos), 5)
+        self.assertNotEqual(e.estado, "esperando_reintento")
+        self.assertEqual(e.nivel_alcanzado, "pr")
+        causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
+        self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
+        self.assertTrue(
+            any("tras 5 tropiezos seguidos: base movida: " in c for c in causas), causas
+        )
+        self.assertEqual(r.eventos("pregunta"), [])
+
+
+class OtrasRespuestasPasajerasAlMergear(unittest.TestCase):
+    """Un 5xx, un `gh` que no contesta, un merge que GitHub aún no marca, un PR
+    que no se puede leer tras el merge y una punta "modificada" que sigue en el
+    SHA revisado no son un bloqueo."""
+
+    def preparar(self, cli, veces):
+        tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+        return _entrega_pr(
+            self, tmp, "merge-pasajero", _github_contesta(cli, veces), nivel="integrado",
+        )
+
+    def test_cada_respuesta_pasajera_espera_y_el_reintento_integra(self):
+        for nombre, (cli, _) in _PASAJERAS.items():
+            with self.subTest(nombre):
+                vuelta, r = self.preparar(cli, veces=1)
+                e = vuelta("hola")
+                self.assertEqual(e.estado, "esperando_reintento")
+                self.assertEqual(e.impedimentos, ())
+
+                final = _hasta_dejar_de_esperar(vuelta, r, e)
+                self.assertEqual(final.estado, "terminado")
+                self.assertEqual(final.nivel_alcanzado, "integrado")
+                self.assertEqual(final.impedimentos, ())
+                self.assertEqual(final.pendientes_entrega, ())
+                self.assertEqual(vuelta.gh.intentos, [e.pr_sha, e.pr_sha])
+                self.assertEqual(r.eventos("pregunta"), [])
+
+    def test_cada_respuesta_que_sigue_se_detiene_al_quinto_intento_con_la_causa(self):
+        for nombre, (cli, marca) in _PASAJERAS.items():
+            with self.subTest(nombre):
+                vuelta, r = self.preparar(cli, veces=99)
+                e = _hasta_dejar_de_esperar(vuelta, r, vuelta("hola"))
+                self.assertEqual(len(vuelta.gh.intentos), 5)
+
+                barrer(r.reg, ahora_iso(), time.time(), None, gh=vuelta.gh)
+                e = r.fold()
+                self.assertEqual(len(vuelta.gh.intentos), 5)
+                self.assertNotEqual(e.estado, "esperando_reintento")
+                self.assertEqual(e.nivel_alcanzado, "pr")
+                causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
+                self.assertTrue(any(marca in c for c in causas), causas)
+                self.assertTrue(any("tras 5 tropiezos seguidos: " in c for c in causas), causas)
+                self.assertEqual(r.eventos("pregunta"), [])
+
+    def test_la_punta_que_de_verdad_se_movio_no_se_reintenta(self):  # no-roja-en-base: ya bloqueaba en la base; fija que el reintento de la misma punta no lo alcance
+        vuelta, r = self.preparar(_cli_head_modificada(movida=True), veces=99)
+        e = vuelta("hola")
+        self.assertNotEqual(e.estado, "esperando_reintento")
+        self.assertEqual(len(vuelta.gh.intentos), 1)
+        causas = [i.causa for i in e.impedimentos if i.clase == "merge"]
+        self.assertTrue(any("Head branch was modified" in c for c in causas), causas)
+
+
+_POLITICA = RuntimeError(
+    "X Pull request #1 is not mergeable: the base branch policy prohibits the merge."
+)
+
+
+def _en_orden(*respuestas):
+    """El merge `n` recibe la respuesta `n` del CLI; la última se repite."""
+    merges = []
+
+    def cli(*args):
+        if args[:2] == ("pr", "merge"):
+            merges.append(args)
+        respuesta = respuestas[min(len(merges), len(respuestas)) - 1]
+        if isinstance(respuesta, BaseException):
+            raise respuesta
+        return respuesta(*args)
+
+    return cli
+
+
+def _sin_leer_checks(fabrica):
+    def fabrica_sin_checks(directorio):
+        gh = fabrica(directorio)
+
+        def checks_requeridos(repo, numero, sha):
+            raise RuntimeError("gh pr checks 1: HTTP 503: Service Unavailable")
+
+        gh.checks_requeridos = checks_requeridos
+        return gh
+
+    return fabrica_sin_checks
+
+
+class TodosLosTropiezosEnUnaSerie(unittest.TestCase):
+    """Cualquier mezcla de respuestas pasajeras y checks sin leer se detiene al
+    quinto tropiezo seguido del merge, con la causa del último."""
+
+    def recorrer(self, fabrica):
+        tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+        vuelta, r = _entrega_pr(self, tmp, "merge-series", fabrica, nivel="integrado")
+        _hasta_dejar_de_esperar(vuelta, r, vuelta("hola"))
+        barrer(r.reg, ahora_iso(), time.time(), None, gh=vuelta.gh)
+        e = r.fold()
+        self.assertNotEqual(e.estado, "esperando_reintento")
+        self.assertEqual(e.nivel_alcanzado, "pr")
+        self.assertEqual(r.eventos("pregunta"), [])
+        return len(vuelta.gh.intentos), [i.causa for i in e.impedimentos if i.clase == "merge"]
+
+    def test_dos_lecturas_de_checks_fallidas_dejan_a_la_base_movida_sus_tres_intentos(self):
+        merges, causas = self.recorrer(_sin_leer_checks(_github_contesta(
+            _en_orden(_POLITICA, _POLITICA, RuntimeError(_BASE_MODIFICADA)), veces=99,
+        )))
+        self.assertEqual(merges, 2 + 3)
+        self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
+
+    def test_base_movida_y_5xx_alternados_se_detienen_al_quinto_tropiezo_con_la_causa(self):
+        error_502, _ = _PASAJERAS["5xx"]
+        merges, causas = self.recorrer(_github_contesta(
+            _en_orden(*[RuntimeError(_BASE_MODIFICADA), error_502] * 6), veces=99,
+        ))
+        self.assertEqual(merges, 5)
+        self.assertTrue(any("Base branch was modified" in c for c in causas), causas)
+        self.assertTrue(
+            any("tras 5 tropiezos seguidos: base movida: " in c for c in causas), causas
+        )
+
+    def test_los_checks_que_nunca_se_leen_se_detienen_al_quinto_tropiezo_con_la_causa(self):
+        merges, causas = self.recorrer(_sin_leer_checks(_github_contesta(_POLITICA, veces=99)))
+        self.assertEqual(merges, 5)
+        self.assertTrue(
+            any("no se pudieron leer los checks requeridos" in c for c in causas), causas
+        )
+        self.assertTrue(
+            any("tras 5 tropiezos seguidos: checks sin leer: " in c for c in causas), causas
+        )
+
+    def test_cada_tropiezo_tiene_una_etiqueta_distinta(self):
+        from motor.respuestas_merge import CHECKS_SIN_LEER, ETIQUETAS
+
+        etiquetas = [*ETIQUETAS.values(), CHECKS_SIN_LEER]
+        self.assertEqual(sorted(set(etiquetas)), sorted(etiquetas))
+
+
+class ElMergeQueEntroSinConfirmarse(unittest.TestCase):
+    """`gh pr merge` integró, pero no terminó a tiempo o el PR no se pudo leer
+    después: el reintento lo ve mergeado y lo adopta sin repetir el merge."""
+
+    def test_el_reintento_adopta_el_merge_sin_repetirlo(self):
+        for nombre, cli in {"sin respuesta": _cli_sin_respuesta, "sin leer": _cli_sin_leer}.items():
+            with self.subTest(nombre):
+                tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+                vuelta, r = _entrega_pr(
+                    self, tmp, "merge-hecho", _el_merge_entra(cli), nivel="integrado",
+                )
+                e = vuelta("hola")
+                self.assertEqual(e.estado, "esperando_reintento")
+                self.assertEqual(e.impedimentos, ())
+
+                final = _hasta_dejar_de_esperar(vuelta, r, e)
+                self.assertEqual(final.estado, "terminado")
+                self.assertEqual(final.nivel_alcanzado, "integrado")
+                self.assertEqual(final.impedimentos, ())
+                self.assertEqual(final.pendientes_entrega, ())
+                self.assertEqual(vuelta.gh.intentos, [e.pr_sha])
+                self.assertEqual(r.eventos("pregunta"), [])
+
 
 class EntregaMergePendiente(unittest.TestCase):
     def preparar(self):

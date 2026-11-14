@@ -304,6 +304,27 @@ class ElPrePushDelProducto(_EspacioConRemoto):
         self.lanzar(NADA)
         self.comprobar_cadena(codigo)
 
+    def test_si_el_del_motor_no_se_instala_el_del_producto_sigue_en_su_lugar(self):
+        ganchos = self.espacio / ".git" / "hooks"
+        self.producto(ganchos)
+        replace = os.replace
+
+        def falla_al_poner_el_del_motor(origen, destino):
+            if Path(origen).name == ".pre-push.tmp":
+                raise OSError("disco lleno")
+            replace(origen, destino)
+
+        with (
+            mock.patch.dict(os.environ, git_env_limpio(), clear=True),
+            mock.patch.object(aislamiento.os, "replace", falla_al_poner_el_del_motor),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as bitacora,
+        ):
+            aislamiento.instalar_pre_push(self.espacio, RAMAS)
+        self.assertIn("disco lleno", bitacora.getvalue())
+        self.assertEqual(self.empuja("refs/heads/encargo/enc_x"), 1)
+        visto = (self.base / "visto").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(visto[0], "origin", "el pre-push del producto corrió")
+
     def test_un_espacio_sin_clonar_no_toca_el_repo_que_lo_contiene(self):
         de_afuera = self.base / "de-afuera"
         self.git("init", "-q", str(de_afuera))
