@@ -62,12 +62,10 @@ from .dominio import (
     correcciones_sin_ver,
     puede_recibir_intento,
     revision_independiente_cubre_producto,
-    _texto_normalizado,
     decision_fallo,
     decision_proceso,
     defecto_al_adoptar_fases,
     fuentes_autorizadas,
-    huella_bloqueo,
     huella_entrega,
     hubo_avance,
     id_encargo,
@@ -87,7 +85,6 @@ from .dominio import (
     recibo_de,
     RELEVO_AGOTADO as _RELEVO_AGOTADO,
     reducir,
-    siguiente_escalon,
     vista,
 )
 from .frontera import (
@@ -98,6 +95,8 @@ from .frontera import (
     turno,
 )
 from .registro import Registro
+from .devolucion import corte_de_instrumento, devolver, sin_avance
+from .lote import Directo, excepcion, incorporado
 from .fases import adoptar as adoptar_fases
 from .sesion import (
     cerrar,
@@ -929,16 +928,7 @@ def _ultima_firma(enc: Encargo | None) -> str:
 
 
 def _marcar_incorporado(registro: Registro, enc: Encargo, hora: str) -> None:
-    """El resultado de este intento ya se incorporó. La generación identifica
-    el intento y la marca vive en el registro, no en su directorio."""
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "incorporado",
-            "data": {"generacion": enc.generacion, "hora": hora},
-        },
-        f"incorporado:{enc.id}:{enc.generacion}",
-    )
+    Directo(registro, enc).con(incorporado(enc, hora))
 
 
 def _almacen_sesion(base: Path, encargo_id: str, rol: str) -> Path:
@@ -2395,56 +2385,6 @@ def _anotar_instrumento(
     )
 
 
-def _corte_de_instrumento(
-    registro: Registro,
-    enc: Encargo,
-    causa: str,
-    hora: str,
-    serie: str,
-    rol: str,
-) -> bool:
-    """La misma causa de instrumento sobre el mismo producto en dos intentos
-    seguidos no vuelve al responsable.
-
-    Deja un hecho visible y pasa el rol a otro modelo autorizado; si el relevo
-    repite la misma causa, el relevo se agota y el encargo entrega con
-    pendientes. No es un tope de rondas: exige clase y causa idénticas y el
-    mismo producto."""
-    enc = registro.fold(enc.id) or enc
-    version = enc.producto.firma if enc.producto else ""
-    fallos = [f for f in enc.fallos_instrumento if f[0] == version]
-    if len(fallos) < 3:
-        return False
-    ultimo, previo = fallos[-1], fallos[-2]
-    if ultimo[1] != previo[1]:
-        return False
-    if _texto_normalizado(ultimo[2]) != _texto_normalizado(previo[2]):
-        return False
-    clase = ultimo[1]
-    clave = hashlib.sha256(
-        f"{clase}|{_texto_normalizado(causa)}|{version}".encode()
-    ).hexdigest()[:16]
-    diagnostico = (
-        f"el instrumento {clase or 'de comprobación'} falló dos veces seguidas "
-        f"con la misma causa sobre el mismo producto: {str(causa)[:400]}"
-    )
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "sin_progreso",
-            "data": {
-                "huella": f"instrumento:{clave}",
-                "diagnostico": diagnostico,
-                "escalar": True,
-                "rol": rol or "responsable",
-                "hora": hora,
-            },
-        },
-        f"instrumento-corte:{enc.id}:{clave}:{enc.generacion}:{serie}",
-    )
-    return True
-
-
 def _devolver(
     registro: Registro,
     enc: Encargo,
@@ -2455,24 +2395,7 @@ def _devolver(
     serie: str,
     rol: str = "responsable",
 ) -> None:
-    if estrategia == "reparar_instrumento" and _corte_de_instrumento(
-        registro, enc, motivo, hora, serie, rol
-    ):
-        return
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "estrategia",
-            "data": {
-                "estrategia": estrategia,
-                "rol": rol,
-                "motivo": motivo,
-                "siguiente": siguiente,
-                "hora": hora,
-            },
-        },
-        f"devolucion:{enc.id}:{enc.generacion}:{serie}",
-    )
+    devolver(Directo(registro, enc), enc, estrategia, motivo, siguiente, hora, serie, rol)
 
 
 def _necesita_agente(enc: Encargo) -> tuple[Encargo, Resultado]:
@@ -2494,87 +2417,7 @@ def _sin_avance(
     serie: str,
     rol: str = "responsable",
 ) -> None:
-    """Escalera de una vuelta que no cerro ningun bloqueante: la primera vuelve
-    a diagnosticar, la segunda seguida releva el mismo rol a otro modelo
-    autorizado. Si el relevo tampoco avanza en el mismo punto, el encargo
-    entrega con los pendientes abiertos. Si ya está aprobado pero la entrega
-    sigue bloqueada, pide intervención y conserva el encargo abierto.
-    `enc` ya incorpora el hallazgo de la vuelta.
-
-    Una vuelta cuenta una sola vez: si otra fuente del mismo barrido ya la
-    resolvio, esta no suma ni escala. Un bloqueante que el responsable no habia
-    visto es informacion nueva: la vuelta vuelve a el para corregir y la escalera
-    empieza de cero. No hay tope para esa serie: mientras cada vuelta traiga
-    informacion nueva, el encargo sigue hasta cerrar los bloqueantes."""
-    huella = huella_bloqueo(enc)
-    base = f"sin-progreso:{enc.id}:{huella}:{enc.generacion}:{serie}"
-    nuevos = sorted(bloqueos_nuevos(enc))
-    if not nuevos and enc.generacion and enc.vuelta_contada == enc.generacion:
-        return
-    if nuevos:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "sin_progreso",
-                "data": {
-                    "huella": huella,
-                    "nueva": True,
-                    "nuevos": nuevos,
-                    "escalar": False,
-                    "rol": rol,
-                    "hora": hora,
-                },
-            },
-            base + ":nueva",
-        )
-        _devolver(
-            registro, enc, "investigar", abierto,
-            "corregir los bloqueantes nuevos de esta vuelta (" + ", ".join(nuevos)
-            + ") junto con los que siguen abiertos; lo aprobado que no cambio se conserva",
-            hora, f"nuevos-{serie}",
-        )
-        return
-    siguiente = siguiente_escalon(enc, rol)
-    if siguiente != "diagnostico":
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "sin_progreso",
-                "data": {
-                    "huella": huella,
-                    "diagnostico": (
-                        "el mismo bloqueo sigue tras el diagnostico, sin "
-                        f"informacion nueva: {abierto}. Se intento: {intentado}"
-                    ),
-                    "escalar": True,
-                    "rol": rol,
-                    "hora": hora,
-                },
-            },
-            base + ":escalar",
-        )
-        if siguiente == "relevo":
-            _devolver(
-                registro, enc, enc.estrategia or "investigar", abierto,
-                "el mismo bloqueo sigue: sigue con otro modelo autorizado del "
-                "mismo rol; si tampoco avanza, se entrega con los pendientes abiertos",
-                hora, f"relevo-{serie}", rol=rol,
-            )
-        return
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "sin_progreso",
-            "data": {"huella": huella, "escalar": False, "rol": rol, "hora": hora},
-        },
-        base + ":diagnostico",
-    )
-    _devolver(
-        registro, enc, "diagnosticar_bloqueo", abierto,
-        "diagnosticar por que la correccion no resolvio el bloqueo; "
-        "no repetir la misma accion",
-        hora, f"diagnostico-{serie}",
-    )
+    sin_avance(Directo(registro, enc), enc, abierto, intentado, hora, serie, rol)
 
 
 def _disputas_pendientes(
@@ -3094,9 +2937,11 @@ def _impedimento_de_instrumento(
     reparación leyendo el fold anterior) y False cuando el llamador debe
     devolver el trabajo para reparar el instrumento."""
     enc = registro.fold(enc.id) or enc
-    _corte_de_instrumento(
-        registro, enc, causa, hora, f"impedimento-{clase}", str(enc.rol or "responsable")
+    corte = corte_de_instrumento(
+        enc, causa, hora, f"impedimento-{clase}", str(enc.rol or "responsable")
     )
+    if corte is not None:
+        Directo(registro, enc).con(corte)
     previas = sum(1 for f in enc.fallos_instrumento if f[1] == clase)
     if previas < 2:
         return False
@@ -5985,34 +5830,9 @@ def _anotar_excepcion(
     motivo: str, hora: str, clave: str, ancla: str = "", region: str = "",
     region_ancla: str = "", region_contexto: list[str] | None = None,
 ) -> None:
-    """La excepción del check de merge, estructurada y con su SHA.
-
-    El check solo acepta esta fuente; el texto del PR no autoriza nada. El
-    ancla, la huella de región, la línea anclada y lo que la sigue son
-    opcionales: los descartes del revisor los llevan para que el motor pueda
-    comprobar en SHAs posteriores si el código que el hallazgo señala sigue
-    en el archivo, sin depender de la posición de la línea.
-    """
-    datos: dict[str, object] = {
-        "tipo": tipo,
-        "sha": str(sha or ""),
-        "id": str(hallazgo or ""),
-        "motivo": " ".join(str(motivo or "").split()),
-        "hora": hora,
-    }
-    if ancla:
-        datos["ancla"] = str(ancla)
-    if region:
-        datos["region"] = str(region)
-    if region_ancla:
-        datos["region_ancla"] = str(region_ancla)
-    if region_contexto is not None:
-        datos["region_contexto"] = [str(x) for x in region_contexto]
-    registro.anotar(
-        enc.id,
-        {"kind": "excepcion", "data": datos},
-        clave,
-    )
+    Directo(registro, enc).con(excepcion(
+        tipo, sha, hallazgo, motivo, hora, clave, ancla, region, region_ancla, region_contexto
+    ))
 
 
 def _descarte_previo_por_id(excepciones, hallazgo_id: str, sha: str):
