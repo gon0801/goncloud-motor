@@ -185,7 +185,8 @@ def _sin_enlace(home: Path) -> _SinEnlace:
 
 
 def _entre_comillas(partes: list[str]) -> str:
-    return " ".join(f'"{parte}"' for parte in partes)
+    # Una barra suelta antes de la comilla de cierre la escapa: "C:\" llegaria como C:".
+    return " ".join('"' + parte + parte[len(parte.rstrip("\\")):] + '"' for parte in partes)
 
 
 def _orden_recuperar(home: Path) -> str:
