@@ -19,8 +19,9 @@ PR que se está revisando).
 líneas ni en tokens de código, y lo que en la base no existe o cabe no puede
 pasar del límite. No guarda nada. Sin `--cabeza` mide el árbol de trabajo; con
 `--cabeza` mide ese commit, leído de git igual que la base, y el árbol no cuenta:
-así juzga un PR quien no ejecuta nada suyo. Mientras dure la reconstrucción,
-`ciclo.py` y `dominio.py` no reciben ninguna función nueva, por chica que sea.
+así juzga un PR quien no ejecuta nada suyo. Una ruta congelada en
+`motor.encargos.politica.CONGELAMIENTOS` no recibe ninguna función nueva, por
+chica que sea.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+import fnmatch
 import io
 import itertools
 import json
@@ -106,9 +108,6 @@ MIGRACION = {"_migrar_un_marcador", "migrar_marcadores"}
 JSON_EXCEPCIONES = {("_texto_inspeccion_resuelta", ".json")}
 MENSAJE_MARCADORES = "anótalo como evento y derívalo en dominio"
 LIMITES_DE_TAMANO = {"archivo": 1000, "funcion": 100}
-# Decisión 6 de la reconstrucción (docs/modelo-centro-encargos.md): el centro
-# no crece ni con funciones chicas; lo nuevo va a un módulo propio.
-CENTRO_CONGELADO = frozenset({"motor/encargos/ciclo.py", "motor/encargos/dominio.py"})
 # Lo que pasa del límite de líneas no puede superar a la base en ninguna de estas
 # medidas. Las líneas solas dejan cambiar un comentario o una línea en blanco por
 # código; los tokens no cambian al borrar un comentario y sí suben con una lista
@@ -511,15 +510,24 @@ def _nombre_de_tamano(clave: tuple) -> str:
     return clave[1] if clave[0] == "archivo" else f"{clave[1]}::{clave[2]}"
 
 
+def _congelada(ruta: str) -> str:
+    from motor.encargos.politica import CONGELAMIENTOS
+
+    for c in CONGELAMIENTOS:
+        if any(fnmatch.fnmatch(ruta, r) for r in c.rutas):
+            return c.decision
+    return ""
+
+
 def _excesos_de_tamano(
     hoy: dict[tuple, collections.Counter], base: dict[tuple, collections.Counter], ref: str
 ) -> list[str]:
     excesos = []
     for clave, medidas in sorted(hoy.items()):
-        if clave[0] == "funcion" and clave[1] in CENTRO_CONGELADO and clave not in base:
+        if clave[0] == "funcion" and clave not in base and (decision := _congelada(clave[1])):
             excesos.append(
-                f"  {_nombre_de_tamano(clave)}: función nueva; no existe en {ref} y la "
-                "reconstrucción no deja crecer ciclo.py ni dominio.py"
+                f"  {_nombre_de_tamano(clave)}: función nueva; no existe en {ref} y "
+                f"{clave[1]} está congelado mientras se reconstruye el centro ({decision})"
             )
             continue
         limite = LIMITES_DE_TAMANO[clave[0]]
