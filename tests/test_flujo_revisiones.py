@@ -280,6 +280,14 @@ class Recorrido:
         return [e for e in self.reg.eventos(self.enc) if e["kind"] == kind]
 
 
+def termina_la_espera(r: Recorrido) -> None:
+    """Vence el plazo de la espera, como lo anota el barrido, y el encargo admite el turno siguiente."""
+    enc = r.fold()
+    r.reg.anotar(
+        r.enc, {"kind": "plazo", "data": {"hora": enc.reanuda_en}}, f"plazo:{r.enc}:{enc.reanuda_en}"
+    )
+
+
 def _interno(r: Recorrido) -> Path:
     p = r.espacio / ".interno"
     p.mkdir(exist_ok=True)

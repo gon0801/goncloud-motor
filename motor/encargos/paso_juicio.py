@@ -3,9 +3,10 @@
 `ciclo._cerrar_con_juicio` observa el plegado, las disputas y el pedido de
 inspección, y guarda con `lote.guardar` lo que devuelve `decidir`: los
 descartes, la revisión, la respuesta al veredicto e `incorporado`, en una
-transacción. Después corre lo que `decidir` deja para el final: el cierre de
-un aprobado o la liga de la inspección de un no concluyente. `decidir` no
-escribe: lee el registro solo con el lote y git solo con `region`.
+transacción. Un no concluyente que pide inspección deja el lote abierto: el
+ciclo le agrega la liga de `inspeccion.ligar` y su `incorporado` antes de
+guardarlo. Después corre el cierre de un aprobado. `decidir` no escribe: lee
+el registro solo con el lote y git solo con `region`.
 
 Las dos lecturas que la escritura cambiaba, el plegado de antes de la revisión
 y las disputas pendientes, salen de la foto. Como el lote entra entero o nada,
@@ -30,8 +31,8 @@ from .dominio import (
     bloqueantes_abiertos,
     hubo_avance,
 )
-from .lote import Lote, Paso, Region, excepcion, incorporado
-from .registro import Evento
+from .lote import Lote, Paso, Region, excepcion, incorporado, ya_incorporado
+from .registro import Evento, Registro
 
 # Lo que corre después de guardar el lote.
 Siguiente = Literal["nada", "cerrar", "ligar_inspeccion"]
@@ -169,15 +170,14 @@ def _cambios(foto: Foto, lote: Lote, revisado: Encargo) -> Lote:
     )
 
 
-def juicio_sin_guardar(enc: Encargo) -> bool:
+def juicio_sin_guardar(registro: Registro, enc: Encargo) -> bool:
     """El registro rechazó el lote del juicio que acaba de incorporarse.
 
-    `decidir` pone `incorporado` en todo lote, y la liga de una inspección lo
-    escribe justo después, así que solo un lote rechazado deja al revisor sin
-    él. El responsable sí queda sin `incorporado` mientras corren sus
-    comprobaciones. Otro turno dejaría huérfano el outcome.json del juicio: la
-    vuelta siguiente lo decide otra vez."""
-    return enc.rol == "revisor" and enc.generacion not in enc.incorporado
+    Toda salida del paso del revisor guarda `incorporado` en su lote, así que
+    solo un lote rechazado deja al revisor sin él. El responsable sí queda sin
+    `incorporado` mientras corren sus comprobaciones. Otro turno dejaría
+    huérfano el outcome.json del juicio: la vuelta siguiente lo decide otra vez."""
+    return enc.rol == "revisor" and not ya_incorporado(registro, enc)
 
 
 def decidir(
@@ -219,9 +219,8 @@ def decidir(
         # inspección ni se gasta otro turno con el mismo pedido.
         return lote.con(incorporado(revisado, hora)).paso("nada")
     if juicio.inspeccion_faltante:
-        # La liga escribe por su cuenta: `incorporado` va después de
-        # ella para que un corte entre las dos no deje el turno por hecho y la
-        # inspección sin pedir.
+        # El ciclo agrega a este lote la liga, que lee el buzón y las
+        # capacidades, y después `incorporado`.
         return devolver(
             lote, revisado, "inspeccionar",
             juicio.inspeccion_faltante,

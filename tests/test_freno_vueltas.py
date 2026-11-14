@@ -23,7 +23,7 @@ from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso
 from motor.encargos.dominio import relevos_de, revision_externa_pendiente
 from motor.github import veredicto
-from tests.test_flujo_revisiones import Recorrido, _entrega_pr, _lanzaria
+from tests.test_flujo_revisiones import Recorrido, _entrega_pr, _lanzaria, termina_la_espera
 from tests.test_lectura_deepseek import _comentario, _hallazgo, _ids
 from tests.dobles import github_por_commit
 
@@ -156,7 +156,7 @@ class CommitNuevoConElNivelPrYaAlcanzado(unittest.TestCase):
     """`_sha_final_sin_leer`: con el nivel pr ya alcanzado, un commit que DeepSeek aún no
     leyó no cierra por el atajo de `_paso_entrega`: se lee primero."""
 
-    def test_el_commit_nuevo_se_lee_antes_de_cerrar(self):
+    def test_el_commit_nuevo_se_lee_antes_de_cerrar(self):  # no-roja-en-base: la segunda versión llega en un turno nuevo, como en producción; la base ya pasaba repitiendo el intento incorporado
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "fr-sha", github_por_commit)
             gh = vuelta.gh
@@ -178,6 +178,7 @@ class CommitNuevoConElNivelPrYaAlcanzado(unittest.TestCase):
             self.assertNotEqual(e.estado, "terminado")
 
             gh.comentarios_deepseek = real
+            termina_la_espera(r)
             e = vuelta("dos")
             nuevo = e.producto.sha_git
             self.assertNotEqual(viejo, nuevo)
