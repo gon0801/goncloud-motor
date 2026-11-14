@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from ops.agente_ensayo import leer_escenario
+
+AGENTE = Path(__file__).resolve().parents[1] / "ops" / "agente_ensayo.py"
+ESCENARIOS = "canario-escenarios"
 
 
 def _base() -> dict:
@@ -136,6 +141,47 @@ class LeerEscenario(unittest.TestCase):
             "titulo_bloqueo": "falta a",
         }
         self.assertEqual(self.leer(datos), datos)
+
+
+class EscenarioPropio(unittest.TestCase):
+    """El canario deja en la base el escenario de un encargo; el de trabajo.sh queda para los demás."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix="agente-"))
+        self.addCleanup(shutil.rmtree, self.base, True)
+
+    def turno(self, encargo: str) -> Path:
+        """El primer turno del responsable de `encargo`, con el escenario común en argv."""
+        espacio = self.base / "espacio" / encargo
+        (espacio / ".interno").mkdir(parents=True)
+        intento = self.base / "ejecucion" / encargo / "intento-1"
+        intento.mkdir(parents=True)
+        (intento.parent / "actual").write_text("intento-1", encoding="utf-8")
+        (intento / "arranque.json").write_text(json.dumps({"token": "t"}), encoding="utf-8")
+        prompt = self.base / "runtime" / encargo / "t" / "prompt.md"
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("primer turno\n", encoding="utf-8")
+        comun = self.base / "comun.json"
+        comun.write_text(json.dumps(_base()), encoding="utf-8")
+        subprocess.run([sys.executable, str(AGENTE), str(comun)], cwd=espacio, check=True)
+        return espacio
+
+    def test_el_escenario_propio_del_encargo_manda_sobre_el_comun(self):
+        propio = {
+            "fases": [{"id": "falla", "resultado": "falla.txt"}],
+            "producto": {"falla": {"falla.txt": "falla\n"}},
+        }
+        (self.base / ESCENARIOS).mkdir()
+        (self.base / ESCENARIOS / "enc_propio.json").write_text(json.dumps(propio), encoding="utf-8")
+
+        espacio = self.turno("enc_propio")
+        otro = self.turno("enc_otro")
+
+        fases = json.loads((espacio / ".interno" / "fases.json").read_text(encoding="utf-8"))
+        self.assertEqual(fases["fases"], propio["fases"])
+        self.assertEqual((espacio / "falla.txt").read_text(encoding="utf-8"), "falla\n")
+        self.assertFalse((espacio / "saludo.txt").exists(), "escribió el producto del escenario común")
+        self.assertEqual((otro / "saludo.txt").read_text(encoding="utf-8"), "hola\n")
 
 
 if __name__ == "__main__":

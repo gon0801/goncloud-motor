@@ -7,40 +7,53 @@ el mismo), desde el árbol del motor que se prueba:
         [--base ~/.motor-canario] [--base-viva ~/.motor-encargos]
         [--despliegue ~/motor-canario-despliegue] [--corrida <nombre>] [--maquina <nombre>]
         [--tope-min <n>] [--tope-cierre-s <n>] [--intervalo-s <n>]
-        [--esperado <árbol>/ops/canario_encargos.esperado.json]
+        [--esperado <árbol>/ops/canario_encargos.esperado.json] [--sin-se-detiene]
 
 El árbol es siempre el de este archivo: el supervisor, el agente de ensayo y el
 reductor con el que se mide salen de él. Las rutas relativas se leen desde donde
 se corre la orden.
+
+Una corrida lleva dos encargos al mismo supervisor: el que termina, que mide casi
+toda la tabla, y el que falla a propósito, que mide la fila "se detiene". Con
+`--sin-se-detiene` solo corre el primero, y esa fila queda sin medir.
 
 Una corrida da estos pasos, en este orden (`Paso`):
 
 1. preparar: deja la base aparte con lo que el motor lee de la base viva, cada cosa
    como dice `COMPARTIDOS`, y sin `PROHIBIDOS`.
 2. encargar: recibe un encargo de nivel desplegado contra el repo del canario,
-   con la clave canario-<versión>-<máquina>-<corrida>. La misma corrida retoma
-   el mismo encargo.
+   con la clave canario-<versión>-<máquina>-<corrida>, y el que falla con la misma
+   clave más -se-detiene. La misma corrida retoma los mismos encargos. Al que
+   falla le deja en `canario-escenarios/<id>.json` su escenario
+   (`escenario_se_detiene`): su fase trae su propia receta de despliegue, con un
+   checklist que siempre sale rojo.
 3. lanzar: un supervisor propio con `--agente ensayo` desde el árbol, con
    `MOTOR_CANARIO_ARBOL`, que es de donde el `trabajo.sh` del repo del canario
-   toma el agente de ensayo.
-4. esperar: `motor ver` hasta que el encargo cierra, vence el tope o el
-   supervisor muere. No da órdenes ni escribe eventos.
-5. cerrar: mata el grupo de su supervisor, para el encargo si no cerró y espera,
-   hasta `--tope-cierre-s`, a que no quede vivo ningún proceso de sus turnos ni
-   de sus trabajadores de despliegue, que el motor lanza en sesión propia. Pasa
-   siempre que el encargo se recibió, aunque un paso anterior falle, y cada uno
-   de sus pasos se intenta aunque otro falle o lo corte un Ctrl-C. Lo que falló
-   queda en `Cierre.fallas`; un Ctrl-C se vuelve a lanzar al terminar el cierre.
+   toma el agente de ensayo, y `MOTOR_CANARIO_DESPLIEGUE`, la carpeta del
+   despliegue, de donde la receta del que falla toma su destino.
+4. esperar: `motor ver` de los dos encargos a la vez, hasta que cada uno cierra,
+   vence su tope o el supervisor muere. Cada tope cuenta desde que se recibió su
+   encargo, y el del que falla es más corto, para que un bucle del motor no
+   alargue la corrida. Al que vence lo para con `motor parar`, la orden del
+   canario, sin tocar el supervisor que el otro necesita. No escribe otro evento.
+5. cerrar: mata el grupo de su supervisor y, por cada encargo, lo para si no cerró
+   y espera, hasta `--tope-cierre-s`, a que no quede vivo ningún proceso de sus
+   turnos ni de sus trabajadores de despliegue, que el motor lanza en sesión
+   propia. Pasa siempre que el encargo se recibió, aunque un paso anterior falle,
+   y cada uno de sus pasos se intenta aunque otro falle o lo corte un Ctrl-C. Lo
+   que falló queda en `Cierre.fallas`; un Ctrl-C se vuelve a lanzar al terminar
+   el cierre.
 6. medir: `canario_encargos.observar` y `juzgar`.
-7. limpiar: borra su rama remota encargo/<id>, espacio/<id>, ejecucion/<id> y
-   trabajos/<id>.json de la flota. Con algo que no es un id no borra nada, ni
-   tampoco por una carpeta de la base que lleve fuera de ella. Después recoge lo
-   mismo de los encargos cerrados de corridas anteriores (`recoger`).
+7. limpiar: borra de cada encargo su rama remota encargo/<id>, espacio/<id>,
+   ejecucion/<id>, trabajos/<id>.json de la flota y su escenario propio. Con algo
+   que no es un id no borra nada, ni tampoco por una carpeta de la base que lleve
+   fuera de ella. Después recoge lo mismo de los encargos cerrados de corridas
+   anteriores (`recoger`).
 
-Solo se mide y se borra con el cierre listo (`Cierre.listo`): el encargo cerrado,
-el grupo del supervisor ausente, ningún proceso del encargo vivo o sin poder
-mirarse y ningún paso del cierre caído. Si no, la orden no borra nada y nombra lo
-que quedó.
+Solo se mide y se borra con el cierre de cada encargo listo (`Cierre.listo`): el
+encargo cerrado, el grupo del supervisor ausente, ningún proceso del encargo vivo
+o sin poder mirarse y ningún paso del cierre caído. Si no, la orden no borra nada
+y nombra lo que quedó.
 
 Por stderr van los avances y la tabla. Por stdout, un solo objeto JSON: el
 `Informe` una vez recibido el encargo, o `{"corrida", "paso", "error", "codigo": 2}`
@@ -76,7 +89,7 @@ import threading
 import time
 import tomllib
 import traceback
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,6 +107,7 @@ from motor.github import GhGitHub  # noqa: E402
 from motor.io import escribir_texto, leer_texto  # noqa: E402
 from motor.repositorios import resolver_repositorio  # noqa: E402
 from ops import canario_encargos as canario  # noqa: E402
+from ops.agente_ensayo import ESCENARIOS, Escenario  # noqa: E402
 
 Paso = Literal["preparar", "encargar", "lanzar", "esperar", "cerrar", "medir", "limpiar"]
 Fin = Literal["terminado", "detenido", "cancelado", "tope", "supervisor_muerto"]
@@ -147,6 +161,12 @@ REGISTRO = ("registro.sqlite", "registro.sqlite-wal", "registro.sqlite-shm")
 """Lo que SQLite escribe del registro: si uno fuera el de la base viva, el canario escribiría en ella."""
 INFORME = "canario-informe.json"
 TEXTO = "Canario: escribe el id de esta corrida en corridas/<máquina>.txt."
+SE_DETIENE = "se-detiene"
+TEXTO_SE_DETIENE = (
+    f"Canario: escribe el id de esta corrida en canario/{SE_DETIENE}/<máquina>.txt;"
+    " su checklist de despliegue falla a propósito."
+)
+DESTINO = "MOTOR_CANARIO_DESPLIEGUE"
 ID = re.compile(r"enc_[0-9a-f]+")
 CORRIDA = re.compile(r"[A-Za-z0-9._-]+")
 ESPERA_GRUPO_S = 10.0
@@ -178,6 +198,8 @@ class Pedido:
     esperado: Path
     tope_cierre_s: float
     """Cuánto espera el cierre a que mueran los procesos del encargo."""
+    se_detiene: bool = True
+    """Si corre también el encargo cuyo checklist falla a propósito."""
 
 
 @dataclass(frozen=True)
@@ -188,13 +210,25 @@ class Fallo:
 
 
 @dataclass(frozen=True)
+class Espera:
+    """Cómo terminó la espera de un encargo."""
+
+    fin: Fin
+    estado: str
+    """El del encargo según `motor ver` cuando terminó su espera."""
+    parada: str = ""
+    """Lo que dejó `motor parar` al vencer su tope; vacío si no venció."""
+
+
+@dataclass(frozen=True)
 class Cierre:
     """Cómo quedó lo de la corrida antes de medir y borrar."""
 
     estado: str
     """El del encargo según `motor ver` al terminar el cierre; vacío si no se pudo leer."""
     parada: str
-    """Vacío si el encargo ya había cerrado; si no, lo que dejó el último `motor parar`."""
+    """Vacío si nadie lo paró; si no, lo que dejó el último `motor parar`, el de la espera
+    al vencer su tope o el del cierre."""
     supervisor: Presencia
     vivos: tuple[str, ...]
     """Los procesos del encargo que al vencer el tope seguían vivos o no se pudieron mirar."""
@@ -217,6 +251,18 @@ class Borrado:
 
 
 @dataclass(frozen=True)
+class Seguimiento:
+    """El encargo cuyo checklist falla a propósito: cómo terminó su espera y su cierre."""
+
+    clave: str
+    encargo: str
+    fin: Fin | None
+    """None: la espera no llegó a terminar."""
+    estado: str
+    cierre: Cierre
+
+
+@dataclass(frozen=True)
 class Informe:
     maquina: str
     version: str
@@ -231,12 +277,14 @@ class Informe:
     """Desde que se pidió el encargo hasta que terminó la espera."""
     cierre: Cierre
     filas: tuple[canario.Fila, ...]
-    """Vacío si no se midió: el cierre no quedó listo o un paso anterior falló."""
+    """Vacío si no se midió: un cierre no quedó listo o un paso anterior falló."""
     limpieza: tuple[Borrado, ...]
-    """Vacío si no se borró: el cierre no quedó listo."""
+    """Lo que se borró de los dos encargos; vacío si no se borró: un cierre no quedó listo."""
     fallo: Fallo | None = None
     recogida: tuple[Borrado, ...] = ()
     """Lo que `recoger` borró, o no pudo borrar, de las corridas anteriores."""
+    detencion: Seguimiento | None = None
+    """None: la corrida no llegó a recibir el encargo que falla a propósito."""
 
     @property
     def coincide(self) -> bool:
@@ -246,7 +294,8 @@ class Informe:
     def codigo(self) -> int:
         if self.fallo is not None:
             return 2
-        limpio = self.cierre.listo and all(
+        cierres = (self.cierre, *((self.detencion.cierre,) if self.detencion else ()))
+        limpio = all(c.listo for c in cierres) and all(
             b.resultado != "falló" for b in (*self.limpieza, *self.recogida)
         )
         return 0 if self.coincide and limpio else 1
@@ -302,16 +351,19 @@ def _sin_colgar() -> Iterator[None]:
         signal.signal(signal.SIGHUP, antes)
 
 
-def _entorno() -> dict[str, str]:
+def _entorno(p: Pedido) -> dict[str, str]:
     # Sin .pyc: el árbol puede ser el del servicio vivo y el canario no escribe en él.
-    return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "MOTOR_CANARIO_ARBOL": str(RAIZ)}
+    return {
+        **os.environ, "PYTHONDONTWRITEBYTECODE": "1", "MOTOR_CANARIO_ARBOL": str(RAIZ),
+        DESTINO: p.despliegue.as_posix(),
+    }
 
 
 def _motor(p: Pedido, *argv: str) -> dict:
     """La salida JSON de `python -m motor <argv>` desde el árbol; RuntimeError si no la hay."""
     try:
         hecho = subprocess.run(
-            [sys.executable, "-B", "-m", "motor", *argv], cwd=RAIZ, env=_entorno(),
+            [sys.executable, "-B", "-m", "motor", *argv], cwd=RAIZ, env=_entorno(p),
             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -416,11 +468,11 @@ def preparar(p: Pedido) -> tuple[str, canario.Esperado]:
     return nombre, esperado
 
 
-def encargar(p: Pedido, clave: str) -> str:
+def encargar(p: Pedido, clave: str, texto: str = TEXTO) -> str:
     try:
         datos = _motor(
             p, "encargar", "--base", str(p.base), "--clave", clave, "--repo", p.repo,
-            "--entrega", "desplegado", "--texto", TEXTO,
+            "--entrega", "desplegado", "--texto", texto,
         )
     except RuntimeError as exc:
         raise NoSePuede("encargar", str(exc)) from exc
@@ -432,28 +484,92 @@ def encargar(p: Pedido, clave: str) -> str:
     return encargo
 
 
+def escenario_se_detiene(maquina: str, encargo: str) -> Escenario:
+    """Una fase de nivel desplegado con su propia receta: el despliegue deja
+    `<máquina>.txt` en `$MOTOR_CANARIO_DESPLIEGUE/se-detiene`, el checklist sale
+    siempre rojo y el rollback borra esa carpeta.
+
+    La receta es de la fase, no del `.motor.toml` del repo del canario, para que el
+    encargo que termina siga con la suya. Es el camino de producción de una receta
+    declarada en `.interno/fases.json` (`politica_despliegue.resolver`). Los guiones
+    no cambian entre máquinas ni corridas: solo cambia `<máquina>.txt`, así que dos
+    máquinas a la vez no chocan al mergear."""
+    carpeta = f"canario/{SE_DETIENE}"
+    destino = f'"${{{DESTINO}:?el lanzador del canario la define}}/{SE_DETIENE}"'
+    return {
+        "fases": [{
+            "id": "uno",
+            "resultado": f"{carpeta}/{maquina}.txt con el id de la corrida, desplegado con un"
+                         " checklist que falla a propósito",
+            "requiere_despliegue": True,
+            "despliegue": {
+                "desplegar": f"{carpeta}/despliega.sh",
+                "checklist": f"{carpeta}/checklist.sh",
+                "rollback": f"{carpeta}/rollback.sh",
+            },
+        }],
+        "producto": {"uno": {
+            f"{carpeta}/{maquina}.txt": f"{encargo}\n",
+            f"{carpeta}/despliega.sh": (
+                f'set -euo pipefail\ndestino={destino}\nmkdir -p "$destino"\n'
+                'cp "$(dirname "$0")"/*.txt "$destino/"\n'
+            ),
+            f"{carpeta}/checklist.sh": (
+                'echo "el canario de encargos hace fallar este checklist a propósito" >&2\nexit 1\n'
+            ),
+            f"{carpeta}/rollback.sh": f"set -euo pipefail\nrm -rf {destino}\n",
+        }},
+    }
+
+
+def dejar_escenario(p: Pedido, maquina: str, encargo: str) -> None:
+    ruta = p.base / ESCENARIOS / f"{encargo}.json"
+    if _sale_de(p.base, ruta):
+        raise NoSePuede("encargar", f"{ruta.parent} lleva fuera de {p.base} por un enlace")
+    try:
+        ruta.parent.mkdir(exist_ok=True)
+        escribir_texto(ruta, json.dumps(escenario_se_detiene(maquina, encargo), ensure_ascii=False, indent=1))
+    except OSError as exc:
+        raise NoSePuede("encargar", f"no pude dejar el escenario de {encargo}: {exc}") from exc
+
+
 def lanzar(p: Pedido, argv: Sequence[str]) -> dict:
     try:
-        return plataforma.lanzar_separado(list(argv), RAIZ, _entorno(), p.base / "canario-supervisor.log")
+        return plataforma.lanzar_separado(list(argv), RAIZ, _entorno(p), p.base / "canario-supervisor.log")
     except OSError as exc:
         raise NoSePuede("lanzar", str(exc)) from exc
 
 
-def esperar(p: Pedido, encargo: str, supervisor: dict, tope_s: float) -> tuple[Fin, str]:
-    vence = time.monotonic() + tope_s
-    estado = ""
-    while True:
-        visto = _estado(p, encargo, "esperar") or estado
-        if visto != estado:
-            _avance("esperar", f"{encargo} {visto}")
-        estado = visto
-        if estado in CERRADOS:
-            return CERRADOS[estado], estado
-        if plataforma.estado_proc(supervisor) != "vivo":
-            return "supervisor_muerto", estado
-        if time.monotonic() >= vence:
-            return "tope", estado
-        time.sleep(max(0.0, min(p.intervalo_s, vence - time.monotonic())))
+def esperar(p: Pedido, supervisor: dict, vencen: Mapping[str, float]) -> dict[str, Espera]:
+    """Mira a la vez cada encargo de `vencen`, con su tope en `time.monotonic()`, hasta que
+    cierra, vence su tope o el supervisor muere. Al que vence lo para en ese momento, para
+    que no siga corriendo mientras se espera al otro."""
+    estados = dict.fromkeys(vencen, "")
+    esperas: dict[str, Espera] = {}
+    while len(esperas) < len(vencen):
+        vivo = plataforma.estado_proc(supervisor) == "vivo"
+        for encargo, vence in vencen.items():
+            if encargo in esperas:
+                continue
+            visto = _estado(p, encargo, "esperar") or estados[encargo]
+            if visto != estados[encargo]:
+                _avance("esperar", f"{encargo} {visto}")
+            estados[encargo] = visto
+            if visto in CERRADOS:
+                espera = Espera(CERRADOS[visto], visto)
+            elif not vivo:
+                espera = Espera("supervisor_muerto", visto)
+            elif time.monotonic() >= vence:
+                espera = Espera("tope", visto, _parar(p, encargo))
+            else:
+                continue
+            esperas[encargo] = espera
+            _avance("esperar", f"{encargo} terminó por {espera.fin}" + (
+                f"; el canario lo paró: {espera.parada}" if espera.parada else ""
+            ))
+        if pendientes := [vence for encargo, vence in vencen.items() if encargo not in esperas]:
+            time.sleep(max(0.0, min(p.intervalo_s, min(pendientes) - time.monotonic())))
+    return esperas
 
 
 def detener(supervisor: dict) -> Presencia:
@@ -498,47 +614,58 @@ def _esperar_procesos(p: Pedido, encargo: str) -> tuple[str, ...]:
     return vivos
 
 
-def cerrar(p: Pedido, encargo: str, supervisor: dict | None) -> Cierre:
-    fallas: list[str] = []
+def cerrar(p: Pedido, paradas: Mapping[str, str], supervisor: dict | None) -> tuple[Cierre, ...]:
+    """Un cierre por encargo de `paradas`, en su orden, cada uno con lo que dejó la parada
+    de su espera (vacío si no lo paró); el supervisor se detiene una vez."""
     cortes: list[BaseException] = []
 
-    def intentar(que: str, hacer: Callable[[], T], si_falla: T) -> T:
+    def intentar(fallas: list[str], que: str, hacer: Callable[[], T], si_falla: T) -> T:
         try:
             return hacer()
-        except BaseException as exc:  # también un Ctrl-C: el encargo no puede quedar vivo
+        except BaseException as exc:  # también un Ctrl-C: ningún encargo puede quedar vivo
             fallas.append(f"{que}: {type(exc).__name__}: {exc}")
             if not isinstance(exc, Exception):
                 cortes.append(exc)
             return si_falla
 
-    def estado_actual() -> str:
-        return intentar("leer el encargo", lambda: _estado(p, encargo, "cerrar"), "")
-
+    del_supervisor: list[str] = []
     presencia: Presencia = (
-        intentar("detener el supervisor", lambda: detener(supervisor), "incierto") if supervisor
-        else "ausente"
+        intentar(del_supervisor, "detener el supervisor", lambda: detener(supervisor), "incierto")
+        if supervisor else "ausente"
     )
-    parada = ""
-    if estado_actual() not in CERRADOS:
-        parada = intentar("parar el encargo", lambda: _parar(p, encargo), "")
-    sin_mirar = ("los procesos del encargo, que no pude esperar",)
-    vivos = intentar("esperar sus procesos", lambda: _esperar_procesos(p, encargo), sin_mirar)
-    estado = estado_actual()
-    if estado not in CERRADOS and not vivos:
-        # Una parada no cierra mientras viva el trabajador de despliegue, y cuando él
-        # termina ya no queda supervisor que barra: otra parada es ese barrido.
-        parada = intentar("parar el encargo", lambda: _parar(p, encargo), parada)
+
+    def cerrar_uno(encargo: str, parada: str) -> Cierre:
+        fallas = list(del_supervisor)
+
+        def estado_actual() -> str:
+            return intentar(fallas, "leer el encargo", lambda: _estado(p, encargo, "cerrar"), "")
+
+        def parar(antes: str) -> str:
+            return intentar(fallas, "parar el encargo", lambda: _parar(p, encargo), antes)
+
+        if estado_actual() not in CERRADOS:
+            parada = parar(parada)
+        sin_mirar = ("los procesos del encargo, que no pude esperar",)
+        vivos = intentar(fallas, "esperar sus procesos", lambda: _esperar_procesos(p, encargo), sin_mirar)
         estado = estado_actual()
-    cierre = Cierre(estado, parada, presencia, vivos, tuple(fallas))
-    _avance("cerrar", (
-        f"el encargo quedó {estado or 'sin leer'}; el grupo del supervisor, {presencia}"
-        + (f"; siguen {', '.join(vivos)}" if vivos else "")
-        + (f"; fallaron {'; '.join(fallas)}" if fallas else "")
-        + ("" if cierre.listo else ": no mido ni borro nada")
-    ))
+        if estado not in CERRADOS and not vivos:
+            # Una parada no cierra mientras viva el trabajador de despliegue, y cuando él
+            # termina ya no queda supervisor que barra: otra parada es ese barrido.
+            parada = parar(parada)
+            estado = estado_actual()
+        cierre = Cierre(estado, parada, presencia, vivos, tuple(fallas))
+        _avance("cerrar", (
+            f"{encargo} quedó {estado or 'sin leer'}; el grupo del supervisor, {presencia}"
+            + (f"; siguen {', '.join(vivos)}" if vivos else "")
+            + (f"; fallaron {'; '.join(fallas)}" if fallas else "")
+            + ("" if cierre.listo else ": no mido ni borro nada")
+        ))
+        return cierre
+
+    cierres = tuple(cerrar_uno(encargo, parada) for encargo, parada in paradas.items())
     if cortes:
         raise cortes[0]
-    return cierre
+    return cierres
 
 
 def _sha_desplegado(viva: Path) -> str:
@@ -547,7 +674,8 @@ def _sha_desplegado(viva: Path) -> str:
 
 
 def medir(
-    p: Pedido, encargo: str, maquina: str, gh: canario.LectorPR, esperado: canario.Esperado,
+    p: Pedido, encargo: str, detencion: str, maquina: str, gh: canario.LectorPR,
+    esperado: canario.Esperado,
 ) -> tuple[canario.Fila, ...]:
     obs = canario.observar(
         p.base, encargo, gh,
@@ -555,6 +683,8 @@ def medir(
         arbol=RAIZ,
         sha_desplegado=_sha_desplegado(p.base_viva),
         archivo=(p.despliegue / "corridas" / f"{maquina}.txt", encargo),
+        detencion=detencion,
+        archivo_detencion=p.despliegue / SE_DETIENE / f"{maquina}.txt" if detencion else None,
     )
     if obs.pliegue is None:
         raise NoSePuede("medir", f"el encargo {encargo} no está en el registro")
@@ -638,16 +768,16 @@ def _ramas_remotas(repo: str) -> frozenset[str] | None:
     )
 
 
-def recoger(p: Pedido, salvo: str = "") -> tuple[Borrado, ...]:
+def recoger(p: Pedido, salvo: Sequence[str] = ()) -> tuple[Borrado, ...]:
     """Limpia lo que dejaron las corridas anteriores: cada encargo de la base del canario,
-    salvo `salvo`, que ya cerró, que aún deja algo y del que no queda ningún proceso vivo.
+    salvo los de `salvo`, que ya cerró, que aún deja algo y del que no queda ningún proceso vivo.
 
     Corre después del cierre y no al preparar: el supervisor de esta corrida vuelve a
     crear `espacio/<id>` vacío al barrer un encargo cerrado de la anterior."""
     if not (p.base / "registro.sqlite").is_file():
         return ()
     try:
-        cerrados = [i for i in _cerrados(p.base) if i != salvo]
+        cerrados = [i for i in _cerrados(p.base) if i not in salvo]
     except (OSError, ValueError, sqlite3.Error) as exc:
         return (Borrado(
             "los restos de las corridas anteriores", "falló",
@@ -660,7 +790,10 @@ def recoger(p: Pedido, salvo: str = "") -> tuple[Borrado, ...]:
             "las ramas remotas de las corridas anteriores", "falló", "no pude leerlas del repo del canario",
         ))
     for encargo in cerrados:
-        locales = [p.base / "espacio" / encargo, p.base / "ejecucion" / encargo]
+        locales = [
+            p.base / "espacio" / encargo, p.base / "ejecucion" / encargo,
+            p.base / ESCENARIOS / f"{encargo}.json",
+        ]
         if flota:
             locales.append(flota / "trabajos" / f"{encargo}.json")
         if f"encargo/{encargo}" not in (remotas or ()) and not any(os.path.lexists(r) for r in locales):
@@ -692,12 +825,15 @@ def limpiar(p: Pedido, encargo: str) -> tuple[Borrado, ...]:
                 else Borrado(f"la rama remota {rama}", "falló", f"no es {suya}: no la borro")
                 for rama in ramas
             ]
-        for d in ("espacio", "ejecucion"):
-            ruta, nombre = p.base / d / encargo, f"{d}/{encargo}"
-            borrados.append(
-                Borrado(nombre, "falló", f"{p.base / d} lleva fuera de la base: no lo borro")
-                if _sale_de(p.base, ruta) else _borrar_ruta(ruta, nombre)
-            )
+        escenario = p.base / ESCENARIOS / f"{encargo}.json"
+        propios = [(p.base / d / encargo, d, f"{d}/{encargo}") for d in ("espacio", "ejecucion")]
+        if os.path.lexists(escenario):
+            propios.append((escenario, ESCENARIOS, f"{ESCENARIOS}/{encargo}.json"))
+        borrados += [
+            Borrado(nombre, "falló", f"{p.base / d} lleva fuera de la base: no lo borro")
+            if _sale_de(p.base, ruta) else _borrar_ruta(ruta, nombre)
+            for ruta, d, nombre in propios
+        ]
         flota = _flota(p.base)
         trabajo = f"trabajos/{encargo}.json de la flota"
         borrados.append(
@@ -730,42 +866,64 @@ def correr(p: Pedido, gh: canario.LectorPR, supervisor: Sequence[str] | None = N
         raise NoSePuede("encargar", f"no pude leer el SHA de {RAIZ}")
     clave = f"canario-{version[:12]}-{maquina}-{p.corrida}"
     _avance("preparar", f"base {p.base} lista; {maquina} en {version[:12]}")
+
+    def vence(arranque: float, minutos: int) -> float:
+        return arranque + (p.tope_s if p.tope_s is not None else minutos * 60.0)
+
     inicio = time.monotonic()
     encargo = encargar(p, clave)
+    vencen = {encargo: vence(inicio, esperado.topes.minutos_termina)}
+    clave_detencion = f"{clave}-{SE_DETIENE}"
+    detencion = ""
     proceso: dict | None = None
-    fin: Fin | None = None
-    estado = ""
+    esperas: dict[str, Espera] = {}
     fallo: Fallo | None = None
     try:
         _avance("encargar", f"{encargo} con la clave {clave}")
+        if p.se_detiene:
+            arranque = time.monotonic()
+            detencion = encargar(p, clave_detencion, TEXTO_SE_DETIENE)
+            vencen[detencion] = vence(arranque, esperado.topes.minutos_se_detiene)
+            dejar_escenario(p, maquina, detencion)
+            _avance("encargar", f"{detencion} con la clave {clave_detencion}: su checklist falla a propósito")
         proceso = lanzar(p, supervisor or [
             sys.executable, "-B", "-m", "motor", "supervisor", "--base", str(p.base), "--agente", "ensayo",
         ])
         _avance("lanzar", f"supervisor {proceso['pid']}")
-        tope_s = p.tope_s if p.tope_s is not None else esperado.topes.minutos_termina * 60.0
-        fin, estado = esperar(p, encargo, proceso, tope_s)
-        _avance("esperar", f"terminó por {fin}")
+        esperas = esperar(p, proceso, vencen)
     except Exception as exc:
         fallo = _fallo(exc)
     finally:
         segundos = int(time.monotonic() - inicio)
-        cierre = cerrar(p, encargo, proceso)
-    if fallo is None and cierre.fallas:
-        fallo = Fallo("cerrar", "; ".join(cierre.fallas))
+        paradas = {e: esperas[e].parada if e in esperas else "" for e in vencen}
+        cierre, *otros = cerrar(p, paradas, proceso)
+    cierres = (cierre, *otros)
+    espera, espera_detencion = esperas.get(encargo), esperas.get(detencion)
+    fallas = tuple(dict.fromkeys(f for c in cierres for f in c.fallas))
+    if fallo is None and fallas:
+        fallo = Fallo("cerrar", "; ".join(fallas))
     filas: tuple[canario.Fila, ...] = ()
     limpieza: tuple[Borrado, ...] = ()
     recogida: tuple[Borrado, ...] = ()
-    if cierre.listo:
+    if all(c.listo for c in cierres):
         if fallo is None:
             try:
-                filas = medir(p, encargo, maquina, gh, esperado)
+                filas = medir(p, encargo, detencion, maquina, gh, esperado)
             except Exception as exc:
                 fallo = _fallo(exc)
-        limpieza = limpiar(p, encargo)
-        recogida = recoger(p, salvo=encargo)
+        limpieza = tuple(b for e in (encargo, detencion) if e for b in limpiar(p, e))
+        recogida = recoger(p, salvo=(encargo, detencion))
+    seguimiento = (
+        Seguimiento(
+            clave_detencion, detencion, espera_detencion.fin if espera_detencion else None,
+            espera_detencion.estado if espera_detencion else "", otros[0],
+        )
+        if detencion else None
+    )
     return Informe(
-        maquina, version, p.corrida, clave, encargo, fin, estado, segundos, cierre,
-        filas, limpieza, fallo, recogida,
+        maquina, version, p.corrida, clave, encargo, espera.fin if espera else None,
+        espera.estado if espera else "", segundos, cierre, filas, limpieza, fallo, recogida,
+        seguimiento,
     )
 
 
@@ -828,6 +986,10 @@ def main(
     a.add_argument("--tope-cierre-s", type=_no_negativo, default=120.0)
     a.add_argument("--intervalo-s", type=_positivo, default=60.0)
     a.add_argument("--esperado", type=_ruta, default=str(canario.ESPERADO))
+    a.add_argument(
+        "--sin-se-detiene", action="store_true",
+        help="no corre el encargo cuyo checklist falla a propósito; la fila se detiene queda sin medir",
+    )
     args = a.parse_args(argv)
     if not CORRIDA.fullmatch(args.corrida):
         a.error("--corrida solo lleva letras, dígitos, punto, guion y guion bajo")
@@ -836,6 +998,7 @@ def main(
         corrida=args.corrida, maquina=args.maquina,
         tope_s=None if args.tope_min is None else args.tope_min * 60.0,
         intervalo_s=args.intervalo_s, esperado=args.esperado, tope_cierre_s=args.tope_cierre_s,
+        se_detiene=not args.sin_se_detiene,
     )
     with _sin_colgar():
         try:

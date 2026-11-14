@@ -6,14 +6,18 @@
   "no pierde": "no medido",
   "no repite": "no medido",
   "cuesta poco": "pasa",
-  "se detiene": "no medido",
+  "se detiene": "pasa",
   "versión": "pasa",
   "legible": "pasa"
+ },
+ "razones": {
+  "limpio": "el motor aún no aplica la tabla de limpieza del modelo: la rama remota y lo que queda junto al recibo del despliegue no se borran (paso 4 del orden de trabajo)"
  },
  "topes": {
   "minutos_termina": 90,
   "minutos": 45,
   "turnos_por_rol": 2,
-  "rondas": 1
+  "rondas": 1,
+  "minutos_se_detiene": 15
  }
 }

@@ -196,8 +196,9 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         return {"ops/despliega.sh": "sleep 600\n", "ops/rollback.sh": f"set -eu\n{reversa}\n"}
 
     def argv(self, *extra: str) -> list[str]:
-        if "--tope-min" not in extra:
-            # Un encargo que no avanza falla al tope y no espera los 90 min de lo esperado.
+        if "--tope-min" not in extra and "--esperado" not in extra:
+            # Un encargo que no avanza falla al tope y no espera los 90 min de lo esperado;
+            # una prueba con su propio esperado trae también sus topes.
             extra = (*extra, "--tope-min", "1")
         return [
             "--repo", str(self.repo), "--base", str(self.base), "--base-viva", str(self.viva),
@@ -239,6 +240,24 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         finally:
             reg.close()
 
+    def eventos(self, encargo: str) -> list[dict]:
+        reg = Registro(self.base)
+        try:
+            return reg.eventos(encargo)
+        finally:
+            reg.close()
+
+    def cerro_en(self, encargo: str) -> int:
+        """El id del evento con que `encargo` quedó cerrado en el registro."""
+        reg = Registro(self.base)
+        try:
+            return next(
+                ev["id"] for ev in reg.eventos(encargo)
+                if getattr(reg.fold(encargo, ev["id"]), "estado", "") in CERRADOS
+            )
+        finally:
+            reg.close()
+
     def queda_cerrado(self) -> None:
         estados = self.estados()
         self.assertTrue(estados, "no se recibió ningún encargo")
@@ -246,7 +265,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         if self.hijo:
             self.assertFalse(plataforma.pid_vivo(self.hijo), "el hijo del supervisor sigue vivo")
 
-    def test_una_corrida_que_termina_da_la_tabla_esperada_y_borra_solo_lo_suyo(self):
+    def test_una_corrida_que_termina_da_la_tabla_esperada_y_borra_solo_lo_suyo(self):  # no-roja-en-base: la corrida ahora limpia también el encargo que falla; la prueba sigue mirando solo lo del que termina
         ajenos = [
             self.base / "espacio" / "enc_ajeno" / "x", self.base / "ejecucion" / "enc_ajeno" / "x",
             self.flota / "trabajos" / "enc_ajeno.json",
@@ -270,7 +289,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.sin_procesos_suyos(informe)
         self.assertEqual(informe["cierre"]["parada"], "")
         self.assertEqual(
-            {b["resto"]: b["resultado"] for b in informe["limpieza"]},
+            {b["resto"]: b["resultado"] for b in informe["limpieza"] if ident in b["resto"]},
             {
                 f"la rama remota encargo/{ident}": "borrado",
                 f"espacio/{ident}": "borrado",
@@ -289,11 +308,69 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         for nombre in canario_lanzador.PROHIBIDOS:
             self.assertFalse(os.path.lexists(self.base / nombre), nombre)
 
+    def test_el_encargo_que_falla_a_proposito_mide_se_detiene_y_se_limpia(self):
+        codigo, informe = self.correr()
+
+        detencion = informe["detencion"]
+        ident = detencion["encargo"]
+        fila = self.filas(informe)["se detiene"]
+        self.assertEqual(codigo, 0, informe["tabla"])
+        self.assertEqual((detencion["fin"], detencion["cierre"]["parada"]), ("terminado", ""), self.avances)
+        self.assertEqual(fila["resultado"], "pasa", fila["observado"])
+        for texto in (
+            "quedó como entrega parcial: la fase uno, «", "se paró solo", "dijo por qué: «",
+            "revirtió su despliegue (rollback salida 0)", "gastó turnos",
+        ):
+            self.assertIn(texto, fila["observado"])
+        self.assertFalse((self.destino / "se-detiene").exists(), "el rollback no quitó lo desplegado")
+        self.assertEqual(_git(self.repo, "show", "main:canario/se-detiene/banco.txt"), ident)
+        self.assertEqual(
+            {b["resto"]: b["resultado"] for b in informe["limpieza"] if ident in b["resto"]},
+            {
+                f"la rama remota encargo/{ident}": "borrado",
+                f"espacio/{ident}": "borrado",
+                f"ejecucion/{ident}": "borrado",
+                f"canario-escenarios/{ident}.json": "borrado",
+                f"trabajos/{ident}.json de la flota": "borrado",
+            },
+        )
+
+    def test_sin_se_detiene_la_fila_queda_sin_medir_y_la_tabla_no_coincide(self):
+        codigo, informe = self.correr("--sin-se-detiene")
+
+        fila = self.filas(informe)["se detiene"]
+        self.assertEqual((fila["resultado"], fila["discrepancia"]), ("no medido", "dejó de medirse"))
+        self.assertIsNone(informe["detencion"])
+        self.assertEqual(self.estados(), ["terminado"])
+        self.assertEqual(codigo, 1)
+
+    def test_el_encargo_que_falla_se_para_a_su_tope_aunque_el_otro_siga(self):
+        """El tope de cada encargo cuenta desde su propio arranque: el que falla no corre
+        hasta que el otro termine. Con 0 min, el canario lo para en cuanto lo ve."""
+        esperado = self.tmp / "esperado.json"
+        datos = json.loads((RAIZ / "ops" / "canario_encargos.esperado.json").read_text(encoding="utf-8"))
+        datos["topes"].update(minutos_termina=1, minutos_se_detiene=0)
+        esperado.write_text(json.dumps(datos), encoding="utf-8")
+
+        _, informe = self.correr("--esperado", str(esperado))
+
+        falla = informe["detencion"]["encargo"]
+        self.assertEqual((informe["fin"], informe["detencion"]["fin"]), ("terminado", "tope"), self.avances)
+        ordenes = [ev["id"] for ev in self.eventos(falla) if ev["kind"] == "orden"]
+        self.assertTrue(ordenes, "el canario no paró el encargo que falla")
+        self.assertLess(ordenes[0], self.cerro_en(informe["encargo"]), "lo paró después de que el otro terminó")
+        fila = self.filas(informe)["se detiene"]
+        self.assertIn("no se paró solo: recibió la orden parar", fila["observado"])
+        self.queda_cerrado()
+
     def test_una_corrida_que_vence_el_tope_para_su_encargo_y_lo_limpia(self):
         codigo, informe = self.correr("--tope-min", "0.05", modo=("--quieto",))
 
         self.assertEqual(informe["fin"], "tope", self.avances)
         self.assertEqual(self.filas(informe)["termina"]["resultado"], "falla")
+        detenido = self.filas(informe)["se detiene"]
+        self.assertEqual(detenido["resultado"], "falla", "el canario contó su propia parada")
+        self.assertIn("no se paró solo: recibió la orden parar", detenido["observado"])
         self.assertEqual(codigo, 1)
         self.sin_procesos_suyos(informe)
         self.assertEqual(informe["cierre"]["parada"], "detenido")
@@ -335,7 +412,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.cambiar_repo(self.reversa_larga(f'sleep 15\ntouch "{revertido.as_posix()}"'))
         self.addCleanup(_esperar_trabajadores, self.base)
 
-        codigo, informe = self.correr(modo=("--muere-al-desplegar",))
+        codigo, informe = self.correr("--sin-se-detiene", modo=("--muere-al-desplegar",))
 
         self.assertTrue(
             revertido.is_file(),
@@ -353,7 +430,9 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.addCleanup(_esperar_trabajadores, self.base)
         self.addCleanup(suelta.touch)
 
-        codigo, informe = self.correr("--tope-cierre-s", "2", modo=("--muere-al-desplegar",))
+        codigo, informe = self.correr(
+            "--tope-cierre-s", "2", "--sin-se-detiene", modo=("--muere-al-desplegar",),
+        )
 
         ident = informe["encargo"]
         self.assertNotEqual(codigo, 0)
@@ -376,7 +455,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
             return motor(p, *argv)
 
         with mock.patch.object(canario_lanzador, "_motor", parar_falla):
-            codigo, informe = self.correr(modo=("--muere-tras", "2"))
+            codigo, informe = self.correr("--sin-se-detiene", modo=("--muere-tras", "2"))
 
         self.assertEqual(codigo, 1, informe)
         (estado,) = self.estados()
@@ -916,17 +995,19 @@ class ElCodigoDeSalida(unittest.TestCase):
 
     def informe(
         self, *, resultado="pasa", estado="terminado", supervisor="ausente", vivos=(),
-        limpieza="borrado", fallo=None, medido=True, recogida="borrado",
+        limpieza="borrado", fallo=None, medido=True, recogida="borrado", detencion="terminado",
     ) -> Informe:
-        from ops.canario_lanzador import Cierre
+        from ops.canario_lanzador import Cierre, Seguimiento
 
         fila = Fila("termina", "1", resultado, "pasa", "", "")  # type: ignore[arg-type]
         hora = datetime.now(timezone.utc).isoformat()
+        cierre = Cierre(detencion, "", supervisor, ())  # type: ignore[arg-type]
         return Informe(
             "banco", "a" * 40, hora, "clave", "enc_0", "terminado", "terminado", 1,
             Cierre(estado, "", supervisor, vivos),  # type: ignore[arg-type]
             (fila,) if medido else (), (Borrado("espacio/enc_0", limpieza),),  # type: ignore[arg-type]
             fallo, recogida=(Borrado("espacio/enc_1", recogida),),  # type: ignore[arg-type]
+            detencion=Seguimiento("clave-se-detiene", "enc_2", "terminado", detencion, cierre),
         )
 
     def test_cada_condicion_cuenta(self):
@@ -942,6 +1023,7 @@ class ElCodigoDeSalida(unittest.TestCase):
         self.assertEqual(self.informe(limpieza="falló").codigo, 1)
         self.assertEqual(self.informe(limpieza="no estaba").codigo, 0)
         self.assertEqual(self.informe(recogida="falló").codigo, 1)
+        self.assertEqual(self.informe(detencion="deteniendo").codigo, 1)
         self.assertEqual(self.informe(fallo=Fallo("medir", "no midió"), medido=False).codigo, 2)
 
 

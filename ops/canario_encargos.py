@@ -5,6 +5,11 @@ Uso, siempre en solo lectura:
     python3 ops/canario_encargos.py <encargo> [--base ~/.motor-encargos]
         [--esperado ops/canario_encargos.esperado.json] [--arbol <ruta>]
         [--sha-desplegado <sha>] [--archivo-desplegado <ruta> --marca <texto>]
+        [--detencion <encargo> [--archivo-detencion <ruta>]]
+
+`--detencion` nombra el encargo cuyo checklist de despliegue falla a propósito:
+de él sale la fila "se detiene". `--archivo-detencion` es el archivo que su
+despliegue deja y su rollback quita; su marca es el id de ese encargo.
 
 Tres capas separadas:
 
@@ -152,6 +157,10 @@ class Pliegue:
     """Revisiones independientes, contadas como las cuenta el reductor."""
     violaciones: tuple[str, ...]
     """Invariantes de `tools/plegado.py` que no se sostienen."""
+    ordenes: tuple[str, ...] = ()
+    """La acción de cada orden que recibió (parar, cancelar, continuar...), en orden."""
+    causas: tuple[str, ...] = ()
+    """Lo que el encargo deja escrito como causa: su motivo y la de cada impedimento."""
 
 
 @dataclass(frozen=True)
@@ -170,12 +179,37 @@ class Version:
     pasada: str
 
 
+Contenido = Literal["con la marca", "sin la marca", "no existe", "ilegible"]
+
+
 @dataclass(frozen=True)
 class ArchivoDesplegado:
     ruta: str
     marca: str
-    contiene: bool | None
-    """None: el archivo no existe."""
+    contenido: Contenido
+
+
+@dataclass(frozen=True)
+class Despliegue:
+    """Un recibo de despliegue del encargo tal como lo dejó el trabajador, aprobado o no."""
+
+    fase: str
+    estado: str
+    pasos: tuple[tuple[str, int], ...]
+    """Cada paso que el trabajador lanzó, con su salida."""
+
+
+@dataclass(frozen=True)
+class Detencion:
+    """El encargo cuyo checklist de despliegue falla a propósito."""
+
+    encargo: str
+    pliegue: Pliegue | NoPliega | None
+    """None: el encargo no está en el registro."""
+    despliegues: tuple[Despliegue, ...] | None = ()
+    """None: no se pudieron leer sus recibos."""
+    archivo: ArchivoDesplegado | None = None
+    """Lo que su despliegue deja y su rollback quita; None: nadie pidió revisarlo."""
 
 
 @dataclass(frozen=True)
@@ -191,6 +225,8 @@ class Observacion:
     """Hora de la última actualización del servicio (instalacion.json); vacío si no se sabe."""
     archivo: ArchivoDesplegado | None = None
     """None: nadie pidió revisar un archivo desplegado."""
+    detencion: Detencion | None = None
+    """None: esta corrida no hizo el encargo que falla a propósito."""
 
 
 # --------------------------------------------------------------------------- esperado
@@ -202,6 +238,8 @@ class Topes:
     minutos: int
     turnos_por_rol: int
     rondas: int
+    minutos_se_detiene: int
+    """Lo que puede tardar en pararse el encargo que falla a propósito."""
 
 
 @dataclass(frozen=True)
@@ -374,10 +412,13 @@ def _entregado(obs: Observacion, _topes: Topes) -> Juicio:
             + (f" ({'; '.join(rechazos)})" if rechazos else "")
         )
     if obs.archivo is not None:
-        if obs.archivo.contiene is None:
-            fallas.append(f"no existe el archivo desplegado {obs.archivo.ruta}")
-        elif not obs.archivo.contiene:
-            fallas.append(f"el archivo desplegado {obs.archivo.ruta} no trae la marca")
+        ruta = obs.archivo.ruta
+        if obs.archivo.contenido == "no existe":
+            fallas.append(f"no existe el archivo desplegado {ruta}")
+        elif obs.archivo.contenido == "sin la marca":
+            fallas.append(f"el archivo desplegado {ruta} no trae la marca")
+        elif obs.archivo.contenido == "ilegible":
+            sin_leer.append(f"el archivo desplegado {ruta}")
     if fallas:
         return "falla", "; ".join(fallas)
     if sin_leer:
@@ -495,6 +536,125 @@ def _legible(obs: Observacion, _topes: Topes) -> Juicio:
     return "pasa", f"pliega y sostiene las {len(plegado.INVARIANTES)} invariantes de tools/plegado.py"
 
 
+Condicion = tuple[bool | None, str]
+"""True: se cumple; False: no; None: no se pudo mirar. El texto lo dice."""
+
+
+def _corto(texto: str, largo: int = 160) -> str:
+    return texto if len(texto) <= largo else texto[: largo - 1] + "…"
+
+
+def _paro_con_palabra(p: Pliegue) -> Condicion:
+    """docs/modelo-centro-encargos.md, "Qué significa cada palabra del reporte": una fase
+    bloqueada se reporta "entrega parcial" con cada fase que falta y su causa, y `detenido`
+    queda para sus cuatro causas. La causa de un `detenido` la juzgan `_se_paro_solo` y
+    `_dice_por_que`: el registro todavía no la guarda como dato."""
+    if p.estado == "detenido":
+        return True, "quedó detenido"
+    if p.estado != "terminado":
+        return False, f"quedó {p.estado}: ni detenido ni entrega parcial"
+    if p.completo:
+        return False, "quedó terminado completo: no dijo que algo no se pudo"
+    faltan = [f for f in p.fases if f.estado != "preparada"]
+    if not faltan:
+        return False, "quedó terminado sin fases: no nombra qué faltó"
+    calladas = [f.id for f in faltan if not f.causa]
+    if calladas:
+        return False, f"quedó como entrega parcial sin decir por qué falta la fase {', '.join(calladas)}"
+    return True, "quedó como entrega parcial: " + "; ".join(
+        f"la fase {f.id}, «{_corto(f.causa)}»" for f in faltan
+    )
+
+
+def _se_paro_solo(p: Pliegue, hora: str, topes: Topes) -> Condicion:
+    paradas = [o for o in p.ordenes if o in ("parar", "cancelar")]
+    if paradas:
+        return False, f"no se paró solo: recibió la orden {', '.join(paradas)}"
+    if p.estado not in ("detenido", "cancelado", "terminado"):
+        return False, f"no se paró: sigue {p.estado}"
+    duracion = _duracion(p.recibido, p.cierre or hora)
+    if duracion > timedelta(minutes=topes.minutos_se_detiene):
+        return False, (
+            f"tardó {_texto_duracion(duracion)} en pararse y el tope es"
+            f" {topes.minutos_se_detiene} min"
+        )
+    return True, f"se paró solo en {_texto_duracion(duracion)} (tope {topes.minutos_se_detiene} min)"
+
+
+def _dice_por_que(p: Pliegue) -> Condicion:
+    causas = [*p.causas, *(f"la fase {f.id}: {f.causa}" for f in p.fases if f.causa)]
+    if not causas:
+        return False, "no dejó escrita la causa"
+    return True, f"dijo por qué: «{_corto(causas[0])}»"
+
+
+def _no_deja_roto(d: Detencion) -> Condicion:
+    """El freno corrió (un checklist lanzado y en rojo), cada despliegue quedó revertido y
+    el destino ya no lo trae. Lo que no se pudo leer no cuenta como revertido."""
+    if d.archivo is not None and d.archivo.contenido == "con la marca":
+        return False, f"{d.archivo.ruta} todavía trae lo desplegado"
+    if d.despliegues is None:
+        return None, "sus recibos de despliegue"
+    if any(x.estado == "aplicado" for x in d.despliegues):
+        return False, "su despliegue quedó aplicado: el checklist no falló"
+    desplegados = [x for x in d.despliegues if any(paso == "desplegar" for paso, _ in x.pasos)]
+    sin_revertir = [
+        (x.fase, rollback) for x in desplegados
+        if (rollback := dict(x.pasos).get("rollback", "sin correr")) != 0
+    ]
+    if sin_revertir:
+        return False, "; ".join(
+            f"el despliegue de la fase {fase} quedó sin revertir (rollback {rollback})"
+            for fase, rollback in sin_revertir
+        )
+    rojos = [codigo for x in d.despliegues for paso, codigo in x.pasos if paso == "checklist" and codigo != 0]
+    if not rojos:
+        return False, "el checklist no salió en rojo en ningún recibo: el freno no corrió"
+    if d.archivo is not None and d.archivo.contenido == "ilegible":
+        return None, f"el destino {d.archivo.ruta}"
+    destino = f" y {d.archivo.ruta} ya no lo trae" if d.archivo is not None else ""
+    return True, f"el checklist salió {rojos[0]}, revirtió su despliegue (rollback salida 0){destino}"
+
+
+def _acotado(p: Pliegue, topes: Topes) -> Condicion:
+    turnos = ", ".join(f"{rol} {n}" for rol, n in p.turnos) or "ninguno"
+    gasto = (
+        f"turnos {turnos} (tope {topes.turnos_por_rol} por rol) y rondas de revisión"
+        f" {p.rondas} (tope {topes.rondas})"
+    )
+    de_mas = any(n > topes.turnos_por_rol for _, n in p.turnos) or p.rondas > topes.rondas
+    return (False, f"gastó de más: {gasto}") if de_mas else (True, f"gastó {gasto}")
+
+
+def _se_detiene(obs: Observacion, topes: Topes) -> Juicio:
+    """Con un checklist de despliegue que falla a propósito, el motor para el encargo
+    solo y con una palabra del modelo, con la causa escrita, sin dejar el despliegue
+    roto y sin gastar de más."""
+    d = obs.detencion
+    if d is None:
+        return "no medido", "esta corrida no hizo el encargo cuyo checklist falla a propósito"
+    if d.pliegue is None:
+        return "no medido", f"el encargo que falla a propósito, {d.encargo}, no está en el registro"
+    if isinstance(d.pliegue, NoPliega):
+        return "no medido", (
+            f"el registro de {d.encargo} se rompe en el evento {d.pliegue.evento}"
+            f" ({d.pliegue.tipo}): {d.pliegue.excepcion}"
+        )
+    p = d.pliegue
+    condiciones = (
+        _paro_con_palabra(p), _se_paro_solo(p, obs.hora, topes), _dice_por_que(p), _no_deja_roto(d),
+        _acotado(p, topes),
+    )
+    fallas = [texto for ok, texto in condiciones if ok is False]
+    sin_mirar = [texto for ok, texto in condiciones if ok is None]
+    cumple = [texto for ok, texto in condiciones if ok]
+    if fallas:
+        return "falla", "; ".join(fallas) + (f"; sí {'; '.join(cumple)}" if cumple else "")
+    if sin_mirar:
+        return "no medido", "no pude leer " + "; ".join(sin_mirar)
+    return "pasa", "; ".join(cumple)
+
+
 def _sin_medicion(motivo: str) -> Callable[[Observacion, Topes], Juicio]:
     return lambda _obs, _topes: ("no medido", motivo)
 
@@ -512,8 +672,8 @@ TABLA: tuple[tuple[NombreFila, str, str, Juez], ...] = (
     ("no repite", "3", "sin fuente todavía",
      _sin_medicion("necesita contar PR, merges, recetas e invocaciones tras un corte")),
     ("cuesta poco", "4", "registro: turnos, revisiones y horas", _cuesta_poco),
-    ("se detiene", "5", "sin fuente todavía",
-     _sin_medicion("necesita un encargo con un checklist que falla a propósito")),
+    ("se detiene", "5", "el encargo cuyo checklist falla a propósito: registro, sus recibos"
+     " de despliegue y su destino", _se_detiene),
     ("versión", "6", "instalacion.json, supervisor-pasada.json y HEAD del árbol", _version),
     ("legible", "todos", "registro: plegado e invariantes de tools/plegado.py", _legible),
 )
@@ -550,6 +710,15 @@ def leer_esperado(ruta: Path) -> Esperado:
         or any(type(v) is not int for v in topes.values())
     ):
         raise ValueError(f"{ruta}: 'topes' debe traer enteros para {sorted(campos)}")
+    # Una falla conocida sin su razón escrita se olvida: el archivo no admite comentarios.
+    conocidas = sorted(nombre for nombre, valor in filas.items() if valor == "falla")
+    razones = datos.get("razones")
+    if (
+        not isinstance(razones, dict)
+        or sorted(razones) != conocidas
+        or any(not isinstance(v, str) or not v.strip() for v in razones.values())
+    ):
+        raise ValueError(f"{ruta}: 'razones' debe explicar cada fila que se espera falla: {conocidas}")
     return Esperado(filas=cast(Mapping[NombreFila, Resultado], filas), topes=Topes(**topes))
 
 
@@ -616,6 +785,10 @@ def vista(e: Encargo, eventos: list[dict], violaciones: tuple[str, ...] = ()) ->
             and str(ev["data"].get("origen") or "independiente") == "independiente"
         ),
         violaciones=violaciones,
+        ordenes=tuple(str(ev["data"].get("accion") or "") for ev in eventos if ev["kind"] == "orden"),
+        causas=tuple(dict.fromkeys(
+            c for c in (e.motivo, *(i.causa for i in e.impedimentos)) if c.strip()
+        )),
     )
 
 
@@ -743,11 +916,82 @@ def _recibo(e: Encargo, fase: str) -> Recibo:
     return Recibo(fase, "aplicado", str(datos.get("sha") or ""))
 
 
+def _claves(base: Path) -> list[Path]:
+    """Las carpetas de `despliegues/`, una por despliegue; OSError si no se pudo listar."""
+    raiz = base / "despliegues"
+    return sorted(d for d in raiz.iterdir() if d.is_dir()) if raiz.is_dir() else []
+
+
+def _es_del_encargo(clave: Path, encargo: str) -> bool:
+    recibo = _json_o_vacio(clave / "recibo.json")
+    identidad = _json_o_vacio(clave / "pedido.json").get("identidad")
+    dueno = identidad.get("encargo") if isinstance(identidad, dict) else None
+    return encargo in (dueno, recibo.get("encargo"))
+
+
+def _objeto(ruta: Path) -> dict | None:
+    """El objeto JSON de `ruta`: vacío si no existe; None si existe y no se pudo leer."""
+    try:
+        datos = leer_json(ruta)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None
+    return datos if isinstance(datos, dict) else None
+
+
+def _dueno(pedido: dict | None, recibo: dict | None) -> str:
+    """El encargo del despliegue: el de la identidad de su pedido o, si no, el de su recibo."""
+    identidad = (pedido or {}).get("identidad")
+    del_pedido = identidad.get("encargo") if isinstance(identidad, dict) else None
+    for dueno in (del_pedido, (recibo or {}).get("encargo")):
+        if isinstance(dueno, str) and dueno:
+            return dueno
+    return ""
+
+
+def _pasos_lanzados(recibo: dict) -> tuple[tuple[str, int], ...] | None:
+    """Los pasos que el trabajador lanzó, con su salida; None si alguno no dice si se lanzó."""
+    pasos = recibo.get("pasos")
+    if not isinstance(pasos, list):
+        return None
+    lanzados = []
+    for paso in pasos:
+        if not isinstance(paso, dict) or not isinstance(paso.get("paso"), str):
+            return None
+        if type(paso.get("enviado")) is not bool or (paso["enviado"] and type(paso.get("codigo")) is not int):
+            return None
+        if paso["enviado"]:
+            lanzados.append((paso["paso"], paso["codigo"]))
+    return tuple(lanzados)
+
+
+def _recibos_de_despliegue(base: Path, encargo: str) -> tuple[Despliegue, ...] | None:
+    """Los recibos de despliegue del encargo. None si alguno que puede ser suyo no se pudo
+    leer o no dice qué pasos lanzó: un recibo ilegible no es un despliegue que no corrió."""
+    try:
+        claves = _claves(base)
+    except OSError:
+        return None
+    despliegues = []
+    for clave in claves:
+        pedido, recibo = _objeto(clave / "pedido.json"), _objeto(clave / "recibo.json")
+        dueno = _dueno(pedido, recibo)
+        if not dueno and (pedido is None or recibo is None):
+            return None
+        if dueno != encargo:
+            continue
+        if recibo is None or (pasos := _pasos_lanzados(recibo)) is None:
+            return None
+        despliegues.append(Despliegue(str(recibo.get("fase") or ""), str(recibo.get("estado") or ""), pasos))
+    return tuple(despliegues)
+
+
 def _despliegues(base: Path, encargo: str) -> tuple[Resto, ...]:
     """Lo que quedó junto a los recibos del encargo y sus trabajadores."""
     raiz = base / "despliegues"
     try:
-        claves = sorted(d for d in raiz.iterdir() if d.is_dir()) if raiz.is_dir() else []
+        claves = _claves(base)
     except OSError:
         return (
             Resto("despliegue", "despliegues/", None),
@@ -756,10 +1000,7 @@ def _despliegues(base: Path, encargo: str) -> tuple[Resto, ...]:
     restos: list[Resto] = []
     vivos: list[bool | None] = []
     for clave in claves:
-        recibo = _json_o_vacio(clave / "recibo.json")
-        identidad = _json_o_vacio(clave / "pedido.json").get("identidad")
-        dueno = identidad.get("encargo") if isinstance(identidad, dict) else None
-        if encargo not in (dueno, recibo.get("encargo")):
+        if not _es_del_encargo(clave, encargo):
             continue
         try:
             demas = sorted(x.name for x in clave.iterdir() if x.name != "recibo.json")
@@ -802,10 +1043,12 @@ def _version_de(
 
 def _archivo(ruta: Path, marca: str) -> ArchivoDesplegado:
     try:
-        contiene: bool | None = marca in leer_texto(ruta, errors="replace")
+        texto = leer_texto(ruta, errors="replace")
+    except FileNotFoundError:
+        return ArchivoDesplegado(str(ruta), marca, "no existe")
     except OSError:
-        contiene = None
-    return ArchivoDesplegado(str(ruta), marca, contiene)
+        return ArchivoDesplegado(str(ruta), marca, "ilegible")
+    return ArchivoDesplegado(str(ruta), marca, "con la marca" if marca in texto else "sin la marca")
 
 
 def _restos(
@@ -853,6 +1096,31 @@ def procesos(base: Path, encargo: str) -> tuple[Resto, ...]:
     )
 
 
+def _plegar(eventos: list[dict]) -> tuple[Pliegue, Encargo] | NoPliega:
+    """El encargo plegado con el reductor del árbol y su vista, o dónde se rompe."""
+    reductor = plegado.cargar_reductor(RAIZ)
+    traza = plegado.trazar(reductor, eventos)
+    if traza.fallo is not None:
+        return NoPliega(traza.fallo.evento, traza.fallo.tipo, traza.fallo.excepcion)
+    e: Encargo = traza.estados[-1]
+    violaciones = tuple(
+        nombre for nombre, invariante in plegado.INVARIANTES
+        if invariante(reductor, eventos, traza) is not None
+    )
+    return vista(e, eventos, violaciones), e
+
+
+def _detencion(base: Path, encargo: str, archivo: Path | None) -> Detencion:
+    desplegado = _archivo(archivo, encargo) if archivo else None
+    eventos = _eventos(base / "registro.sqlite", encargo)
+    if not eventos:
+        return Detencion(encargo, None, archivo=desplegado)
+    plegada = _plegar(eventos)
+    if isinstance(plegada, NoPliega):
+        return Detencion(encargo, plegada, archivo=desplegado)
+    return Detencion(encargo, plegada[0], _recibos_de_despliegue(base, encargo), desplegado)
+
+
 def observar(
     base: Path,
     encargo: str,
@@ -862,40 +1130,34 @@ def observar(
     arbol: Path | None = None,
     sha_desplegado: str = "",
     archivo: tuple[Path, str] | None = None,
+    detencion: str = "",
+    archivo_detencion: Path | None = None,
 ) -> Observacion:
     eventos = _eventos(base / "registro.sqlite", encargo)
     pasada = _json_o_vacio(base / "supervisor-pasada.json")
     instalacion = _json_o_vacio(base / "instalacion.json")
     servicio = arbol or (Path(str(pasada["ruta"])) if pasada.get("ruta") else None)
-    version = _version_de(pasada, instalacion, servicio, sha_desplegado)
-    actualizado = str(instalacion.get("hora") or "")
-    desplegado = _archivo(*archivo) if archivo else None
-    if not eventos:
-        return Observacion(hora, None, version=version, actualizado=actualizado, archivo=desplegado)
-    reductor = plegado.cargar_reductor(RAIZ)
-    traza = plegado.trazar(reductor, eventos)
-    if traza.fallo is not None:
-        rotura = NoPliega(traza.fallo.evento, traza.fallo.tipo, traza.fallo.excepcion)
-        return Observacion(
-            hora, rotura, version=version, actualizado=actualizado, archivo=desplegado,
-        )
-    e: Encargo = traza.estados[-1]
-    violaciones = tuple(
-        nombre for nombre, invariante in plegado.INVARIANTES
-        if invariante(reductor, eventos, traza) is not None
+    comunes = Observacion(
+        hora, None,
+        version=_version_de(pasada, instalacion, servicio, sha_desplegado),
+        actualizado=str(instalacion.get("hora") or ""),
+        archivo=_archivo(*archivo) if archivo else None,
+        detencion=_detencion(base, detencion, archivo_detencion) if detencion else None,
     )
+    if not eventos:
+        return comunes
+    plegada = _plegar(eventos)
+    if isinstance(plegada, NoPliega):
+        return replace(comunes, pliegue=plegada)
+    pliegue, e = plegada
     repo = e.entrega.repo
     prs = tuple(_pr(gh, repo, f.id, f.pr_numero) for f in e.fases) if repo else ()
-    pliegue = vista(e, eventos, violaciones)
-    return Observacion(
-        hora=hora,
+    return replace(
+        comunes,
         pliegue=pliegue,
         prs=prs,
         recibos=tuple(_recibo(e, f.id) for f in pliegue.fases if f.desplegable),
         restos=_restos(base, e, eventos, prs, servicio, _despliegues(base, encargo)),
-        version=version,
-        actualizado=actualizado,
-        archivo=desplegado,
     )
 
 
@@ -941,9 +1203,13 @@ def main(argv: list[str] | None = None, gh: LectorPR | None = None) -> int:
     p.add_argument("--sha-desplegado", default="", help="por omisión, el de instalacion.json")
     p.add_argument("--archivo-desplegado", type=Path)
     p.add_argument("--marca", default="")
+    p.add_argument("--detencion", default="", help="el encargo cuyo checklist falla a propósito")
+    p.add_argument("--archivo-detencion", type=Path)
     args = p.parse_args(argv)
     if (args.archivo_desplegado is None) != (not args.marca):
         p.error("--archivo-desplegado y --marca van juntos")
+    if args.archivo_detencion is not None and not args.detencion:
+        p.error("--archivo-detencion pide --detencion")
     try:
         esperado = leer_esperado(args.esperado)
     except (OSError, ValueError) as exc:
@@ -958,6 +1224,8 @@ def main(argv: list[str] | None = None, gh: LectorPR | None = None) -> int:
         arbol=args.arbol,
         sha_desplegado=args.sha_desplegado,
         archivo=(args.archivo_desplegado, args.marca) if args.archivo_desplegado else None,
+        detencion=args.detencion,
+        archivo_detencion=args.archivo_detencion,
     )
     if obs.pliegue is None:
         print(f"canario: el encargo {args.encargo} no está en el registro", file=sys.stderr)
