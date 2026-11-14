@@ -171,18 +171,22 @@ def instalar_pre_push(espacio: Path, ramas: tuple[str, ...]) -> None:
     motor solo empuja esas ramas; la receta de despliegue, que corre en un worktree del espacio y
     comparte sus hooks, trae `EMPUJE_DE_RECETA` y el agente no la hereda. Un pre-push que no sea
     del motor, como el de Git LFS, pasa a `pre-push.previo` y sigue corriendo detrás. Es la
-    segunda red, detrás de la guardia de gh: `--no-verify` lo salta."""
+    segunda red, detrás de la guardia de gh: `--no-verify` lo salta. Una carpeta de hooks donde no
+    se puede escribir, como `core.hooksPath=/dev/null`, no impide arrancar: queda la nota."""
     ganchos = _carpeta_de_ganchos(espacio)
     if ganchos is None:
         return
-    ganchos.mkdir(parents=True, exist_ok=True)
-    gancho = ganchos / "pre-push"
-    if gancho.is_file() and _MARCA_PRE_PUSH.encode() not in gancho.read_bytes():
-        os.replace(gancho, ganchos / "pre-push.previo")
-    temporal = ganchos / ".pre-push.tmp"
-    escribir_texto(temporal, _pre_push(ramas))
-    temporal.chmod(0o755)
-    os.replace(temporal, gancho)
+    try:
+        ganchos.mkdir(parents=True, exist_ok=True)
+        gancho = ganchos / "pre-push"
+        if gancho.is_file() and _MARCA_PRE_PUSH.encode() not in gancho.read_bytes():
+            os.replace(gancho, ganchos / "pre-push.previo")
+        temporal = ganchos / ".pre-push.tmp"
+        escribir_texto(temporal, _pre_push(ramas))
+        temporal.chmod(0o755)
+        os.replace(temporal, gancho)
+    except OSError as exc:
+        print(f"pre-push del motor sin instalar en {ganchos}: {exc}", file=sys.stderr)
 
 
 def temporal_de(runtime: Path) -> Path:

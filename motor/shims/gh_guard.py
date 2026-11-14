@@ -1,5 +1,5 @@
 """`gh` para los agentes: todo pasa al `gh` real salvo abrir, mergear, cerrar, marcar listo o
-revisar PRs, mover una rama por la API sin PR o renombrar comandos con un alias.
+revisar PRs, mover, borrar o escribir una rama por la API sin PR o renombrar comandos con un alias.
 
 El único que abre y mergea es el motor, con su MergeTicket. MOTOR 01 (2026-10-20): GitHub
 rechazó un merge porque faltaban pruebas, el agente recibió el rechazo como tarea y mergeó él
@@ -38,21 +38,21 @@ ACCIONES = (
     Accion(
         "gh pr merge",
         (("pr", "merge"),),
+        (Rest("PUT", r"pulls/\d+/merge"),),
+        ("mergePullRequest", "enablePullRequestAutoMerge", "enqueuePullRequest"),
+    ),
+    Accion(
+        "escribir en una rama por la API, sin PR",
+        (),
         (
-            Rest("PUT", r"pulls/\d+/merge"),
             Rest("POST", r"merges"),
             Rest("POST", r"git/refs"),
             Rest("PATCH", r"git/refs/.+"),
+            Rest("DELETE", r"git/refs/.+"),
+            Rest("PUT", r"contents/.+"),
+            Rest("DELETE", r"contents/.+"),
         ),
-        (
-            "mergePullRequest",
-            "enablePullRequestAutoMerge",
-            "enqueuePullRequest",
-            "mergeBranch",
-            "createRef",
-            "updateRef",
-            "updateRefs",
-        ),
+        ("mergeBranch", "createRef", "updateRef", "updateRefs", "deleteRef"),
     ),
     Accion(
         "gh pr close",
@@ -100,7 +100,7 @@ def _valores(args: list[str], corta: str, larga: str) -> list[str]:
         elif a.startswith(f"{larga}="):
             out.append(a[len(larga) + 1 :])
         elif a.startswith(corta) and not a.startswith("--"):
-            out.append(a[len(corta) :])
+            out.append(a[len(corta) :].removeprefix("="))
     return out
 
 
