@@ -121,6 +121,7 @@ CREDENCIALES_DEL_SUPERVISOR = {
     "GH_TOKEN": "del-supervisor",
     "GITHUB_TOKEN": "del-supervisor",
     "GH_ENTERPRISE_TOKEN": "del-supervisor",
+    "GITHUB_ENTERPRISE_TOKEN": "del-supervisor",
 }
 TOKENS = tuple(CREDENCIALES_DEL_SUPERVISOR)
 MIRA_GITHUB = (
@@ -129,11 +130,18 @@ MIRA_GITHUB = (
 )
 
 
+def _token(base: Path, texto: str, modo: int = 0o600) -> Path:
+    ruta = base / "github-agentes.token"
+    ruta.write_text(texto, encoding="utf-8")
+    ruta.chmod(modo)
+    return ruta
+
+
 @unittest.skipUnless(ES_POSIX, "el wrapper del intento es de la rama POSIX")
 class ElGitHubDelAgenteEsDeSoloLectura(unittest.TestCase):
     """El agente usa el token de solo lectura de su base, nunca la sesión de `gh` del usuario ni
-    otra credencial de GitHub del supervisor. Sin ese token arranca sin ninguna y la bitácora del
-    supervisor lo dice."""
+    otra credencial de GitHub del supervisor. Sin ese token, `gh` recibe uno que GitHub rechaza,
+    para que no busque otro en el llavero, y la bitácora del supervisor dice por qué."""
 
     def lanzar(self, base: Path) -> tuple[dict, str]:
         """Lo que ve el agente que lanza el wrapper: el entorno que heredó del supervisor más el
@@ -158,15 +166,20 @@ class ElGitHubDelAgenteEsDeSoloLectura(unittest.TestCase):
     def test_gh_usa_el_token_de_la_base_con_una_carpeta_propia(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             base = Path(tmp).resolve()
-            (base / "github-agentes.token").write_text(TOKEN_FALSO + "\n", encoding="utf-8")
+            _token(base, TOKEN_FALSO + "\n")
             visto, _ = self.lanzar(base)
         self.assertEqual(
             {k: visto[k] for k in TOKENS},
-            {"GH_TOKEN": TOKEN_FALSO, "GITHUB_TOKEN": TOKEN_FALSO, "GH_ENTERPRISE_TOKEN": None},
+            {
+                "GH_TOKEN": TOKEN_FALSO,
+                "GITHUB_TOKEN": TOKEN_FALSO,
+                "GH_ENTERPRISE_TOKEN": None,
+                "GITHUB_ENTERPRISE_TOKEN": None,
+            },
         )
         self.assertTrue(Path(visto["GH_CONFIG_DIR"]).is_relative_to(base / "runtime"))
 
-    def test_sin_token_legible_arranca_sin_credencial_de_github_y_lo_anota(self):
+    def test_sin_token_legible_gh_recibe_uno_que_github_rechaza_y_lo_anota(self):
         for caso in ("ausente", "vacio", "ilegible"):
             with self.subTest(caso=caso), tempfile.TemporaryDirectory(
                 ignore_cleanup_errors=True
@@ -174,13 +187,33 @@ class ElGitHubDelAgenteEsDeSoloLectura(unittest.TestCase):
                 base = Path(tmp).resolve()
                 token = base / "github-agentes.token"
                 if caso == "vacio":
-                    token.write_text("\n", encoding="utf-8")
+                    _token(base, "\n")
                 if caso == "ilegible":
-                    token.mkdir()
+                    token.mkdir(mode=0o700)
                 visto, bitacora = self.lanzar(base)
-                self.assertEqual({k: visto[k] for k in TOKENS}, dict.fromkeys(TOKENS))
+                self.assertTrue(
+                    visto["GH_TOKEN"], "sin GH_TOKEN, gh busca la sesión del usuario en el llavero"
+                )
+                self.assertEqual(
+                    {k: visto[k] for k in TOKENS},
+                    {
+                        "GH_TOKEN": aislamiento.TOKEN_RECHAZADO,
+                        "GITHUB_TOKEN": aislamiento.TOKEN_RECHAZADO,
+                        "GH_ENTERPRISE_TOKEN": None,
+                        "GITHUB_ENTERPRISE_TOKEN": None,
+                    },
+                )
                 self.assertTrue(Path(visto["GH_CONFIG_DIR"]).is_relative_to(base / "runtime"))
                 self.assertIn(str(token), bitacora)
+
+    def test_un_token_que_leen_el_grupo_u_otros_no_se_usa_y_lo_anota(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            token = _token(base, TOKEN_FALSO + "\n", 0o644)
+            visto, bitacora = self.lanzar(base)
+        self.assertNotEqual(visto["GH_TOKEN"], TOKEN_FALSO, "usó un token legible por otros")
+        self.assertIn(str(token), bitacora)
+        self.assertNotIn(TOKEN_FALSO, bitacora)
 
 
 RAMAS = ("encargo/enc_x",)
