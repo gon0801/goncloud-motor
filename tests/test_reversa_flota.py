@@ -299,6 +299,49 @@ class ReversaFlota(unittest.TestCase):
                 self.assertFalse((self.home / "instalacion.json").exists())
                 self.assertEqual(asignar(self.home), self.buena)
 
+    def test_recuperar_termina_la_reversa_anotada_aunque_quede_el_pendiente_de_su_instalacion(self) -> None:
+        class Apagon(BaseException):
+            pass
+
+        quitar, mover, reemplazar = Path.unlink, Path.replace, os.replace
+
+        def apagar_al_borrar_el_pendiente(ruta: Path, *args, **kwargs):
+            if ruta.name == "instalacion-pendiente.json":
+                raise Apagon
+            return quitar(ruta, *args, **kwargs)
+
+        def apagar_al_mover_actual(origen, destino, *args, **kwargs):
+            if Path(destino).name == "actual":
+                raise Apagon
+            return reemplazar(origen, destino, *args, **kwargs)
+
+        def apagar_al_archivar_el_recibo(ruta: Path, destino, *args, **kwargs):
+            if Path(destino).parent.name == "historial":
+                raise Apagon
+            return mover(ruta, destino, *args, **kwargs)
+
+        cortes = (
+            ("al mover actual", mock.patch.object(os, "replace", side_effect=apagar_al_mover_actual)),
+            (
+                "al archivar el recibo",
+                mock.patch.object(Path, "replace", autospec=True, side_effect=apagar_al_archivar_el_recibo),
+            ),
+        )
+        for nombre, corte in cortes:
+            with self.subTest(corte=nombre):
+                aplicar(self.home, self.buena, sin_turnos=True)
+                with mock.patch.object(Path, "unlink", autospec=True, side_effect=apagar_al_borrar_el_pendiente):
+                    with self.assertRaises(Apagon):
+                        aplicar(self.home, self.nueva, sin_turnos=True)
+                with corte, self.assertRaises(Apagon):
+                    revertir(self.home)
+
+                self.assertEqual(recuperar(self.home)["accion"], "revertido")
+                self.assertEqual(self._marca_vigente(), "buena\n")
+                self.assertEqual(asignar(self.home), self.buena)
+                self.assertFalse((self.home / "instalacion.json").exists())
+                self.assertFalse((self.home / "instalacion-pendiente.json").exists())
+
     def test_una_reversa_ocupada_no_queda_anotada_para_recuperar(self) -> None:  # no-roja-en-base: la base no anotaba la reversa; guarda que una reversa ocupada no se complete sola cuando el trabajo termina
         aplicar(self.home, self.nueva, sin_turnos=True)
         anotar_trabajo(self.home, "uno", self.nueva, "codex", {"reserva": True})
