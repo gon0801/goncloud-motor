@@ -5,6 +5,9 @@ por `ai-review-publish.yml` en `pull_request_target`, que GitHub corre con el
 workflow de la base del PR, y por el disparo del motor, que lee el del SHA: se
 miran los dos árboles. Solo es «sin revisor» si los dos se leyeron y ningún
 workflow lo nombra; lo que no se pudo leer cuenta como revisor y espera.
+
+El texto de la omisión se escribe y se lee aquí: el cierre y el check de merge
+dicen su causa a partir del motivo registrado, sin otro campo en el registro.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ from .politica import ESPERA_SIN_REVISOR_MIN, TOPE_DEEPSEEK_MIN
 WORKFLOWS = ".github/workflows"
 # El revisor instalado con otro nombre de archivo se delata en su texto.
 SENALES = ("ai-review", "goncloud-pr-review", "deepseek")
+CAUSA_SIN_REVISOR = "sin revisor en el repo"
+CAUSA_TRAS_EL_TOPE = "sin revisión tras el tope"
 
 
 @dataclass(frozen=True)
@@ -41,7 +46,7 @@ class SinRevisor:
 
     @property
     def nota(self) -> str:
-        return f" (sin revisor: {self.motivo})"
+        return f" ({CAUSA_SIN_REVISOR}: {self.motivo})"
 
 
 def revisor_deepseek(espacio: Path, sha: str, base: str) -> ConRevisor | SinRevisor:
@@ -54,6 +59,22 @@ def revisor_deepseek(espacio: Path, sha: str, base: str) -> ConRevisor | SinRevi
     return SinRevisor(
         f"ni el SHA {sha[:12]} ni origin/{base} traen un workflow de ai-review"
     )
+
+
+def texto_de_omision(
+    revisor: ConRevisor | SinRevisor, sha: str, minutos: float, detalle: str = ""
+) -> str:
+    return (
+        f"sin revisión de DeepSeek para el SHA {sha[:12]} tras {int(minutos)} min"
+        f"{detalle}{revisor.nota}; la fase sigue como si no hubiera hallazgos"
+    )
+
+
+def causa_de_la_omision(motivo: str) -> str:
+    """La causa que dice el motivo de una omisión registrada."""
+    if f"({CAUSA_SIN_REVISOR}:" in motivo:
+        return CAUSA_SIN_REVISOR
+    return CAUSA_TRAS_EL_TOPE
 
 
 def _puede_tenerlo(espacio: Path, arbol: str) -> bool:

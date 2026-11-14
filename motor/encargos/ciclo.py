@@ -117,7 +117,7 @@ from .politica import (
     CERRADOS_SONDEO_RAPIDO_S,
     CERRADOS_VENTANA_S,
 )
-from .revisor_deepseek import revisor_deepseek
+from .revisor_deepseek import revisor_deepseek, texto_de_omision
 from .resultado import Avanzo, Devolver, Espera, NecesitaAgente, Resultado, permite_lanzar
 from .suscripciones import CuentaNoDisponible
 
@@ -5683,7 +5683,7 @@ def _leer_deepseek(
 def _omitir_deepseek(
     registro: Registro, enc: Encargo, numero: int, sha: str, texto: str, hora: str
 ) -> Encargo:
-    """Tras el tope, la fase sigue sin la revisión externa.
+    """La fase sigue sin la revisión externa: tras el tope o sin revisor.
 
     La nota queda en el PR y la huella `sin-revision` libera el SHA para
     integrar o desplegar. Una relectura posterior con comentarios reales
@@ -5726,16 +5726,6 @@ def _omitir_deepseek(
         f"excepcion:{enc.id}:omision:{enc.fase_activa}:{sha}",
     )
     return registro.fold(enc.id) or enc
-
-
-def _seguir_sin_deepseek(
-    registro: Registro, enc: Encargo, gh, numero: int, sha: str, texto: str, hora: str
-) -> tuple[Encargo, Resultado]:
-    """Omite la revisión del SHA y sigue con la entrega en la misma pasada."""
-    enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
-    if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
-        return enc, Avanzo()
-    return _paso_entrega_paso(registro, enc, gh, hora)
 
 
 def _disparar_deepseek(
@@ -7270,7 +7260,7 @@ def _veredicto_antes_de_cerrar(
             )
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return registro.fold(enc.id)
-        # La fase siguió sin revisión tras el tope: una relectura fallida no
+        # La fase siguió sin revisión: una relectura fallida no
         # vuelve a frenar el cierre. Si llega un comentario, el siguiente
         # barrido lo lee y lo trata como tardío.
         return None
@@ -10157,13 +10147,13 @@ def _paso_entrega_paso(
                 hora, f"deepseek-leer-{sha[:12]}",
             )
             if minutos >= revisor.espera_min:
-                texto = (
-                    "sin revisión de DeepSeek para el SHA "
-                    f"{sha[:12]} tras {int(minutos)} min (no se pudo leer: "
-                    f"{str(exc)[:200]}){revisor.nota}; la fase sigue como si "
-                    "no hubiera hallazgos"
+                texto = texto_de_omision(
+                    revisor, sha, minutos, f" (no se pudo leer: {str(exc)[:200]})"
                 )
-                return _seguir_sin_deepseek(registro, enc, gh, numero, sha, texto, hora)
+                enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
+                if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
+                    return enc, Avanzo()
+                return _paso_entrega_paso(registro, enc, gh, hora)
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return _con_espera(registro.fold(enc.id) or enc)
         if isinstance(lectura_ds, PendienteLectura):
@@ -10182,7 +10172,10 @@ def _paso_entrega_paso(
                 "declara que la revisión excedió su tiempo límite y no se "
                 "reintenta; la fase sigue como si no hubiera hallazgos"
             )
-            return _seguir_sin_deepseek(registro, enc, gh, numero, sha, texto, hora)
+            enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
+            if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
+                return enc, Avanzo()
+            return _paso_entrega_paso(registro, enc, gh, hora)
         if not comentarios:
             disparado = any(
                 ev["kind"] == "entrega_externa"
@@ -10209,12 +10202,11 @@ def _paso_entrega_paso(
                     f"entrega:{enc.id}:{enc.fase_activa}:deepseek_disparado:{sha}",
                 )
             if minutos >= revisor.espera_min:
-                texto = (
-                    "sin revisión de DeepSeek para el SHA "
-                    f"{sha[:12]} tras {int(minutos)} min{revisor.nota}; la fase "
-                    "sigue como si no hubiera hallazgos"
-                )
-                return _seguir_sin_deepseek(registro, enc, gh, numero, sha, texto, hora)
+                texto = texto_de_omision(revisor, sha, minutos)
+                enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
+                if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
+                    return enc, Avanzo()
+                return _paso_entrega_paso(registro, enc, gh, hora)
             marcar_espera(
                 registro,
                 enc.id,
