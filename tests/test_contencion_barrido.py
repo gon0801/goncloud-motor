@@ -109,6 +109,30 @@ class ContencionDelBarrido(unittest.TestCase):
             self.assertLessEqual(len(causa), 2000)
         self.assertIn("reponlo con motor flota recuperar", pendiente["data"]["texto"])
 
+    def test_una_causa_que_no_se_lanzo_tambien_entra_en_la_causa_anotada(self):
+        def reservar(*_):
+            raise RuntimeError("no se pudo reservar la generacion de flota") from ValueError(
+                "instalacion.json no se puede leer"
+            )
+
+        with Banco(self.tmp) as b:
+            b.error = reservar
+            b.vuelta()
+            (fallo,) = b.eventos(b.malo, "instrumento_fallo")
+
+        self.assertIn(
+            "; causa: ValueError: instalacion.json no se puede leer", fallo["data"]["causa"]
+        )
+
+    def test_una_excepcion_sin_traceback_conserva_su_tipo_y_su_mensaje(self):
+        from motor.encargos.instrumento import causa_de_excepcion
+
+        exc = RuntimeError("no se pudo reservar")
+        exc.__cause__ = ValueError("ilegible")
+        self.assertEqual(
+            causa_de_excepcion(exc), "RuntimeError: no se pudo reservar; causa: ValueError: ilegible"
+        )
+
     def test_el_mismo_error_no_se_repite_sin_fin(self):
         with Banco(self.tmp) as b:
             for _ in range(TOPE_FALLOS_BARRIDO + 4):

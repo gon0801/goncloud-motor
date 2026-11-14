@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import sys
 import traceback
-from pathlib import Path
 
 from . import instrumento
+from .instrumento import causa_de_excepcion
 from .dominio import Encargo, TransicionIlegal, vista
 from .lote import Directo
 from .registro import Rechazo, Registro, sin_valores
@@ -30,13 +30,6 @@ _SIN_REGISTRO: set[tuple[str, str]] = set()
 # proceso del supervisor: una vuelta sana la borra, y un registro de eventos no
 # distingue una vuelta sana de otra que falló antes de anotar nada.
 _RACHA_BARRIDO: dict[str, tuple[str, int]] = {}
-
-
-def causa_de_excepcion(exc: BaseException) -> str:
-    return "; causa: ".join(
-        f"{type(e).__name__}: {e} en {Path(marco.filename).name}:{marco.lineno} ({marco.name})"
-        for e in (exc, exc.__cause__) if e for marco in traceback.extract_tb(e.__traceback__, -1)
-    )[:2000]
 
 
 def detener_por_fallo_interno(

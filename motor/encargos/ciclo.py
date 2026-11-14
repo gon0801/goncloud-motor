@@ -95,16 +95,11 @@ from .frontera import (
 )
 from .registro import Evento, EventoIlegal, Registro
 from .devolucion import devolver, sin_avance
-from .contencion import (
-    _RACHA_BARRIDO,
-    aparcado_por_barrido,
-    causa_de_excepcion,
-    contener,
-    vista_o_minima,
-)
+from .contencion import _RACHA_BARRIDO, aparcado_por_barrido, contener, vista_o_minima
 from . import instrumento
 from .instrumento import apariciones as _apariciones
 from .instrumento import entorno, fallo_juicio, impedimento_de_instrumento
+from .instrumento import causa_de_excepcion
 from .inspeccion import consumir_ligada, entregada, ligar
 from .lote import Directo, Lote, excepcion, guardar, guardar_incorporado, incorporado
 from .lote import sobre, ya_incorporado

@@ -467,6 +467,14 @@ class EnlaceDeFlotaEnWindows(unittest.TestCase):
         self.assertEqual(asignar(home), nueva)
         self.assertEqual(revertir(home)["anterior"], buena)
 
+    def test_el_comando_para_un_home_en_la_raiz_de_la_unidad_llega_entero_a_python(self):
+        from motor.flota.control import _entre_comillas, _orden_recuperar
+
+        self.assertTrue(_orden_recuperar(Path("C:\\")).endswith('"--home" "C:\\\\"'))
+        eco = _entre_comillas([sys.executable, "-c", "import sys; print(sys.argv[1])", "C:\\"])
+        hecho = _run(eco, shell=True, capture_output=True, text=True)
+        self.assertEqual(hecho.stdout, "C:\\\n", hecho.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

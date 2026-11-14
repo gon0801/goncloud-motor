@@ -127,6 +127,38 @@ no_contiene "la flota movida es la misma" "$S/salida" "AVISO flota"
 rm -r "$S/home-mac/.motor-encargos/flota-home.json" "$S/home-mac/flota-movida"
 flota mac v9
 
+# aplicar y recuperar dejan sin-medir.json cuando una lectura de la generación no terminó a
+# tiempo; la nota dice cuál de las dos la escribió.
+sin_medir() { # sin_medir <flota> <operacion>
+  printf '{"generacion": "%s", "operacion": "%s", "orden": "/ruta/python comprobar.py", "tope": 120, "causa": "x"}\n' \
+    "$SNAPSHOT" "$2" >"$1/sin-medir.json"
+}
+sin_medir "$S/home-mini/flota" recuperar
+sin_medir "$S/home-gwpc/flota" aplicar
+espera "una flota sin medir avisa sin fallar el despliegue" 0 \
+  bash "$SCRIPT" --sha "$SHA" --maquina "mac mini pc"
+contiene "el aviso de recuperar manda recuperar" "$S/salida" \
+  "AVISO mini: la flota no midió la generación ${SNAPSHOT:0:12} (tope 120 s); vuelve a correr motor flota recuperar"
+contiene "el aviso de aplicar manda aplicar la misma generación" "$S/salida" \
+  "AVISO pc: la flota no midió la generación ${SNAPSHOT:0:12} (tope 120 s); vuelve a aplicar la generación ${SNAPSHOT:0:12} con motor flota aplicar"
+grep '^AVISO pc: la flota' "$S/salida" | grep -q recuperar \
+  && fallo "la nota de aplicar manda recuperar: $(grep '^AVISO pc: la flota' "$S/salida")"
+no_contiene "el aviso no imprime la orden" "$S/salida" "/ruta/python"
+no_contiene "una flota medida no avisa" "$S/salida" "AVISO mac: la flota"
+rm "$S/home-mini/flota/sin-medir.json" "$S/home-gwpc/flota/sin-medir.json"
+
+# El servicio escribe flota-home.json: la nota se busca en el home que apunta.
+mv "$S/home-mac/flota" "$S/home-mac/flota-movida"
+ln -sfn "$S/home-mac/flota-movida/generaciones/gen-mac" "$S/home-mac/flota-movida/actual"
+printf '{"home": "../flota-movida"}\n' >"$S/home-mac/.motor-encargos/flota-home.json"
+sin_medir "$S/home-mac/flota-movida" recuperar
+espera "una flota movida sin medir avisa sin fallar el despliegue" 0 \
+  bash "$SCRIPT" --sha "$SHA" --maquina "mac mini pc"
+contiene "la mac avisa desde su home movido" "$S/salida" \
+  "AVISO mac: la flota no midió la generación ${SNAPSHOT:0:12} (tope 120 s); vuelve a correr motor flota recuperar"
+rm -r "$S/home-mac/.motor-encargos/flota-home.json" "$S/home-mac/flota-movida"
+flota mac v9
+
 rm -rf "$S/home-gwpc/flota"
 espera "una máquina sin flota no revienta la comprobación" 0 \
   bash "$SCRIPT" --sha "$SHA" --maquina "mac mini pc"

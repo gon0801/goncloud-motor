@@ -8,11 +8,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from .cerrojo import _cerrojo_flota
+from .comprobador import Comprobacion, comprobar, comprobar_instalada
 from .manifiesto import Politica, cargar, guardar, proyectar_tabla
 
 
@@ -172,7 +174,11 @@ class _SinEnlace(NamedTuple):
 
 
 def _sin_enlace(home: Path) -> _SinEnlace:
-    recibo = _leer(home / "instalacion.json") or {}
+    recibo = _leer(home / "instalacion.json")
+    if recibo is None:
+        recibo = {}
+    elif not isinstance(recibo, dict):
+        raise ValueError(f"instalacion.json trae {type(recibo).__name__}, no un objeto")
     instalada = str((recibo.get("destino") or {}).get("codigo") or "")
     if recibo.get("etapa") == "revirtiendo":
         anterior = str((recibo.get("anterior") or {}).get("codigo") or "")
@@ -184,95 +190,38 @@ def _sin_enlace(home: Path) -> _SinEnlace:
 
 
 def _entre_comillas(partes: list[str]) -> str:
-    return " ".join(f'"{parte}"' for parte in partes)
+    # Una barra suelta antes de la comilla de cierre la escapa: "C:\" llegaria como C:".
+    return " ".join('"' + parte + parte[len(parte.rstrip("\\")):] + '"' for parte in partes)
+
+
+def _orden_recuperar(home: Path) -> str:
+    raiz = Path(__file__).resolve().parents[2]
+    argv = [sys.executable, "-m", "motor", "flota", "recuperar", "--home", str(home.absolute())]
+    # python -m motor busca el paquete en la carpeta actual; cmd cambia de unidad solo con
+    # /d y no corta dentro de comillas dobles, ni en un espacio ni en un &.
+    cd, unir = ("cd /d", _entre_comillas) if os.name == "nt" else ("cd", shlex.join)
+    return f"{cd} {unir([str(raiz)])} && {unir(argv)}"
 
 
 def asignar(home: Path) -> str:
     actual = home / "actual"
     if actual.is_symlink():
         return actual.resolve().name
-    sin = _sin_enlace(home)
-    if sin.exige_enlace:
-        raiz = Path(__file__).resolve().parents[2]
-        argv = [sys.executable, "-m", "motor", "flota", "recuperar", "--home", str(home.absolute())]
-        # python -m motor busca el paquete en la carpeta actual; cmd cambia de unidad solo con
-        # /d y no corta dentro de comillas dobles, ni en un espacio ni en un &.
-        cd, unir = ("cd /d", _entre_comillas) if os.name == "nt" else ("cd", shlex.join)
+    try:
+        sin = _sin_enlace(home)
+    except ValueError as exc:
         raise RuntimeError(
-            f"falta el enlace actual; reponlo con `{cd} {unir([str(raiz)])} && {unir(argv)}`. "
+            f"falta el enlace actual e instalacion.json no se puede leer ({type(exc).__name__}: "
+            f"{exc}); corrigelo y reponlo con `{_orden_recuperar(home)}`. Sin ese recibo la "
+            "maquina no sabe que generacion tiene instalada."
+        ) from exc
+    if sin.exige_enlace:
+        raise RuntimeError(
+            f"falta el enlace actual; reponlo con `{_orden_recuperar(home)}`. "
             f"instalacion.json registra la generacion {sin.asignada} y sin el enlace la "
             "maquina correria el HEAD del clon, otra version."
         )
     return sin.asignada
-
-
-def _comprobar_detalle(gen: Path) -> tuple[int, str]:
-    if (gen / "runtime.json").is_file():
-        try:
-            from .actualizaciones import comprobar_runtime
-
-            comprobar_runtime(gen)
-        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-            return 1, "runtime de componentes"
-    script = gen / "comprobar.py"
-    if script.is_file():
-        try:
-            rc = subprocess.run(
-                [sys.executable, str(script)], cwd=gen, timeout=120
-            ).returncode
-        except (OSError, subprocess.TimeoutExpired):
-            return 1, "comprobar.py"
-        return rc, "comprobar.py"
-    if (gen / "motor" / "__main__.py").is_file():
-        try:
-            ayuda = subprocess.run(
-                [sys.executable, "-m", "motor", "--help"],
-                cwd=gen,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if ayuda.returncode != 0:
-                return ayuda.returncode or 1, "motor --help"
-            compilado = subprocess.run(
-                [sys.executable, "-m", "compileall", "-q", str(gen / "motor")],
-                cwd=gen,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            return compilado.returncode, "motor --help y compileall"
-        except (OSError, subprocess.TimeoutExpired):
-            return 1, "motor --help y compileall"
-    if (gen / "pyproject.toml").is_file():
-        try:
-            rc = subprocess.run(
-                [sys.executable, "-m", "compileall", "-q", str(gen)],
-                cwd=gen,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            ).returncode
-        except (OSError, subprocess.TimeoutExpired):
-            return 1, "compileall"
-        return rc, "compileall"
-    if any(gen.glob("*.py")) or (gen / "motor").is_dir():
-        try:
-            rc = subprocess.run(
-                [sys.executable, "-m", "compileall", "-q", str(gen)],
-                cwd=gen,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            ).returncode
-        except (OSError, subprocess.TimeoutExpired):
-            return 1, "compileall"
-        return rc, "compileall"
-    return 1, "ninguno"
-
-
-def _comprobar(gen: Path) -> int:
-    return _comprobar_detalle(gen)[0]
 
 
 def _tiene_poteto(base: Path) -> bool:
@@ -599,15 +548,16 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
     _atomico(home / "instalacion-pendiente.json", recibo)
     if corte == "worktree":
         return {"accion": "cortado", "etapa": "codigo", "vigente": asignar(home) if (home / "actual").exists() else anterior}
-    rc, comprobador = _comprobar_detalle(gen)
+    rc, comprobador, sin_medir = _medir(home, destino, comprobar(gen), "aplicar")
     recibo["comprobador"] = comprobador
     if rc != 0:
+        motivo = sin_medir.causa if sin_medir else "la comprobacion fallo"
         (home / "instalacion-pendiente.json").unlink(missing_ok=True)
         _atomico(
             home / "candidata.json",
-            {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo", "comprobador": comprobador},
+            {"estado": "rechazada", "destino": destino, "motivo": motivo, "comprobador": comprobador},
         )
-        return {"accion": "rechazada", "vigente": anterior, "destino": destino}
+        return {"accion": "rechazada", "vigente": anterior, "destino": destino, "motivo": motivo}
     try:
         _comprobar_paquete_completo(home, gen)
     except ValueError as exc:
@@ -653,6 +603,32 @@ def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False)
     return {"accion": "aplicada", "generacion": destino, "anterior": anterior, "turnos": resumen}
 
 
+def _medir(
+    home: Path, generacion: str, comprobacion: Comprobacion, operacion: Literal["aplicar", "recuperar"]
+) -> Comprobacion:
+    """Deja en sin-medir.json la ultima lectura que no termino; una que termina lo borra.
+
+    La nota dice que operacion la escribio: es la que hay que volver a correr.
+
+    Con el ciclo de flota apagado nadie vuelve a medir solo: el archivo es lo que queda.
+    """
+    nota = home / "sin-medir.json"
+    if comprobacion.sin_medir is None:
+        nota.unlink(missing_ok=True)
+        return comprobacion
+    _atomico(
+        nota,
+        {
+            "generacion": generacion,
+            "operacion": operacion,
+            **comprobacion.sin_medir._asdict(),
+            "causa": comprobacion.sin_medir.causa,
+            "hora": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
+    )
+    return comprobacion
+
+
 def _recuperar_instalada(home: Path) -> dict:
     comp = _leer(home / "instalacion.json")
     if comp and comp.get("etapa") == "revirtiendo":
@@ -661,22 +637,11 @@ def _recuperar_instalada(home: Path) -> dict:
         destino_c = str((comp.get("destino") or {}).get("codigo") or "")
         gen_c = home / "generaciones" / destino_c
         if destino_c and gen_c.exists():
-            rc_c, _nombre_c = _comprobar_detalle(gen_c)
-            if rc_c != 0:
+            comprobacion = _medir(home, destino_c, comprobar_instalada(gen_c), "recuperar")
+            if comprobacion.sin_medir:
+                return {"accion": "no_medido", "generacion": destino_c, "causa": comprobacion.sin_medir.causa}
+            if comprobacion.rc != 0:
                 return revertir(home)
-            if (gen_c / "motor" / "__main__.py").is_file():
-                try:
-                    arranque = subprocess.run(
-                        [sys.executable, "-m", "motor", "--help"],
-                        cwd=gen_c,
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
-                    if arranque.returncode != 0:
-                        return revertir(home)
-                except (OSError, subprocess.TimeoutExpired):
-                    return revertir(home)
             if not (home / "actual").is_symlink():
                 _enlace(home, gen_c)
                 return {"accion": "enlazada", "generacion": destino_c}
@@ -716,7 +681,11 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
     apunta = False
     if gen.exists() and actual.is_symlink():
         apunta = actual.resolve() == gen.resolve()
-    rc, comprobador = _comprobar_detalle(gen) if gen.exists() else (1, "ninguno")
+    rc, comprobador, sin_medir = _medir(
+        home, destino, comprobar(gen) if gen.exists() else Comprobacion(1, "ninguno"), "recuperar"
+    )
+    if sin_medir:
+        return {"accion": "no_medido", "destino": destino, "causa": sin_medir.causa}
     if gen.exists() and rc == 0:
         try:
             _comprobar_paquete_completo(home, gen)

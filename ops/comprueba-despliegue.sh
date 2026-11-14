@@ -5,7 +5,8 @@
 # Para instalar el motor viejo de planes usa ops/instala-todo.sh; este comprobador no lo mira.
 # Es idempotente: solo lee y reintenta la lectura. Si el agente arrancaría sin el token de
 # GitHub de los agentes, avisa por máquina sin fallar. Imprime la huella de la flota de
-# cada máquina y avisa, sin fallar, si no corren la misma tabla de modelos o manifiesto.
+# cada máquina y avisa, sin fallar, si no corren la misma tabla de modelos o manifiesto, o
+# si recuperar dejó una generación sin medir.
 #
 # --sha SHA     SHA que debe estar instalado (por omisión, HEAD del repo).
 # --maquina M   Una sola máquina: mac, mini o pc.
@@ -193,13 +194,16 @@ def tabla_de(texto):
         return nombre
     return "#" + corto(nombre.encode("utf-8"))
 
-# Se compara lo que corre, la generación activa. El manifiesto raíz es el deseado: una
-# actualización pendiente lo escribe antes de activar su generación.
-def huella_flota():
+def home_flota():
     base = home / ".motor-encargos"
     vinculo = leer(base / "flota-home.json")
     destino = vinculo.get("home") if isinstance(vinculo, dict) else None
-    flota = base / str(destino) if destino else home / "flota"
+    return base / str(destino) if destino else home / "flota"
+
+# Se compara lo que corre, la generación activa. El manifiesto raíz es el deseado: una
+# actualización pendiente lo escribe antes de activar su generación.
+def huella_flota():
+    flota = home_flota()
     if not flota.is_dir():
         return "sin-flota"
     try:
@@ -219,6 +223,22 @@ def huella_flota():
     snapshot = snapshot[:12] if re.fullmatch("[0-9a-f]{64}", snapshot) else "sin-fuente"
     return " ".join((tabla, manifiesto, snapshot, deseado))
 
+# motor flota aplicar o recuperar deja sin-medir.json cuando una lectura de la generación no
+# terminó; la orden trae rutas de la máquina y no se imprime.
+def sin_medir():
+    nota = leer(home_flota() / "sin-medir.json")
+    if not isinstance(nota, dict) or not nota:
+        return "-"
+    gen = str(nota.get("generacion") or "")
+    gen = gen[:12] if re.fullmatch("[0-9a-f]{7,64}", gen) else "#" + corto(gen.encode("utf-8"))
+    tope = nota.get("tope")
+    operacion = nota.get("operacion")
+    return " ".join((
+        gen,
+        str(tope) if isinstance(tope, (int, float)) else "?",
+        operacion if operacion in ("aplicar", "recuperar") else "?",
+    ))
+
 print("recibo", recibo)
 print("vivo", vivo)
 print(
@@ -232,6 +252,7 @@ print("arbol", arbol)
 print("registro", registro)
 print("token", token)
 print("flota", huella_flota())
+print("sinmedir", sin_medir())
 '
 
 PROGRAMA_PC_B64="$(printf '%s' "$PROGRAMA" | _pc_b64)"
@@ -337,6 +358,15 @@ for m in $maquinas; do
   token="$(printf '%s\n' "$estado" | awk '/^token /{ $1=""; sub(/^ /,""); print; exit}')"
   if [ -n "$token" ] && [ "$token" != ok ]; then
     echo "AVISO $m: el agente arranca sin credencial de GitHub: $token" >&2
+  fi
+  read -r sin_gen sin_tope sin_op <<<"$(printf '%s\n' "$estado" | awk '/^sinmedir /{ print $2, $3, $4; exit }')"
+  if [ -n "$sin_gen" ] && [ "$sin_gen" != - ]; then
+    case "$sin_op" in
+      aplicar) repite="vuelve a aplicar la generación $sin_gen con motor flota aplicar" ;;
+      recuperar) repite="vuelve a correr motor flota recuperar" ;;
+      *) repite="vuelve a aplicarla con motor flota aplicar o a correr motor flota recuperar" ;;
+    esac
+    echo "AVISO $m: la flota no midió la generación $sin_gen (tope $sin_tope s); $repite" >&2
   fi
   flota="$(printf '%s\n' "$estado" | awk '/^flota /{ $1=""; sub(/^ /,""); print; exit}')"
   case "$flota" in
