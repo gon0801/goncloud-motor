@@ -4,6 +4,7 @@ from motor.io import escribir_texto, leer_json
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -188,13 +189,14 @@ def asignar(home: Path) -> str:
         return actual.resolve().name
     sin = _sin_enlace(home)
     if sin.exige_enlace:
-        sin_turnos = " --sin-turnos" if (_leer(home / "instalacion.json") or {}).get("sin_turnos") else ""
         raiz = Path(__file__).resolve().parents[2]
+        argv = [sys.executable, "-m", "motor", "flota", "recuperar", "--home", str(home.absolute())]
+        # python -m motor busca el paquete en la carpeta actual; cmd cambia de unidad solo con /d.
+        cd, unir = ("cd /d", subprocess.list2cmdline) if os.name == "nt" else ("cd", shlex.join)
         raise RuntimeError(
-            f"falta el enlace {actual} aunque instalacion.json registra la generacion "
-            f"{sin.asignada}. Sin el enlace la maquina correria el HEAD del clon, otra "
-            f'version. Reponlo con `cd "{raiz}" && "{sys.executable}" -m motor flota '
-            f'aplicar --home "{home}" --destino {sin.asignada}{sin_turnos}`.'
+            f"falta el enlace {actual.absolute()} y instalacion.json registra la generacion "
+            f"{sin.asignada}; reponlo con `{cd} {unir([str(raiz)])} && {unir(argv)}`. Sin el "
+            "enlace la maquina correria el HEAD del clon, otra version."
         )
     return sin.asignada
 
@@ -670,6 +672,9 @@ def _recuperar_instalada(home: Path) -> dict:
                         return revertir(home)
                 except (OSError, subprocess.TimeoutExpired):
                     return revertir(home)
+            if not (home / "actual").is_symlink():
+                _enlace(home, gen_c)
+                return {"accion": "enlazada", "generacion": destino_c}
     return {"accion": "nada"}
 
 
