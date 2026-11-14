@@ -47,7 +47,7 @@ from motor.encargos.cli import lanzar_de_ruta, marcar_ruta
 from motor.encargos.dominio import vista
 from motor.encargos.registro import Registro
 from motor.encargos.rutas import elegir
-from motor.github import ChecksVerdict, FakeGitHub, PoliticaBloquea
+from motor.github import ChecksVerdict, FakeGitHub, PoliticaBloquea, clasificar_merge
 from ops.agente_ensayo import Comprobacion, Escenario, _escribir
 from tests import git_env_limpio
 from tests.entorno import deja_breakaway, requiere_windows
@@ -245,6 +245,24 @@ class _LaBaseYaTieneLaFaseDos(_DeepSeekAprueba):
                 _git(copia, "push", "-q", "origin", base)
             raise RuntimeError(f"pull request create failed: No commits between {base} and {rama}")
         return super().abrir_pr(repo, rama, base, titulo, cuerpo)
+
+
+class _LaBaseSeMueveCuatroVecesPorPR(_DeepSeekAprueba):
+    """Los cuatro primeros merges de cada PR reciben "Base branch was modified",
+    como cuando otra máquina integra en el mismo repo; el quinto entra."""
+
+    def __init__(self, d):
+        super().__init__(d)
+        self.pedidos: list[int] = []
+
+    def merge(self, repo, numero, sha, metodo, mensaje):
+        self.pedidos.append(numero)
+        if self.pedidos.count(numero) <= 4:
+            raise clasificar_merge(RuntimeError(
+                f"gh pr merge {numero}: GraphQL: Base branch was modified. "
+                "Review and try the merge again. (mergePullRequest)"
+            ))
+        return super().merge(repo, numero, sha, metodo, mensaje)
 
 
 # --------------------------------------------------------------------------- agente de ensayo
@@ -834,6 +852,39 @@ class LasVariantesDeLaCompuerta(CompuertaReal):
         self.assertTrue(
             any("sin revisión de DeepSeek" in n.get("texto", "") for n in notas)
         )
+
+
+class LosTropiezosDelMerge(CompuertaReal):
+    """La serie de tropiezos es de un PR. Un PR mergeado no se vuelve a mergear,
+    así que no tropieza otra vez; el de la fase siguiente empieza con sus cinco
+    intentos."""
+
+    def test_el_pr_de_la_fase_siguiente_empieza_con_sus_cinco_intentos(self):
+        escenario = {
+            "fases": [
+                {"id": "uno", "resultado": "saludo.txt con hola"},
+                {"id": "dos", "resultado": "saludo.txt con hola y mundo", "requiere": ["uno"]},
+            ],
+            "producto": {
+                "uno": {"saludo.txt": "hola\\n"},
+                "dos": {"saludo.txt": "hola\\nmundo\\n"},
+            },
+        }
+        banco = self.banco(escenario, nivel="integrado", gh_cls=_LaBaseSeMueveCuatroVecesPorPR)
+        banco.correr(
+            lambda: banco.fold().estado == "terminado"
+            or any(i.clase == "merge" for i in banco.fold().impedimentos)
+        )
+        enc = banco.fold()
+        self.assertEqual(
+            [i.causa for i in enc.impedimentos if i.clase == "merge"], [],
+        )
+        self.assertEqual(enc.estado, "terminado")
+        self.assertEqual(
+            sorted(p["fase"] for p in banco.pasos_entrega("integrado")), ["dos", "uno"],
+        )
+        primero, segundo = sorted(set(banco.gh.pedidos))
+        self.assertEqual(banco.gh.pedidos, [primero] * 5 + [segundo] * 5)
 
 
 class ElPlazoTrasLaReceta(CompuertaReal):

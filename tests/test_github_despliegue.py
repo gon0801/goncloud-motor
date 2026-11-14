@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from motor import effects as fxmod
+from motor import github as ghmod
 from motor import machine as m
 from motor.conf import Maquina
 from motor.diagnostico import Causa, diagnostico
@@ -690,6 +694,14 @@ class ChecksTest(unittest.TestCase):
 class MergeTest(unittest.TestCase):
     def setUp(self):
         self.t = Path(tempfile.mkdtemp(prefix="h-merge-"))
+        # Como en el runner del CI: git sin identidad configurada y sin deducirla
+        # del nombre del equipo, que en la Mac sí trae dominio.
+        sin_identidad = self.t / "gitconfig"
+        sin_identidad.write_text("[user]\n\tuseConfigOnly = true\n")
+        self.enterContext(mock.patch.dict(os.environ, {
+            "GIT_CONFIG_GLOBAL": str(sin_identidad), "GIT_CONFIG_NOSYSTEM": "1",
+        }))
+        os.environ.pop("EMAIL", None)
         self.repo, self.sha, self.w = _bare_con_rama(self.t)
         (self.t / "gh").mkdir()
 
@@ -752,12 +764,42 @@ class MergeTest(unittest.TestCase):
         with self.assertRaises(Conflicto):
             gh2.merge(self.repo, pr2.numero, self.sha, "squash", "m")
 
+    def test_fake_la_base_que_otra_maquina_mueve_en_pleno_merge_es_base_movida(self):
+        from motor.github import BaseMovida
+
+        gh = self._fake({"requeridos": ["ci"], "checks": {"ci": "./ci.sh"}})
+        pr = gh.abrir_pr(self.repo, "feat", "main", "t", "c")
+        gh.marcar_listo(self.repo, pr.numero)
+        otra = self.t / "otra"
+        git("clone", "-q", "-b", "main", self.repo, str(otra))
+        (otra / "z.txt").write_text("z\n")
+        git("add", "-A", cwd=otra)
+        git("-c", "user.name=b", "-c", "user.email=b@l", "commit", "-q", "-m", "z", cwd=otra)
+        pendiente = [otra]
+
+        def git_con_carrera(*args, **kw):
+            if args[:1] == ("push",) and pendiente:
+                git("push", "-q", "origin", "main", cwd=pendiente.pop())
+            return git(*args, **kw)
+
+        with mock.patch.object(ghmod, "git", git_con_carrera):
+            with self.assertRaises(BaseMovida):
+                gh.merge(self.repo, pr.numero, self.sha, "squash", "m")
+        self.assertEqual(gh.merge(self.repo, pr.numero, self.sha, "squash", "m").estado, "mergeado")
+        for archivo in ("x.txt", "z.txt"):
+            self.assertEqual(git("cat-file", "-e", f"main:{archivo}", cwd=self.repo).returncode, 0)
+
     def test_gh_clasifica_por_tipo(self):
+        from motor.github import BaseMovida
+
         casos = [
             ("Pull Request is still a draft", Borrador),
             ("Head branch was modified", PuntaMovida),
+            ("Base branch was modified. Review and try the merge again.", BaseMovida),
             ("the merge commit cannot be cleanly created", Conflicto),
             ("required status checks have not passed", PoliticaBloquea),
+            ("Pull request #7 is not mergeable: the base branch policy prohibits the merge.",
+             PoliticaBloquea),
         ]
         for texto, tipo in casos:
             with self.subTest(texto=texto):
@@ -769,7 +811,50 @@ class MergeTest(unittest.TestCase):
                         return _pr_json()
 
                 with self.assertRaises(tipo):
-                    F({}).merge("o/r", 7, SHA, "squash", "m")
+                    F({}).merge("o/r", 7, "b" * 40, "squash", "m")  # el PR sigue en SHA
+
+    def test_gh_tipa_las_respuestas_pasajeras_del_merge(self):
+        from motor.github import (
+            ErrorDeGitHub, MergeSinConfirmar, MergeSinRespuesta, PrSinAsentar, PrSinLeer,
+        )
+
+        def falla(error):
+            def cli(*a):
+                if a[:2] == ("pr", "merge"):
+                    raise error
+                return _pr_json()
+
+            return cli
+
+        def sin_leer(error):
+            def cli(*a):
+                if a[:2] == ("pr", "merge"):
+                    return ""
+                raise error
+
+            return cli
+
+        cambiada = RuntimeError("GraphQL: Head branch was modified. Review and try the merge again.")
+        casos = [
+            *(
+                (falla(RuntimeError(f"gh pr merge 7: HTTP {codigo}: x (https://api.github.com/graphql)")),
+                 ErrorDeGitHub)
+                for codigo in (500, 502, 503, 504)
+            ),
+            (falla(subprocess.TimeoutExpired(["gh", "pr", "merge"], 60)), MergeSinRespuesta),
+            (lambda *a: "" if a[:2] == ("pr", "merge") else _pr_json(), MergeSinConfirmar),
+            (sin_leer(RuntimeError("gh pr view 7: HTTP 502: x (https://api.github.com/graphql)")),
+             PrSinLeer),
+            (sin_leer(subprocess.TimeoutExpired(["gh", "pr", "view"], 60)), PrSinLeer),
+            (falla(cambiada), PrSinAsentar),
+            (cambiada, PuntaMovida),
+        ]
+        for cli, tipo in casos:
+            with self.subTest(tipo=tipo.__name__):
+                gh = GhGitHub({})
+                with mock.patch.object(gh, "_gh", side_effect=cli):
+                    with self.assertRaises(tipo):
+                        gh.merge("o/r", 7, SHA, "squash", "m")
 
     def _fx_merge(self, error):
         from motor.github import PrView
