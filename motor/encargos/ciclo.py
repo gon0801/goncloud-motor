@@ -97,7 +97,7 @@ from .frontera import (
     leer_parada_local,
     turno,
 )
-from .registro import Registro
+from .registro import Registro, contar_omitidos
 from .fases import adoptar as adoptar_fases
 from .sesion import (
     cerrar,
@@ -11776,29 +11776,14 @@ def _asociacion_conductor(registro: Registro, enc: Encargo, token: str) -> str:
     return str(previo["data"].get("fase") or "")
 
 
-def _asociar_conductor(
-    registro: Registro, enc: Encargo, token: str, fase: str, hora: str
-) -> None:
-    if not token or not fase:
-        return
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "conductor_fase",
-            "data": {"token": token, "fase": fase, "hora": hora},
-        },
-        f"conductor-fase:{enc.id}:{token}",
-    )
-
-
 def _fase_de_resultado(
-    registro: Registro, enc: Encargo, token: str, version: str, hora: str
+    registro: Registro, enc: Encargo, token: str, version: str
 ) -> str:
     """Fase que produjo el resultado, sin tomarla de la fase activa del momento.
 
-    La asociación durable conductor-fase manda y se guarda en cualquier ruta que
-    acepte el resultado, no solo cuando hay que recurrir a la fase activa. Después
-    valen la fase del intento y la versión del producto.
+    La asociación durable conductor-fase manda; el paso la guarda con lo demás
+    en cualquier ruta que identifique la fase, no solo cuando hay que recurrir a
+    la fase activa. Después valen la fase del intento y la versión del producto.
     """
     ligada = _asociacion_conductor(registro, enc, token)
     if ligada:
@@ -11825,8 +11810,6 @@ def _fase_de_resultado(
             return ""
     if not fase:
         fase = enc.fase_activa or (FASE_IMPLICITA if not enc.fases else "")
-    if fase:
-        _asociar_conductor(registro, enc, token, fase, hora)
     return fase
 
 
@@ -11873,25 +11856,16 @@ def _recibir_resultado_nuevo(
     juicio: dict,
     hora: str,
 ) -> dict:
-    from .comprobacion import validar_juicio
-    version = str(observaciones.get("version") or observaciones.get("producto") or "")
-    manifiesto = tuple(
-        (str(x[0]), str(x[1]))
-        for x in (observaciones.get("manifiesto") or ())
-        if isinstance(x, (list, tuple)) and len(x) >= 2
-    )
+    from .paso_resultado import Foto, decidir, producto_de
+
+    version, manifiesto = producto_de(observaciones)
     if not version or not manifiesto:
         return {"rechazado": True, "motivo": "el resultado no trae versión del producto"}
-    fase = _fase_de_resultado(registro, enc, token, version, hora)
+    fase = _fase_de_resultado(registro, enc, token, version)
     if not fase:
         return {"rechazado": True, "motivo": "el resultado no identifica una única fase"}
     huella = _huella_resultado(observaciones, juicio)
-    previo = _resultado_ya_aplicado(registro, enc, fase, token, huella)
-    if previo is not None:
-        return previo
-    activa = enc.fase_activa or (FASE_IMPLICITA if not enc.fases else "")
-    if fase != activa:
-        return {"rechazado": True, "motivo": "el resultado pertenece a otra fase"}
+    evento_intento = None
     if enc.intento:
         evento_intento = next(
             (
@@ -11902,184 +11876,19 @@ def _recibir_resultado_nuevo(
             ),
             None,
         )
-        fase_intento = str((evento_intento or {}).get("data", {}).get("fase") or "")
-        if fase_intento and fase_intento != fase:
-            return {"rechazado": True, "motivo": "el intento pertenece a otra fase"}
-    actual = next((f for f in enc.fases if f.id == fase), None)
-    if actual is not None and actual.estado == "preparada":
-        return {"rechazado": True, "motivo": "la fase ya está preparada"}
-    if enc.producto is None or enc.producto.firma != version:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "producto_listo",
-                "data": {
-                    "version": version,
-                    "manifiesto": [list(x) for x in manifiesto],
-                    "fase": fase,
-                    "intento": enc.intento,
-                    "hora": hora,
-                },
-            },
-            f"producto-autoridad:{enc.id}:{fase}:{version}",
-        )
-        enc = registro.fold(enc.id)
-    crudo = dict(juicio)
-    if "hallazgos" in crudo:
-        hallazgos = crudo.pop("hallazgos") or []
-        crudo["bloqueantes"] = [
-            h for h in hallazgos if isinstance(h, dict) and h.get("gravedad") == "bloqueante"
-        ]
-        crudo["observaciones"] = [
-            str(h.get("titulo") or "")
-            for h in hallazgos
-            if isinstance(h, dict) and h.get("gravedad") != "bloqueante"
-        ]
-        crudo["resueltos"] = [
-            str(h.get("id"))
-            for h in hallazgos
-            if isinstance(h, dict) and h.get("estado") == "resuelto"
-        ]
-    alcance = alcance_de(enc)
-    try:
-        validado = validar_juicio(
-            crudo, alcance, externos=bloqueantes_abiertos(enc, "deepseek")
-        )
-    except (ValueError, KeyError, TypeError) as exc:
-        return {"rechazado": True, "motivo": str(exc)}
-    if validado.veredicto != "aprobado":
-        return {"rechazado": True, "motivo": "el resultado no fue comprobado"}
-    if any(e.estado in ("intencion", "incierto") for e in enc.efectos):
-        return {"rechazado": True, "motivo": "la autoridad conserva efectos sin recibo"}
-    pedidos = list(observaciones.get("solicitudes_efecto") or [])
-    if pedidos and set(validado.efectos_pendientes) != {str(p["id"]) for p in pedidos}:
-        return {
-            "rechazado": True,
-            "motivo": "la aprobacion no enumera los efectos solicitados",
-        }
-    hallazgos_validados = list(validado.hallazgos)
-    abiertos_ds = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
-    aplicados = False
-    ya_resueltos = {h.id for h in hallazgos_validados}
-    marca = validado.evidencia or "descartado por el revisor independiente"
-    for hid in validado.resueltos:
-        h = abiertos_ds.get(hid)
-        if h is None or hid in ya_resueltos:
-            continue
-        hallazgos_validados.append(
-            replace(h, estado="resuelto", cierre_evidencia=marca)
-        )
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "nota_pr",
-                "data": {
-                    "texto": (
-                        f"hallazgo de DeepSeek descartado por el revisor "
-                        f"independiente: {hid} «{h.titulo}» ({marca[:400]})"
-                    ),
-                    "hora": hora,
-                },
-            },
-            f"disputa-resuelta-autoridad:{enc.id}:{hid}",
-        )
-        huella_region, texto_region, siguiente_region = _region_del_hallazgo(
-            _espacio(registro.base, enc.id), enc.pr_sha, h
-        )
-        _anotar_excepcion(
-            registro, enc, "descarte", enc.pr_sha, hid, marca, hora,
-            f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{hid}",
-            ancla=h.ancla,
-            region=huella_region,
-            region_ancla=texto_region,
-            region_contexto=siguiente_region,
-        )
-        ya_resueltos.add(hid)
-        aplicados = True
-    for hid, razon in validado.fuera_de_alcance:
-        h = abiertos_ds.get(hid)
-        if h is None or hid in ya_resueltos:
-            continue
-        hallazgos_validados.append(
-            replace(
-                h,
-                gravedad="observacion",
-                estado="resuelto",
-                cierre_evidencia=razon,
-            )
-        )
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "hallazgo_fuera_de_alcance",
-                "data": {"id": hid, "titulo": h.titulo, "razon": razon, "hora": hora},
-            },
-            f"fuera-alcance:{enc.id}:{fase}:{hid}",
-        )
-        _anotar_excepcion(
-            registro, enc, "fuera_alcance", enc.pr_sha, hid, razon, hora,
-            f"excepcion:{enc.id}:fuera:{enc.pr_sha}:{hid}",
-        )
-        ya_resueltos.add(hid)
-        aplicados = True
-    if aplicados:
-        enc = registro.fold(enc.id) or enc
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "revision",
-            "data": {
-                "revision_id": "rev_autoridad_" + version[:12],
-                "version": version,
-                "base_version": validado.base_version,
-                "alcance": validado.alcance,
-                "veredicto": validado.veredicto,
-                "revisor": "autoridad",
-                "origen": "independiente",
-                "cubre": list(validado.cubre),
-                "hallazgos": [h.como_dict() for h in hallazgos_validados],
-                "aprobadas": [list(x) for x in validado.aprobadas],
-                "evidencia": validado.evidencia,
-                "efectos_pendientes": list(validado.efectos_pendientes),
-                "fase": fase,
-                "intento": enc.intento,
-                "hora": hora,
-            },
-        },
-        f"revision-autoridad:{enc.id}:{fase}:{version}",
+    paso = decidir(
+        Foto(
+            enc, token, host, observaciones, juicio, hora, version, manifiesto, fase, huella,
+            fase_del_intento=str((evento_intento or {}).get("data", {}).get("fase") or ""),
+            previo=_resultado_ya_aplicado(registro, enc, fase, token, huella),
+        ),
+        proyectar=lambda eventos: registro.proyectar(enc.id, eventos),
+        region=lambda sha, h: _region_del_hallazgo(_espacio(registro.base, enc.id), sha, h),
+        destino=lambda: DestinoEnsayo(registro.base / "destino"),
     )
-    enc = registro.fold(enc.id)
-    from .cierre import comprobar_destino, componer
-
-    try:
-        cierre = componer(enc, pedidos, validado.evidencia)
-        if pedidos:
-            comprobar_destino(cierre, DestinoEnsayo(registro.base / "destino"))
-    except (ValueError, KeyError, TypeError) as exc:
-        return {"rechazado": True, "motivo": str(exc)}
-    ukey = f"resultado:{enc.id}:{fase}:{token}"
-    resultado = registro.anotar(
-        enc.id,
-        {
-            "kind": "comprobacion",
-            "data": {
-                **cierre,
-                "fase": fase,
-                "huella_resultado": huella,
-                "observaciones": observaciones,
-                "host": host,
-                "hora": hora,
-            },
-        },
-        ukey,
-    )
-    return {
-        "registrado": resultado in ("nuevo", "igual"),
-        "encargo": enc.id,
-        "estado": registro.fold(enc.id).estado,
-        "fase": fase,
-        "recibo": ukey,
-    }
+    registro.append_many(enc.id, paso.eventos)
+    contar_omitidos(paso.omitidos)
+    return paso.respuesta
 
 
 def recibir_resultado(
