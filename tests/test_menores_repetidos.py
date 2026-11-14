@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from motor.encargos import ciclo
 from motor.encargos.ciclo import (
@@ -19,6 +20,8 @@ from motor.encargos.ciclo import (
     _entregar_con_pendientes,
     ahora_iso,
 )
+from motor.encargos.contencion import contener
+from motor.encargos.registro import ClaveOcupada
 from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import _bloqueante, _entrega_pr
 
@@ -780,40 +783,43 @@ class EntregarConPendientesNoMienteSiElCuerpoFalla(unittest.TestCase):
         self.assertTrue(e.pendientes_entrega)
         return e
 
+    def _con_pr_y_pendientes_otra_vez(self, tmp: str, clave: str):
+        """Un PR con pendientes ya publicado, y la fase reabierta vuelve a dejar pendientes."""
+        vuelta, r = _entrega_pr(self, tmp, clave, FakeGitHub, nivel="pr")
+        self._hasta_pendientes(r)
+        e = _entregar_con_pendientes(r.reg, r.fold(), vuelta.gh, r.hora)
+        self.assertTrue(e.pr_numero, "el primer PR con pendientes se publica")
+
+        fase = e.cierre_forzado_fase
+        ciclo.ordenar(
+            r.reg, r.enc, "reabrir", "reabrir-parcial", r.hora,
+            fase=fase.id, cierre=e.cierre_forzado_huella,
+        )
+        ciclo.ordenar(r.reg, r.enc, "continuar", "continuar-parcial", r.hora)
+        self._abrir_intento(r, "post-continuar")
+        (r.espacio / "malo.txt").write_text("X")
+        r.incorporar()
+        self._cerrar_intento(r)
+        r.juicio(
+            {
+                "veredicto": "cambios",
+                "evidencia": "lei malo.txt",
+                "bloqueantes": [_bloqueante("malo.txt no contiene B")],
+            }
+        )
+        for _ in range(6):
+            e = r.incorporar()
+        self.assertTrue(e.pendientes_entrega, e.pendientes_entrega)
+        return vuelta, r
+
     def test_un_fallo_al_editar_el_cuerpo_no_se_registra_como_publicado(self):  # no-roja-en-base: el comportamiento correcto ya existe en 2298ff3; la fase lo perdió
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(
-                self, tmp, "pendientes-cuerpo-falla", FakeGitHub, nivel="pr"
-            )
-            self._hasta_pendientes(r)
-            e = _entregar_con_pendientes(r.reg, r.fold(), vuelta.gh, r.hora)
-            self.assertTrue(e.pr_numero, "el primer PR con pendientes se publica")
+            vuelta, r = self._con_pr_y_pendientes_otra_vez(tmp, "pendientes-cuerpo-falla")
             publicados_antes = [
                 ev
                 for ev in r.eventos("entrega_externa")
                 if ev["data"].get("paso") == "pr_con_pendientes"
             ]
-
-            fase = e.cierre_forzado_fase
-            ciclo.ordenar(
-                r.reg, r.enc, "reabrir", "reabrir-parcial", r.hora,
-                fase=fase.id, cierre=e.cierre_forzado_huella,
-            )
-            ciclo.ordenar(r.reg, r.enc, "continuar", "continuar-parcial", r.hora)
-            self._abrir_intento(r, "post-continuar")
-            (r.espacio / "malo.txt").write_text("X")
-            r.incorporar()
-            self._cerrar_intento(r)
-            r.juicio(
-                {
-                    "veredicto": "cambios",
-                    "evidencia": "lei malo.txt",
-                    "bloqueantes": [_bloqueante("malo.txt no contiene B")],
-                }
-            )
-            for _ in range(6):
-                e = r.incorporar()
-            self.assertTrue(e.pendientes_entrega, e.pendientes_entrega)
 
             gh_roto = _GhFallaElCuerpo(vuelta.gh.d)
             _entregar_con_pendientes(r.reg, r.fold(), gh_roto, r.hora)
@@ -841,6 +847,31 @@ class EntregarConPendientesNoMienteSiElCuerpoFalla(unittest.TestCase):
                 if ev["data"].get("paso") == "pr_con_pendientes"
             ]
             self.assertEqual(len(publicados_despues), len(publicados_antes))
+
+    def test_un_cuerpo_que_el_registro_rechaza_detiene_por_fallo_interno(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._con_pr_y_pendientes_otra_vez(tmp, "pendientes-cuerpo-rechazado")
+            bloqueos = len(r.eventos("bloqueo_fase"))
+            anotar = r.reg.anotar
+
+            def rechaza_el_cuerpo(encargo, evento, ukey):
+                if evento["data"].get("paso") == "pr_cuerpo":
+                    raise ClaveOcupada(0, ukey, ("sha",), evento["kind"])
+                return anotar(encargo, evento, ukey)
+
+            with mock.patch.object(r.reg, "anotar", side_effect=rechaza_el_cuerpo):
+                with self.assertRaises(ClaveOcupada) as rechazo:
+                    _entregar_con_pendientes(r.reg, r.fold(), vuelta.gh, r.hora)
+            contener(r.reg, r.enc, rechazo.exception, r.hora)
+
+            enc = r.fold()
+            self.assertEqual(enc.estado, "detenido")
+            self.assertIn("fallo interno", enc.motivo)
+            self.assertEqual(len(r.eventos("bloqueo_fase")), bloqueos)
+            notas = [str(n["data"].get("texto") or "") for n in r.eventos("nota_pr")]
+            self.assertFalse(
+                any("no se pudo publicar el PR con pendientes" in n for n in notas), notas
+            )
 
 
 class LaNotaTardiaConservaElFinal(unittest.TestCase):
