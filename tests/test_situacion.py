@@ -5,7 +5,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos.dominio import TransicionIlegal, reducir
+from motor.encargos.dominio import Fase, TransicionIlegal, reducir
 from tools import plegado
 from tools.plegado import INVARIANTES, Reductor, Traza
 
@@ -86,6 +86,52 @@ class SituacionComoLectura(unittest.TestCase):
         self.assertEqual(
             [(v.invariante, v.encargo) for v in resultado.violaciones],
             [("datos_dependen_del_estado", "dos")],
+        )
+
+    def test_orden_reabrir_no_se_confunde_con_importar_ni_parar(self) -> None:
+        from motor.encargos.situacion import Detenido, PorOrden, situacion_de
+
+        _, e = _entrega()
+        importado = replace(e, estado="detenido", orden_parada="")
+        self.assertEqual(situacion_de(importado), Detenido(PorOrden("importar")))
+        fase = Fase("F", "resultado")
+        cerrado = replace(e, estado="terminado", fases=(fase,), fase_activa=fase.id,
+                          cierre_forzado_fase=fase, cierre_forzado_huella="huella",
+                          evidencia=("comprobado",))
+        reabierto = reducir(cerrado, {"kind": "orden", "data": {
+            "accion": "reabrir", "fase": fase.id, "cierre": "huella",
+        }}, nuevo=False)
+        self.assertEqual(situacion_de(reabierto), Detenido(PorOrden("reabrir")))
+        parado = reducir(reabierto, {"kind": "orden", "data": {"accion": "parar"}}, nuevo=False)
+        self.assertEqual(
+            situacion_de(replace(parado, estado="detenido")),
+            Detenido(PorOrden("parar")),
+        )
+
+    def test_comprobar_recuerda_estados_tras_primera_divergencia(self) -> None:
+        evento, e = _entrega()
+        eventos_a = [evento, {"id": 2, "kind": "recibo"}, {"id": 3, "kind": "recibo"}]
+        terminado = replace(e, estado="terminado", escrituras=False,
+                            intentos_nuevos=False, evidencia=("si",))
+        trazas = [
+            Traza(estados=[e, replace(e, escrituras=False), terminado]),
+            Traza(estados=[replace(terminado, escrituras=True)]),
+        ]
+        with (
+            mock.patch.object(plegado, "ultimo_evento", return_value=3),
+            mock.patch.object(plegado, "leer_encargos",
+                              return_value=iter((("uno", eventos_a), ("dos", [evento])))),
+            mock.patch.object(plegado, "trazar", side_effect=trazas),
+            mock.patch.object(plegado, "INVARIANTES",
+                              (("datos_dependen_del_estado",
+                                dict(INVARIANTES)["datos_dependen_del_estado"]),)),
+        ):
+            resultado = plegado.comprobar(Reductor(reducir, ("recibido", "terminado")),
+                                          Path("registro.sqlite"))
+        self.assertEqual(
+            [(v.invariante, v.encargo) for v in resultado.violaciones],
+            [("datos_dependen_del_estado", "uno"),
+             ("datos_dependen_del_estado", "dos")],
         )
 
 
