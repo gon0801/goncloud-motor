@@ -613,6 +613,14 @@ class CorpusPlegado(unittest.TestCase):
 
             sano = verificar(RAIZ)
             self.assertEqual(sano.returncode, 0, sano.stdout + sano.stderr)
+            ruta_meta = corpus / "meta.json"
+            meta_sana = ruta_meta.read_text(encoding="utf-8")
+            meta_incompleta = json.loads(meta_sana)
+            meta_incompleta["descartados"] = 2
+            ruta_meta.write_text(json.dumps(meta_incompleta), encoding="utf-8")
+            descuadre = verificar(RAIZ)
+            self.assertNotEqual(descuadre.returncode, 0, descuadre.stdout)
+            ruta_meta.write_text(meta_sana, encoding="utf-8")
             copia = raiz / "copia"
             shutil.copytree(RAIZ / "motor", copia / "motor")
             dominio = copia / "motor" / "encargos" / "dominio.py"
@@ -636,18 +644,26 @@ class CorpusPlegado(unittest.TestCase):
     def test_generar_limpia_un_worktree_de_corpus_sin_carpeta(self) -> None:
         from tools import corpus_plegado
 
-        with tempfile.TemporaryDirectory(prefix="corpus-ref-") as temporal:
+        with (tempfile.TemporaryDirectory(prefix="corpus-ref-") as temporal,
+              tempfile.TemporaryDirectory(prefix="otro-ref-") as ajeno,
+              tempfile.TemporaryDirectory(prefix="corpus-ref-") as nombre_alterno,
+              tempfile.TemporaryDirectory(prefix="corpus-ref-") as activo):
             arbol = Path(temporal) / "arbol"
-            subprocess.run(
-                ["git", "-C", str(RAIZ), "worktree", "add", "--detach", str(arbol), "HEAD"],
-                check=True, capture_output=True,
-            )
-            shutil.rmtree(arbol)
+            ajenos = (Path(ajeno) / "arbol", Path(nombre_alterno) / "otro")
+            vivo = Path(activo) / "arbol"
+            for ruta in (arbol, *ajenos, vivo):
+                subprocess.run(
+                    ["git", "-C", str(RAIZ), "worktree", "add", "--detach", str(ruta), "HEAD"],
+                    check=True, capture_output=True,
+                )
+            for ruta in (arbol, *ajenos):
+                shutil.rmtree(ruta)
             try:
                 registrados = subprocess.check_output(
                     ["git", "-C", str(RAIZ), "worktree", "list", "--porcelain"], text=True,
                 )
-                self.assertIn(str(arbol), registrados)
+                for ruta in (arbol, *ajenos, vivo):
+                    self.assertIn(str(ruta), registrados)
                 with (mock.patch.object(corpus_plegado.subprocess, "check_output",
                                         side_effect=RuntimeError("fin del ensayo")),
                       mock.patch.object(corpus_plegado.tempfile, "gettempdir",
@@ -660,11 +676,14 @@ class CorpusPlegado(unittest.TestCase):
                 ).stdout
                 self.assertNotIn(str(arbol), registrados)
                 self.assertIn(str(RAIZ), registrados)
+                for ruta in (*ajenos, vivo):
+                    self.assertIn(str(ruta), registrados)
             finally:
-                subprocess.run(
-                    ["git", "-C", str(RAIZ), "worktree", "remove", "--force", str(arbol)],
-                    check=False, capture_output=True,
-                )
+                for ruta in (arbol, *ajenos, vivo):
+                    subprocess.run(
+                        ["git", "-C", str(RAIZ), "worktree", "remove", "--force", str(ruta)],
+                        check=False, capture_output=True,
+                    )
 
     def test_generar_reintenta_solo_el_fallo_ajeno_y_anota_el_resultado(self) -> None:
         from tools import corpus_plegado
