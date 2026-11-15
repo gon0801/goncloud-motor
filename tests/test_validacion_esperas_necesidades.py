@@ -4,7 +4,7 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
-from motor.encargos.dominio import TransicionIlegal, reducir
+from motor.encargos.dominio import Fase, TransicionIlegal, reducir
 from motor.encargos.reductor import TABLA
 
 ESPERAS = set("""
@@ -25,6 +25,36 @@ def _pedido():
 
 
 class ValidacionEsperasNecesidades(unittest.TestCase):
+    def test_ajustes_no_impiden_cerrar_fase_intermedia_ni_esperar_despliegue(self) -> None:  # no-roja-en-base: preserva los retornos previos al cierre terminal
+        e = _pedido()
+        intermedia = replace(
+            e, fases=(Fase("a", "a"), Fase("b", "b")),
+            fase_activa="a", ajustes=("ajuste",),
+        )
+        pendiente = replace(
+            e,
+            entrega=replace(e.entrega, nivel="desplegado"),
+            fases=(
+                Fase("a", "a", ultimo_paso_entrega="desplegado"),
+                Fase(
+                    "b", "b", estado="bloqueada", evidencia="bloqueo",
+                    bloqueo_causa="falla", ultimo_paso_entrega="integrado",
+                    requiere_despliegue=True, despliegue_espera_en="mañana",
+                ),
+            ),
+            fase_activa="a", ajustes=("ajuste",),
+        )
+        for nombre, previo, fase, siguiente in (
+            ("intermedia", intermedia, "b", "trabajar la fase b"),
+            ("despliegue", pendiente, "a", "esperar la conciliación del despliegue pendiente"),
+        ):
+            with self.subTest(caso=nombre):
+                resultado = reducir(previo, {"kind": "comprobacion", "data": {
+                    "clase": "confirmado", "evidencia": "ok", "ajustes_vistos": 0,
+                }}, nuevo=True)
+                self.assertEqual((resultado.estado, resultado.fase_activa, resultado.siguiente),
+                                 ("recibido", fase, siguiente))
+
     def test_validadores_en_las_filas_que_antes_lanzaban(self) -> None:
         con_validacion = {
             "afirmacion", "comprobacion", "efecto", "espera", "incorporado",
