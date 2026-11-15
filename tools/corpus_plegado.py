@@ -17,6 +17,8 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parents[1]
 FALLO_BASE = ("tests/test_rama_fase.py::UnFalloDeGitRepetidoPideAyuda"
               "::test_un_ajuste_del_propietario_vuelve_a_intentarlo")
+MIN_ENCARGOS_REALES = 900
+MIN_EVENTOS_REALES = 10000
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
@@ -30,6 +32,13 @@ def _fallos_pytest(codigo: int, salida: str) -> list[str]:
         return fallos
     raise RuntimeError(f"pytest no produjo el corpus esperado: salida {codigo}, "
                        f"fallos {fallos}, errores {errores}")
+
+
+def _comprobar_cobertura(encargos: int, eventos: int) -> None:
+    if encargos < MIN_ENCARGOS_REALES or eventos < MIN_EVENTOS_REALES:
+        raise RuntimeError(f"corpus insuficiente antes de sembrar: {encargos} encargos y "
+                           f"{eventos} eventos; mínimo {MIN_ENCARGOS_REALES} encargos y "
+                           f"{MIN_EVENTOS_REALES} eventos")
 
 
 def _json(ruta: Path, valor: object) -> None:
@@ -215,7 +224,10 @@ def generar(ref: str, salida: Path) -> int:
             if fallos:
                 print(f"La batería en la base falló solo en {fallos[0]}.",
                       file=sys.stderr)
-            _, descartados, _, presentes = _referencia(salida, arbol, ref)
+            encargos_reales, descartados, eventos_reales, presentes = _referencia(
+                salida, arbol, ref,
+            )
+            _comprobar_cobertura(encargos_reales, eventos_reales)
             _descartar(salida)
             faltan = _kinds(arbol) - presentes
             if faltan:
@@ -254,9 +266,14 @@ def verificar(salida: Path, raiz: Path) -> int:
     reductor = cargar_reductor(raiz)
     with (salida / "meta.json").open(encoding="utf-8") as archivo:
         meta = json.load(archivo)
-    if (meta.get("pytest_exit", 0) not in (0, 1)
-        or meta.get("pytest_exit", 0) == 1 and meta.get("pytest_fallos") != [FALLO_BASE]
-        or meta.get("pytest_exit", 0) == 0 and meta.get("pytest_fallos", [])):
+    faltan = {"pytest_exit", "pytest_fallos", "archivos", "encargos",
+              "eventos", "rechazos"} - meta.keys()
+    if faltan:
+        print(f"faltan metadatos: {', '.join(sorted(faltan))}")
+        return 1
+    if (meta["pytest_exit"] not in (0, 1)
+        or meta["pytest_exit"] == 1 and meta["pytest_fallos"] != [FALLO_BASE]
+        or meta["pytest_exit"] == 0 and meta["pytest_fallos"]):
         print("el corpus proviene de una batería con fallos no aceptados")
         return 1
     iguales = total = aceptados = sin_referencia = 0
@@ -324,15 +341,14 @@ def verificar(salida: Path, raiz: Path) -> int:
                 else:
                     rechazos_cambiados += 1
                     print(f"{intento['archivo']}: cambió el rechazo {intento['tipo']}")
-    esperados_rechazos = meta.get("rechazos", rechazos + rechazos_cambiados)
-    print(f"acepta {aceptados} de {meta.get('eventos', aceptados)}; "
-          f"rechaza {rechazos} de {esperados_rechazos}; "
-          f"estado igual en {iguales} de {total}")
+    print(f"acepta {aceptados} de {meta['eventos']}; "
+          f"rechaza {rechazos} de {meta['rechazos']}; "
+          f"estado igual en {iguales} de {meta['encargos']}")
     return int(iguales != total or sin_referencia != 0
-               or len(registros) != meta.get("archivos", len(registros))
-               or total != meta.get("encargos", total)
-               or aceptados != meta.get("eventos", aceptados)
-               or rechazos_cambiados != 0 or rechazos != esperados_rechazos)
+               or len(registros) != meta["archivos"]
+               or total != meta["encargos"]
+               or aceptados != meta["eventos"]
+               or rechazos_cambiados != 0 or rechazos != meta["rechazos"])
 
 
 def main() -> int:
