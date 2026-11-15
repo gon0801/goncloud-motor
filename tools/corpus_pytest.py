@@ -128,12 +128,14 @@ def pytest_configure() -> None:
             if (isinstance(args, (list, tuple)) and len(args) > 1
                     and str(args[1]) == "-c"
                     and Path(str(args[0])).resolve() == Path(sys.executable).resolve()):
-                entorno = dict(opciones.get("env") or os.environ)
-                entorno["PYTHONPATH"] = (
-                    str(Path(__file__).resolve().parents[1])
-                    + os.pathsep + entorno.get("PYTHONPATH", "")
-                )
-                opciones["env"] = entorno
+                original = opciones.get("env")
+                entorno = dict(os.environ if original is None else original)
+                if "MOTOR_CORPUS_DIR" in entorno:
+                    entorno["PYTHONPATH"] = (
+                        str(Path(__file__).resolve().parents[1])
+                        + os.pathsep + entorno.get("PYTHONPATH", "")
+                    )
+                    opciones["env"] = entorno
             super().__init__(args, *posicional, **opciones)
 
     subprocess.Popen = PopenCorpus
