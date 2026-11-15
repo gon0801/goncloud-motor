@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from . import detencion, esperas, fase, intento, necesidades, retirados, revision, pedido
+from . import validacion_intento
 
 if TYPE_CHECKING:
     from ..dominio import Encargo
@@ -18,6 +19,12 @@ class Fila:
     alcance: Literal["encargo", "fase", "intento"] = "encargo"
     corta_series: bool = True
     marcador: bool = False
+    validar: Callable[[Encargo, dict], None] | None = None
+
+    def reducir(self, e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
+        if nuevo and self.validar is not None:
+            self.validar(e, d)
+        return self.aplicar(e, d, hora, nuevo)
 
 
 TABLA: dict[str, Fila] = {
@@ -31,7 +38,7 @@ TABLA: dict[str, Fila] = {
     "ajuste": Fila(pedido.ajuste, alcance="fase"),
     "procedimiento": Fila(pedido.procedimiento),
     "migracion": Fila(pedido.migracion),
-    'actividad': Fila(intento.actividad, alcance="intento"),
+    'actividad': Fila(intento.actividad, alcance="intento", validar=validacion_intento.validar_actividad),
     'afirmacion': Fila(esperas.afirmacion),
     'arbol': Fila(detencion.arbol),
     'autoridad': Fila(necesidades.autoridad),
@@ -44,13 +51,13 @@ TABLA: dict[str, Fila] = {
     'ci_revision_rojo': Fila(retirados.registrar),
     'ci_sondeo': Fila(revision.ci_sondeo, corta_series=False, marcador=True),
     'cierre_forzado': Fila(fase.cierre_forzado, alcance="fase"),
-    'colgada': Fila(intento.colgada, alcance="intento"),
+    'colgada': Fila(intento.colgada, alcance="intento", validar=validacion_intento.validar_colgada),
     'comprobacion': Fila(esperas.comprobacion),
     'comprobaciones_supervisor': Fila(revision.comprobaciones_supervisor, alcance="fase"),
     'concesion': Fila(retirados.registrar),
     'conciliacion_fase': Fila(fase.conciliacion_fase, alcance="fase", corta_series=False, marcador=True),
-    'conductor': Fila(intento.conductor, alcance="intento"),
-    'conductor_fase': Fila(intento.conductor_fase, alcance="fase"),
+    'conductor': Fila(intento.conductor, alcance="intento", validar=validacion_intento.validar_conductor),
+    'conductor_fase': Fila(intento.conductor_fase, alcance="fase", validar=validacion_intento.validar_conductor_fase),
     'decision': Fila(necesidades.decision),
     'deepseek_cerrado': Fila(revision.deepseek_cerrado, corta_series=False, marcador=True),
     'deepseek_lectura': Fila(revision.deepseek_lectura, corta_series=False, marcador=True),
@@ -77,7 +84,7 @@ TABLA: dict[str, Fila] = {
     'inspeccion_solicitud': Fila(revision.inspeccion_solicitud, alcance="fase"),
     'instrumento_fallo': Fila(necesidades.instrumento_fallo, corta_series=False),
     'instrumento_no_disponible': Fila(necesidades.instrumento_no_disponible),
-    'intento_abierto': Fila(intento.intento_abierto, alcance="intento"),
+    'intento_abierto': Fila(intento.intento_abierto, alcance="intento", validar=validacion_intento.validar_intento_abierto),
     'intento_cerrado': Fila(intento.intento_cerrado, alcance="intento"),
     'lectura_fallida': Fila(fase.lectura_fallida, alcance="fase"),
     'nivel_efectivo': Fila(fase.nivel_efectivo),
@@ -90,7 +97,7 @@ TABLA: dict[str, Fila] = {
     'producto_listo': Fila(fase.producto_listo, alcance="fase"),
     'quietud': Fila(necesidades.quietud),
     'quietud_vigilada': Fila(esperas.quietud_vigilada, corta_series=False, marcador=True),
-    'reserva': Fila(intento.reserva, alcance="intento", corta_series=False),
+    'reserva': Fila(intento.reserva, alcance="intento", corta_series=False, validar=validacion_intento.validar_reserva),
     'reserva_cerrada': Fila(intento.reserva_cerrada, alcance="intento", corta_series=False),
     'resolucion': Fila(revision.resolucion, alcance="fase"),
     'respuesta': Fila(revision.respuesta, alcance="fase"),
