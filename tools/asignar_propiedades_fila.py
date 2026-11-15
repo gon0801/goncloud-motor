@@ -16,13 +16,17 @@ ENTRE_REINTENTOS = frozenset((
     "plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
     "contexto_entrega", "sesion_perdida",
 ))
-LECTURAS_DE_ENCARGO = frozenset(("deepseek_lectura", "deepseek_cerrado", "ci_sondeo"))
+HECHOS_DE_ENCARGO = frozenset((
+    "deepseek_lectura", "deepseek_cerrado", "ci_sondeo", "fases",
+    "nivel_efectivo", "observacion_supervisor", "hallazgo_fuera_de_alcance",
+    "resultado_directo",
+))
 
 
 def alcance(kind: str, manejador: str) -> str:
     tema = manejador.split(".", 1)[0]
     if kind in {"ajuste", "conductor_fase"} or (
-        tema in {"fase", "revision"} and kind not in LECTURAS_DE_ENCARGO
+        tema in {"fase", "revision"} and kind not in HECHOS_DE_ENCARGO
     ):
         return "fase"
     if tema == "intento":
