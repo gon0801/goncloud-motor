@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 from .catalogo_agentes import identidad_modelo
+from .reductor import ENTRE_REINTENTOS, EVENTOS_DE_MARCADOR, TABLA
 
 ESTADOS = (
     "recibido",
@@ -33,29 +34,10 @@ OrdenParada = Literal["", "parar", "cancelar", "fallo_interno"]
 
 # Los marcadores son observaciones del motor, no hechos del encargo: no cortan
 # las series de reintentos ni cuentan como movimiento del encargo.
-_EVENTOS_DE_MARCADOR = (
-    "incorporado",
-    "quietud_vigilada",
-    "deepseek_lectura",
-    "deepseek_cerrado",
-    "ci_sondeo",
-    "excepcion",
-    "conciliacion_fase",
-)
+_EVENTOS_DE_MARCADOR: tuple[str, ...] = EVENTOS_DE_MARCADOR
 
 # Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
-_ENTRE_REINTENTOS = (
-    "plazo",
-    "espera",
-    "instrumento_fallo",
-    "reserva",
-    "reserva_cerrada",
-    "contexto_entrega",
-    # La recuperación de la copia de sesión no es un suceso distinto entre
-    # esperas: perder la sesión acompaña a las notas de copia, que tampoco
-    # cortan la serie.
-    "sesion_perdida",
-)
+_ENTRE_REINTENTOS: tuple[str, ...] = ENTRE_REINTENTOS
 
 _NOTA_COPIA_SESION = "copia de sesión "
 
@@ -1839,8 +1821,6 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
     if estado is None:
         raise TransicionIlegal("no hay encargo")
     e = estado
-    from .reductor import TABLA
-
     fila = TABLA.get(kind)
     if fila is None:
         raise TransicionIlegal(f"evento desconocido: {kind}")
