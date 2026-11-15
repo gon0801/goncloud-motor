@@ -547,7 +547,85 @@ class Comparar(_RepoFalso):
                       texto.stdout.decode("utf-8").splitlines())
 
 
+def _corpus_sin_entrega(raiz: Path) -> Path:
+    corpus = raiz / "corpus"
+    (corpus / "registros").mkdir(parents=True)
+    (corpus / "rechazos.jsonl").write_text("", encoding="utf-8")
+    ruta = corpus / "registros" / "uno.sqlite"
+    with sqlite3.connect(ruta) as db:
+        db.execute(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
+            " encargo TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, ukey TEXT UNIQUE)"
+        )
+        db.execute(
+            "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
+            ("", "sin_entrega", "recibo", "{}", "recibo:sin_entrega"),
+        )
+    return corpus
+
+
 class CorpusPlegado(unittest.TestCase):
+    def test_referencia_conserva_los_descartados_tras_la_semilla(self) -> None:
+        from tools.corpus_plegado import _descartar, _referencia
+
+        with tempfile.TemporaryDirectory() as temporal:
+            corpus = _corpus_sin_entrega(Path(temporal))
+            _, descartados, _, _ = _referencia(corpus, RAIZ, "prueba")
+            self.assertEqual(descartados, 1)
+            with (corpus / "meta.json").open(encoding="utf-8") as archivo:
+                original = json.load(archivo)["descartados_detalle"]
+            self.assertEqual(original[0]["encargo"], "sin_entrega")
+            self.assertIn("no hay encargo", original[0]["fallo"]["error"])
+            _descartar(corpus)
+            _referencia(corpus, RAIZ, "prueba", descartados)
+            with (corpus / "meta.json").open(encoding="utf-8") as archivo:
+                self.assertEqual(json.load(archivo)["descartados_detalle"], original)
+
+    def test_verificar_detecta_descartado_que_empieza_a_plegar(self) -> None:
+        from tools.corpus_plegado import _descartar
+        from tools.plegado import leer_encargos, ultimo_evento
+
+        with tempfile.TemporaryDirectory() as temporal:
+            raiz = Path(temporal)
+            corpus = _corpus_sin_entrega(raiz)
+            registro = corpus / "registros" / "uno.sqlite"
+            secuencia = next(leer_encargos(registro, ultimo_evento(registro)))[1]
+            (corpus / "estado-base").mkdir()
+            (corpus / "estado-base" / "uno.json").write_text("{}", encoding="utf-8")
+            _descartar(corpus)
+            (corpus / "meta.json").write_text(json.dumps({
+                "ref": "prueba", "archivos": 1, "encargos": 0, "descartados": 1,
+                "eventos": 0, "rechazos": 0, "pytest_exit": 0, "pytest_fallos": [],
+                "descartados_detalle": [{
+                    "archivo": "uno.sqlite", "encargo": "sin_entrega", "eventos": secuencia,
+                    "fallo": {"evento": secuencia[0]["id"], "tipo": "recibo",
+                              "excepcion": "TransicionIlegal",
+                              "error": "TransicionIlegal: no hay encargo"},
+                }],
+            }), encoding="utf-8")
+
+            def verificar(arbol: Path) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [sys.executable, str(RAIZ / "tools" / "corpus_plegado.py"),
+                     "verificar", str(corpus), "--raiz", str(arbol)],
+                    capture_output=True, text=True, check=False,
+                )
+
+            sano = verificar(RAIZ)
+            self.assertEqual(sano.returncode, 0, sano.stdout + sano.stderr)
+            copia = raiz / "copia"
+            shutil.copytree(RAIZ / "motor", copia / "motor")
+            dominio = copia / "motor" / "encargos" / "dominio.py"
+            texto = dominio.read_text(encoding="utf-8")
+            original = '        raise TransicionIlegal("no hay encargo")'
+            mutado = ('        return _reducir_evento(None, {"kind": "entrega", "data": '
+                      '{"id": "x", "clave": "x", "huella": "h", "texto": "x"}}, nuevo)')
+            self.assertIn(original, texto)
+            dominio.write_text(texto.replace(original, mutado, 1), encoding="utf-8")
+            resultado = verificar(copia)
+            self.assertNotEqual(resultado.returncode, 0, resultado.stdout)
+            self.assertIn("sin_entrega", resultado.stdout)
+
     def test_generar_limpia_un_worktree_de_corpus_sin_carpeta(self) -> None:
         from tools import corpus_plegado
 
