@@ -229,25 +229,22 @@ def generar(ref: str, salida: Path) -> int:
         try:
             shutil.copy2(RAIZ / "tools" / "corpus_pytest.py", arbol / "tools" / "corpus_pytest.py")
             shutil.copy2(RAIZ / "tools" / "corpus_sitecustomize.py", arbol / "sitecustomize.py")
+            entorno_pytest = {
+                **os.environ, "TMPDIR": os.path.realpath(tempfile.gettempdir()),
+                "MOTOR_CORPUS_DIR": str(salida.resolve()),
+                "MOTOR_CORPUS_REPO": str(arbol.resolve()),
+            }
             proceso = subprocess.run(
                 [sys.executable, "-m", "pytest", "-q", "-n", "8", "-p",
                  "tools.corpus_pytest", "tests"],
-                cwd=arbol, env={
-                    **os.environ, "MOTOR_CORPUS_DIR": str(salida.resolve()),
-                    "MOTOR_CORPUS_REPO": str(arbol.resolve()),
-                },
+                cwd=arbol, env=entorno_pytest,
                 capture_output=True, text=True, check=False,
             )
             with os.fdopen(os.open(salida / "pytest-base.log", os.O_WRONLY | os.O_CREAT, 0o600),
                            "w", encoding="utf-8") as archivo:
                 archivo.write(proceso.stdout)
                 archivo.write(proceso.stderr)
-            fallos, reintentados = _bateria_con_reintento(
-                proceso, arbol, {
-                    **os.environ, "MOTOR_CORPUS_DIR": str(salida.resolve()),
-                    "MOTOR_CORPUS_REPO": str(arbol.resolve()),
-                },
-            )
+            fallos, reintentados = _bateria_con_reintento(proceso, arbol, entorno_pytest)
             if fallos:
                 print(f"La batería en la base falló solo en {fallos[0]}.",
                       file=sys.stderr)
