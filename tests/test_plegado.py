@@ -548,7 +548,7 @@ class Comparar(_RepoFalso):
 
 class CorpusPlegado(unittest.TestCase):
     def test_una_falla_ajena_de_pytest_invalida_el_corpus(self) -> None:
-        from tools.corpus_plegado import _fallos_pytest
+        from tools.corpus_plegado import _comprobar_cobertura, _fallos_pytest
 
         conocido = ("tests/test_rama_fase.py::UnFalloDeGitRepetidoPideAyuda"
                     "::test_un_ajuste_del_propietario_vuelve_a_intentarlo")
@@ -558,6 +558,11 @@ class CorpusPlegado(unittest.TestCase):
             _fallos_pytest(1, "FAILED tests/test_otro.py::test_roto\n1 failed, 2800 passed")
         with self.assertRaises(RuntimeError):
             _fallos_pytest(1, "1 failed, 2800 passed")
+        _comprobar_cobertura(900, 10000)
+        with self.assertRaises(RuntimeError):
+            _comprobar_cobertura(1, 10000)
+        with self.assertRaises(RuntimeError):
+            _comprobar_cobertura(900, 1)
 
     def test_el_plugin_inyecta_el_bootstrap_en_un_hijo_sin_pythonpath(self) -> None:
         with tempfile.TemporaryDirectory() as temporal:
@@ -719,6 +724,11 @@ class CorpusPlegado(unittest.TestCase):
             }) + "\n", encoding="utf-8")
             (corpus / "meta.json").write_text(json.dumps({
                 "ref": "prueba", "kinds": ["entrega", "espera", "plazo"],
+                "pytest_exit": 1, "pytest_fallos": [
+                    "tests/test_rama_fase.py::UnFalloDeGitRepetidoPideAyuda"
+                    "::test_un_ajuste_del_propietario_vuelve_a_intentarlo",
+                ],
+                "archivos": 1, "encargos": 1, "eventos": 3, "rechazos": 1,
             }), encoding="utf-8")
 
             def verificar(arbol: Path) -> subprocess.CompletedProcess[str]:
@@ -733,6 +743,18 @@ class CorpusPlegado(unittest.TestCase):
             self.assertIn("estado igual en 1 de 1", sano.stdout)
             ruta_meta = corpus / "meta.json"
             meta_sana = ruta_meta.read_text(encoding="utf-8")
+            meta_sin_fallos = {**json.loads(meta_sana), "pytest_exit": 0, "pytest_fallos": []}
+            ruta_meta.write_text(json.dumps(meta_sin_fallos), encoding="utf-8")
+            self.assertEqual(verificar(RAIZ).returncode, 0)
+            for campo in ("pytest_exit", "pytest_fallos", "archivos",
+                          "encargos", "eventos", "rechazos"):
+                meta_incompleta = json.loads(meta_sana)
+                del meta_incompleta[campo]
+                ruta_meta.write_text(json.dumps(meta_incompleta), encoding="utf-8")
+                incompleto = verificar(RAIZ)
+                self.assertNotEqual(incompleto.returncode, 0, campo)
+                self.assertIn("metadatos", incompleto.stdout)
+            ruta_meta.write_text(meta_sana, encoding="utf-8")
             meta_rota = json.loads(meta_sana)
             meta_rota.update(pytest_exit=1, pytest_fallos=["tests/test_otro.py::test_roto"])
             ruta_meta.write_text(json.dumps(meta_rota), encoding="utf-8")
@@ -749,7 +771,7 @@ class CorpusPlegado(unittest.TestCase):
             ruta_rechazos.write_text((json.dumps(alterado) + "\n") * 256, encoding="utf-8")
             muchos_rechazos = verificar(RAIZ)
             self.assertNotEqual(muchos_rechazos.returncode, 0, muchos_rechazos.stdout)
-            self.assertIn("rechaza 0 de 256", muchos_rechazos.stdout)
+            self.assertEqual(muchos_rechazos.stdout.count("cambió el rechazo"), 256)
             ruta_rechazos.write_text(original, encoding="utf-8")
             registro_corpus = corpus / "registros" / "uno.sqlite"
             copia_sana = raiz / "uno-sano.sqlite"
