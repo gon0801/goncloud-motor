@@ -5,9 +5,9 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos.dominio import Fase, TransicionIlegal, reducir
+from motor.encargos.dominio import Efecto, Fase, TransicionIlegal, reducir, vista
 from tools import plegado
-from tools.plegado import INVARIANTES, Reductor, Traza
+from tools.plegado import Reductor, Traza
 
 
 def _entrega() -> tuple[dict, object]:
@@ -63,9 +63,62 @@ class SituacionComoLectura(unittest.TestCase):
             with self.subTest(mensaje=mensaje), self.assertRaisesRegex(EstadoIncoherente, mensaje):
                 situacion_de(replace(e, **cambios))
 
+    def test_vista_delega_sus_errores_y_contencion_muestra_la_minima(self) -> None:
+        from motor.encargos.contencion import vista_o_minima
+        from motor.encargos.situacion import EstadoIncoherente
+
+        _, e = _entrega()
+        roto = replace(e, estado="terminado")
+        with self.assertRaisesRegex(EstadoIncoherente, "terminado sin evidencia"):
+            vista(roto)
+        self.assertEqual(vista_o_minima(roto), {"encargo": e.id, "estado": "terminado"})
+
+    def test_variantes_conservan_datos_reales_de_cada_estado(self) -> None:
+        from motor.encargos.situacion import situacion_de
+
+        _, e = _entrega()
+        casos = (
+            ({"estado": "ejecutando", "fase_activa": "F", "intento": "I",
+              "reserva": True, "ultimo_hecho": "en marcha"},
+             {"estado": "ejecutando", "fase": "F", "intento": "I", "proc": None,
+              "reservado": True}),
+            ({"estado": "esperando_reintento", "motivo": "red", "reanuda_en": "mañana"},
+             {"estado": "esperando_reintento", "motivo": "red", "reanuda_en": "mañana"}),
+            ({"estado": "conciliando", "efectos": (Efecto("ef", "d", "op", "c", "incierto"),)},
+             {"estado": "conciliando", "efecto": "ef"}),
+            ({"estado": "deteniendo", "orden_parada": "cancelar",
+              "intento_interrumpido": True},
+             {"estado": "deteniendo", "orden": {"accion": "cancelar"},
+              "interrumpido": True}),
+            ({"estado": "detenido", "orden_parada": "fallo_interno"},
+             {"estado": "detenido", "causa": {
+                 "kind": "", "clase_ukey": "", "rechazo": "",
+             }}),
+        )
+        for cambios, esperado in casos:
+            with self.subTest(estado=cambios["estado"]):
+                self.assertEqual(asdict(situacion_de(replace(e, **cambios))), esperado)
+
+    def test_terminado_con_fases_completas_y_pendientes_no_es_parcial_vacio(self) -> None:
+        from motor.encargos.situacion import Completo, Parcial, Terminado, situacion_de
+
+        _, e = _entrega()
+        fase = Fase("F", "resultado", estado="preparada", evidencia="comprobado")
+        cerrado = replace(e, estado="terminado", fases=(fase,), evidencia=("probado",),
+                          pendientes_entrega=("pendiente de entrega",))
+        self.assertTrue(vista(cerrado)["objetivo"]["completo"])
+        self.assertEqual(situacion_de(cerrado), Terminado(Completo(), None))
+        incompleto = replace(cerrado, fases=(Fase("F", "resultado"),),
+                             cierre_forzado_fase=fase, cierre_forzado_huella="h")
+        self.assertEqual(
+            asdict(situacion_de(incompleto)),
+            {"resultado": asdict(Parcial(("F",))), "forzado": {"fase": "F", "huella": "h"},
+             "estado": "terminado"},
+        )
+
     def test_comprobar_mide_incoherencias_y_dependencia_del_estado(self) -> None:
         evento, e = _entrega()
-        nombres = dict(INVARIANTES)
+        nombres = dict(plegado.INVARIANTES_COMPROBAR)
         self.assertIn("situacion_tipada", nombres)
         self.assertIn("datos_dependen_del_estado", nombres)
         reductor = Reductor(reducir, ("recibido",))
@@ -95,9 +148,9 @@ class SituacionComoLectura(unittest.TestCase):
             mock.patch.object(plegado, "leer_encargos",
                               return_value=iter((("uno", eventos), ("dos", eventos)))),
             mock.patch.object(plegado, "trazar", side_effect=trazas),
-            mock.patch.object(plegado, "INVARIANTES",
+            mock.patch.object(plegado, "INVARIANTES_COMPROBAR",
                               (("datos_dependen_del_estado",
-                                dict(INVARIANTES)["datos_dependen_del_estado"]),)),
+                                dict(plegado.INVARIANTES_COMPROBAR)["datos_dependen_del_estado"]),)),
         ):
             resultado = plegado.comprobar(Reductor(reducir, ("recibido",)), Path("registro.sqlite"))
         self.assertEqual(
@@ -139,9 +192,9 @@ class SituacionComoLectura(unittest.TestCase):
             mock.patch.object(plegado, "leer_encargos",
                               return_value=iter((("uno", eventos_a), ("dos", [evento])))),
             mock.patch.object(plegado, "trazar", side_effect=trazas),
-            mock.patch.object(plegado, "INVARIANTES",
+            mock.patch.object(plegado, "INVARIANTES_COMPROBAR",
                               (("datos_dependen_del_estado",
-                                dict(INVARIANTES)["datos_dependen_del_estado"]),)),
+                                dict(plegado.INVARIANTES_COMPROBAR)["datos_dependen_del_estado"]),)),
         ):
             resultado = plegado.comprobar(Reductor(reducir, ("recibido", "terminado")),
                                           Path("registro.sqlite"))
