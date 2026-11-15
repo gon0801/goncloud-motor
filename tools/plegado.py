@@ -55,6 +55,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, NoReturn
 
@@ -362,9 +363,11 @@ def _situacion_tipada(
 
 
 def _datos_dependen_del_estado(
-    _reductor: Reductor, eventos: Sequence[Evento], traza: Traza
+    _reductor: Reductor, eventos: Sequence[Evento], traza: Traza,
+    observados: dict[str, tuple[bool, bool, bool]] | None = None,
 ) -> tuple[Evento, str] | None:
-    observados: dict[str, tuple[bool, bool, bool]] = {}
+    if observados is None:
+        observados = {}
     for evento, e in zip(eventos, traza.estados, strict=False):
         datos = (e.escrituras, e.intentos_nuevos, bool(e.evidencia))
         previo = observados.setdefault(e.estado, datos)
@@ -392,10 +395,16 @@ def _plegado(encargo: str, eventos: Sequence[Evento], traza: Traza) -> Plegado:
 def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
     plegados: list[Plegado] = []
     violaciones: list[Violacion] = []
+    observados: dict[str, tuple[bool, bool, bool]] = {}
+    invariantes = tuple(
+        (nombre, partial(invariante, observados=observados)
+         if invariante is _datos_dependen_del_estado else invariante)
+        for nombre, invariante in INVARIANTES
+    )
     for encargo, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
         traza = trazar(reductor, eventos)
         plegados.append(_plegado(encargo, eventos, traza))
-        for nombre, invariante in INVARIANTES:
+        for nombre, invariante in invariantes:
             hallado = invariante(reductor, eventos, traza)
             if hallado is not None:
                 evento, detalle = hallado
