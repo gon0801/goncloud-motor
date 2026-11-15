@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..dominio import Encargo
+    from ..dominio import Encargo, Fase
 
 
 def leer_incorporado(d: dict) -> int | None:
@@ -26,6 +26,19 @@ def leer_quietud_vigilada(d: dict) -> tuple[int, int, float, float] | None:
         )
     except (TypeError, ValueError):
         return None
+
+
+def leer_cierre(
+    e: Encargo, fase: Fase, evidencia: str,
+) -> tuple[tuple[Fase, ...], Fase | None, tuple[Fase, ...]]:
+    from ..dominio import _fase_disponible, _preparar_con_entrada, replace
+
+    preparada = replace(fase, estado="preparada", evidencia=evidencia)
+    firma = fase.producto.firma if fase.producto else ""
+    fases = _preparar_con_entrada(e.fases, preparada, firma)
+    disponible = _fase_disponible(fases)
+    pendientes = tuple(f for f in fases if f.estado != "preparada")
+    return fases, disponible, pendientes
 
 
 def validar_incorporado(e: Encargo, d: dict) -> None:
@@ -64,7 +77,10 @@ def validar_efecto(e: Encargo, d: dict) -> None:
 
 
 def validar_comprobacion(e: Encargo, d: dict) -> None:
-    from ..dominio import TransicionIlegal, asegurar_fase, nivel_cumplido
+    from ..dominio import (
+        TransicionIlegal, _espera_despliegue_pendiente, asegurar_fase,
+        nivel_cumplido, queda_trabajo,
+    )
 
     clase = d.get("clase")
     if clase not in (
@@ -88,6 +104,10 @@ def validar_comprobacion(e: Encargo, d: dict) -> None:
     if e.entrega.nivel != "terminado" and not nivel_cumplido(e):
         return
     if e.estado in ("cancelado", "deteniendo", "detenido"):
+        return
+    fases, disponible, pendientes = leer_cierre(e, e.fase_actual, str(d["evidencia"]))
+    if (disponible is not None or pendientes and queda_trabajo(fases)
+        or _espera_despliegue_pendiente(e, fases)):
         return
     # Quien cierra anota cuántas correcciones cubre (vistas o dichas en la
     # nota). Una que entró después no la atendió nadie: el registro rechaza

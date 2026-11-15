@@ -3716,6 +3716,8 @@ def _preparar_con_entrada(
 
 
 def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encargo:
+    from .reductor.validacion_esperas import leer_cierre
+
     clase = d.get("clase")
     if clase == "producto_aprobado":
         return replace(
@@ -3746,12 +3748,8 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 ultimo_hecho=evidencia,
                 siguiente="completar la entrega externa autorizada",
             )
-        preparada = replace(fase, estado="preparada", evidencia=evidencia)
-        firma = fase.producto.firma if fase.producto else ""
-        fases = _preparar_con_entrada(e.fases, preparada, firma)
-        disponible = _fase_disponible(fases)
+        fases, disponible, pendientes = leer_cierre(e, fase, evidencia)
         siguiente = disponible.id if disponible is not None else ""
-        pendientes = [f for f in fases if f.estado != "preparada"]
         if e.estado in ("cancelado", "deteniendo", "detenido"):
             activa = siguiente or (pendientes[0].id if pendientes else fase.id)
             resultado = replace(
