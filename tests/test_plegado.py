@@ -553,6 +553,8 @@ class CorpusPlegado(unittest.TestCase):
 
         ajeno = "tests/test_canario_lanzador.py::LanzadorEnUnaMaquinaDePrueba::test_repetir_la_corrida"
         with tempfile.TemporaryDirectory() as temporal:
+            (Path(temporal) / "hijo").mkdir()
+            alias = str(Path(temporal) / "hijo" / "..")
             for falla_reintento in (False, True):
                 with self.subTest(falla_reintento=falla_reintento):
                     vistos = []
@@ -591,7 +593,10 @@ class CorpusPlegado(unittest.TestCase):
                           mock.patch.object(corpus_plegado, "_referencia",
                                             side_effect=referencia),
                           mock.patch.object(corpus_plegado, "_descartar"),
-                          mock.patch.object(corpus_plegado, "_kinds", return_value={"entrega"})):
+                          mock.patch.object(corpus_plegado, "_kinds", return_value={"entrega"}),
+                          mock.patch.object(corpus_plegado.tempfile, "gettempdir",
+                                            return_value=alias),
+                          mock.patch.dict(os.environ, {"TMPDIR": alias})):
                         if falla_reintento:
                             with self.assertRaises(RuntimeError):
                                 corpus_plegado.generar("origin/main", destino)
@@ -604,6 +609,8 @@ class CorpusPlegado(unittest.TestCase):
                     self.assertEqual(vistos[1][0][-1], ajeno)
                     self.assertNotIn("-p", vistos[1][0])
                     self.assertNotIn("MOTOR_CORPUS_DIR", vistos[1][1])
+                    self.assertEqual(vistos[0][1]["TMPDIR"], str(Path(temporal).resolve()))
+                    self.assertEqual(vistos[1][1]["TMPDIR"], str(Path(temporal).resolve()))
 
     def test_generar_frena_antes_de_descartar_y_sembrar_sin_cobertura_real(self) -> None:
         from tools import corpus_plegado
