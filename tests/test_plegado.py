@@ -548,6 +548,63 @@ class Comparar(_RepoFalso):
 
 
 class CorpusPlegado(unittest.TestCase):
+    def test_generar_reintenta_solo_el_fallo_ajeno_y_anota_el_resultado(self) -> None:
+        from tools import corpus_plegado
+
+        ajeno = "tests/test_canario_lanzador.py::LanzadorEnUnaMaquinaDePrueba::test_repetir_la_corrida"
+        with tempfile.TemporaryDirectory() as temporal:
+            for falla_reintento in (False, True):
+                with self.subTest(falla_reintento=falla_reintento):
+                    vistos = []
+
+                    def correr(args, *, falla_reintento=falla_reintento, vistos=vistos, **opciones):
+                        if args[3:5] == ["worktree", "add"]:
+                            (Path(args[-2]) / "tools").mkdir(parents=True)
+                            return subprocess.CompletedProcess(args, 0, "", "")
+                        if args[3:5] == ["worktree", "remove"]:
+                            return subprocess.CompletedProcess(args, 0, "", "")
+                        if args[1:3] == ["-m", "pytest"]:
+                            vistos.append((args, opciones["env"]))
+                            if "-p" in args:
+                                return subprocess.CompletedProcess(
+                                    args, 1, f"FAILED {corpus_plegado.FALLO_BASE}\n"
+                                    f"FAILED {ajeno}\n2 failed, 2800 passed", "",
+                                )
+                            return subprocess.CompletedProcess(
+                                args, int(falla_reintento),
+                                f"FAILED {ajeno}\n1 failed" if falla_reintento else "1 passed", "",
+                            )
+                        raise AssertionError(args)
+
+                    def referencia(salida, raiz, ref, descartados=0):
+                        corpus_plegado._json(salida / "meta.json", {
+                            "ref": ref, "archivos": 1, "encargos": 1000,
+                            "descartados": descartados, "eventos": 12000,
+                            "rechazos": 0, "kinds": ["entrega"],
+                        })
+                        return 1000, descartados, 12000, {"entrega"}
+
+                    destino = Path(temporal) / f"corpus-{int(falla_reintento)}"
+                    with (mock.patch.object(corpus_plegado.subprocess, "check_output",
+                                            return_value="base\n"),
+                          mock.patch.object(corpus_plegado.subprocess, "run", side_effect=correr),
+                          mock.patch.object(corpus_plegado, "_referencia",
+                                            side_effect=referencia),
+                          mock.patch.object(corpus_plegado, "_descartar"),
+                          mock.patch.object(corpus_plegado, "_kinds", return_value={"entrega"})):
+                        if falla_reintento:
+                            with self.assertRaises(RuntimeError):
+                                corpus_plegado.generar("origin/main", destino)
+                        else:
+                            self.assertEqual(corpus_plegado.generar("origin/main", destino), 0)
+                            meta = json.loads((destino / "meta.json").read_text(encoding="utf-8"))
+                            self.assertEqual(meta["pytest_fallos"], [corpus_plegado.FALLO_BASE])
+                            self.assertEqual(meta["pytest_reintentos"], [ajeno])
+                    self.assertEqual(len(vistos), 2)
+                    self.assertEqual(vistos[1][0][-1], ajeno)
+                    self.assertNotIn("-p", vistos[1][0])
+                    self.assertNotIn("MOTOR_CORPUS_DIR", vistos[1][1])
+
     def test_generar_frena_antes_de_descartar_y_sembrar_sin_cobertura_real(self) -> None:
         from tools import corpus_plegado
 
