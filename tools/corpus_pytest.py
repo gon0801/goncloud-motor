@@ -76,9 +76,12 @@ def _escribir(
         archivo, _ = _sincronizar(instancia)
         with sqlite3.connect(archivo) as copia:
             conteo = copia.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        origen_error = rechazo.__cause__ or rechazo
         registro_rechazado = {
             "archivo": archivo.name, "encargo": encargo, "conteo": conteo,
             "indice": rechazo.indice, "tipo": type(rechazo).__name__,
+            "mensaje": str(rechazo), "tipo_origen": type(origen_error).__name__,
+            "mensaje_origen": str(origen_error),
             "lote": [
                 {"kind": evento.kind, "data": dict(evento.data), "ukey": evento.ukey, "ts": ts}
                 for evento, ts in filas

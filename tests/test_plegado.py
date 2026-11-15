@@ -987,6 +987,10 @@ class CorpusPlegado(unittest.TestCase):
                 "    r.append_many('hijo', [registro.Evento('procedimiento', {'nota': 'otro'}, 'nota:hijo')])\n"
                 "except registro.ClaveOcupada:\n"
                 "    pass\n"
+                "try:\n"
+                "    r.append_many('hijo', [registro.Evento('conductor_fase', {}, 'invalida:hijo')])\n"
+                "except registro.EventoIlegal:\n"
+                "    pass\n"
                 "r.close()\n"
             )
             padre = (
@@ -1020,10 +1024,14 @@ class CorpusPlegado(unittest.TestCase):
             rechazos = [json.loads(linea) for linea in
                         (corpus / "rechazos.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual([(r["tipo"], r["indice"], len(r["lote"]))
-                              for r in rechazos], [("ClaveOcupada", 0, 1)])
-            self.assertTrue(all(r["tipo_origen"] == "ClaveOcupada"
-                                and r["mensaje"] == r["mensaje_origen"]
-                                for r in rechazos))
+                              for r in rechazos], [("ClaveOcupada", 0, 1),
+                                                   ("EventoIlegal", 0, 1)])
+            self.assertEqual(
+                [(r["tipo_origen"], r["mensaje_origen"]) for r in rechazos],
+                [("ClaveOcupada", rechazos[0]["mensaje"]),
+                 ("TransicionIlegal", "asociación sin fase")],
+            )
+            self.assertIn("asociación sin fase", rechazos[1]["mensaje"])
 
     def test_verificar_detecta_un_cambio_invisible_en_la_vista(self) -> None:
         with tempfile.TemporaryDirectory() as temporal:
