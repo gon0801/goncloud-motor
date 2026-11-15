@@ -9,38 +9,29 @@ if TYPE_CHECKING:
 
 
 def incorporado(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, replace
+    from ..dominio import replace
+    from .validacion_esperas import leer_incorporado
 
     # El resultado de un intento ya se incorporó. La generación identifica
     # el intento; la marca sobrevive a la limpieza de su directorio.
-    try:
-        generacion = int(d.get("generacion") or 0)
-    except (TypeError, ValueError):
-        raise TransicionIlegal(
-            "la incorporación necesita una generación"
-        ) from None
-    if generacion < 0:
-        raise TransicionIlegal("la incorporación necesita una generación")
+    generacion = leer_incorporado(d)
+    if generacion is None:
+        return e
     marcas = e.incorporado if generacion in e.incorporado else (
         tuple(sorted(e.incorporado + (generacion,)))
     )
     return replace(e, incorporado=marcas)
 
 def quietud_vigilada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, replace
+    from ..dominio import replace
+    from .validacion_esperas import leer_quietud_vigilada
 
     # Una vuelta del supervisor observó el encargo quieto sobre el evento
     # `evento`. La cuenta vive en el registro; un evento nuevo la estrena.
-    try:
-        evento_id = int(d.get("evento") or 0)
-        vueltas = int(d.get("vueltas") or 0)
-        desde = float(d.get("desde") or 0)
-        visto = float(d.get("visto") or 0)
-    except (TypeError, ValueError):
-        raise TransicionIlegal(
-            "la quietud vigilada necesita números"
-        ) from None
-    return replace(e, quietud_vigilada=(evento_id, vueltas, desde, visto))
+    lectura = leer_quietud_vigilada(d)
+    if lectura is None:
+        return e
+    return replace(e, quietud_vigilada=lectura)
 
 def sin_progreso(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _clave_del_sin_progreso, con_escalon, escalon_gastado, replace
@@ -127,14 +118,47 @@ def comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def afirmacion(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import replace
 
+    if "texto" not in d:
+        return e
     return replace(
         e, procedimiento=e.procedimiento + (f"afirmación: {d['texto']}",)
     )
 
 def efecto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import _efecto_evento
+    from ..dominio import Efecto, _CERRADOS, _efecto, replace
 
-    return _efecto_evento(e, d, hora)
+    if "id" not in d or "estado" not in d:
+        return e
+    nuevo_efecto = Efecto(
+        id=d["id"],
+        destino=d.get("destino") or "",
+        operacion=d.get("operacion") or "",
+        clave=d.get("clave") or "",
+        estado=d["estado"],
+        recibo=d.get("recibo") or "",
+        observacion=d.get("observacion") or "",
+        cuerpo=str(d.get("cuerpo") or ""),
+    )
+    estado = e.estado
+    motivo = e.motivo
+    siguiente = e.siguiente
+    if nuevo_efecto.estado == "incierto" and e.estado not in _CERRADOS:
+        estado = "conciliando"
+        motivo = f"efecto {nuevo_efecto.id} sin resultado confirmado"
+        siguiente = "consultar el destino antes de repetir"
+    if nuevo_efecto.estado == "aplicado" and e.estado == "conciliando":
+        estado = "recibido"
+        motivo = ""
+        siguiente = "seguir con el pedido"
+    return replace(
+        e,
+        efectos=_efecto(e, nuevo_efecto),
+        estado=estado,
+        motivo=motivo,
+        siguiente=siguiente,
+        hora=hora or e.hora,
+        ultimo_hecho=nuevo_efecto.observacion or e.ultimo_hecho,
+    )
 
 def plazo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import replace
@@ -152,12 +176,12 @@ def plazo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def espera(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _CERRADOS, replace
+    from ..dominio import _CERRADOS, replace
 
     if e.estado in _CERRADOS:
         return e
     if not d.get("motivo") or not d.get("reanuda_en"):
-        raise TransicionIlegal("la espera necesita motivo y reanudación")
+        return e
     return replace(
         e,
         estado="esperando_reintento",

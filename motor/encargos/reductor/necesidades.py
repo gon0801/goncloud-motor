@@ -21,13 +21,13 @@ def instrumento_fallo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def impedimento(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import Impedimento, TransicionIlegal, _con_impedimentos, impedimento_bloquea_trabajo, replace
+    from ..dominio import Impedimento, _con_impedimentos, impedimento_bloquea_trabajo, replace
 
     clase = str(d.get("clase") or d.get("huella") or "")
     causa = str(d.get("causa") or "")
     condicion = str(d.get("condicion") or "")
     if not clase or not causa or not condicion:
-        raise TransicionIlegal("el impedimento necesita clase, causa y condicion")
+        return e
     pendientes = {i.clase: i for i in e.impedimentos}
     pendientes[clase] = Impedimento(
         clase, causa, condicion, bool(d.get("verificable", True)),
@@ -46,12 +46,12 @@ def impedimento(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return replace(e, ultimo_hecho=e.impedimento_causa)
 
 def impedimento_resuelto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _con_impedimentos, impedimento_bloquea_trabajo, replace
+    from ..dominio import _con_impedimentos, impedimento_bloquea_trabajo, replace
 
     clase = str(d.get("clase") or d.get("huella") or "")
     evidencia = str(d.get("evidencia") or "")
     if not clase or not evidencia:
-        raise TransicionIlegal("el impedimento no se resuelve sin clase y evidencia")
+        return e
     restantes = tuple(i for i in e.impedimentos if i.clase != clase)
     if len(restantes) == len(e.impedimentos):
         return e
@@ -81,11 +81,11 @@ def impedimento_resuelto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo
     return replace(e, motivo="", siguiente="seguir el mismo encargo", ultimo_hecho=hecho)
 
 def instrumento_no_disponible(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _con_impedimentos, replace
+    from ..dominio import _con_impedimentos, replace
 
     clase = str(d.get("clase") or "").strip()
     if not clase:
-        raise TransicionIlegal("instrumento_no_disponible sin clase")
+        return e
     limpios = tuple(i for i in e.impedimentos if i.clase != clase)
     return _con_impedimentos(
         replace(
@@ -113,13 +113,13 @@ def pregunta(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def quietud(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, replace
+    from ..dominio import replace
 
     # La quietud es un dato del diagnóstico, no una espera. Se convierte en
     # un pendiente visible que el barrido entrega con lo que haya.
     causa = str(d.get("causa") or "").strip()
     if not causa:
-        raise TransicionIlegal("la quietud necesita causa")
+        return e
     if e.estado not in ("recibido", "ejecutando"):
         return e
     return replace(
@@ -138,6 +138,8 @@ def quietud(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def estrategia(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _bloqueos_abiertos, replace
 
+    if any(campo not in d for campo in ("estrategia", "motivo", "siguiente")):
+        return e
     if d["estrategia"] in ("investigar", "diagnosticar_bloqueo") and (
         d.get("rol") or "responsable"
     ) == "responsable":
@@ -155,6 +157,8 @@ def estrategia(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def autoridad(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import replace
 
+    if "alcanzable" not in d:
+        return e
     alcanzable = bool(d["alcanzable"])
     puede = (
         alcanzable
@@ -164,15 +168,15 @@ def autoridad(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return replace(e, autoridad=alcanzable, escrituras=puede)
 
 def via(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, replace
+    from ..dominio import replace
 
     via = d.get("via")
     if via not in ("directa", "durable"):
-        raise TransicionIlegal("via desconocida")
+        return e
     if e.estado in ("cancelado", "terminado"):
-        raise TransicionIlegal("el encargo ya cerró")
+        return e
     if e.proc is not None or e.reserva:
-        raise TransicionIlegal("el ejecutor anterior sigue abierto")
+        return e
     if via == e.via:
         return e
     return replace(

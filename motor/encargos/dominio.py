@@ -1945,31 +1945,37 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
 
 def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:
     """Una necesidad entra con la fase y el intento de origen, no con los vigentes."""
+    from .reductor.validacion_necesidades import leer_solicitud
+
     if e.estado in _CERRADOS or e.estado == "detenido":
-        raise TransicionIlegal("el encargo no admite solicitudes en este estado")
+        return e
     ident = str(d.get("id") or "").strip()
     if not ident:
-        raise TransicionIlegal("la solicitud necesita id")
+        return e
     if any(s.id == ident for s in e.solicitudes):
-        raise TransicionIlegal(f"la solicitud {ident} ya existe")
+        return e
     if str(d.get("fase") or "") != e.fase_activa:
-        raise TransicionIlegal("la solicitud no pertenece a la fase activa")
+        return e
     intento = str(d.get("intento") or "")
     if not intento or (e.intento and intento != e.intento):
-        raise TransicionIlegal("la solicitud no pertenece al intento vigente")
+        return e
     nace = str(d.get("estado") or "pendiente")
     if nace not in ("pendiente", "pregunta"):
-        raise TransicionIlegal("una solicitud nace pendiente o a la espera del propietario")
+        return e
+    lectura = leer_solicitud(d)
+    if lectura is None:
+        return e
+    operacion, generacion, parametros = lectura
     sol = Solicitud(
         id=ident,
-        operacion=str(d["operacion"]),
+        operacion=operacion,
         recurso=str(d.get("recurso") or ""),
         fase=str(d.get("fase") or ""),
         intento=intento,
-        generacion=int(d.get("generacion") or 0),
+        generacion=generacion,
         conductor=str(d.get("conductor") or ""),
         motivo=str(d.get("motivo") or ""),
-        parametros=tuple((str(k), str(v)) for k, v in (d.get("parametros") or ())),
+        parametros=parametros,
         estado=nace,
         pregunta=str(d.get("pregunta") or "") if nace == "pregunta" else "",
     )
@@ -1981,10 +1987,10 @@ def _herramienta(e: Encargo, d: dict, hora: str) -> Encargo:
     ident = str(d.get("id") or "")
     sol = next((s for s in e.solicitudes if s.id == ident), None)
     if sol is None:
-        raise TransicionIlegal("la herramienta no tiene solicitud")
+        return e
     carpeta = str(d.get("carpeta") or "")
     if not carpeta:
-        raise TransicionIlegal("la herramienta necesita su carpeta")
+        return e
     if sol.carpeta:
         return e
     return replace(
@@ -2121,9 +2127,9 @@ def _autorizacion(e: Encargo, d: dict, hora: str) -> Encargo:
     operacion = str(d.get("operacion") or "").strip()
     texto = str(d.get("texto") or "")
     if not recurso:
-        raise TransicionIlegal("la autorización necesita recurso")
+        return e
     if not operacion:
-        raise TransicionIlegal("la autorización necesita la operación explicada")
+        return e
     fase = str(d.get("fase") or "")
     intento = str(d.get("intento") or "")
     tupla = (recurso, operacion, fase, intento, texto, hora)
@@ -2133,21 +2139,26 @@ def _autorizacion(e: Encargo, d: dict, hora: str) -> Encargo:
 
 
 def _decision(e: Encargo, d: dict, hora: str) -> Encargo:
+    from .reductor.validacion_necesidades import leer_fases_decision
+
     ident = str(d.get("id") or "").strip()
     if not ident:
-        raise TransicionIlegal("la decisión necesita id")
+        return e
     if any(x.id == ident for x in e.decisiones):
-        raise TransicionIlegal(f"la decisión {ident} ya existe")
+        return e
+    fases = leer_fases_decision(d)
+    if fases is None:
+        return e
     decision = Decision(
         id=ident,
         eleccion=str(d.get("eleccion") or ""),
         motivo=str(d.get("motivo") or ""),
         evidencia=str(d.get("evidencia") or ""),
-        fases=tuple(str(x) for x in d.get("fases") or ()),
+        fases=fases,
         hora=hora or e.hora,
     )
     if not decision.eleccion or not decision.motivo:
-        raise TransicionIlegal("la decisión necesita elección y motivo")
+        return e
     return replace(e, decisiones=e.decisiones + (decision,), hora=hora or e.hora)
 
 
@@ -3705,7 +3716,7 @@ def _preparar_con_entrada(
 
 
 def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encargo:
-    clase = d["clase"]
+    clase = d.get("clase")
     if clase == "producto_aprobado":
         return replace(
             e,
@@ -3715,18 +3726,18 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
     if clase in ("confirmado", "cierre_comprobado"):
         evidencia = str(d.get("evidencia") or "")
         if not evidencia:
-            raise TransicionIlegal("confirmado sin evidencia")
+            return e
         evidencias = e.evidencia + (evidencia,)
         e = asegurar_fase(e)
         pedida = str(d.get("fase") or "")
         if pedida and pedida != e.fase_activa:
-            raise TransicionIlegal("el cierre pertenece a otra fase")
+            return e
         intento = str(d.get("intento") or "")
         if intento and e.intento and intento != e.intento:
-            raise TransicionIlegal("el cierre pertenece a otro intento")
+            return e
         fase = e.fase_actual
         if fase is None:
-            raise TransicionIlegal("no hay fase que cerrar")
+            return e
         if e.entrega.nivel != "terminado" and not nivel_cumplido(e):
             return replace(
                 e,
@@ -3818,15 +3829,6 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 devuelto_con=(),
                 hora=hora or e.hora,
             )
-        # Quien cierra anota cuántas correcciones cubre (vistas o dichas en la
-        # nota). Una que entró después no la atendió nadie: el registro rechaza
-        # el cierre en la misma transacción en que lo escribe, haya o no un
-        # intento que pueda recibirla, así que no hay carrera con corregir.
-        # Sólo al escribir: un cierre ya registrado se relee tal como se
-        # aceptó, también los que escribió la versión anterior.
-        vistas = d.get("ajustes_vistos")
-        if nuevo and vistas is not None and len(e.ajustes) > int(vistas):
-            raise TransicionIlegal("llegó una corrección durante el cierre")
         # Con fases bloqueadas el cierre es una entrega parcial: la identidad
         # del cierre por fase se conserva para que `reabrir` la encuentre.
         completo = not pendientes
@@ -3886,40 +3888,7 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
             hora=hora or e.hora,
             siguiente="volver a observar; no declarar terminado",
         )
-    raise TransicionIlegal(f"comprobación desconocida: {clase}")
-
-
-def _efecto_evento(e: Encargo, d: dict, hora: str) -> Encargo:
-    nuevo = Efecto(
-        id=d["id"],
-        destino=d.get("destino") or "",
-        operacion=d.get("operacion") or "",
-        clave=d.get("clave") or "",
-        estado=d["estado"],
-        recibo=d.get("recibo") or "",
-        observacion=d.get("observacion") or "",
-        cuerpo=str(d.get("cuerpo") or ""),
-    )
-    estado = e.estado
-    motivo = e.motivo
-    siguiente = e.siguiente
-    if nuevo.estado == "incierto" and e.estado not in _CERRADOS:
-        estado = "conciliando"
-        motivo = f"efecto {nuevo.id} sin resultado confirmado"
-        siguiente = "consultar el destino antes de repetir"
-    if nuevo.estado == "aplicado" and e.estado == "conciliando":
-        estado = "recibido"
-        motivo = ""
-        siguiente = "seguir con el pedido"
-    return replace(
-        e,
-        efectos=_efecto(e, nuevo),
-        estado=estado,
-        motivo=motivo,
-        siguiente=siguiente,
-        hora=hora or e.hora,
-        ultimo_hecho=nuevo.observacion or e.ultimo_hecho,
-    )
+    return e
 
 
 def bitacora_legible(e: Encargo) -> list[dict]:
