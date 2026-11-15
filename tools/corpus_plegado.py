@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -131,6 +132,10 @@ def _referencia(
     reductor = cargar_reductor(raiz)
     (salida / "estado-base").mkdir(mode=0o700, exist_ok=True)
     encargos, descartados, eventos = 0, descartados_previos, 0
+    previos = []
+    if descartados_previos:
+        with (salida / "meta.json").open(encoding="utf-8") as archivo:
+            previos = json.load(archivo)["descartados_detalle"]
     presentes: set[str] = set()
     for archivo in _registros(salida):
         estados = {}
@@ -139,6 +144,10 @@ def _referencia(
             traza = trazar(reductor, secuencia)
             if traza.fallo is not None:
                 descartados += 1
+                previos.append({
+                    "archivo": archivo.name, "encargo": encargo,
+                    "eventos": secuencia, "fallo": asdict(traza.fallo),
+                })
                 continue
             estados[encargo] = campos_de(traza.estados[-1])
             presentes.update(presente)
@@ -149,7 +158,7 @@ def _referencia(
     _json(salida / "meta.json", {
         "ref": ref, "archivos": len(_registros(salida)), "encargos": encargos,
         "descartados": descartados, "eventos": eventos, "rechazos": rechazos,
-        "kinds": sorted(presentes),
+        "kinds": sorted(presentes), "descartados_detalle": previos,
     })
     return encargos, descartados, eventos, presentes
 
@@ -312,7 +321,7 @@ def verificar(salida: Path, raiz: Path) -> int:
     with (salida / "meta.json").open(encoding="utf-8") as archivo:
         meta = json.load(archivo)
     faltan = {"pytest_exit", "pytest_fallos", "archivos", "encargos",
-              "eventos", "rechazos"} - meta.keys()
+              "eventos", "rechazos", "descartados", "descartados_detalle"} - meta.keys()
     if faltan:
         print(f"faltan metadatos: {', '.join(sorted(faltan))}")
         return 1
@@ -321,6 +330,12 @@ def verificar(salida: Path, raiz: Path) -> int:
         or meta["pytest_exit"] == 0 and meta["pytest_fallos"]):
         print("el corpus proviene de una batería con fallos no aceptados")
         return 1
+    descartes_cambiados = 0
+    for descarte in meta["descartados_detalle"]:
+        traza = trazar(reductor, descarte["eventos"])
+        if traza.fallo is None or asdict(traza.fallo) != descarte["fallo"]:
+            descartes_cambiados += 1
+            print(f"{descarte['archivo']}/{descarte['encargo']}: cambió el descarte")
     iguales = total = aceptados = sin_referencia = 0
     registros = _registros(salida)
     for registro in registros:
@@ -390,6 +405,8 @@ def verificar(salida: Path, raiz: Path) -> int:
           f"rechaza {rechazos} de {meta['rechazos']}; "
           f"estado igual en {iguales} de {meta['encargos']}")
     return int(iguales != total or sin_referencia != 0
+               or descartes_cambiados != 0
+               or len(meta["descartados_detalle"]) != meta["descartados"]
                or len(registros) != meta["archivos"]
                or total != meta["encargos"]
                or aceptados != meta["eventos"]
