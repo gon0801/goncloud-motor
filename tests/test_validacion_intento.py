@@ -34,7 +34,7 @@ class ValidacionIntento(unittest.TestCase):
             with self.subTest(kind=kind, datos=datos), self.assertRaises(TransicionIlegal):
                 reducir(e, {"kind": kind, "data": datos}, nuevo=True)
 
-    def test_los_ocho_rechazos_conservan_estado_datos_y_mensaje(self) -> None:  # no-roja-en-base: mensajes legados
+    def test_los_ocho_rechazos_conservan_el_mensaje(self) -> None:  # no-roja-en-base: mensajes legados
         e = _entrega()
         casos = (
             ("reserva", replace(e, reserva=True), {}, "ya hay un escritor"),
@@ -77,9 +77,30 @@ class ValidacionIntento(unittest.TestCase):
                     reducir(previo, {"kind": kind, "data": datos}, nuevo=False)
                 )
 
+    def test_aplicar_con_carga_ilegible_devuelve_el_estado_previo(self) -> None:
+        e = _entrega()
+        casos = (
+            ("reserva", {"generacion": "no entero"}),
+            ("reserva", {"ajustes": "no entero"}),
+            ("intento_abierto", {}),
+            ("intento_abierto", {"id": "i", "pid": "no entero", "inicio": "t"}),
+        )
+        for kind, datos in casos:
+            with self.subTest(kind=kind, datos=datos):
+                self.assertIs(TABLA[kind].aplicar(e, datos, "", False), e)
+
     def test_aplicar_cada_kind_de_intento_con_datos_vacios(self) -> None:
         e = _entrega()
-        for kind, fila in TABLA.items():
-            if fila.aplicar.__module__.endswith(".intento"):
-                with self.subTest(kind=kind):
-                    self.assertIsNotNone(reducir(e, {"kind": kind, "data": {}}, nuevo=False))
+        kinds = {
+            "reserva", "reserva_cerrada", "conductor", "intento_abierto",
+            "actividad", "colgada", "intento_cerrado", "sesion_perdida",
+            "conductor_fase",
+        }
+        self.assertEqual(
+            {kind for kind, fila in TABLA.items()
+             if fila.aplicar.__module__.endswith(".intento")},
+            kinds,
+        )
+        for kind in kinds:
+            with self.subTest(kind=kind):
+                self.assertIsNotNone(reducir(e, {"kind": kind, "data": {}}, nuevo=False))
