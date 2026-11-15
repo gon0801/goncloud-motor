@@ -149,7 +149,7 @@ def situacion_de(e: Encargo) -> Situacion:
         if not e.evidencia:
             raise EstadoIncoherente("terminado sin evidencia")
         resultado: Completo | Parcial = (
-            Completo() if e.objetivo_completo() and not e.pendientes_entrega
+            Completo() if e.objetivo_completo()
             else Parcial(tuple(f.id for f in e.fases if f.estado != "preparada"))
         )
         forzado = (

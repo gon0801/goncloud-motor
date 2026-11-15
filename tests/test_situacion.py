@@ -23,6 +23,7 @@ class SituacionComoLectura(unittest.TestCase):
 
         from ops import canario_juzgar, canario_observar
 
+        self.assertIn("situacion_tipada", dict(plegado.INVARIANTES_COMPROBAR))
         evento, _ = _entrega()
         evento["ts"] = "2026-11-15T00:00:00Z"
 

@@ -7,7 +7,7 @@ Uso, siempre en solo lectura (nunca escribe en un registro):
 
 `comprobar` pliega cada encargo con el reductor del árbol de trabajo. Sale con 1
 si algún plegado lanza o termina fuera de `ESTADOS`. Además revisa las
-invariantes de `INVARIANTES` en cada prefijo y las reporta aparte, sin cambiar
+invariantes de `INVARIANTES_COMPROBAR` en cada prefijo y las reporta aparte, sin cambiar
 el código de salida.
 
 `comparar` pliega cada encargo con el reductor de `<ref-de-git>` y con el del
@@ -383,6 +383,9 @@ INVARIANTES: tuple[tuple[str, Invariante], ...] = (
     ("cancelacion_definitiva", _cancelacion_definitiva),
     ("mismo_estado_al_replegar", _mismo_estado_al_replegar),
     ("mismo_estado_con_otro_host", _mismo_estado_con_otro_host),
+)
+
+INVARIANTES_COMPROBAR: tuple[tuple[str, Invariante], ...] = INVARIANTES + (
     ("situacion_tipada", _situacion_tipada),
     ("datos_dependen_del_estado", _datos_dependen_del_estado),
 )
@@ -400,7 +403,7 @@ def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
     invariantes = tuple(
         (nombre, partial(invariante, observados=observados)
          if invariante is _datos_dependen_del_estado else invariante)
-        for nombre, invariante in INVARIANTES
+        for nombre, invariante in INVARIANTES_COMPROBAR
     )
     for encargo, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
         traza = trazar(reductor, eventos)
@@ -546,7 +549,7 @@ def _texto_comprobacion(c: Comprobacion) -> list[str]:
         lineas.append("  No pliegan:")
         lineas.extend(_texto_fallos(c.fallos))
     lineas.append("  Invariantes, revisadas en cada prefijo (no cambian la salida):")
-    for nombre, _ in INVARIANTES:
+    for nombre, _ in INVARIANTES_COMPROBAR:
         suyas = [v for v in c.violaciones if v.invariante == nombre]
         if not suyas:
             lineas.append(f"    {nombre}: sin violaciones.")
