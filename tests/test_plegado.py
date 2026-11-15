@@ -565,6 +565,94 @@ def _corpus_sin_entrega(raiz: Path) -> Path:
 
 
 class CorpusPlegado(unittest.TestCase):
+    def test_kinds_lee_la_tabla_del_arbol_de_referencia(self) -> None:
+        from tools.corpus_plegado import _kinds
+
+        with tempfile.TemporaryDirectory() as temporal:
+            raiz = Path(temporal)
+            reductor = raiz / "motor" / "encargos" / "reductor"
+            reductor.mkdir(parents=True)
+            (reductor.parent / "dominio.py").write_text(
+                'def _reducir_evento(estado, evento):\n'
+                '    kind = evento["kind"]\n'
+                '    if kind == "entrega":\n'
+                '        return estado\n',
+                encoding="utf-8",
+            )
+            (reductor / "__init__.py").write_text(
+                'TABLA = {"solo_en_ref": object()}\n', encoding="utf-8",
+            )
+            self.assertEqual(_kinds(raiz), {"entrega", "solo_en_ref"})
+
+    def test_verificar_cobertura_muestra_lineas_no_ejecutadas(self) -> None:
+        from tools.corpus_plegado import _referencia
+
+        with tempfile.TemporaryDirectory() as temporal:
+            raiz = Path(temporal)
+            corpus = raiz / "corpus"
+            (corpus / "registros").mkdir(parents=True)
+            (corpus / "rechazos.jsonl").write_text("", encoding="utf-8")
+            registro = Registro(raiz / "origen")
+            registro.append_many("enc_a", (Evento("entrega", _ENTREGA[1], "entrega:enc_a"),))
+            registro.close()
+            shutil.copy2(raiz / "origen" / "registro.sqlite", corpus / "registros" / "uno.sqlite")
+            _referencia(corpus, RAIZ, "prueba")
+            meta = json.loads((corpus / "meta.json").read_text(encoding="utf-8"))
+            (corpus / "meta.json").write_text(
+                json.dumps({**meta, "pytest_exit": 0, "pytest_fallos": []}), encoding="utf-8",
+            )
+            resultado = _ejecutar(
+                "verificar", corpus, "--cobertura",
+                herramienta=RAIZ / "tools" / "corpus_plegado.py",
+            )
+            self.assertEqual(resultado.returncode, 0, resultado.stdout + resultado.stderr)
+            fuente = (RAIZ / "motor" / "encargos" / "dominio.py").read_text(encoding="utf-8")
+            linea = next(i for i, texto in enumerate(fuente.splitlines(), 1)
+                         if 'raise TransicionIlegal(f"evento desconocido: {kind}")' in texto)
+            self.assertIn(f"motor/encargos/dominio.py:{linea}:", resultado.stdout)
+            ejecutada = next(i for i, texto in enumerate(fuente.splitlines(), 1)
+                             if 'if kind == "entrega":' in texto)
+            self.assertNotIn(f"motor/encargos/dominio.py:{ejecutada}:", resultado.stdout)
+            self.assertIn("estado igual en 1 de 1", resultado.stdout)
+            self.assertNotIn(": def _reducir_evento(", resultado.stdout)
+            self.assertNotIn(": def recibo(", resultado.stdout)
+
+    def test_cobertura_omite_bytecode_sin_linea(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from tools import cobertura_reductor
+
+        original = cobertura_reductor.dis.findlinestarts
+
+        def sin_linea(codigo):
+            yield 0, None
+            yield from original(codigo)
+
+        salida = StringIO()
+        with (mock.patch.object(cobertura_reductor.dis, "findlinestarts",
+                                side_effect=sin_linea), redirect_stdout(salida)):
+            self.assertEqual(cobertura_reductor.medir(RAIZ, lambda: 0), 0)
+        self.assertIn("líneas ejecutadas", salida.getvalue())
+        self.assertNotIn(":None:", salida.getvalue())
+
+    def test_tabla_de_pedido_y_ordenes_tiene_filas_aplicables(self) -> None:
+        from motor.encargos.dominio import reducir
+        from motor.encargos.reductor import Fila, TABLA
+
+        esperados = {
+            "recibo", "ruta_agentes", "contexto_entrega", "proveedor_fallo",
+            "proveedor_disponible", "falla_sesion_local", "orden", "ajuste",
+            "procedimiento", "migracion",
+        }
+        self.assertTrue(esperados <= TABLA.keys())
+        self.assertTrue(all(callable(TABLA[kind].aplicar) for kind in esperados))
+        entrega = reducir(None, {"kind": "entrega", "data": _ENTREGA[1]}, nuevo=False)
+        aplicar = mock.Mock(wraps=TABLA["recibo"].aplicar)
+        with mock.patch.dict(TABLA, {"recibo": Fila(aplicar)}):
+            reducir(entrega, {"kind": "recibo", "data": {}}, nuevo=False)
+        aplicar.assert_called_once_with(entrega, {}, "", False)
+
     def test_referencia_conserva_los_descartados_tras_la_semilla(self) -> None:
         from tools.corpus_plegado import _descartar, _referencia
 
