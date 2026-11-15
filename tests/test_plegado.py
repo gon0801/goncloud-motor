@@ -595,6 +595,25 @@ class CorpusPlegado(unittest.TestCase):
             self.assertNotIn(": def _reducir_evento(", resultado.stdout)
             self.assertNotIn(": def recibo(", resultado.stdout)
 
+    def test_cobertura_omite_bytecode_sin_linea(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from tools import cobertura_reductor
+
+        original = cobertura_reductor.dis.findlinestarts
+
+        def sin_linea(codigo):
+            yield 0, None
+            yield from original(codigo)
+
+        salida = StringIO()
+        with (mock.patch.object(cobertura_reductor.dis, "findlinestarts",
+                                side_effect=sin_linea), redirect_stdout(salida)):
+            self.assertEqual(cobertura_reductor.medir(RAIZ, lambda: 0), 0)
+        self.assertIn("líneas ejecutadas", salida.getvalue())
+        self.assertNotIn(":None:", salida.getvalue())
+
     def test_tabla_de_pedido_y_ordenes_tiene_filas_aplicables(self) -> None:
         from motor.encargos.dominio import reducir
         from motor.encargos.reductor import Fila, TABLA
