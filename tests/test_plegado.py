@@ -591,6 +591,8 @@ class CorpusPlegado(unittest.TestCase):
                     vistos = []
 
                     def correr(args, *, falla_reintento=falla_reintento, vistos=vistos, **opciones):
+                        if args[3:5] == ["worktree", "list"]:
+                            return subprocess.CompletedProcess(args, 0, "", "")
                         if args[3:5] == ["worktree", "add"]:
                             (Path(args[-2]) / "tools").mkdir(parents=True)
                             return subprocess.CompletedProcess(args, 0, "", "")
@@ -648,6 +650,8 @@ class CorpusPlegado(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporal:
             def correr(args, **_):
+                if args[3:5] == ["worktree", "list"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
                 if args[3:5] == ["worktree", "add"]:
                     (Path(args[-2]) / "tools").mkdir(parents=True)
                     return subprocess.CompletedProcess(args, 0, "", "")
