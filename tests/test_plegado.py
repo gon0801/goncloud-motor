@@ -648,8 +648,10 @@ class CorpusPlegado(unittest.TestCase):
                     ["git", "-C", str(RAIZ), "worktree", "list", "--porcelain"], text=True,
                 )
                 self.assertIn(str(arbol), registrados)
-                with mock.patch.object(corpus_plegado.subprocess, "check_output",
-                                       side_effect=RuntimeError("fin del ensayo")):
+                with (mock.patch.object(corpus_plegado.subprocess, "check_output",
+                                        side_effect=RuntimeError("fin del ensayo")),
+                      mock.patch.object(corpus_plegado.tempfile, "gettempdir",
+                                        return_value=str(Path(temporal).parent / "otro-temporal"))):
                     with self.assertRaisesRegex(RuntimeError, "fin del ensayo"):
                         corpus_plegado.generar("origin/main", Path(temporal) / "corpus")
                 registrados = subprocess.run(
