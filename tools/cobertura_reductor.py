@@ -34,7 +34,8 @@ def medir(raiz: Path, ejecutar: Callable[[], int]) -> int:
     posibles = {
         (rutas[codigo], linea)
         for codigo in codigos for _, linea in dis.findlinestarts(codigo)
-        if linea != codigo.co_firstlineno or codigo.co_name.startswith("<")
+        if linea is not None
+        and (linea != codigo.co_firstlineno or codigo.co_name.startswith("<"))
     }
     visitadas: set[tuple[str, int]] = set()
 
