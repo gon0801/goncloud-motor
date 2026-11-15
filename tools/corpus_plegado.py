@@ -109,14 +109,13 @@ def _limpiar_worktrees() -> None:
         ["git", "-C", str(RAIZ), "worktree", "list", "--porcelain"],
         check=True, capture_output=True, text=True,
     )
-    temporal = Path(tempfile.gettempdir()).resolve()
     for bloque in listado.stdout.split("\n\n"):
         lineas = bloque.splitlines()
         if not lineas or not lineas[0].startswith("worktree "):
             continue
         arbol = Path(lineas[0][9:])
         if (arbol.name == "arbol" and arbol.parent.name.startswith("corpus-ref-")
-            and arbol.parent.parent.resolve() == temporal and not arbol.exists()
+            and not arbol.exists()
             and any(linea.startswith("prunable ") for linea in lineas)):
             subprocess.run(
                 ["git", "-C", str(RAIZ), "worktree", "remove", "--force", str(arbol)],
