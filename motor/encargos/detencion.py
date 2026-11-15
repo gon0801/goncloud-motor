@@ -6,8 +6,8 @@
 guardar. El encargo no lo calla ni lo reintenta en cada vuelta; se detiene con
 la causa escrita, sin valores, hasta que alguien mande `continuar`.
 
-El reductor de `dominio` los aplica desde `DETENCIONES`. Este módulo no importa
-`dominio` al cargarse porque `dominio` lo importa a él.
+`reductor.detencion` los aplica desde `DETENCIONES` por la tabla. Este módulo
+importa `dominio` solo dentro de sus funciones para evitar el ciclo.
 """
 
 from __future__ import annotations
