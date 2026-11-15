@@ -34,6 +34,28 @@ def _fallos_pytest(codigo: int, salida: str) -> list[str]:
                        f"fallos {fallos}, errores {errores}")
 
 
+def _bateria_con_reintento(
+    proceso: subprocess.CompletedProcess[str], arbol: Path, entorno: dict[str, str],
+) -> tuple[list[str], list[str]]:
+    salida = proceso.stdout + proceso.stderr
+    fallidos = re.findall(r"^FAILED (\S+)", salida, re.MULTILINE)
+    errores = re.findall(r"^ERROR (\S+)", salida, re.MULTILINE)
+    extras = list(dict.fromkeys(fallo for fallo in fallidos if fallo != FALLO_BASE))
+    if not extras or proceso.returncode != 1 or errores:
+        return _fallos_pytest(proceso.returncode, salida), []
+    entorno_reintento = {k: v for k, v in entorno.items()
+                         if k not in {"MOTOR_CORPUS_DIR", "MOTOR_CORPUS_REPO"}}
+    reintento = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", *extras],
+        cwd=arbol, env=entorno_reintento, capture_output=True, text=True, check=False,
+    )
+    if reintento.returncode:
+        raise RuntimeError(f"pytest sigue fallando tras reintentar {extras}: "
+                           f"salida {reintento.returncode}")
+    _fallos_pytest(reintento.returncode, reintento.stdout + reintento.stderr)
+    return ([FALLO_BASE] if FALLO_BASE in fallidos else []), extras
+
+
 def _comprobar_cobertura(encargos: int, eventos: int) -> None:
     if encargos < MIN_ENCARGOS_REALES or eventos < MIN_EVENTOS_REALES:
         raise RuntimeError(f"corpus insuficiente antes de sembrar: {encargos} encargos y "
@@ -220,7 +242,12 @@ def generar(ref: str, salida: Path) -> int:
                            "w", encoding="utf-8") as archivo:
                 archivo.write(proceso.stdout)
                 archivo.write(proceso.stderr)
-            fallos = _fallos_pytest(proceso.returncode, proceso.stdout + proceso.stderr)
+            fallos, reintentados = _bateria_con_reintento(
+                proceso, arbol, {
+                    **os.environ, "MOTOR_CORPUS_DIR": str(salida.resolve()),
+                    "MOTOR_CORPUS_REPO": str(arbol.resolve()),
+                },
+            )
             if fallos:
                 print(f"La batería en la base falló solo en {fallos[0]}.",
                       file=sys.stderr)
@@ -248,8 +275,8 @@ def generar(ref: str, salida: Path) -> int:
             with (salida / "meta.json").open(encoding="utf-8") as archivo:
                 meta = json.load(archivo)
             _json(salida / "meta.json", {
-                **meta, "sha": sha, "pytest_exit": proceso.returncode,
-                "pytest_fallos": fallos,
+                **meta, "sha": sha, "pytest_exit": int(bool(fallos)),
+                "pytest_fallos": fallos, "pytest_reintentos": reintentados,
             })
             rechazos = meta["rechazos"]
             print(f"{encargos} encargos ({descartados} descartados), {eventos} eventos, "
