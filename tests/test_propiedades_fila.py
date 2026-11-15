@@ -7,8 +7,7 @@ from motor.encargos.reductor import TABLA
 
 
 class PropiedadesFila(unittest.TestCase):
-    # no-roja-en-base: fija las tuplas que ahora salen de la tabla
-    def test_tuplas_conservan_sus_elementos(self) -> None:
+    def test_tuplas_conservan_sus_elementos(self) -> None:  # no-roja-en-base: fija tuplas legadas
         self.assertIsInstance(_ENTRE_REINTENTOS, tuple)
         self.assertIsInstance(_EVENTOS_DE_MARCADOR, tuple)
         self.assertCountEqual(
