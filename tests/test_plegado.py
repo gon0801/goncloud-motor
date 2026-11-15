@@ -548,6 +548,37 @@ class Comparar(_RepoFalso):
 
 
 class CorpusPlegado(unittest.TestCase):
+    def test_generar_limpia_un_worktree_de_corpus_sin_carpeta(self) -> None:
+        from tools import corpus_plegado
+
+        with tempfile.TemporaryDirectory(prefix="corpus-ref-") as temporal:
+            arbol = Path(temporal) / "arbol"
+            subprocess.run(
+                ["git", "-C", str(RAIZ), "worktree", "add", "--detach", str(arbol), "HEAD"],
+                check=True, capture_output=True,
+            )
+            shutil.rmtree(arbol)
+            try:
+                registrados = subprocess.check_output(
+                    ["git", "-C", str(RAIZ), "worktree", "list", "--porcelain"], text=True,
+                )
+                self.assertIn(str(arbol), registrados)
+                with mock.patch.object(corpus_plegado.subprocess, "check_output",
+                                       side_effect=RuntimeError("fin del ensayo")):
+                    with self.assertRaisesRegex(RuntimeError, "fin del ensayo"):
+                        corpus_plegado.generar("origin/main", Path(temporal) / "corpus")
+                registrados = subprocess.run(
+                    ["git", "-C", str(RAIZ), "worktree", "list", "--porcelain"],
+                    capture_output=True, text=True, check=True,
+                ).stdout
+                self.assertNotIn(str(arbol), registrados)
+                self.assertIn(str(RAIZ), registrados)
+            finally:
+                subprocess.run(
+                    ["git", "-C", str(RAIZ), "worktree", "remove", "--force", str(arbol)],
+                    check=False, capture_output=True,
+                )
+
     def test_generar_reintenta_solo_el_fallo_ajeno_y_anota_el_resultado(self) -> None:
         from tools import corpus_plegado
 
