@@ -34,9 +34,25 @@ class PropiedadesFila(unittest.TestCase):
         self.assertTrue(all(not fila.corta_series for fila in TABLA.values() if fila.marcador))
 
     def test_cada_fila_declara_el_alcance_de_su_hecho(self) -> None:
-        for fila in TABLA.values():
-            self.assertIn(fila.alcance, ("encargo", "fase", "intento"))
-        self.assertEqual(TABLA["recibo"].alcance, "encargo")
-        self.assertEqual(TABLA["fase_desplegada"].alcance, "fase")
-        self.assertEqual(TABLA["inspeccion_solicitud"].alcance, "fase")
-        self.assertEqual(TABLA["intento_abierto"].alcance, "intento")
+        fase = set("""
+            ajuste bloqueo_fase ci_pr cierre_forzado comprobaciones_supervisor
+            conciliacion_fase conductor_fase entrada_incorporada entrega_bloqueada
+            entrega_devuelta entrega_externa fase_desplegada fase_reabierta
+            fase_reactivada inspeccion_entregada inspeccion_solicitud lectura_fallida
+            nota_pr politica_despliegue producto_listo resolucion respuesta revision
+        """.split())
+        intento = set("""
+            actividad colgada conductor intento_abierto intento_cerrado
+            reserva reserva_cerrada sesion_perdida
+        """.split())
+        self.assertEqual(
+            {kind: fila.alcance for kind, fila in TABLA.items()},
+            {kind: ("fase" if kind in fase else "intento" if kind in intento else "encargo")
+             for kind in TABLA},
+        )
+
+    def test_el_generador_reproduce_la_tabla_vigente(self) -> None:
+        from tools.asignar_propiedades_fila import RUTA, asignar
+
+        texto = RUTA.read_text(encoding="utf-8")
+        self.assertEqual(asignar(texto), texto)
