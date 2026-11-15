@@ -583,10 +583,17 @@ class CorpusPlegado(unittest.TestCase):
                 "    pass\n"
             )
             (arbol / "tests" / "test_hijo.py").write_text(
-                "import subprocess, sys\n\n"
+                "import os, subprocess, sys\n\n"
                 "def test_hijo():\n"
                 f"    subprocess.run([sys.executable, '-c', {hijo!r}, "
-                f"{str(raiz / 'origen')!r}], check=True)\n",
+                f"{str(raiz / 'origen')!r}], check=True)\n\n"
+                "def test_entorno_vacio():\n"
+                "    os.environ['MOTOR_CORPUS_SENAL'] = 'marcador'\n"
+                "    resultado = subprocess.run([sys.executable, '-c', "
+                "'import os; print(os.environ.get(\"MOTOR_CORPUS_SENAL\", \"\"), "
+                "os.environ.get(\"PYTHONPATH\", \"\"), sep=\"|\")'], "
+                "env={}, capture_output=True, text=True, check=True)\n"
+                "    assert resultado.stdout.strip() == '|'\n",
                 encoding="utf-8",
             )
             entorno = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
