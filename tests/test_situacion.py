@@ -37,7 +37,7 @@ class SituacionComoLectura(unittest.TestCase):
             ({"estado": "esperando_reintento"}, "espera incompleta"),
             ({"estado": "conciliando"}, "conciliando sin efecto incierto"),
             ({"estado": "terminado"}, "terminado sin evidencia"),
-            ({"estado": "ejecutando"}, "ejecutando sin hecho"),
+            ({"estado": "ejecutando", "ultimo_hecho": ""}, "ejecutando sin hecho"),
         )
         for cambios, mensaje in casos:
             with self.subTest(mensaje=mensaje), self.assertRaisesRegex(EstadoIncoherente, mensaje):
