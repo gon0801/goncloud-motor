@@ -421,6 +421,7 @@ def main() -> int:
     verificar_args = comandos.add_parser("verificar")
     verificar_args.add_argument("corpus", type=Path)
     verificar_args.add_argument("--raiz", default=RAIZ, type=Path)
+    verificar_args.add_argument("--cobertura", action="store_true")
     semilla_args = comandos.add_parser("_sembrar")
     semilla_args.add_argument("--salida", required=True, type=Path)
     semilla_args.add_argument("--raiz", required=True, type=Path)
@@ -431,6 +432,10 @@ def main() -> int:
     if args.comando == "_sembrar":
         _sembrar(args.salida, args.raiz, set(args.faltan))
         return 0
+    if args.cobertura:
+        from tools.cobertura_reductor import medir
+
+        return medir(args.raiz, lambda: verificar(args.corpus, args.raiz))
     return verificar(args.corpus, args.raiz)
 
 
