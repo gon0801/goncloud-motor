@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import asdict, replace
+from pathlib import Path
+from unittest import mock
 
 from motor.encargos.dominio import TransicionIlegal, reducir
+from tools import plegado
 from tools.plegado import INVARIANTES, Reductor, Traza
 
 
@@ -62,6 +65,28 @@ class SituacionComoLectura(unittest.TestCase):
         )
         self.assertIsNotNone(dependencia)
         self.assertEqual(dependencia[0]["id"], 2)
+
+    def test_comprobar_compara_datos_del_estado_entre_encargos(self) -> None:
+        evento, e = _entrega()
+        eventos = [evento]
+        trazas = [
+            Traza(estados=[e]),
+            Traza(estados=[replace(e, escrituras=False)]),
+        ]
+        with (
+            mock.patch.object(plegado, "ultimo_evento", return_value=2),
+            mock.patch.object(plegado, "leer_encargos",
+                              return_value=iter((("uno", eventos), ("dos", eventos)))),
+            mock.patch.object(plegado, "trazar", side_effect=trazas),
+            mock.patch.object(plegado, "INVARIANTES",
+                              (("datos_dependen_del_estado",
+                                dict(INVARIANTES)["datos_dependen_del_estado"]),)),
+        ):
+            resultado = plegado.comprobar(Reductor(reducir, ("recibido",)), Path("registro.sqlite"))
+        self.assertEqual(
+            [(v.invariante, v.encargo) for v in resultado.violaciones],
+            [("datos_dependen_del_estado", "dos")],
+        )
 
 
 if __name__ == "__main__":
