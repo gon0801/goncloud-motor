@@ -7,7 +7,7 @@ Uso, siempre en solo lectura (nunca escribe en un registro):
 
 `comprobar` pliega cada encargo con el reductor del árbol de trabajo. Sale con 1
 si algún plegado lanza o termina fuera de `ESTADOS`. Además revisa las
-invariantes de `INVARIANTES` en cada prefijo y las reporta aparte, sin cambiar
+invariantes de `INVARIANTES_COMPROBAR` en cada prefijo y las reporta aparte, sin cambiar
 el código de salida.
 
 `comparar` pliega cada encargo con el reductor de `<ref-de-git>` y con el del
@@ -55,6 +55,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, NoReturn
 
@@ -348,12 +349,45 @@ def _mismo_estado_con_otro_host(
     return _primera_divergencia(eventos, traza, otra)
 
 
+def _situacion_tipada(
+    _reductor: Reductor, eventos: Sequence[Evento], traza: Traza
+) -> tuple[Evento, str] | None:
+    from motor.encargos.situacion import EstadoIncoherente, situacion_de
+
+    for evento, e in zip(eventos, traza.estados, strict=False):
+        try:
+            situacion_de(e)
+        except EstadoIncoherente as exc:
+            return evento, str(exc)
+    return None
+
+
+def _datos_dependen_del_estado(
+    _reductor: Reductor, eventos: Sequence[Evento], traza: Traza,
+    observados: dict[str, tuple[bool, bool, bool]] | None = None,
+) -> tuple[Evento, str] | None:
+    if observados is None:
+        observados = {}
+    primera: tuple[Evento, str] | None = None
+    for evento, e in zip(eventos, traza.estados, strict=False):
+        datos = (e.escrituras, e.intentos_nuevos, bool(e.evidencia))
+        previo = observados.setdefault(e.estado, datos)
+        if previo != datos and primera is None:
+            primera = evento, f"{e.estado}: escrituras, intentos_nuevos o evidencia dependen de más datos"
+    return primera
+
+
 Invariante = Callable[[Reductor, Sequence[Evento], Traza], "tuple[Evento, str] | None"]
 
 INVARIANTES: tuple[tuple[str, Invariante], ...] = (
     ("cancelacion_definitiva", _cancelacion_definitiva),
     ("mismo_estado_al_replegar", _mismo_estado_al_replegar),
     ("mismo_estado_con_otro_host", _mismo_estado_con_otro_host),
+)
+
+INVARIANTES_COMPROBAR: tuple[tuple[str, Invariante], ...] = INVARIANTES + (
+    ("situacion_tipada", _situacion_tipada),
+    ("datos_dependen_del_estado", _datos_dependen_del_estado),
 )
 
 
@@ -365,10 +399,16 @@ def _plegado(encargo: str, eventos: Sequence[Evento], traza: Traza) -> Plegado:
 def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
     plegados: list[Plegado] = []
     violaciones: list[Violacion] = []
+    observados: dict[str, tuple[bool, bool, bool]] = {}
+    invariantes = tuple(
+        (nombre, partial(invariante, observados=observados)
+         if invariante is _datos_dependen_del_estado else invariante)
+        for nombre, invariante in INVARIANTES_COMPROBAR
+    )
     for encargo, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
         traza = trazar(reductor, eventos)
         plegados.append(_plegado(encargo, eventos, traza))
-        for nombre, invariante in INVARIANTES:
+        for nombre, invariante in invariantes:
             hallado = invariante(reductor, eventos, traza)
             if hallado is not None:
                 evento, detalle = hallado
@@ -509,7 +549,7 @@ def _texto_comprobacion(c: Comprobacion) -> list[str]:
         lineas.append("  No pliegan:")
         lineas.extend(_texto_fallos(c.fallos))
     lineas.append("  Invariantes, revisadas en cada prefijo (no cambian la salida):")
-    for nombre, _ in INVARIANTES:
+    for nombre, _ in INVARIANTES_COMPROBAR:
         suyas = [v for v in c.violaciones if v.invariante == nombre]
         if not suyas:
             lineas.append(f"    {nombre}: sin violaciones.")

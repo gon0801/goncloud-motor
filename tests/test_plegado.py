@@ -207,6 +207,8 @@ class Comprobar(unittest.TestCase):
             "    cancelacion_definitiva: sin violaciones.",
             "    mismo_estado_al_replegar: sin violaciones.",
             "    mismo_estado_con_otro_host: sin violaciones.",
+            "    situacion_tipada: sin violaciones.",
+            "    datos_dependen_del_estado: sin violaciones.",
         ])
 
 
@@ -222,6 +224,10 @@ class _RepoFalso(unittest.TestCase):
         for paquete in ("motor", "motor/encargos"):
             (self.repo / paquete / "__init__.py").touch()
         shutil.copy(HERRAMIENTA, self.repo / "tools" / "plegado.py")
+        (self.repo / "motor" / "encargos" / "situacion.py").write_text(
+            "class EstadoIncoherente(RuntimeError):\n    pass\n\n"
+            "def situacion_de(e):\n    return e.estado\n", encoding="utf-8",
+        )
         self.herramienta = self.repo / "tools" / "plegado.py"
         self.registro = self.dir / "registro.sqlite"
 
@@ -249,6 +255,8 @@ class Encargo:
     estado: str
     orden_parada: str
     escrituras: object
+    intentos_nuevos: bool = True
+    evidencia: tuple = ()
 
 
 def reducir(estado, evento, nuevo=True):
@@ -308,6 +316,9 @@ class Hallazgo:
 class Encargo:
     estado: str
     hallazgos: tuple = ()
+    escrituras: bool = True
+    intentos_nuevos: bool = True
+    evidencia: tuple = ()
 {encargo}
 
 def reducir(estado, evento, nuevo=True):
