@@ -94,9 +94,24 @@ def _kinds(raiz: Path) -> set[str]:
                          and isinstance(n.target, ast.Name) and n.target.id == "DETENCIONES")
             encontrados.update(k.value for k in tabla.keys if isinstance(k, ast.Constant))
     if (raiz / "motor" / "encargos" / "reductor").is_dir():
-        from motor.encargos.reductor import TABLA
-
-        encontrados.update(TABLA)
+        with (raiz / "motor" / "encargos" / "reductor" / "__init__.py").open(
+            encoding="utf-8"
+        ) as archivo:
+            filas = ast.parse(archivo.read())
+        tabla = next(
+            n.value for n in filas.body
+            if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+            and n.target.id == "TABLA"
+            or isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "TABLA" for t in n.targets
+            )
+        )
+        if not isinstance(tabla, ast.Dict) or any(
+            not isinstance(k, ast.Constant) or not isinstance(k.value, str)
+            for k in tabla.keys
+        ):
+            raise ValueError("la tabla del reductor necesita claves literales")
+        encontrados.update(k.value for k in tabla.keys)
     return encontrados
 
 
