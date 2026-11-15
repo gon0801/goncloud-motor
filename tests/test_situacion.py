@@ -18,6 +18,23 @@ def _entrega() -> tuple[dict, object]:
 
 
 class SituacionComoLectura(unittest.TestCase):
+    def test_comprobar_no_cambia_el_veredicto_del_canario(self) -> None:
+        from types import SimpleNamespace
+
+        from ops import canario_juzgar, canario_observar
+
+        evento, _ = _entrega()
+        evento["ts"] = "2026-11-15T00:00:00Z"
+
+        def reductor(estado, hecho, nuevo=False):
+            return replace(reducir(estado, hecho, nuevo), estado="ejecutando", ultimo_hecho="")
+
+        with mock.patch.object(plegado, "cargar_reductor",
+                               return_value=Reductor(reductor, ("ejecutando",))):
+            pliegue, _ = canario_observar._plegar([evento])
+        self.assertEqual(pliegue.violaciones, ())
+        self.assertEqual(canario_juzgar._legible(SimpleNamespace(pliegue=pliegue), None)[0], "pasa")
+
     def test_variantes_no_se_guardan_en_encargo(self) -> None:
         from motor.encargos.situacion import Cancelado, Recibido, situacion_de
 
