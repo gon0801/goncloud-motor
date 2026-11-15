@@ -4812,14 +4812,9 @@ def seguimiento_de(e: Encargo) -> dict:
 
 
 def vista(e: Encargo, recibo: str = "") -> dict:
-    if e.estado == "esperando_reintento" and (not e.motivo or not e.reanuda_en):
-        raise TransicionIlegal("espera incompleta")
-    if e.estado == "conciliando" and not any(x.estado == "incierto" for x in e.efectos):
-        raise TransicionIlegal("conciliando sin efecto incierto")
-    if e.estado == "terminado" and not e.evidencia:
-        raise TransicionIlegal("terminado sin evidencia")
-    if e.estado == "ejecutando" and not e.ultimo_hecho:
-        raise TransicionIlegal("ejecutando sin hecho")
+    from .situacion import situacion_de
+
+    situacion_de(e)
     def _modelo(rol: str) -> str:
         for r, _agente, modelo in reversed(e.modelos):
             if r == rol:

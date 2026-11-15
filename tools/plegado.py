@@ -348,12 +348,39 @@ def _mismo_estado_con_otro_host(
     return _primera_divergencia(eventos, traza, otra)
 
 
+def _situacion_tipada(
+    _reductor: Reductor, eventos: Sequence[Evento], traza: Traza
+) -> tuple[Evento, str] | None:
+    from motor.encargos.situacion import EstadoIncoherente, situacion_de
+
+    for evento, e in zip(eventos, traza.estados, strict=False):
+        try:
+            situacion_de(e)
+        except EstadoIncoherente as exc:
+            return evento, str(exc)
+    return None
+
+
+def _datos_dependen_del_estado(
+    _reductor: Reductor, eventos: Sequence[Evento], traza: Traza
+) -> tuple[Evento, str] | None:
+    observados: dict[str, tuple[bool, bool, bool]] = {}
+    for evento, e in zip(eventos, traza.estados, strict=False):
+        datos = (e.escrituras, e.intentos_nuevos, bool(e.evidencia))
+        previo = observados.setdefault(e.estado, datos)
+        if previo != datos:
+            return evento, f"{e.estado}: escrituras, intentos_nuevos o evidencia dependen de más datos"
+    return None
+
+
 Invariante = Callable[[Reductor, Sequence[Evento], Traza], "tuple[Evento, str] | None"]
 
 INVARIANTES: tuple[tuple[str, Invariante], ...] = (
     ("cancelacion_definitiva", _cancelacion_definitiva),
     ("mismo_estado_al_replegar", _mismo_estado_al_replegar),
     ("mismo_estado_con_otro_host", _mismo_estado_con_otro_host),
+    ("situacion_tipada", _situacion_tipada),
+    ("datos_dependen_del_estado", _datos_dependen_del_estado),
 )
 
 
