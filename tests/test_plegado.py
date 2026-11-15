@@ -565,6 +565,45 @@ def _corpus_sin_entrega(raiz: Path) -> Path:
 
 
 class CorpusPlegado(unittest.TestCase):
+    def test_verificar_cobertura_muestra_lineas_no_ejecutadas(self) -> None:
+        from tools.corpus_plegado import _referencia
+
+        with tempfile.TemporaryDirectory() as temporal:
+            raiz = Path(temporal)
+            corpus = raiz / "corpus"
+            (corpus / "registros").mkdir(parents=True)
+            (corpus / "rechazos.jsonl").write_text("", encoding="utf-8")
+            registro = Registro(raiz / "origen")
+            registro.append_many("enc_a", (Evento("entrega", _ENTREGA[1], "entrega:enc_a"),))
+            registro.close()
+            shutil.copy2(raiz / "origen" / "registro.sqlite", corpus / "registros" / "uno.sqlite")
+            _referencia(corpus, RAIZ, "prueba")
+            meta = json.loads((corpus / "meta.json").read_text(encoding="utf-8"))
+            (corpus / "meta.json").write_text(
+                json.dumps({**meta, "pytest_exit": 0, "pytest_fallos": []}), encoding="utf-8",
+            )
+            resultado = _ejecutar(
+                "verificar", corpus, "--cobertura",
+                herramienta=RAIZ / "tools" / "corpus_plegado.py",
+            )
+            self.assertEqual(resultado.returncode, 0, resultado.stdout + resultado.stderr)
+            fuente = (RAIZ / "motor" / "encargos" / "dominio.py").read_text(encoding="utf-8")
+            linea = next(i for i, texto in enumerate(fuente.splitlines(), 1)
+                         if 'raise TransicionIlegal(f"evento desconocido: {kind}")' in texto)
+            self.assertIn(f"motor/encargos/dominio.py:{linea}:", resultado.stdout)
+            self.assertIn("estado igual en 1 de 1", resultado.stdout)
+
+    def test_tabla_de_pedido_y_ordenes_tiene_filas_aplicables(self) -> None:
+        from motor.encargos.reductor import TABLA
+
+        esperados = {
+            "recibo", "ruta_agentes", "contexto_entrega", "proveedor_fallo",
+            "proveedor_disponible", "falla_sesion_local", "orden", "ajuste",
+            "procedimiento", "migracion",
+        }
+        self.assertTrue(esperados <= TABLA.keys())
+        self.assertTrue(all(callable(TABLA[kind].aplicar) for kind in esperados))
+
     def test_referencia_conserva_los_descartados_tras_la_semilla(self) -> None:
         from tools.corpus_plegado import _descartar, _referencia
 
