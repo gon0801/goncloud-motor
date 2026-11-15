@@ -565,6 +565,25 @@ def _corpus_sin_entrega(raiz: Path) -> Path:
 
 
 class CorpusPlegado(unittest.TestCase):
+    def test_kinds_lee_la_tabla_del_arbol_de_referencia(self) -> None:
+        from tools.corpus_plegado import _kinds
+
+        with tempfile.TemporaryDirectory() as temporal:
+            raiz = Path(temporal)
+            reductor = raiz / "motor" / "encargos" / "reductor"
+            reductor.mkdir(parents=True)
+            (reductor.parent / "dominio.py").write_text(
+                'def _reducir_evento(estado, evento):\n'
+                '    kind = evento["kind"]\n'
+                '    if kind == "entrega":\n'
+                '        return estado\n',
+                encoding="utf-8",
+            )
+            (reductor / "__init__.py").write_text(
+                'TABLA = {"solo_en_ref": object()}\n', encoding="utf-8",
+            )
+            self.assertEqual(_kinds(raiz), {"entrega", "solo_en_ref"})
+
     def test_verificar_cobertura_muestra_lineas_no_ejecutadas(self) -> None:
         from tools.corpus_plegado import _referencia
 
