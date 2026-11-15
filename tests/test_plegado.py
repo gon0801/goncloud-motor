@@ -592,6 +592,8 @@ class CorpusPlegado(unittest.TestCase):
                          if 'raise TransicionIlegal(f"evento desconocido: {kind}")' in texto)
             self.assertIn(f"motor/encargos/dominio.py:{linea}:", resultado.stdout)
             self.assertIn("estado igual en 1 de 1", resultado.stdout)
+            self.assertNotIn(": def _reducir_evento(", resultado.stdout)
+            self.assertNotIn(": def recibo(", resultado.stdout)
 
     def test_tabla_de_pedido_y_ordenes_tiene_filas_aplicables(self) -> None:
         from motor.encargos.dominio import reducir
