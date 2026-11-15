@@ -594,7 +594,8 @@ class CorpusPlegado(unittest.TestCase):
             self.assertIn("estado igual en 1 de 1", resultado.stdout)
 
     def test_tabla_de_pedido_y_ordenes_tiene_filas_aplicables(self) -> None:
-        from motor.encargos.reductor import TABLA
+        from motor.encargos.dominio import reducir
+        from motor.encargos.reductor import Fila, TABLA
 
         esperados = {
             "recibo", "ruta_agentes", "contexto_entrega", "proveedor_fallo",
@@ -603,6 +604,11 @@ class CorpusPlegado(unittest.TestCase):
         }
         self.assertTrue(esperados <= TABLA.keys())
         self.assertTrue(all(callable(TABLA[kind].aplicar) for kind in esperados))
+        entrega = reducir(None, {"kind": "entrega", "data": _ENTREGA[1]}, nuevo=False)
+        aplicar = mock.Mock(wraps=TABLA["recibo"].aplicar)
+        with mock.patch.dict(TABLA, {"recibo": Fila(aplicar)}):
+            reducir(entrega, {"kind": "recibo", "data": {}}, nuevo=False)
+        aplicar.assert_called_once_with(entrega, {}, "", False)
 
     def test_referencia_conserva_los_descartados_tras_la_semilla(self) -> None:
         from tools.corpus_plegado import _descartar, _referencia
