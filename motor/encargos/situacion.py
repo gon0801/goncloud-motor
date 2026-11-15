@@ -140,7 +140,9 @@ def situacion_de(e: Encargo) -> Situacion:
     if e.estado == "detenido":
         if e.orden_parada == "fallo_interno":
             return Detenido(FalloInterno("", "", ""))
-        return Detenido(PorOrden("parar" if e.orden_parada == "parar" else "importar"))
+        if e.orden_parada == "parar":
+            return Detenido(PorOrden("parar"))
+        return Detenido(PorOrden("reabrir" if e.reaperturas else "importar"))
     if e.estado == "cancelado":
         return Cancelado()
     if e.estado == "terminado":

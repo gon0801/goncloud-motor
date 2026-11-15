@@ -368,12 +368,13 @@ def _datos_dependen_del_estado(
 ) -> tuple[Evento, str] | None:
     if observados is None:
         observados = {}
+    primera: tuple[Evento, str] | None = None
     for evento, e in zip(eventos, traza.estados, strict=False):
         datos = (e.escrituras, e.intentos_nuevos, bool(e.evidencia))
         previo = observados.setdefault(e.estado, datos)
-        if previo != datos:
-            return evento, f"{e.estado}: escrituras, intentos_nuevos o evidencia dependen de más datos"
-    return None
+        if previo != datos and primera is None:
+            primera = evento, f"{e.estado}: escrituras, intentos_nuevos o evidencia dependen de más datos"
+    return primera
 
 
 Invariante = Callable[[Reductor, Sequence[Evento], Traza], "tuple[Evento, str] | None"]
