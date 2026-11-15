@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from motor.encargos.registro import ClaveOcupada, Evento, Registro
 from tools.plegado import campos_de
@@ -547,6 +548,35 @@ class Comparar(_RepoFalso):
 
 
 class CorpusPlegado(unittest.TestCase):
+    def test_generar_frena_antes_de_descartar_y_sembrar_sin_cobertura_real(self) -> None:
+        from tools import corpus_plegado
+
+        with tempfile.TemporaryDirectory() as temporal:
+            def correr(args, **_):
+                if args[3:5] == ["worktree", "add"]:
+                    (Path(args[-2]) / "tools").mkdir(parents=True)
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if args[3:5] == ["worktree", "remove"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if args[1:3] == ["-m", "pytest"]:
+                    return subprocess.CompletedProcess(
+                        args, 1,
+                        f"FAILED {corpus_plegado.FALLO_BASE}\n1 failed, 2800 passed", "",
+                    )
+                raise AssertionError(f"no se debía sembrar: {args}")
+
+            with (mock.patch.object(corpus_plegado.subprocess, "check_output",
+                                    return_value="base\n"),
+                  mock.patch.object(corpus_plegado.subprocess, "run",
+                                    side_effect=correr) as ejecuciones,
+                  mock.patch.object(corpus_plegado, "_referencia",
+                                    return_value=(1, 0, 1, {"entrega"})),
+                  mock.patch.object(corpus_plegado, "_descartar") as descartar):
+                with self.assertRaisesRegex(RuntimeError, "corpus insuficiente antes de sembrar"):
+                    corpus_plegado.generar("origin/main", Path(temporal) / "corpus")
+                descartar.assert_not_called()
+                self.assertEqual(ejecuciones.call_count, 3)
+
     def test_una_falla_ajena_de_pytest_invalida_el_corpus(self) -> None:
         from tools.corpus_plegado import _comprobar_cobertura, _fallos_pytest
 
