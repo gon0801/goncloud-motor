@@ -625,6 +625,13 @@ class CorpusPlegado(unittest.TestCase):
             resultado = verificar(copia)
             self.assertNotEqual(resultado.returncode, 0, resultado.stdout)
             self.assertIn("sin_entrega", resultado.stdout)
+            dominio.write_text(
+                texto.replace(original, '        raise TransicionIlegal("otro error")', 1),
+                encoding="utf-8",
+            )
+            otro_error = verificar(copia)
+            self.assertNotEqual(otro_error.returncode, 0, otro_error.stdout)
+            self.assertIn("sin_entrega", otro_error.stdout)
 
     def test_generar_limpia_un_worktree_de_corpus_sin_carpeta(self) -> None:
         from tools import corpus_plegado
@@ -936,6 +943,7 @@ class CorpusPlegado(unittest.TestCase):
                     "::test_un_ajuste_del_propietario_vuelve_a_intentarlo",
                 ],
                 "archivos": 1, "encargos": 1, "eventos": 3, "rechazos": 1,
+                "descartados": 0, "descartados_detalle": [],
             }), encoding="utf-8")
 
             def verificar(arbol: Path) -> subprocess.CompletedProcess[str]:
@@ -954,7 +962,8 @@ class CorpusPlegado(unittest.TestCase):
             ruta_meta.write_text(json.dumps(meta_sin_fallos), encoding="utf-8")
             self.assertEqual(verificar(RAIZ).returncode, 0)
             for campo in ("pytest_exit", "pytest_fallos", "archivos",
-                          "encargos", "eventos", "rechazos"):
+                          "encargos", "eventos", "rechazos", "descartados",
+                          "descartados_detalle"):
                 meta_incompleta = json.loads(meta_sana)
                 del meta_incompleta[campo]
                 ruta_meta.write_text(json.dumps(meta_incompleta), encoding="utf-8")
