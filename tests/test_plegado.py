@@ -1125,10 +1125,12 @@ class CorpusPlegado(unittest.TestCase):
             shutil.copy2(copia_sana, registro_corpus)
             copia = raiz / "copia"
             shutil.copytree(RAIZ / "motor", copia / "motor")
-            dominio = copia / "motor" / "encargos" / "dominio.py"
-            texto = dominio.read_text(encoding="utf-8")
-            self.assertIn('    "plazo",\n', texto)
-            dominio.write_text(texto.replace('    "plazo",\n', "", 1), encoding="utf-8")
+            filas = copia / "motor" / "encargos" / "reductor" / "__init__.py"
+            texto = filas.read_text(encoding="utf-8")
+            original = "'plazo': Fila(esperas.plazo, corta_series=False)"
+            self.assertIn(original, texto)
+            filas.write_text(texto.replace(original, original.replace("False", "True"), 1),
+                             encoding="utf-8")
             mutado = verificar(copia)
             self.assertNotEqual(mutado.returncode, 0, mutado.stdout)
             self.assertIn("fallos_repo", mutado.stdout)
