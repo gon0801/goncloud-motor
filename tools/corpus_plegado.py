@@ -103,6 +103,26 @@ def _registros(salida: Path) -> list[Path]:
     return sorted((salida / "registros").glob("*.sqlite"))
 
 
+def _limpiar_worktrees() -> None:
+    listado = subprocess.run(
+        ["git", "-C", str(RAIZ), "worktree", "list", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    )
+    temporal = Path(tempfile.gettempdir()).resolve()
+    for bloque in listado.stdout.split("\n\n"):
+        lineas = bloque.splitlines()
+        if not lineas or not lineas[0].startswith("worktree "):
+            continue
+        arbol = Path(lineas[0][9:])
+        if (arbol.name == "arbol" and arbol.parent.name.startswith("corpus-ref-")
+            and arbol.parent.parent.resolve() == temporal and not arbol.exists()
+            and any(linea.startswith("prunable ") for linea in lineas)):
+            subprocess.run(
+                ["git", "-C", str(RAIZ), "worktree", "remove", "--force", str(arbol)],
+                check=True, capture_output=True,
+            )
+
+
 def _referencia(
     salida: Path, raiz: Path, ref: str, descartados_previos: int = 0
 ) -> tuple[int, int, int, set[str]]:
@@ -215,6 +235,7 @@ def _sembrar(salida: Path, raiz: Path, faltan: set[str]) -> None:
 def generar(ref: str, salida: Path) -> int:
     if salida.exists() and any(salida.iterdir()):
         raise ValueError(f"el destino no está vacío: {salida}")
+    _limpiar_worktrees()
     salida.mkdir(parents=True, exist_ok=True, mode=0o700)
     if salida.stat().st_mode & 0o077:
         raise ValueError(f"el destino debe ser privado: {salida}")

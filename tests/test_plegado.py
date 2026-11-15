@@ -674,7 +674,7 @@ class CorpusPlegado(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "corpus insuficiente antes de sembrar"):
                     corpus_plegado.generar("origin/main", Path(temporal) / "corpus")
                 descartar.assert_not_called()
-                self.assertEqual(ejecuciones.call_count, 3)
+                self.assertEqual(ejecuciones.call_count, 4)
 
     def test_una_falla_ajena_de_pytest_invalida_el_corpus(self) -> None:
         from tools.corpus_plegado import _comprobar_cobertura, _fallos_pytest
