@@ -76,3 +76,10 @@ class ValidacionIntento(unittest.TestCase):
                 self.assertIsNotNone(
                     reducir(previo, {"kind": kind, "data": datos}, nuevo=False)
                 )
+
+    def test_aplicar_cada_kind_de_intento_con_datos_vacios(self) -> None:
+        e = _entrega()
+        for kind, fila in TABLA.items():
+            if fila.aplicar.__module__.endswith(".intento"):
+                with self.subTest(kind=kind):
+                    self.assertIsNotNone(reducir(e, {"kind": kind, "data": {}}, nuevo=False))

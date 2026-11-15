@@ -68,6 +68,12 @@ def asignar(texto: str) -> str:
             opciones.append("corta_series=False")
         if kind in MARCADORES:
             opciones.append("marcador=True")
+        for keyword in valor.keywords:
+            if keyword.arg == "validar":
+                validador = ast.get_source_segment(texto, keyword.value)
+                if validador is None:
+                    raise ValueError(f"validador ilegible: {kind}")
+                opciones.append(f"validar={validador}")
         argumentos = ", " + ", ".join(opciones) if opciones else ""
         lineas[valor.lineno - 1] = f"{prefijo}: Fila({manejador}{argumentos}),\n"
     return "".join(lineas)

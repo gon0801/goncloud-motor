@@ -10,25 +10,21 @@ if TYPE_CHECKING:
 
 
 def reserva(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _CERRADOS, _ajustes_de_la_reserva, replace
+    from ..dominio import replace
+    from .validacion_intento import leer_reserva
 
-    if e.proc is not None or e.reserva:
-        raise TransicionIlegal("ya hay un escritor")
-    if (
-        not e.intentos_nuevos
-        or e.estado in _CERRADOS
-        or e.estado == "esperando_reintento"
-    ):
-        raise TransicionIlegal("no hay autorización para otro intento")
+    carga = leer_reserva(e, d)
+    if carga is None:
+        return e
     return replace(
         e,
         reserva=True,
-        ajustes_reservados=_ajustes_de_la_reserva(e, d),
+        ajustes_reservados=carga[0],
         conductor=str(d.get("conductor") or e.conductor),
         candidato=str(d.get("candidato") or ""),
         host=str(d.get("host") or socket.gethostname()),
         rol=str(d.get("rol") or e.rol or "responsable"),
-        generacion=int(d.get("generacion") or (e.generacion + 1)),
+        generacion=carga[1],
         estado="ejecutando" if e.estado == "recibido" else e.estado,
         ultimo_hecho=e.ultimo_hecho or "intento reservado",
         hora=hora or e.hora,
@@ -49,20 +45,19 @@ def conductor(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import replace
 
     return replace(
-        e, conductor=d["token"], candidato="", host=d["host"], hora=hora or e.hora
+        e, conductor=d.get("token", e.conductor), candidato="",
+        host=d.get("host", e.host), hora=hora or e.hora,
     )
 
 def intento_abierto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import Proc, TransicionIlegal, _CERRADOS, replace
+    from ..dominio import Proc, replace
+    from .validacion_intento import leer_intento_abierto
 
-    if not e.intentos_nuevos or e.estado in _CERRADOS:
-        raise TransicionIlegal("no hay autorización para otro intento")
-    if e.proc is not None:
-        raise TransicionIlegal("ya hay un escritor")
+    carga = leer_intento_abierto(d)
+    if carga is None:
+        return e
     rol_intento = str(d.get("rol") or e.rol or "responsable")
     poteto = str(d.get("poteto_digest") or "")
-    if "poteto_digest" in d and rol_intento == "responsable" and not poteto:
-        raise TransicionIlegal("intento del responsable sin poteto verificado")
     modelo = str(d.get("modelo") or "")
     modelos = e.modelos
     modelos_fase = e.modelos_fase
@@ -87,12 +82,12 @@ def intento_abierto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         modelos_fase=modelos_fase,
         sesion_modo=str(d.get("sesion_modo") or e.sesion_modo),
         poteto_digest=poteto or e.poteto_digest,
-        intento=d["id"],
+        intento=carga[0],
         intento_interrumpido=False,
         sesion=d.get("sesion") or e.sesion,
         proc=Proc(
-            pid=int(d["pid"]),
-            inicio=str(d["inicio"]),
+            pid=carga[1],
+            inicio=str(carga[2]),
             boot_id=str(d.get("boot_id") or ""),
             job=str(d.get("job") or ""),
             host=str(d.get("host") or socket.gethostname()),
@@ -113,7 +108,7 @@ def actividad(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return replace(
         e,
         estado="ejecutando",
-        ultimo_hecho=d["hecho"],
+        ultimo_hecho=d.get("hecho", ""),
         hora=hora or e.hora,
         herramienta=str(d.get("herramienta") or ""),
         motivo="",
@@ -125,7 +120,7 @@ def colgada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return replace(
         e,
         hora=hora or e.hora,
-        ultimo_hecho=d["hecho"],
+        ultimo_hecho=d.get("hecho", ""),
         motivo="sesión colgada",
         siguiente="cerrar el escritor y no abrir otro hasta verlo ausente",
         causa=d.get("causa") or e.causa,
@@ -168,14 +163,4 @@ def sesion_perdida(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def conductor_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import FASE_IMPLICITA, TransicionIlegal
-
-    fase = str(d.get("fase") or "")
-    token = str(d.get("token") or "")
-    if not fase:
-        raise TransicionIlegal("asociación sin fase")
-    if e.conductor and token != e.conductor:
-        raise TransicionIlegal("la asociación no corresponde al conductor")
-    if e.fases and fase != FASE_IMPLICITA and all(f.id != fase for f in e.fases):
-        raise TransicionIlegal("asociación a una fase inexistente")
     return e

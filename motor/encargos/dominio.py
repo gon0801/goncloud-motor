@@ -1824,7 +1824,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
     fila = TABLA.get(kind)
     if fila is None:
         raise TransicionIlegal(f"evento desconocido: {kind}")
-    return fila.aplicar(e, d, hora, nuevo)
+    return fila.reducir(e, d, hora, nuevo)
 
 
 
