@@ -22,6 +22,10 @@ from motor.respuestas_merge import motivo_del_merge, tras_el_rechazo
 
 from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .entrega.observacion import anotar_integrado, anotar_pr, preparar_pr, siguiente_fase
+from .entrega.ejecutar import (
+    anotar_pendiente, base_objetivo_del_pr as _base_objetivo_del_pr,
+    conciliar_otra_vista, conducir_pr, esperar_sin_gh, fase_final_por_sondear,
+)
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
@@ -42,7 +46,7 @@ from .comprobacion import (
     sincronizar_declaradas_de_fase,
     version_producto,
 )
-from . import capacidades, necesidades, producto_listo, trabajos_ci
+from . import capacidades, necesidades, politica, producto_listo, trabajos_ci
 from .dominio import (
     _CERRADOS,
     Encargo,
@@ -1642,6 +1646,7 @@ def barrer(
     migrar_marcadores(registro, hora)
     informes = []
     presupuesto = [CERRADOS_POR_PASADA]
+    presupuesto_pr = CERRADOS_POR_PASADA
     for encargo_id in registro.ids():
         try:
             previo = plegar_aislado(registro, encargo_id)
@@ -1650,6 +1655,22 @@ def barrer(
             if aparcado_por_barrido(previo):
                 informes.append(vista_o_minima(previo))
                 continue
+            if (gh is not None and leer_parada_local(registro.base) is None
+                and previo.via != "directa"):
+                fase = fase_final_por_sondear(previo) if politica.ENTREGA_V4 else ""
+                if fase and presupuesto_pr > 0:
+                    presupuesto_pr -= 1
+                    previo, _ = conducir_pr(registro, previo, gh, hora, fase)
+                elif (
+                    previo.estado not in ("terminado", "cancelado", "detenido", "deteniendo")
+                    and not (previo.pendientes_entrega and any(
+                        i.clase.startswith("despliegue:") for i in previo.impedimentos
+                    ))
+                ):
+                    previo, atendido = conducir_pr(registro, previo, gh, hora)
+                    if atendido:
+                        informes.append(vista(previo))
+                        continue
             informes += _barrer_encargos(
                 registro, [encargo_id], hora, epoch, lanzador, umbral_s, gh,
                 presupuesto,
@@ -3967,17 +3988,6 @@ def _base_fase(enc: Encargo) -> str:
 
     fase = enc.fase_actual
     return base_de(fase, frozenset()) if fase is not None else enc.entrega.base
-
-
-def _base_objetivo_del_pr(enc: Encargo) -> str:
-    """La base a la que apunta el PR de esta fase.
-
-    Un PR de nivel «pr» apunta a la base de su fase, que puede ser la rama de
-    otra fase apilada; uno integrado apunta a la base autorizada.
-    """
-    if nivel_objetivo(enc) in ("integrado", "desplegado"):
-        return enc.entrega.base
-    return _base_fase(enc)
 
 
 def _ref_existente(espacio: Path, *candidatos: str) -> str:
@@ -6988,7 +6998,7 @@ def _base_del_pr(gh, enc: Encargo) -> str:
     real. Si la vista no se puede leer, se usa la misma base con la que se abre
     el PR, que ya contempla la fase apilada.
     """
-    respaldo = str(_base_objetivo_del_pr(enc) or enc.entrega.base or "main")
+    respaldo = str(_base_objetivo_del_pr(enc, gh) or enc.entrega.base or "main")
     if gh is None or not enc.pr_numero:
         return respaldo
     try:
@@ -8071,18 +8081,9 @@ def _entregar_con_pendientes(
             _publicar_resultado(registro, enc, hora)
             _limpiar_encargo_cerrado(registro, enc, hora)
         return enc
-    if not enc.pendientes_entrega:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "pendiente_entrega",
-                "data": {"texto": pendientes[0], "hora": hora},
-            },
-            f"pendiente-entrega:{enc.id}:{enc.fase_activa}",
-        )
-        enc = registro.fold(enc.id) or enc
+    enc = anotar_pendiente(registro, enc, pendientes[0], hora)
     publicable = enc.entrega.nivel != "terminado" and gh is not None
-    if enc.entrega.nivel != "terminado" and gh is None:
+    if not publicable and gh is None and enc.entrega.nivel != "terminado":
         causa = (
             "nivel de entrega "
             + enc.entrega.nivel
@@ -8103,7 +8104,7 @@ def _entregar_con_pendientes(
                 )
         if not causa:
             rama = _rama_fase(enc)
-            base = _base_objetivo_del_pr(enc)
+            base = _base_objetivo_del_pr(enc, gh)
             if not numero:
                 ref_base = _ref_existente(espacio, f"origin/{base}", base)
                 conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}") if ref_base else None
@@ -8573,7 +8574,7 @@ def _conciliar_fases(
     con su merge commit sin relaunch del responsable y sin mover el turno de la
     fase activa.
     """
-    from . import despliegue, politica_despliegue
+    from . import despliegue
 
     if not enc.fases or enc.entrega.nivel not in (
         "pr", "integrado", "desplegado"
@@ -8624,45 +8625,9 @@ def _conciliar_fases(
             resultado="error", causa=str(exc)[:300],
         )
     enc = anotar_pr(registro, enc, candidata.id, vista, hora)
-    if vista.estado != "mergeado" or vista.base != enc.entrega.base:
-        return _anotar_conciliacion(
-            registro, enc, candidata, "consulta", hora,
-            resultado=vista.estado, base=str(vista.base),
-        )
-    if enc.entrega.nivel not in ("integrado", "desplegado"):
-        # La entrega no pide integrar: el PR mergeado se observa, pero la fase
-        # ya estaba en el nivel que el encargo autorizó y no se reescribe.
-        return _anotar_conciliacion(
-            registro, enc, candidata, "consulta", hora,
-            resultado="mergeado", base=str(vista.base),
-        )
-    recibo = vista.merge_commit or vista.head
-    _asegurar_commit_local(espacio, recibo, enc.entrega.base)
-    integrada = replace(
-        candidata, integrado_sha=recibo, ultimo_paso_entrega="integrado"
+    return conciliar_otra_vista(
+        registro, enc, gh, candidata, vista, hora, espacio, activa_despliega,
     )
-    politica = politica_despliegue.resolver(espacio, enc, integrada)
-    extra = {
-        "sha": recibo,
-        "recibo": recibo,
-        "numero": candidata.pr_numero,
-        "base": vista.base,
-        "resultado": "mergeado",
-    }
-    if politica.requiere_despliegue is not None:
-        extra.update(politica.datos())
-    enc = _anotar_conciliacion(registro, enc, candidata, "integrado", hora, **extra)
-    fase = next((f for f in enc.fases if f.id == candidata.id), None)
-    if (
-        fase is not None
-        and enc.proc is None
-        and not enc.reserva
-        and not activa_despliega
-        and nivel_de(fase) == "integrado"
-        and fase.estado != "preparada"
-    ):
-        enc = _paso_despliegue_fase(registro, enc, fase, espacio, hora)
-    return enc
 
 
 def _paso_entrega_paso(
@@ -8721,18 +8686,7 @@ def _paso_entrega_paso(
             )
         return enc, resultado
     if gh is None:
-        causa = (
-            "nivel de entrega "
-            + enc.entrega.nivel
-            + " sin puerto GitHub configurado en este supervisor"
-        )
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "configurar el puerto GitHub del supervisor y reintentar",
-            hora, "sin-puerto",
-        )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
-        return _con_espera(registro.fold(enc.id) or enc)
+        return esperar_sin_gh(registro, enc, hora)
     espacio = _espacio(registro.base, enc.id)
     directorio = _directorio(registro.base, enc.id)
     if _git(espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0:
@@ -8875,7 +8829,7 @@ def _paso_entrega_paso(
         )
         return registro.fold(enc.id) or enc, Devolver("responsable", causa)
     rama = _rama_fase(enc)
-    base = _base_objetivo_del_pr(enc)
+    base = _base_objetivo_del_pr(enc, gh)
     firma = enc.producto.firma if enc.producto is not None else ""
     for paso in ("commit", "push"):
         registro.anotar(
