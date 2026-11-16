@@ -164,7 +164,7 @@ class AvisosPorPalabra(unittest.TestCase):
         self.assertEqual(aviso["palabra"], rep.palabra)
         self.assertEqual(rep.palabra, "listo para tu merge")
 
-    def test_cierre_local_pendiente_no_se_descarta_al_configurar_transporte(self) -> None:
+    def test_cierre_local_pendiente_no_se_descarta_al_configurar_transporte(self) -> None:  # no-roja-en-base: el cierre sin tipo ya se reenviaba al configurar el transporte
         ident = self._terminar()
         config = self.banco.base / "canal.json"
         configurado = config.read_text(encoding="utf-8")
