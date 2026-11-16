@@ -44,17 +44,20 @@ def aplicar_fila(e: Encargo, kind: str, d: dict, hora: str, nuevo: bool) -> Enca
     return fila.reducir(e, d, hora, nuevo)
 
 
-_OMISION_SIN_DERIVADOS = frozenset({
-    "entrega", "cierre_forzado", "bloqueo_fase", "producto_listo",
-    "orden", "ruta_agentes", "contexto_entrega", "ajuste", "procedimiento",
-    "proveedor_fallo", "proveedor_disponible", "fallo_interno", "incorporado",
-    "quietud_vigilada",
-    "solicitud", "conciliacion_fase",
-})
-
-
-def se_omitio(kind: str, anterior: Encargo | None, aplicado: Encargo) -> bool:
-    return aplicado is anterior and (kind not in TABLA or kind in _OMISION_SIN_DERIVADOS)
+def plegar_evento(
+    anterior: Encargo | None, evento: dict, nuevo: bool,
+    reducir_evento: Callable[[Encargo | None, dict, bool], Encargo],
+    derivados: Callable[[Encargo, dict], Encargo],
+) -> Encargo:
+    try:
+        aplicado = reducir_evento(anterior, evento, nuevo)
+        if aplicado is anterior and evento["kind"] not in TABLA:
+            return aplicado
+        return derivados(aplicado, evento)
+    except Exception:
+        if nuevo or anterior is None:
+            raise
+        return anterior
 
 
 TABLA: dict[str, Fila] = {

@@ -59,7 +59,7 @@ def validar_orden(e: Encargo, d: dict) -> None:
 
 
 def validar_ajuste(e: Encargo, d: dict) -> None:
-    from ..dominio import TransicionIlegal
+    from ..dominio import TransicionIlegal, _resolver_cierres
 
     if e.estado == "terminado":
         fase = e.fase_actual
@@ -67,6 +67,7 @@ def validar_ajuste(e: Encargo, d: dict) -> None:
             raise TransicionIlegal("el encargo ya terminó; no admite correcciones")
     if e.orden_parada == "cancelar":
         raise TransicionIlegal("el encargo está cancelado; no admite correcciones")
+    _resolver_cierres(d.get("cierra") or (), [])
     d["texto"]
 
 

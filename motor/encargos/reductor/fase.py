@@ -209,14 +209,9 @@ def fase_reactivada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return _fase_reactivada(e, d, hora)
 
 def conciliacion_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _conciliacion_fase
+    from ..dominio import _conciliacion_fase
 
-    try:
-        return _conciliacion_fase(e, d, hora)
-    except (TransicionIlegal, TypeError, ValueError, OverflowError):
-        if nuevo:
-            raise
-        return e
+    return _conciliacion_fase(e, d, hora)
 
 def fase_desplegada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _fase_desplegada

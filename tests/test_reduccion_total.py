@@ -77,8 +77,9 @@ class ReduccionTotal(unittest.TestCase):
         ):
             with self.subTest(kind=kind):
                 resultado = reducir(previo, {"kind": kind, "data": datos}, nuevo=False)
-                self.assertEqual(resultado.fallos_repo, ("", 0))
-                self.assertEqual(resultado.fallos_entrega, ("", 0))
+                fallos = ("", 0) if kind == "solicitud" else ("git falló", 2)
+                self.assertEqual(resultado.fallos_repo, fallos)
+                self.assertEqual(resultado.fallos_entrega, fallos)
                 self.assertEqual(resultado.ultima_firma,
                                  datos.get("firma", "anterior"))
 
