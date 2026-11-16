@@ -519,6 +519,8 @@ def observacion(registro, enc, fase=None) -> str:
 
 def _observacion_en(registro, enc, directorio: Path) -> str:
     try:
+        if not directorio.exists() and not directorio.is_symlink():
+            return "ausente"
         # Tras la limpieza, el recibo y el pedido sobreviven al proceso del trabajador.
         if (not (directorio / "proceso.json").exists()
                 and any(tipo == "despliegue" and clave == directorio.name and resultado == "borrado"
