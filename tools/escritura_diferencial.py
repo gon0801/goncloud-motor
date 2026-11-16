@@ -50,6 +50,8 @@ def _muestras(corpus: Path, kinds: set[str]) -> dict[str, list[dict]]:
 
 def _adaptar(datos: dict, estado: Any) -> dict:
     ajustados = dict(datos)
+    if estado is None:
+        return ajustados
     for campo, valor in (("fase", estado.fase_activa), ("intento", estado.intento)):
         if campo in ajustados:
             ajustados[campo] = valor
@@ -69,7 +71,7 @@ def _variantes(kind: str, datos: dict, estado: Any):
     for campo, valor in (("fase", "otra_fase"), ("intento", "otro_intento")):
         yield f"{campo}:ajeno", {**datos, campo: valor}
     for campo in ("solicitudes", "efectos"):
-        existentes = getattr(estado, campo, ())
+        existentes = getattr(estado, campo, ()) if estado is not None else ()
         if existentes:
             yield "id:repetido", {**datos, "id": existentes[0].id}
             break
@@ -79,9 +81,25 @@ def _variantes(kind: str, datos: dict, estado: Any):
             yield f"ajustes_vistos:{nombre}", {**datos, "ajustes_vistos": valor}
 
 
+def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
+                  carga: dict, legado: bool) -> None:
+    from tools.plegado import campos_de
+
+    clave = hashlib.sha256(
+        json.dumps(carga, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    try:
+        nuevo = reductor.reducir(estado, {"kind": kind, "data": carga}, nuevo=True)
+        valor = campos_de(nuevo) if legado else nuevo
+        salida = ["acepta", repr(valor)]
+    except Exception as exc:
+        salida = ["rechaza", type(exc).__name__, str(exc)]
+    print(json.dumps([kind, variante, clave, *salida], ensure_ascii=False))
+
+
 def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int, paso: int,
              legado: bool) -> int:
-    from tools.plegado import cargar_reductor, campos_de, leer_encargos, ultimo_evento
+    from tools.plegado import cargar_reductor, leer_encargos, ultimo_evento
 
     reductor = cargar_reductor(raiz)
     muestras = _muestras(corpus, set(kinds))
@@ -89,6 +107,13 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int, paso: i
         raise ValueError(f"kinds sin cargas reales: {', '.join(faltan)}")
     cuenta = 0
     prefijo = 0
+    if "entrega" in muestras:
+        for muestra in muestras["entrega"]:
+            for variante, carga in _variantes("entrega", muestra, None):
+                _escribir_caso(reductor, None, "entrega", variante, carga, legado)
+                cuenta += 1
+                if cuenta >= max_casos:
+                    return 0
     for ruta in sorted((corpus / "registros").glob("*.sqlite")):
         for _, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
             estado = None
@@ -101,18 +126,7 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int, paso: i
                     for muestra in muestras[kind]:
                         datos = _adaptar(muestra, estado)
                         for variante, carga in _variantes(kind, datos, estado):
-                            clave = hashlib.sha256(
-                                json.dumps(carga, sort_keys=True, default=str).encode("utf-8")
-                            ).hexdigest()
-                            try:
-                                nuevo = reductor.reducir(
-                                    estado, {"kind": kind, "data": carga}, nuevo=True,
-                                )
-                                valor = campos_de(nuevo) if legado else nuevo
-                                salida = ["acepta", repr(valor)]
-                            except Exception as exc:
-                                salida = ["rechaza", type(exc).__name__, str(exc)]
-                            print(json.dumps([kind, variante, clave, *salida], ensure_ascii=False))
+                            _escribir_caso(reductor, estado, kind, variante, carga, legado)
                             cuenta += 1
                             if cuenta >= max_casos:
                                 return 0
