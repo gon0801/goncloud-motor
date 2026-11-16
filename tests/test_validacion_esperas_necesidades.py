@@ -34,7 +34,7 @@ class ValidacionEsperasNecesidades(unittest.TestCase):
         with self.assertRaisesRegex(TransicionIlegal, "^solicitud sin operación$"):
             reducir(e, {"kind": "solicitud", "data": datos}, nuevo=True)
 
-    def test_solicitud_con_operacion_ausente_o_cero_conserva_su_escritura(self) -> None:
+    def test_solicitud_con_operacion_ausente_o_cero_conserva_su_escritura(self) -> None:  # no-roja-en-base: protege el comportamiento antiguo contra la nueva lectura
         e = _pedido()
         datos = {"id": "s", "fase": "", "intento": "i"}
         with self.assertRaises(TransicionIlegal) as exc:
