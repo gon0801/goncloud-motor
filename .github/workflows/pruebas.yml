@@ -53,6 +53,8 @@ jobs:
         parte: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
