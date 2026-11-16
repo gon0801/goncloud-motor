@@ -76,6 +76,8 @@ def contexto_de_cierre(enc: Encargo) -> str:
     partes = []
     if enc.pendientes_entrega or any(f.pendientes for f in enc.fases):
         partes.append(
+            "Quedaron pendientes sin resolver al cancelar el encargo."
+            if enc.estado == "cancelado" else
             "Quedaron pendientes abiertos escritos en el PR; "
             "no hace falta que hagas nada para que el trabajo siga."
         )
