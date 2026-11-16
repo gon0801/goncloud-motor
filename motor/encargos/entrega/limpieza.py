@@ -356,7 +356,13 @@ def _despliegue(registro: Registro, enc: Encargo,
         return True
     if despliegue._observacion_en(registro, enc, ruta) in ("vivo", "incierto"):
         return False
-    for archivo in sorted(ruta.iterdir(), key=lambda p: (p.name == "proceso.json", p.name)):
+    for archivo in sorted(
+        ruta.iterdir(),
+        key=lambda p: (
+            p.name in ("comando.json", "proceso.json"),
+            p.name == "proceso.json", p.name,
+        ),
+    ):
         if archivo.name in _CONSERVED:
             continue
         if not presupuesto[0]:

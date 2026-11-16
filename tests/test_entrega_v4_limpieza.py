@@ -388,6 +388,35 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertTrue(ruta.is_file())
         self.assertTrue(enc.limpio)
 
+    def _presupuesto_partido_sin_proceso(self, enviado: bool) -> None:
+        from motor.encargos.entrega.limpieza import _despliegue
+
+        ruta = self._recibo(presente=True, receta=True, terminado=True)
+        (ruta.parent / "proceso.json").unlink()
+        (ruta.parent.parent / "x.actual").unlink()
+        if enviado:
+            (ruta.parent / "comando.json").write_text(json.dumps({
+                "estado": "enviado", "pid": 7311, "inicio": "t0",
+                "boot_id": plataforma.boot_id(),
+            }), encoding="utf-8")
+        with mock.patch.object(plataforma, "presencia_grupo", return_value="ausente"):
+            self.assertFalse(_despliegue(self.reg, self.reg.fold("x"), ruta.parent, [1]))
+            self.assertTrue((ruta.parent / "comando.json").exists())
+            self.assertFalse((ruta.parent / "trabajador.log").exists())
+            enc = self._limpiar(1)
+        self.assertTrue(enc.limpio)
+        self.assertTrue(ruta.is_file())
+        self.assertFalse([
+            resultado for tipo, _, resultado, _, _ in enc.limpieza
+            if tipo == "despliegue" and resultado in ("fallo", "agotado")
+        ])
+
+    def test_presupuesto_partido_sin_proceso_ni_envio(self) -> None:
+        self._presupuesto_partido_sin_proceso(False)
+
+    def test_presupuesto_partido_sin_proceso_con_grupo_ausente(self) -> None:
+        self._presupuesto_partido_sin_proceso(True)
+
     def test_un_paso_ausente_no_prueba_que_murio_el_trabajador(self) -> None:
         ruta = self._recibo(presente=True, receta=True, terminado=True)
         ruta.write_text('{"encargo":"x","estado":"ejecutando"}', encoding="utf-8")
