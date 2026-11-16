@@ -270,8 +270,8 @@ def informe(home: Path, manifiesto: Path) -> list[str]:
             if nombre == "claw":
                 herencia = {**herencia, **_filas_de_claw(manifiesto.parent)}
             # El bot que lleva el nombre de su app (MausBot) es su director: la fila de claw.
-            if "claw" in herencia:
-                herencia = {nombre: herencia["claw"], **herencia}
+            if "claw" in herencia and nombre not in herencia:
+                herencia = {**herencia, nombre: herencia["claw"]}
             texto = comparar(director, director.lee(home), puestos, herencia)
         except Exception as exc:
             causa = str(exc) if isinstance(exc, Ilegible) else type(exc).__name__

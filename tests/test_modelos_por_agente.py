@@ -276,6 +276,17 @@ class ModelosPorAgente(unittest.TestCase):
             " claude-opus-5-5 high)",
         ])
 
+    def test_si_la_herencia_nombra_al_bot_de_la_app_manda_la_herencia(self):
+        home = _maquina(self.base, "mausbot")
+        manifiesto = home / "flota" / "actual" / "manifesto.toml"
+        manifiesto.write_text(
+            manifiesto.read_text(encoding="utf-8") + 'claw = "dirigir"\nmausbot = "simples"\n',
+            encoding="utf-8",
+        )
+        _mausbot(home, [("MausBot", {"instanceId": "go", "model": "deepseek-v4.1-flash", "variant": "high"})])
+
+        self.assertEqual(_informe(home), ["mausbot: 1 de 1 agentes como la tabla"])
+
     def test_lo_que_no_se_puede_leer_se_dice_por_director_y_sigue(self):
         home = _maquina(self.base, "hermes", "claw", "openbot", "mausbot")
         _claw(home, {"alfa": [m for m, _ in DIRIGIR]})
