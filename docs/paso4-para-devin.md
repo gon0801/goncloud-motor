@@ -216,7 +216,7 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
     `canceladas`, o si el encargo está `cancelado`, `detenido` o `deteniendo`. Acepta sobre un
     `terminado`. En `detenido` o `deteniendo`, la decisión es `Esperar` hasta el `continuar`.
   - F pasa a `estado="bloqueada"`, con `evidencia` `pr-cerrado:<numero>` y `bloqueo_causa`
-    "David cerró el PR #N" (causa `pr_cerrado`) o "depende de la fase <id> que David canceló"
+    "David cerró el PR #N" (causa `pr_cerrado`) o "depende de la fase <origen>, que se canceló"
     (causa `depende`, con el `origen` de la carga), y entra a `canceladas`. `ESTADOS_FASE` no
     cambia. Con causa `depende`, la carga lleva `numero` null si la fase no tiene PR, y la
     `evidencia` es `depende:<origen>`.
@@ -257,7 +257,10 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
   `requiere_despliegue` de la fase). Para nivel `pr`, "nivel" es el efectivo, no el pedido.
 - `base_pedida` es `e.entrega.base`.
 - En un encargo `cancelado`, la decisión es siempre `Nada`: no se anota ni se decide nada, y sus
-  PR los cierra la limpieza. Solo un `terminado` sigue observándose y anotándose.
+  PR los cierra la limpieza. Solo un `terminado` sigue observándose y anotándose. La limpieza de
+  un cancelado no depende de esa observación: después de `cerrar_pr` lee el PR con `ver()`, y
+  cuando lo confirma `Cerrado` o `Mergeado` escribe su `pr_observado` (que se acepta también en
+  un `cancelado`) junto con la `limpieza`.
 - `ContextoEntrega` lleva también el `EstadoPR` de las otras fases, para decidir el caso en
   cadena.
 - Un `Abierto` es `Abierto` en cualquier base. La base a la que el motor reapunta un PR sigue
@@ -272,7 +275,7 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
 | Borrador | `MarcarListo` | `MarcarListo` |
 | Abierto | `SeguirRevision`. Al quedar listo y sin bloqueantes, el encargo queda `terminado` con "listo para tu merge" **y se sigue observando** | `SeguirRevision` y `Mergear`, como hoy |
 | Mergeado en `base_pedida` o en su `aceptada_en` | `AnotarMergeado` | `AnotarMergeado` y `Desplegar` si toca, como hoy, desde el merge commit |
-| Mergeado en la rama de otra fase del mismo encargo | `AnotarObservado` mientras esa otra fase no esté mergeada en `base_pedida`; `AnotarMergeado` cuando ya lo esté | Igual |
+| Mergeado en la rama de otra fase del mismo encargo | `AnotarObservado` mientras esa otra fase no esté mergeada en `base_pedida`; `AnotarMergeado` cuando ya lo esté | Hoy no hay PR apilados con este nivel. Si aparece uno, igual que con nivel `pr`, y `Desplegar` si toca |
 | Mergeado en otra base | `DetenerOtraBase`. Si el encargo ya es `terminado`, `AnotarObservado` | Igual |
 | Cerrado sin merge | `CancelarFase` | `CancelarFase` |
 
@@ -374,6 +377,7 @@ carpetas en disco, solo en encargos finales.
 | Observar encargos `terminado` de nivel `pr` | No | Sí |
 | `_limpiar_encargo_cerrado` de hoy (al cerrar: cierra los procesos del encargo, borra `runtime/<id>`, `intento-*` y `actual`) | Sigue igual | Lo reemplaza `limpieza.py`, que conserva cerrar los procesos y borrar `actual` |
 | Borrar credenciales al incorporar cada turno | No: se borran al cerrar, como hoy | Sí |
+| Cerrar el PR de una fase en `canceladas` | No: queda abierto, y no cuenta para "listo para tu merge" | Sí |
 | Limpieza nueva, `limpieza` y `limpio` | No | Sí |
 | Palabra de `reporte` | `reporte(e, limpieza_activa=False)`. En un cerrado sin `limpio` dice "falta limpiar", con la causa "la limpieza automática no está encendida" | `reporte(e, limpieza_activa=True)` |
 | Aviso de cierre | Sale al cerrar, como hoy, con la palabra de `reporte` | Sale con `limpio`, con `agotado` o con "listo para tu merge" |
@@ -449,7 +453,8 @@ filas de `TABLA` con `validar` y `aplicar`, `CLAVES_NUEVAS` en `tools/plegado.py
 - **Evidencia.** Pruebas de `estado_de` con la salida JSON de `gh` de cada estado. Una prueba de
   que `pr_observado` no se repite si el estado no cambia.
 
-**4.2 Decisión por tabla.** `decision.py`, `ejecutar.py` y la prueba de 14 filas. El paso de
+**4.2 Decisión por tabla.** `decision.py`, `ejecutar.py` y la prueba de tabla (14 celdas más
+las dos ramas del caso en cadena: 16 filas, sin contar las de `Nada` y `Esperar`). El paso de
 entrega de `ciclo.py` llama a `decidir` y a `ejecutar`. Las celdas nuevas escriben
 `fase_cancelada` y `pr_otra_base`. `politica.ENTREGA_V4` y el tercer caso de observación.
 - **Evidencia.** La prueba de tabla. Una prueba de punta a punta por cada una de las seis celdas
