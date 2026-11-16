@@ -114,7 +114,7 @@ class AvisosPorPalabra(unittest.TestCase):
         self.assertEqual(len([a for a in nuevos if a["novedad"]]), 1)
         self.assertNotEqual(nuevos[0]["id"], detenidos[0]["id"])
 
-    def test_detenido_anterior_al_corte_no_se_avisa_al_abrir(self) -> None:
+    def test_detenido_anterior_al_corte_no_se_avisa_al_abrir(self) -> None:  # no-roja-en-base: el silencio histórico también existía antes del aviso nuevo
         ident = self.banco.encargo("# Antiguo\n\nPedido", "antiguo", via="durable")
         self.banco.reg.anotar(
             ident, {"kind": "orden", "data": {"accion": "parar", "hora": HORA}},
@@ -132,7 +132,7 @@ class AvisosPorPalabra(unittest.TestCase):
         salida = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
         self.assertFalse([a for a in salida if a.get("tipo") == "detenido"])
 
-    def test_final_anterior_al_corte_conserva_el_cierre_viejo(self) -> None:
+    def test_final_anterior_al_corte_conserva_el_cierre_viejo(self) -> None:  # no-roja-en-base: el cierre legado ya usaba este texto antes del corte v4
         ident = self._terminar()
         self.banco.reg.db.execute(
             "DELETE FROM cortes_avisos WHERE version = 'palabras-v4'"
