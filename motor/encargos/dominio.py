@@ -1935,9 +1935,10 @@ def _con_hechos_derivados(e: Encargo, evento: dict) -> Encargo:
 
 
 def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
-    return _con_hechos_derivados(
-        _reducir_evento(estado, evento, nuevo), evento
-    )
+    aplicado = _reducir_evento(estado, evento, nuevo)
+    if aplicado is estado and evento["kind"] in ("cierre_forzado", "bloqueo_fase", "producto_listo"):
+        return aplicado
+    return _con_hechos_derivados(aplicado, evento)
 
 
 def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:
@@ -3260,6 +3261,9 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
     """
     from .reductor.validacion_fase import leer_fase
 
+    estado = str(d.get("estado") or "")
+    if estado not in ("verde", "rojo", "error", "reintentando", "sin_resultado"):
+        return e
     lectura = leer_fase(e, d)
     if lectura is None:
         return e
@@ -3268,9 +3272,6 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
     if fase is None:
         return e
     sha = str(d.get("sha") or "")
-    estado = str(d.get("estado") or "")
-    if estado not in ("verde", "rojo", "error", "reintentando", "sin_resultado"):
-        return e
     causa = str(d.get("causa") or "")
     fallas = tuple(str(x) for x in (d.get("fallas") or ()) if str(x))
     nueva = replace(
