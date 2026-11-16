@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import io
+import itertools
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -126,6 +129,32 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
         self.assertIn("base_acepta_arbol_rechaza", hecho.stdout)
 
+    def test_entrega_vacia_prueba_cambios_de_campo(self) -> None:
+        arbol = self.raiz / "mutado"
+        shutil.copytree(RAIZ / "motor", arbol / "motor")
+        archivo = arbol / "motor/encargos/dominio.py"
+        contenido = archivo.read_text(encoding="utf-8")
+        self.assertIn('id=d["id"]', contenido)
+        archivo.write_text(contenido.replace('id=d["id"]', 'id=d.get("id")'),
+                           encoding="utf-8")
+        hecho = self.correr("--kinds", "entrega", "--arbol", str(arbol))
+        self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
+        self.assertIn("base_rechaza_arbol_acepta=", hecho.stdout)
+
+    def test_cambio_del_numero_de_firmas_no_se_confunde_con_cargas(self) -> None:
+        archivo = self.raiz / "mutado/motor/encargos/reductor/pedido.py"
+        shutil.copytree(RAIZ / "motor", self.raiz / "mutado/motor")
+        contenido = archivo.read_text(encoding="utf-8")
+        original = "def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:\n"
+        self.assertIn(original, contenido)
+        archivo.write_text(contenido.replace(original, original + "    return e\n", 1),
+                           encoding="utf-8")
+        hecho = self.correr("--kinds", "ajuste,comprobacion", "--arbol",
+                           str(self.raiz / "mutado"))
+        self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
+        self.assertIn("firmas_estado_distintas=", hecho.stdout)
+        self.assertNotIn("corrección secreta", hecho.stdout)
+
     def test_un_tope_sin_casos_para_todos_los_kinds_es_invalido(self) -> None:
         hecho = self.correr("--kinds", "comprobacion,solicitud", "--max-casos", "2")
         self.assertEqual(hecho.returncode, 2, hecho.stderr + hecho.stdout)
@@ -158,6 +187,13 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertEqual(hecho.returncode, 2, hecho.stderr)
         self.assertIn("JSONDecodeError", hecho.stderr)
         self.assertNotIn("tope de casos insuficiente", hecho.stderr)
+
+    def test_meta_sin_eventos_se_reporta_como_error_de_entrada(self) -> None:
+        (self.corpus / "meta.json").write_text("{}", encoding="utf-8")
+        hecho = self.correr("--kinds", "entrega")
+        self.assertEqual(hecho.returncode, 2, hecho.stderr + hecho.stdout)
+        self.assertIn("ValueError", hecho.stderr)
+        self.assertNotIn("Traceback", hecho.stderr)
 
     def test_una_escritura_aceptada_con_otro_estado_se_detecta(self) -> None:  # no-roja-en-base: mide la cobertura del comparador ya existente
         arbol = self.mutar(
@@ -212,6 +248,52 @@ class EscrituraDiferencial(unittest.TestCase):
                             for _, c in pares))
         self.assertTrue(any(c.get("evidencia") == "" and c.get("intento") == "otro_intento"
                             for _, c in pares))
+
+    def test_tope_rota_variantes_tardias_entre_firmas(self) -> None:
+        from tools.escritura_diferencial import _casos_por_estado
+
+        estado = SimpleNamespace(
+            ajustes=(), solicitudes=(), efectos=(), fase_activa="F", intento="",
+        )
+        muestras = {"reserva": [{
+            "generacion": 1, "fase": "F", "ajustes_vistos": 0, "id": "s",
+        }]}
+        vistos = set()
+        for indice in range(120):
+            casos = itertools.islice(
+                _casos_por_estado(["reserva"], muestras, estado, indice, 120), 3,
+            )
+            vistos.update(variante for _, variante, _ in casos)
+        self.assertIn("falta:generacion", vistos)
+        self.assertIn("fase:ajeno", vistos)
+        self.assertIn("ajustes_vistos:mas", vistos)
+
+    def test_compara_por_identidad_aun_si_cambia_el_orden_de_las_salidas(self) -> None:
+        from tools.escritura_diferencial import _comparar
+
+        base = self.raiz / "base.jsonl"
+        arbol = self.raiz / "arbol.jsonl"
+        cabecera = json.dumps(["_firmas", 2]) + "\n"
+        primero = ["solicitud", "1:real", "huella-a", "rechaza", "KeyError", "secreto"]
+        segundo = ["comprobacion", "2:vacio", "huella-b", "rechaza", "TypeError", "secreto"]
+        base.write_text(cabecera + json.dumps(primero) + "\n" + json.dumps(segundo) + "\n",
+                        encoding="utf-8")
+        arbol.write_text(cabecera + json.dumps(segundo) + "\n" + json.dumps(primero) + "\n",
+                         encoding="utf-8")
+        salida = StringIO()
+        with redirect_stdout(salida):
+            self.assertEqual(_comparar(base, arbol, ["solicitud", "comprobacion"], set()), 0)
+        self.assertIn("diferencias: 0", salida.getvalue())
+        self.assertNotIn("secreto", salida.getvalue())
+
+        arbol.write_text(cabecera + json.dumps(segundo) + "\n"
+                         + json.dumps(["solicitud", "3:real", *primero[2:]]) + "\n",
+                         encoding="utf-8")
+        salida = StringIO()
+        with redirect_stdout(salida):
+            self.assertEqual(_comparar(base, arbol, ["solicitud", "comprobacion"], set()), 1)
+        self.assertIn("casos_distintos=", salida.getvalue())
+        self.assertNotIn("carga_diferente=", salida.getvalue())
 
     def test_mensaje_de_solicitud_duplicada_se_detecta_con_tope_normal(self) -> None:
         with sqlite3.connect(self.corpus / "registros/uno.sqlite") as db:
