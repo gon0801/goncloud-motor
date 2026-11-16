@@ -1,6 +1,6 @@
 """La recuperación explícita restaura sólo la fase que cerró el atajo."""
 
-from motor.encargos.encargo import evolucionar
+from tests.soporte_situacion import evolucionar
 import json
 from contextlib import closing
 import tempfile

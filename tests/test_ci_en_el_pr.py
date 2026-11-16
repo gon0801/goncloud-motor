@@ -5,7 +5,7 @@ uno incierto recomienda una revisión, y un pendiente o verde no detiene nada.
 El aviso es para alguien no técnico: dice qué falló, de quién es y qué hacer."""
 
 from __future__ import annotations
-from motor.encargos.encargo import evolucionar
+from tests.soporte_situacion import evolucionar
 
 import json
 import tempfile

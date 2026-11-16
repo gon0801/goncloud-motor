@@ -8,7 +8,7 @@ nombra el defecto, no por una importación ni por una firma.
 """
 
 from __future__ import annotations
-from motor.encargos.encargo import evolucionar
+from tests.soporte_situacion import evolucionar
 
 import hashlib
 import inspect

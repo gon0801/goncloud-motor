@@ -24,7 +24,8 @@ from typing import get_args
 
 from motor import plataforma
 from motor.encargos.ciclo import recibir
-from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, Impedimento, VersionProducto, evolucionar
+from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, Impedimento, VersionProducto
+from tests.soporte_situacion import evolucionar
 from motor.encargos.politica import CERRADOS_VENTANA_S
 from motor.encargos.registro import Registro
 from ops.agente_ensayo import APAGON, CORTES, INVOCACIONES

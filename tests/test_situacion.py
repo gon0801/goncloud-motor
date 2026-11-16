@@ -1,5 +1,5 @@
 from __future__ import annotations
-from motor.encargos.encargo import evolucionar
+from tests.soporte_situacion import evolucionar
 
 import unittest
 from dataclasses import asdict, replace

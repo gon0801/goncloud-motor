@@ -1,7 +1,7 @@
 """Una escritura se valida, pero un hecho de fase ya guardado se pliega."""
 
 from __future__ import annotations
-from motor.encargos.encargo import evolucionar
+from tests.soporte_situacion import evolucionar
 
 import unittest
 from dataclasses import asdict

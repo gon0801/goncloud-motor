@@ -1,6 +1,6 @@
 """Al canal solo llegan avisos para una persona no técnica, y un aviso entregado no se manda dos veces."""
 
-from motor.encargos.encargo import evolucionar
+from tests.soporte_situacion import evolucionar
 import json
 import sys
 import tempfile

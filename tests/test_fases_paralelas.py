@@ -23,9 +23,9 @@ from motor.encargos.dominio import (
     EntregaAutorizada,
     Fase,
     VersionProducto,
-    evolucionar,
     reducir,
 )
+from tests.soporte_situacion import evolucionar
 
 
 def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:

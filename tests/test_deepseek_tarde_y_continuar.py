@@ -6,7 +6,7 @@ el encargo en `recibido` con la pregunta vieja del relevo, sin un intento.
 """
 
 from __future__ import annotations
-from motor.encargos.encargo import evolucionar
+from tests.soporte_situacion import evolucionar
 
 import json
 import tempfile

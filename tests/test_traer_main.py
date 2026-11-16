@@ -21,7 +21,8 @@ from unittest import mock
 
 from motor.__main__ import main as motor_main
 from motor.encargos import ciclo
-from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, VersionProducto, evolucionar
+from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, VersionProducto
+from tests.soporte_situacion import evolucionar
 from motor.encargos.integracion import traer_main
 
 HORA = "2026-11-01T12:00:00Z"
