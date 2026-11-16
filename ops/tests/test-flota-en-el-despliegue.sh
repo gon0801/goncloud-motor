@@ -189,6 +189,15 @@ contiene "la mac dice qué no pudo leer" "$S/salida" "MODELOS mac openbot: no pu
   || fallo "se esperaba una línea MODELOS por director: $(grep '^MODELOS' "$S/salida")"
 no_contiene "los modelos no imprimen tokens" "$S/salida" "no-sale"
 grep '^MODELOS' "$S/salida" | grep -qF "$S" && fallo "una línea MODELOS imprime una ruta: $(grep '^MODELOS' "$S/salida")"
+# Un módulo de modelos que no carga tampoco puede dejar a una máquina como "no responde".
+mkdir -p "$S/ops-roto"
+cp "$RAIZ/ops/comprueba-despliegue.sh" "$RAIZ/ops/lib.sh" "$S/ops-roto/"
+printf 'raise RuntimeError("roto")\n' >"$S/ops-roto/modelos_por_agente.py"
+espera "un módulo de modelos roto no hace fallar el despliegue" 0 \
+  bash "$S/ops-roto/comprueba-despliegue.sh" --sha "$SHA" --maquina "mac mini pc"
+contiene "la mini sigue sana con el módulo roto" "$S/salida" "OK mini:"
+contiene "la máquina dice que no pudo imprimir los modelos" "$S/salida" "MODELOS mini directores: no pude imprimir"
+rm -r "$S/ops-roto"
 rm -r "$S/home-mini/.openclaw" "$S/home-gwpc/.openmausbot" "$S"/home-*/.motor-encargos/canal.json
 for host in mac mini gwpc; do flota "$host" v9; done
 

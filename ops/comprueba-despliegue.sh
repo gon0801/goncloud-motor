@@ -264,7 +264,10 @@ try:
     lineas = modelos["informe"](home, home_flota() / "actual" / "manifesto.toml")
 except Exception as exc:
     lineas = ["directores: no pude leer (" + type(exc).__name__ + ")"]
-modelos["imprimir"](lineas, sys.stdout)
+try:
+    modelos["imprimir"](lineas, sys.stdout)
+except Exception:
+    print("modelos directores: no pude imprimir")
 '
 PROGRAMA="MODELOS_POR_AGENTE = \"$(_pc_b64 <"$aqui/modelos_por_agente.py")\"
 $PROGRAMA"
