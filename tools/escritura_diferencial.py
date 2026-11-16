@@ -178,7 +178,12 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
     ]
     pares = len(prefijos) * len(kinds)
     if max_casos is None:
-        max_casos = len(entregas) + pares + min(100_000, len(prefijos) * 32)
+        repetidos = (
+            sum(len(estado.solicitudes) for _, estado in prefijos.values())
+            if "solicitud" in kinds else 0
+        )
+        max_casos = (len(entregas) + pares + repetidos
+                     + min(100_000, len(prefijos) * 32))
     print(json.dumps(["_firmas", len(prefijos)]))
     if max_casos < pares + len(entregas):
         return 3
