@@ -1,6 +1,7 @@
 """Manejadores del reductor extraídos de dominio."""
 
 from __future__ import annotations
+from dataclasses import replace
 from ..encargo import evolucionar
 
 from typing import TYPE_CHECKING, cast
@@ -242,7 +243,12 @@ def bloqueo_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def fase_reactivada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _fase_reactivada
 
-    return _fase_reactivada(e, d, hora)
+    resultado = _fase_reactivada(e, d, hora)
+    if resultado is not e and d.get("fase") in e.canceladas:
+        return replace(resultado, canceladas=tuple(
+            fid for fid in e.canceladas if fid != d["fase"]
+        ))
+    return resultado
 
 def conciliacion_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import TransicionIlegal, _conciliacion_fase
