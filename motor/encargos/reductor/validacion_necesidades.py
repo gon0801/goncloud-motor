@@ -99,7 +99,8 @@ def validar_solicitud(e: Encargo, d: dict) -> None:
         raise TransicionIlegal("la solicitud no pertenece al intento vigente")
     if str(d.get("estado") or "pendiente") not in ("pendiente", "pregunta"):
         raise TransicionIlegal("una solicitud nace pendiente o a la espera del propietario")
-    if not str(d.get("operacion") or "").strip() and str(d.get("estado") or "pendiente") == "pendiente":
+    if ("operacion" in d and not str(d["operacion"]).strip()
+        and str(d.get("estado") or "pendiente") == "pendiente"):
         raise TransicionIlegal("solicitud sin operación")
     if leer_solicitud(d) is None:
         raise TransicionIlegal("la solicitud necesita operación y parámetros válidos")

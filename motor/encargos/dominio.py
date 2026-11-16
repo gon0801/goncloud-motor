@@ -2041,14 +2041,14 @@ def _resolucion(e: Encargo, d: dict, hora: str) -> Encargo:
     ident = str(d.get("id") or "")
     sol = next((s for s in e.solicitudes if s.id == ident), None)
     if sol is None:
-        raise TransicionIlegal("la resolución no tiene solicitud")
+        return e
     if str(d.get("fase") or "") != sol.fase or str(d.get("intento") or "") != sol.intento:
-        raise TransicionIlegal("la resolución no corresponde a la fase e intento de origen")
+        return e
     if sol.estado in ("resuelta", "denegada"):
-        raise TransicionIlegal("la solicitud ya tiene resolución definitiva")
+        return e
     estado = str(d.get("estado") or "")
     if estado not in ESTADOS_SOLICITUD or estado == "pendiente":
-        raise TransicionIlegal("estado de resolución inválido")
+        return e
     nueva = replace(
         sol,
         estado=estado,
@@ -2829,16 +2829,12 @@ def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
     alcanzable, el encargo termina como entrega parcial.
     """
     evidencia = str(d.get("evidencia") or "").strip()
-    if not evidencia:
-        raise TransicionIlegal("bloqueo de fase sin evidencia")
-    if e.estado in _CERRADOS:
-        raise TransicionIlegal("el encargo ya cerró")
+    if not evidencia or e.estado in _CERRADOS:
+        return e
     e = asegurar_fase(e)
     fase = e.fase_actual
-    if fase is None:
-        raise TransicionIlegal("no hay fase que bloquear")
-    if fase.estado == "bloqueada":
-        raise TransicionIlegal(f"la fase {fase.id} ya está bloqueada")
+    if fase is None or fase.estado == "bloqueada":
+        return e
     causa = " ".join(str(d.get("causa") or evidencia).split())
     e = replace(
         e,
@@ -2923,10 +2919,8 @@ def _fase_reactivada(e: Encargo, d: dict, hora: str) -> Encargo:
     fases independientes."""
     pedida = str(d.get("fase") or "")
     fase = next((f for f in e.fases if f.id == pedida), None)
-    if fase is None or fase.estado != "bloqueada":
-        raise TransicionIlegal(f"la fase {pedida or '?'} no está bloqueada")
-    if e.estado in _CERRADOS:
-        raise TransicionIlegal("el encargo ya cerró")
+    if fase is None or fase.estado != "bloqueada" or e.estado in _CERRADOS:
+        return e
     return sesiones_de_fase_nueva(
         replace(
             con_fase(e, replace(fase, estado="trabajo", pendientes=())),
@@ -3003,9 +2997,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
     pedida = str(d.get("fase") or "")
     fase = next((f for f in e.fases if f.id == pedida), None)
     if fase is None:
-        raise TransicionIlegal(
-            f"la conciliación nombra una fase inexistente: {pedida or '?'}"
-        )
+        return e
     paso = str(d.get("paso") or "")
     if paso == "consulta":
         return replace(
@@ -3013,18 +3005,21 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
             hora=hora or e.hora,
         )
     if paso == "politica":
-        nueva = replace(fase, **datos_despliegue(d))
+        try:
+            datos = datos_despliegue(d)
+            correspondencia = _correspondencia_despliegue(e, d)
+        except (TransicionIlegal, TypeError, ValueError):
+            return e
+        nueva = replace(fase, **datos)
         if str(d.get("fuente") or ""):
             nueva = replace(nueva, despliegue_fuente=str(d["fuente"]))
         if str(d.get("huella") or ""):
             nueva = replace(nueva, despliegue_huella=str(d["huella"]))
-        return replace(
-            con_fase(e, nueva), **_correspondencia_despliegue(e, d)
-        )
+        return replace(con_fase(e, nueva), **correspondencia)
     if paso == "impedimento":
         causa = str(d.get("causa") or "").strip()
         if not causa:
-            raise TransicionIlegal("la conciliación impedida no trae causa")
+            return e
         return replace(
             con_fase(
                 e,
@@ -3057,7 +3052,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
     if paso == "espera_agotada":
         causa = str(d.get("causa") or "").strip()
         if not causa:
-            raise TransicionIlegal("la espera agotada no trae causa")
+            return e
         consumida = fase.despliegue_orden_consumida
         if "ordenes" in d:
             try:
@@ -3107,9 +3102,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
         if intentos < 1:
             intentos = 1
         if not causa or not reanuda_en:
-            raise TransicionIlegal(
-                "la espera de conciliación necesita causa y reanudación"
-            )
+            return e
         return replace(
             con_fase(
                 e,
@@ -3125,7 +3118,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
     if paso == "integrado":
         recibo = str(d.get("recibo") or d.get("sha") or "")
         if not recibo:
-            raise TransicionIlegal("la conciliación integrada no trae el merge commit")
+            return e
         datos = datos_despliegue(d)
         nueva = replace(
             fase,
@@ -3157,7 +3150,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
     if paso == "desplegado":
         recibo = str(d.get("recibo") or d.get("sha") or "")
         if not recibo:
-            raise TransicionIlegal("la conciliación desplegada no trae recibo")
+            return e
         nueva = _fase_para_preparar(
             replace(
                 fase,
@@ -3183,7 +3176,7 @@ def _conciliacion_fase(e: Encargo, d: dict, hora: str) -> Encargo:
         if nueva.estado != "preparada":
             return e
         return _dejar_fase(e, nueva, hora, f"fase {fase.id} lista")
-    raise TransicionIlegal(f"paso de conciliación desconocido: {paso}")
+    return e
 
 
 def _fase_desplegada(e: Encargo, d: dict, hora: str) -> Encargo:
@@ -3196,13 +3189,11 @@ def _fase_desplegada(e: Encargo, d: dict, hora: str) -> Encargo:
     pedida = str(d.get("fase") or "")
     fase = next((f for f in e.fases if f.id == pedida), None)
     if fase is None:
-        raise TransicionIlegal(f"la fase {pedida or '?'} no existe")
+        return e
     recibo = str(d.get("recibo") or "")
     sha = str(d.get("sha") or "")
-    if not recibo or not sha:
-        raise TransicionIlegal("una fase desplegada necesita recibo y SHA")
-    if sha != fase.integrado_sha:
-        raise TransicionIlegal("el despliegue no corresponde al SHA integrado de la fase")
+    if not recibo or not sha or sha != fase.integrado_sha:
+        return e
     if fase.estado == "preparada":
         return e
     evidencia = f"despliegue del SHA {sha[:12]} verificado con salida 0"
@@ -3272,14 +3263,19 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
     reintento de un rojo de tubería, antes de leer el resultado de nuevo; el
     estado «sin_resultado» cierra el sondeo cuando el CI no terminó a tiempo.
     """
-    e = _fase_de_evento(e, d)
+    from .reductor.validacion_fase import leer_fase
+
+    lectura = leer_fase(e, d)
+    if lectura is None:
+        return e
+    e = lectura
     fase = e.fase_actual
     if fase is None:
-        raise TransicionIlegal("no hay fase para el CI del PR")
+        return e
     sha = str(d.get("sha") or "")
     estado = str(d.get("estado") or "")
     if estado not in ("verde", "rojo", "error", "reintentando", "sin_resultado"):
-        raise TransicionIlegal("estado de CI del PR desconocido")
+        return e
     causa = str(d.get("causa") or "")
     fallas = tuple(str(x) for x in (d.get("fallas") or ()) if str(x))
     nueva = replace(
@@ -3668,10 +3664,9 @@ def _fase_reabierta(e: Encargo, d: dict, hora: str) -> Encargo:
     pedida = str(d.get("fase") or "")
     fase = next((f for f in e.fases if f.id == pedida), None)
     tardia = bool(d.get("tardia")) and e.estado == "terminado"
-    if fase is None or fase.estado != "preparada":
-        raise TransicionIlegal("solo se reabre una fase preparada")
-    if e.estado in ("terminado", "cancelado", "deteniendo", "detenido") and not tardia:
-        raise TransicionIlegal("el encargo ya no admite reabrir una fase")
+    if (fase is None or fase.estado != "preparada"
+        or e.estado in ("terminado", "cancelado", "deteniendo", "detenido") and not tardia):
+        return e
     causa = str(d.get("causa") or "DeepSeek dejó un hallazgo abierto")
     return sesiones_de_fase_nueva(
         replace(
