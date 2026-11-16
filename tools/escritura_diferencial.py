@@ -2,10 +2,12 @@
 
 Uso:
     python tools/escritura_diferencial.py --base origin/main --corpus DIR
-        [--kinds comprobacion,solicitud] [--max-casos 100000]
+        [--kinds comprobacion,solicitud] [--max-casos N]
 
-El tope limita el trabajo local; la salida nunca incluye datos ni mensajes del
-registro. Los resultados completos viven solo en archivos temporales privados.
+Por omisión se cubre cada firma por cada kind y se rotan variantes con el
+presupuesto restante. Un tope explícito menor que esa cobertura es inválido.
+La salida nunca incluye datos ni mensajes del registro. Los resultados
+completos viven solo en archivos temporales privados.
 """
 
 from __future__ import annotations
@@ -100,9 +102,8 @@ def _variantes(kind: str, datos: dict, estado: Any):
         yield f"{campo}:ajeno", {**datos, campo: valor}
     for campo in ("solicitudes", "efectos"):
         existentes = getattr(estado, campo, ()) if estado is not None else ()
-        if existentes:
-            yield "id:repetido", {**datos, "id": existentes[0].id}
-            break
+        for indice, existente in enumerate(existentes):
+            yield f"id:repetido:{campo}:{indice}", {**datos, "id": existente.id}
     if kind == "comprobacion" or "ajustes_vistos" in datos:
         n = len(estado.ajustes) if estado is not None else 0
         for nombre, valor in (("menos", n - 1), ("mas", n + 1), ("texto", "no numerico")):
@@ -115,7 +116,7 @@ def _firma_estado(e: Any) -> tuple:
     return (
         e.id, e.estado, e.fase_activa, bool(e.intento),
         tuple((f.id, f.estado) for f in e.fases),
-        bool(e.solicitudes), bool(e.efectos), len(e.ajustes),
+        len(e.solicitudes), len(e.efectos), len(e.ajustes),
     )
 
 
@@ -150,7 +151,7 @@ def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
     print(json.dumps([kind, variante, clave, *salida]))
 
 
-def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int,
+def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
              legado: bool) -> int:
     from tools.plegado import cargar_reductor, leer_encargos, ultimo_evento
 
@@ -170,13 +171,16 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int,
                     prefijos.setdefault(_firma_estado(estado), (prefijo, estado))
     if not prefijos:
         raise ValueError("sin estados previos legibles")
-    print(json.dumps(["_firmas", len(prefijos)]))
     entregas = [
         (indice, variante, carga)
         for indice, muestra in enumerate(muestras.get("entrega", []))
         for variante, carga in _variantes("entrega", muestra, None)
     ]
-    if max_casos < max(len(prefijos), len(kinds)) + len(entregas):
+    pares = len(prefijos) * len(kinds)
+    if max_casos is None:
+        max_casos = len(entregas) + pares + min(100_000, len(prefijos) * 32)
+    print(json.dumps(["_firmas", len(prefijos), pares, pares]))
+    if max_casos < pares + len(entregas):
         return 3
     cuenta = 0
     if "entrega" in muestras:
@@ -184,12 +188,35 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int,
             _escribir_caso(reductor, None, "entrega",
                            f"0:{indice}:{variante}", carga, legado)
             cuenta += 1
+    for numero, estado in prefijos.values():
+        for kind in kinds:
+            muestra = muestras[kind][(cuenta // len(kinds)) % len(muestras[kind])]
+            carga = _adaptar(muestra, estado)
+            _escribir_caso(reductor, estado, kind, f"{numero}:base", carga, legado)
+            cuenta += 1
+    if "solicitud" in kinds:
+        for numero, estado in prefijos.values():
+            if cuenta >= max_casos:
+                break
+            muestra = _adaptar(muestras["solicitud"][0], estado)
+            for variante, carga in _variantes("solicitud", muestra, estado):
+                if not variante.startswith("id:repetido:solicitudes:"):
+                    continue
+                if cuenta >= max_casos:
+                    break
+                _escribir_caso(reductor, estado, "solicitud",
+                               f"{numero}:{variante}", carga, legado)
+                cuenta += 1
     disponibles = max_casos - cuenta
     cuota, resto = divmod(disponibles, len(prefijos))
     ordinal = 0
     for indice, (numero, estado) in enumerate(prefijos.values()):
         for kind, variante, carga in itertools.islice(
-            _casos_por_estado(kinds, muestras, estado, indice, ordinal),
+            ((kind, variante, carga) for kind, variante, carga in
+             _casos_por_estado(kinds, muestras, estado, indice, ordinal)
+             if variante != "real" and not (
+                 kind == "solicitud" and variante.startswith("id:repetido:solicitudes:")
+             )),
             cuota + (indice < resto),
         ):
             _escribir_caso(reductor, estado, kind, f"{numero}:{variante}", carga, legado)
@@ -243,6 +270,12 @@ def _comparar(base: Path, arbol: Path, kinds: list[str], permitidos: set[str]) -
             print(f"firmas_estado_distintas={abs(firmas_base[1] - firmas_arbol[1])}")
             print("diferencias: 1")
             return 1
+        if len(firmas_base) > 2 and firmas_base[2:] != firmas_arbol[2:]:
+            print("cobertura_distinta=1")
+            print("diferencias: 1")
+            return 1
+        if len(firmas_base) > 2:
+            print(f"cubiertos {firmas_base[2]} de {firmas_base[3]} pares firma×kind")
         posiciones_base = _indice_casos(izquierda)
         posiciones_arbol = _indice_casos(derecha)
         for kind, variante in posiciones_base.keys() & posiciones_arbol.keys():
@@ -272,12 +305,13 @@ def _archivo_privado(ruta: Path):
 
 
 def _ejecutar_lado(corpus: Path, raiz: Path, destino: Path, kinds: list[str],
-                  max_casos: int, legado: bool) -> int:
+                  max_casos: int | None, legado: bool) -> int:
     orden = [
         sys.executable, "-I", str(Path(__file__).resolve()), "_evaluar",
         "--corpus", str(corpus), "--arbol", str(raiz), "--kinds", ",".join(kinds),
-        "--max-casos", str(max_casos),
     ]
+    if max_casos is not None:
+        orden.extend(("--max-casos", str(max_casos)))
     if legado:
         orden.append("--estado-legado")
     with _archivo_privado(destino) as archivo:
@@ -289,7 +323,7 @@ def _ejecutar_lado(corpus: Path, raiz: Path, destino: Path, kinds: list[str],
 
 
 def comparar(base: str, corpus: Path, arbol: Path, kinds: list[str],
-             max_casos: int, permitidos: set[str], legado: bool) -> int:
+             max_casos: int | None, permitidos: set[str], legado: bool) -> int:
     with (corpus / "meta.json").open(encoding="utf-8") as archivo:
         meta = json.load(archivo)
     if not isinstance(meta, dict) or "eventos" not in meta:
@@ -297,7 +331,7 @@ def comparar(base: str, corpus: Path, arbol: Path, kinds: list[str],
     muestras = _muestras(corpus, set(kinds))
     entregas = sum(1 for datos in muestras.get("entrega", [])
                    for _ in _variantes("entrega", datos, None))
-    if max_casos < len(kinds) + entregas:
+    if max_casos is not None and max_casos < len(kinds) + entregas:
         raise TopeInsuficiente("tope de casos menor que los kinds seleccionados")
     sha = subprocess.check_output(
         ["git", "-C", str(RAIZ), "rev-parse", "--verify", base],
@@ -331,12 +365,12 @@ def main() -> int:
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--arbol", type=Path, default=RAIZ)
     parser.add_argument("--kinds", help="lista de kinds separados por coma")
-    parser.add_argument("--max-casos", type=int, default=100_000)
+    parser.add_argument("--max-casos", type=int)
     parser.add_argument("--permitir-cambio-tipo", default="")
     parser.add_argument("--estado-legado", action="store_true")
     parser.add_argument("orden", nargs="?", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.max_casos <= 0:
+    if args.max_casos is not None and args.max_casos <= 0:
         parser.error("--max-casos debe ser positivo")
     if args.orden == "_evaluar":
         if not args.kinds:
@@ -350,7 +384,7 @@ def main() -> int:
     kinds = sorted(set(args.kinds.split(",")) if args.kinds else _kinds(args.arbol))
     if not kinds or any(k not in _kinds(args.arbol) for k in kinds):
         parser.error("--kinds contiene un kind desconocido")
-    if args.max_casos < len(kinds):
+    if args.max_casos is not None and args.max_casos < len(kinds):
         parser.error("--max-casos menor que el número de kinds")
     try:
         return comparar(args.base, args.corpus, args.arbol, kinds,
