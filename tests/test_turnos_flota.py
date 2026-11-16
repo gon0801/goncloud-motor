@@ -28,7 +28,7 @@ from motor.flota.control import (
     recuperar,
     revertir,
 )
-from motor.flota.manifiesto import Herramienta, Politica, Puesto, guardar
+from motor.flota.manifiesto import Herramienta, Politica, Puesto, cargar, guardar
 
 POLITICA = (
     'generacion="ensayo"\n[[puesto]]\nfuncion="director"\n'
@@ -55,6 +55,15 @@ OPENCLAW = {
     "fuente": "https://registry.npmjs.org/openclaw/latest",
     "tarball": "https://registry.npmjs.org/openclaw/-/openclaw-v2.tgz",
     "integridad": "sha512-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+}
+HERMES = {
+    "nombre": "hermes",
+    "tipo": "git",
+    "repositorio": "https://github.com/NousResearch/hermes-agent.git",
+    "version": "v2",
+    "revision": "c" * 40,
+    "integridad": "git:" + "c" * 40,
+    "fuente": "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest",
 }
 
 
@@ -938,26 +947,12 @@ class TurnosFlota(unittest.TestCase):
                 encoding="utf-8"
             ),
         )
-        workspace = json.loads(
-            (nueva / "perfiles/claw/openclaw.json").read_text(encoding="utf-8")
-        )["workspace"]
-        self.assertEqual(
-            Path(workspace).resolve(),
-            (nueva / "perfiles/claw/workspaces/main").resolve(),
-        )
-        self.assertNotEqual(
-            Path(workspace).resolve(),
-            (gen_a / "perfiles/claw/workspaces/main").resolve(),
-        )
-        home_yaml = (
-            (nueva / "perfiles/hermes/profiles/director/config.yaml")
-            .read_text(encoding="utf-8")
-            .split("home: ", 1)[1]
-            .strip()
-        )
-        self.assertEqual(Path(home_yaml).resolve(), nueva.resolve())
-        self.assertFalse((nueva / "perfiles/hermes/cache/no-copiar.txt").exists())
+        # La vigente trae perfiles de Hermes y OpenClaw; la candidata solo tiene
+        # grok y no los arrastra.
+        for perfil in ("perfiles/hermes", "perfiles/claw"):
+            self.assertFalse((nueva / perfil).exists(), perfil)
         runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
+        self.assertEqual(runtime["config"], {})
         self.assertEqual(
             runtime["poteto"], "config/hermes/shared/sistema-agentes/poteto"
         )
@@ -971,6 +966,75 @@ class TurnosFlota(unittest.TestCase):
         self.assertEqual(tabla["source"], "flota/manifesto.toml")
         self.assertEqual(
             runtime["politica"], "config/hermes/model-routing.source.json"
+        )
+
+    def test_un_manifiesto_sin_hermes_ni_openclaw_prepara_y_activa_una_generacion_limpia(
+        self,
+    ):
+        origen, _a, gen_a = self._flota("origen-sin-programas")
+        for carpeta in ("config/claw/agents", "config/conf/flota"):
+            (gen_a / carpeta).mkdir(parents=True)
+        _runtime_preparada(self.home, gen_a, "grok", "v1")
+        ruta = gen_a / "runtime.json"
+        runtime = json.loads(ruta.read_text(encoding="utf-8"))
+        for programa in ("hermes", "openclaw"):
+            runtime["lanzadores"][programa] = list(runtime["lanzadores"]["grok"])
+            (gen_a / "herramientas" / programa).mkdir(parents=True)
+        runtime["componentes"] = [GROK, HERMES, OPENCLAW]
+        _atomico(ruta, runtime)
+        for perfil in ("perfiles/hermes/profiles", "perfiles/claw"):
+            (gen_a / perfil).mkdir(parents=True)
+        guardar(
+            self.home / "manifiesto.toml",
+            Politica(
+                "ensayo",
+                (Puesto("director", (("p/m", "low"),)),),
+                (),
+                (Herramienta("grok", GROK["fuente"], GROK["version"], GROK["integridad"]),),
+                (),
+                None,
+                (),
+            ),
+        )
+
+        def fake(doc_, destino, gen, home):
+            destino.mkdir(parents=True)
+            script = destino / "cli.py"
+            script.write_text("print(" + repr(doc_["version"]) + ")", encoding="utf-8")
+            return [sys.executable, str(script)], doc_["version"], None
+
+        # El canal oficial sigue ofreciendo Hermes y OpenClaw, y la vigente los tiene.
+        canal = {"componentes": [GROK, HERMES, OPENCLAW], "no_disponibles": []}
+        with (
+            patch("motor.flota.actualizaciones.descubrir", return_value=canal),
+            patch("motor.flota.actualizaciones._preparar_componente", side_effect=fake),
+            patch("motor.flota.turnos._sesion_presente", return_value=False),
+        ):
+            salida = actualizar(self.home, motor_origen=origen, repos={}, sin_turnos=True)
+        self.assertEqual(salida["accion"], "aplicada", salida)
+        self.assertEqual(asignar(self.home), salida["generacion"])
+        nueva = self.home / "generaciones" / salida["generacion"]
+        runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(runtime["lanzadores"]), ["grok"])
+        self.assertEqual(runtime["config"], {})
+        for programa in (
+            "herramientas/hermes",
+            "herramientas/openclaw",
+            "perfiles/hermes",
+            "perfiles/claw",
+        ):
+            self.assertFalse((nueva / programa).exists(), programa)
+        for carpeta in ("config/hermes", "config/claw", "config/conf"):
+            self.assertTrue((nueva / carpeta).is_dir(), carpeta)
+        self.assertTrue((nueva / runtime["poteto"] / "skills/poteto-mode/SKILL.md").is_file())
+        self.assertEqual(runtime["politica"], "config/hermes/model-routing.source.json")
+        deseado = cargar(self.home / "manifiesto.toml")
+        self.assertEqual([h.nombre for h in deseado.herramientas], ["grok"])
+        snap = self.base / "sin-programas-snap.json"
+        exportar(self.home, snap, motor_origen=origen)
+        publicado = json.loads(snap.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [c["nombre"] for c in publicado["catalogo"]["componentes"]], ["grok"]
         )
 
     def test_la_reproyeccion_actualiza_los_perfiles_claw(self):
@@ -1015,6 +1079,9 @@ class TurnosFlota(unittest.TestCase):
         }
         (claw / "modelos.json").write_text(json.dumps(viejo) + "\n", encoding="utf-8")
         (claw / "openclaw.json").write_text(json.dumps(viejo) + "\n", encoding="utf-8")
+        agente = claw / "agents/main/agent/config.json"
+        agente.parent.mkdir(parents=True)
+        agente.write_text("{}\n", encoding="utf-8")
 
         def fake(doc_, destino, gen, home):
             destino.mkdir(parents=True)
@@ -1027,6 +1094,10 @@ class TurnosFlota(unittest.TestCase):
         ):
             salida = preparar(self.home, motor_origen=origen, repos={})
         nueva = self.home / "generaciones" / salida["generacion"]
+        # OpenClaw sigue entre las herramientas y conserva su perfil; Hermes ya
+        # no está y su perfil no pasa a la candidata.
+        self.assertTrue((nueva / "perfiles/claw/agents/main/agent/config.json").is_file())
+        self.assertFalse((nueva / "perfiles/hermes").exists())
         modelos = json.loads(
             (nueva / "perfiles/claw/modelos.json").read_text(encoding="utf-8")
         )

@@ -318,6 +318,22 @@ class ActualizacionesFlota(unittest.TestCase):
             else:
                 toml.write_text(previo, encoding="utf-8")
 
+    def test_la_generacion_lleva_carpetas_de_hermes_y_openclaw_solo_si_los_instala(self):
+        gen = self.base / "generacion"
+        entorno = _entorno_generacion(gen)
+        self.assertEqual(entorno["HERMES_HOME"], str(gen / "perfiles/hermes"))
+        for carpeta in ("perfiles/hermes", "perfiles/claw", "herramientas/hermes"):
+            self.assertFalse((gen / carpeta).exists(), carpeta)
+        for programa in ("hermes", "openclaw"):
+            (gen / "herramientas" / programa).mkdir(parents=True)
+        _entorno_generacion(gen)
+        for carpeta in (
+            "perfiles/hermes/profiles",
+            "herramientas/hermes/tools",
+            "perfiles/claw",
+        ):
+            self.assertTrue((gen / carpeta).is_dir(), carpeta)
+
     def test_un_fallo_de_npm_por_disco_lleno_lo_dice(self):
         hecho = SimpleNamespace(
             returncode=1,
