@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from motor.encargos.dominio import TransicionIlegal, reducir
 from motor.encargos.reductor import TABLA
@@ -14,6 +14,15 @@ def _pedido():
 
 
 class ReduccionTotal(unittest.TestCase):
+    def test_fallo_interno_historico_no_cambia_un_encargo_cerrado(self) -> None:
+        cerrado = replace(_pedido(), estado="terminado")
+        dato = {"kind": "fallo_interno", "data": {}}
+        self.assertEqual(asdict(reducir(cerrado, dato, nuevo=False)), asdict(cerrado))
+        with self.assertRaisesRegex(
+            TransicionIlegal, "un encargo cerrado o que ya se detiene no cambia de causa",
+        ):
+            reducir(cerrado, dato, nuevo=True)
+
     def test_rechazos_de_pedido_siguen_iguales_al_escribir(self) -> None:  # no-roja-en-base: fija los guardias que se moverán a validar
         previo = _pedido()
         casos = (
