@@ -100,6 +100,58 @@ class ObservacionDelPR(unittest.TestCase):
 
 
 class PuertoDeGitHubParaLimpieza(unittest.TestCase):
+    def test_puerto_real_construye_comandos_y_distingue_404(self) -> None:
+        class GhSinRed(GhGitHub):
+            def __init__(self) -> None:
+                super().__init__()
+                self.llamadas: list[tuple[str, ...]] = []
+                self.cerrado = False
+                self.sin_rama = False
+
+            @staticmethod
+            def nombre(repo: str) -> str:
+                return repo
+
+            def _gh(self, *args: str) -> str:
+                self.llamadas.append(args)
+                if args[:2] == ("pr", "close"):
+                    self.cerrado = True
+                if args[:2] == ("pr", "view"):
+                    return json.dumps({
+                        "number": 7, "headRefName": "encargo/f",
+                        "baseRefName": "main", "isDraft": False,
+                        "headRefOid": "sha",
+                        "state": "CLOSED" if self.cerrado else "OPEN",
+                        "mergeCommit": None, "body": "",
+                    })
+                if args[:2] == ("api", "--paginate"):
+                    return "7\n8\n"
+                if args[0] == "api" and "git/ref/heads/" in args[-1] and self.sin_rama:
+                    raise RuntimeError("HTTP 404")
+                return ""
+
+        gh = GhSinRed()
+        self.assertEqual(gh.cerrar_pr("o/r", 7).estado, "cerrado")
+        self.assertEqual(gh.cerrar_pr("o/r", 7).estado, "cerrado")
+        self.assertEqual(gh.llamadas.count(("pr", "close", "7", "-R", "o/r")), 1)
+        self.assertTrue(gh.rama_existe("o/r", "encargo/f"))
+        self.assertEqual(gh.prs_con_base("o/r", "encargo/f"), (7, 8))
+        gh.borrar_rama("o/r", "encargo/f")
+        self.assertIn(
+            ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/encargo/f"),
+            gh.llamadas,
+        )
+        self.assertIn(
+            ("api", "--paginate", "repos/o/r/pulls?state=open&base=encargo%2Ff&per_page=100",
+             "--jq", ".[].number"),
+            gh.llamadas,
+        )
+        gh.sin_rama = True
+        self.assertFalse(gh.rama_existe("o/r", "encargo/f"))
+        gh.llamadas.clear()
+        gh.borrar_rama("o/r", "encargo/f")
+        self.assertFalse(any(args[:2] == ("api", "-X") for args in gh.llamadas))
+
     def test_doble_distingue_ramas_y_pr_abiertos_sin_borrados_reales(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             raiz = Path(tmp)

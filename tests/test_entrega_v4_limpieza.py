@@ -632,7 +632,10 @@ class LimpiezaPorHechos(unittest.TestCase):
         registro = self.reg.base / "registro.sqlite"
         antes = (registro.stat().st_size, registro.stat().st_mtime_ns)
         salida = subprocess.run(
-            [sys.executable, "-m", "tools.limpieza_pendiente", str(self.reg.base)],
+            [sys.executable, str(Path(__file__).resolve().parents[1] /
+                                 "tools" / "limpieza_pendiente.py"), str(self.reg.base)],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "PYTHONPATH": ""},
             capture_output=True, text=True, check=True,
         ).stdout
         self.assertIn("Cota superior:", salida)
@@ -646,7 +649,10 @@ class LimpiezaPorHechos(unittest.TestCase):
         base.mkdir()
         (base / "registro.sqlite").write_bytes(b"no soy sqlite")
         resultado = subprocess.run(
-            [sys.executable, "-m", "tools.limpieza_pendiente", str(base)],
+            [sys.executable, str(Path(__file__).resolve().parents[1] /
+                                 "tools" / "limpieza_pendiente.py"), str(base)],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "PYTHONPATH": ""},
             capture_output=True, text=True,
         )
         self.assertEqual(resultado.returncode, 2)

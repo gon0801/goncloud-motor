@@ -12,9 +12,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from motor.encargos.dominio import reducir
-from motor.encargos.entrega.limpieza import candidatos, _vence
-from tools.plegado import leer_encargos, ultimo_evento
+RAIZ = Path(__file__).resolve().parents[1]
+if str(RAIZ) not in sys.path:
+    sys.path.insert(0, str(RAIZ))
+
+from motor.encargos.dominio import reducir  # noqa: E402
+from motor.encargos.entrega.limpieza import candidatos, _vence  # noqa: E402
+from tools.plegado import leer_encargos, ultimo_evento  # noqa: E402
 
 
 @dataclass(frozen=True)
