@@ -808,7 +808,9 @@ def preparar(
             anterior = home / "generaciones" / asignar(home) / "runtime.json"
             if anterior.is_file():
                 anteriores = leer_json(anterior).get("componentes", [])
-        catalogo = catalogo_deseado(catalogo, politica, anteriores)
+        catalogo = catalogo_deseado(
+            catalogo, politica, anteriores, arranque=not manifiesto.is_file()
+        )
         componentes = catalogo["componentes"]
         nombres = [c["nombre"] for c in componentes]
         herramientas = {h.nombre: h for h in politica.herramientas}

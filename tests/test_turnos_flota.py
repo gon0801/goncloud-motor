@@ -211,6 +211,13 @@ class TurnosFlota(unittest.TestCase):
     def test_preparar_parcial_reutiliza_config_de_vigente(self):
         origen, a, gen_a = self._flota("origen-c")
         _runtime_preparada(self.home, gen_a, "grok", "v1")
+        (self.home / "manifiesto.toml").write_text(
+            POLITICA
+            + '\n[[herramienta]]\nnombre = "grok"\n'
+            'canal = "https://registry.npmjs.org/%40xai-official%2Fgrok/latest"\n'
+            'version = "v1"\nintegridad = "sha512-AAAA"\n',
+            encoding="utf-8",
+        )
         doc = {
             "nombre": "grok",
             "tipo": "npm",

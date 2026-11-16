@@ -326,10 +326,12 @@ class ActualizacionesFlota(unittest.TestCase):
         caido = {"componentes": [grok], "no_disponibles": [{"nombre": "codex", "error": "timeout"}]}
         semilla = Politica("v9", (), (), (), (), None, ())
         with self.assertRaisesRegex(ValueError, "sin resolver: codex"):
-            catalogo_deseado(caido, semilla, [])
+            catalogo_deseado(caido, semilla, [], arranque=True)
         fijada = Politica("v9", (), (), (Herramienta("grok", "c", "1.0.0", "sha512-AAAA"),), (), None, ())
         solo_caido = {"componentes": [], "no_disponibles": caido["no_disponibles"]}
-        self.assertEqual(catalogo_deseado(solo_caido, fijada, [])["no_disponibles"], [])
+        self.assertEqual(catalogo_deseado(solo_caido, fijada, [], arranque=False)["no_disponibles"], [])
+        with self.assertRaisesRegex(ValueError, "no declara herramientas"):
+            catalogo_deseado(solo_caido, semilla, [], arranque=False)
 
     def test_la_generacion_lleva_carpetas_de_hermes_y_openclaw_solo_si_los_instala(self):
         gen = self.base / "generacion"
@@ -379,6 +381,9 @@ class ActualizacionesFlota(unittest.TestCase):
         (home / "manifiesto.toml").write_text(
             'generacion="ensayo"\n[[puesto]]\nfuncion="director"\n'
             'modelo=["p/m"]\nesfuerzo=["low"]\n'
+            '[[herramienta]]\nnombre="openclaw"\n'
+            'canal="https://registry.npmjs.org/openclaw/latest"\n'
+            'version="v0"\nintegridad="sha512-AAAA"\n'
         )
 
         def doc(v):

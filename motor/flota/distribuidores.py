@@ -206,18 +206,22 @@ def _validar_componente(doc: dict) -> None:
         raise ValueError("version invalida")
 
 
-def catalogo_deseado(catalogo: dict, politica: Politica, anteriores: list[dict]) -> dict:
+def catalogo_deseado(
+    catalogo: dict, politica: Politica, anteriores: list[dict], *, arranque: bool
+) -> dict:
     """Lo que la candidata instala: el catálogo sobre los componentes de la
     vigente, solo con las herramientas que declara el manifiesto.
 
     Quitar una herramienta del manifiesto la deja fuera aunque el canal la siga
-    ofreciendo o la vigente la tenga. Un manifiesto sin herramientas, como la
-    semilla del primer arranque, no recorta nada.
+    ofreciendo o la vigente la tenga. Solo la semilla del primer arranque
+    (`arranque`) puede venir sin herramientas: entonces no recorta nada.
     """
     fusion = {c["nombre"]: c for c in anteriores}
     fusion.update({c["nombre"]: c for c in catalogo.get("componentes") or []})
     deseadas = {h.nombre for h in politica.herramientas}
     ausentes = catalogo.get("no_disponibles") or []
+    if not deseadas and not arranque:
+        raise ValueError("el manifiesto no declara herramientas")
     if not deseadas and ausentes:
         # El primer arranque guarda como manifiesto lo que encontró: con un canal caído,
         # esa herramienta quedaría fuera para siempre aunque el canal vuelva.
