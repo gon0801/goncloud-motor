@@ -201,7 +201,7 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
 | Kind | Alcance | `corta_series` | `marcador` | Carga | Efecto al plegar |
 |---|---|---|---|---|---|
 | `pr_observado` | fase | no | sí | `fase`, `estado` (`sin_pr`, `borrador`, `abierto`, `mergeado`, `cerrado`), `numero` (int o null), `head`, `base`, `merge_commit`, `hora` | Reemplaza el `pr` de esa fase en `prs` y conserva su `aceptada_en`. Nada más cambia |
-| `fase_cancelada` | fase | sí | no | `fase`, `numero`, `causa` (`pr_cerrado` o `depende`), `hora` | Ver la lista de abajo |
+| `fase_cancelada` | fase | sí | no | `fase`, `numero` (int o null), `causa` (`pr_cerrado` o `depende`), `origen` (con `depende`, el id de la fase cancelada de la que depende; si no, vacío), `hora` | Ver la lista de abajo |
 | `pr_otra_base` | fase | sí | no | `fase`, `numero`, `base`, `hora` | `Detenido(PorOtraBase(fase, base))`, que sale con `continuar`. Va en `DETENCIONES`. Se rechaza al escribir en `_CERRADOS`, como `fallo_interno` |
 | `limpieza` | encargo | no | sí | `recurso`, `clave`, `resultado` (`borrado`, `fallo`, `agotado`), `intento`, `hora` | Reemplaza la entrada de `(recurso, clave)` en `limpieza` |
 | `limpio` | encargo | no | no | `hora` | `limpio` toma la hora. Solo se acepta en `terminado` o `cancelado` |
@@ -217,8 +217,9 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
     `terminado`. En `detenido` o `deteniendo`, la decisión es `Esperar` hasta el `continuar`.
   - F pasa a `estado="bloqueada"`, con `evidencia` `pr-cerrado:<numero>` y `bloqueo_causa`
     "David cerró el PR #N" (causa `pr_cerrado`) o "depende de la fase <id> que David canceló"
-    (causa `depende`), y entra a `canceladas`. `ESTADOS_FASE` no cambia. Con causa `depende`, la
-    carga lleva `numero` null si la fase no tiene PR, y la `evidencia` es `depende:<id de F>`.
+    (causa `depende`, con el `origen` de la carga), y entra a `canceladas`. `ESTADOS_FASE` no
+    cambia. Con causa `depende`, la carga lleva `numero` null si la fase no tiene PR, y la
+    `evidencia` es `depende:<origen>`.
   - Si todas las fases quedan en `canceladas`, el encargo queda `Cancelado`, también si era
     `terminado`. Esta regla va antes que las de abajo.
   - Si no, y el encargo es `terminado`, sigue `terminado`, y su resultado pasa a `Parcial` con F.
@@ -231,9 +232,9 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
     `dependencia_bloqueada` y el encargo se atasca en `recibido` sin avisar (lo midió un lector).
     El motor escribe el `fase_cancelada` de F y uno con causa `depende` por cada dependiente que
     no esté `preparada` ni en `canceladas`, en orden de dependencia, todos en un solo
-    `append_many`: así un fallo a mitad no deja la cascada a medias. Después cierra con `cerrar_pr`
-    el PR de cada dependiente que esté `Abierto`. Una dependiente ya `preparada` se queda como
-    está.
+    `append_many`: así un fallo a mitad no deja la cascada a medias. El PR de cada dependiente que
+    siga `Abierto` lo cierra la limpieza (fila "PR de una fase en `canceladas`"), con sus
+    reintentos. Una dependiente ya `preparada` se queda como está.
 - Sobre un `continuar` que sale de un `Detenido(PorOtraBase(f, b))`, el aplicador de `orden`
   (`reductor/pedido.py`, alrededor de la llamada a `_orden`) pone `aceptada_en = b` en la
   entrada de `f` en `prs` y vacía `otra_base_de`.
@@ -255,7 +256,10 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
 - `nivel` es el nivel efectivo del encargo, con las tres bajadas de hoy (`_sondeo_nivel` y
   `requiere_despliegue` de la fase). Para nivel `pr`, "nivel" es el efectivo, no el pedido.
 - `base_pedida` es `e.entrega.base`.
-- En un encargo `cancelado`, la decisión es siempre `Nada`: sus PR los cierra la limpieza.
+- En un encargo `cancelado`, la decisión es siempre `Nada`: no se anota ni se decide nada, y sus
+  PR los cierra la limpieza. Solo un `terminado` sigue observándose y anotándose.
+- `ContextoEntrega` lleva también el `EstadoPR` de las otras fases, para decidir el caso en
+  cadena.
 - Un `Abierto` es `Abierto` en cualquier base. La base a la que el motor reapunta un PR sigue
   siendo la de hoy (`_base_objetivo_del_pr` y `_base_fase`), con un solo cambio: si esa base es
   una rama `encargo/*` que ya no existe en el remoto (`rama_existe` da falso), usa
@@ -268,7 +272,7 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
 | Borrador | `MarcarListo` | `MarcarListo` |
 | Abierto | `SeguirRevision`. Al quedar listo y sin bloqueantes, el encargo queda `terminado` con "listo para tu merge" **y se sigue observando** | `SeguirRevision` y `Mergear`, como hoy |
 | Mergeado en `base_pedida` o en su `aceptada_en` | `AnotarMergeado` | `AnotarMergeado` y `Desplegar` si toca, como hoy, desde el merge commit |
-| Mergeado en la rama de otra fase del mismo encargo | `AnotarObservado` | `AnotarObservado` |
+| Mergeado en la rama de otra fase del mismo encargo | `AnotarObservado` mientras esa otra fase no esté mergeada en `base_pedida`; `AnotarMergeado` cuando ya lo esté | Igual |
 | Mergeado en otra base | `DetenerOtraBase`. Si el encargo ya es `terminado`, `AnotarObservado` | Igual |
 | Cerrado sin merge | `CancelarFase` | `CancelarFase` |
 
@@ -305,7 +309,8 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
   llene después un `merge_commit` vacío no vuelve a detener el encargo.
 - `pr_observado` se escribe solo cuando el valor cambia, en tres casos: la fase activa en cada
   paso de entrega, las fases no activas, y los encargos `terminado` de nivel `pr` con algún PR
-  `Abierto` o todavía sin observar. La cadencia de las no activas no cambia: sigue en
+  `Abierto`, en `Borrador` o todavía sin observar (David puede pasar un PR a borrador y después
+  mergearlo o cerrarlo). La cadencia de las no activas no cambia: sigue en
   `Fase.conciliado_en`, que se actualiza con `conciliacion_fase` paso `consulta` cada 2 minutos.
   El tercer caso solo corre con el interruptor encendido, con su propio tope de
   `politica.CERRADOS_POR_PASADA` encargos por pasada, aparte del sondeo de DeepSeek.
@@ -313,7 +318,8 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
   `base_pedida` con nivel `pr`, Mergeado en otra base en las dos columnas, y Cerrado en las dos
   columnas.
 - Esta tabla es la comprobación permanente 3 del modelo: una prueba de tabla con una fila por
-  celda (14 filas, más las de `Nada` y `Esperar`) contra `decidir`, y una prueba de punta a punta con el doble de GitHub por
+  celda (14 filas, más las dos ramas del caso en cadena y las de `Nada` y `Esperar`) contra
+  `decidir`, y una prueba de punta a punta con el doble de GitHub por
   cada una de las seis celdas que cambian.
 
 ## Tabla de limpieza
@@ -329,6 +335,7 @@ carpetas en disco, solo en encargos finales.
 |---|---|---|---|
 | Rama remota `encargo/*` | Al observar `Mergeado` o `Cerrado`, y al cancelar el encargo | `borrar_rama` del puerto (nuevo) | es base de un PR abierto (`prs_con_base`, nuevo) o su propio PR sigue `Abierto` |
 | PR de un encargo cancelado | Al cancelar | `cerrar_pr` del puerto (nuevo) | ya está `Mergeado` o `Cerrado` |
+| PR de una fase en `canceladas` | Al entrar la fase a `canceladas` | `cerrar_pr` | ya está `Mergeado` o `Cerrado` |
 | `espacio/<id>` | `hora_final` + `CERRADOS_VENTANA_S` (7 días) | borrar la carpeta | el encargo tiene un PR `Abierto`, o su ventana de sondeo de DeepSeek sigue abierta |
 | `ejecucion/<id>` | `hora_final` + `CERRADOS_VENTANA_S` | borrar la carpeta | la ventana de sondeo de DeepSeek sigue abierta |
 | `runtime/<id>` completo (`sesion-<rol>`, `sonda` y lo demás) | Al quedar final, como hoy | borrar la carpeta | |
@@ -352,7 +359,9 @@ carpetas en disco, solo en encargos finales.
   fase; hoy solo mira `fase_actual`). Lo que tiene plazo y no venció cuenta como conservado.
   Cuando el plazo vence, el motor lo borra y escribe `limpieza`.
 - `tools/limpieza_pendiente.py <base>` cuenta, por recurso, lo que el motor borraría al encender
-  el interruptor. Lee el disco, y las ramas y PR los saca del plegado, sin llamar a GitHub. Abre
+  el interruptor. Es una cota superior: no consulta GitHub, así que no ve un PR ajeno que use una
+  rama `encargo/*` como base. El motor sí lo comprueba antes de borrar, y la herramienta lo dice
+  en su salida. Lee el disco, y las ramas y PR los saca del plegado, sin llamar a GitHub. Abre
   el registro solo para leer, sin `Registro()`, porque `Registro()` crea tablas: reutiliza
   `tools/plegado.leer_encargos`, que ya abre con `mode=ro`. Solo imprime conteos y tamaños, nunca nombres ni ids. No borra nada.
 
@@ -381,7 +390,8 @@ el encargo es `terminado`), o si tiene
 tiene `desplegado_recibo`. Gana la primera regla que se cumple:
 
 1. `detenido`: dice cuál de las causas y que se reanuda con `continuar`.
-2. `terminado` de nivel `pr` con algún PR `Abierto`: "listo para tu merge".
+2. `terminado` de nivel `pr` con algún PR `Abierto` de una fase que no está en `canceladas`:
+   "listo para tu merge".
 3. Algún recurso con su última `limpieza` en `fallo` o `agotado`, o falta `limpio`: "falta
    limpiar", y nombra lo que queda. Un plazo que venció y sigue en reintentos también cuenta.
 4. `cancelado`: "cancelado".
@@ -407,8 +417,9 @@ Dónde sale, sin ráfagas al desplegar ni al encender:
   que todavía se reintenta no avisa: "falta limpiar" se avisa solo con `agotado`. Uno por
   palabra, con la palabra en el id del aviso. Un encargo que no recibió aviso de cierre de la
   versión nueva no recibe estos avisos.
-- Hay un aviso nuevo al quedar `detenido`, solo si el encargo no estaba `detenido` al corte. Hoy
-  no sale ninguno. Los que ya estaban detenidos al corte no se avisan: avisarlos sería la ráfaga.
+- Hay un aviso nuevo al quedar `detenido`, por cada detención cuyo evento es posterior al corte.
+  Hoy no sale ninguno. La detención que ya existía al corte no se avisa, porque avisarla sería la
+  ráfaga. Si ese encargo se continúa y se vuelve a detener, esa detención nueva sí avisa.
 - `motor ver` agrega el campo `reporte` en `cli.py`, sin tocar `dominio.vista`.
 - `skill/motor/SKILL.md` cambia la línea que dice que `terminado` significa nivel alcanzado igual
   al autorizado, y lista las nueve palabras.
@@ -530,8 +541,8 @@ Estas las tomó el revisor. David puede cambiarlas.
 - **`continuar` después de "mergeado en otra base"** quiere decir que David acepta esa base. La
   fase sigue como si se hubiera mergeado en la base pedida, incluido el despliegue si se pidió, y
   no se abre otro PR. El reporte dice en qué base quedó.
-- **Un encargo ya final no se detiene** si David mergea su PR en otra base. Se anota y el reporte
-  dice en qué base quedó.
+- **Un encargo `terminado` no se detiene** si David mergea su PR en otra base. Se anota y el
+  reporte dice en qué base quedó. Un `cancelado` ya no se observa.
 - **`pedido.json` se conserva junto al recibo.** El modelo dice "se conserva el recibo", pero el
   canario lee `pedido.json` para saber de qué encargo es cada carpeta. Pesa poco.
 - **Interruptor apagado al desplegar.** Al encenderlo se limpia lo viejo que ya venció. Por eso el
