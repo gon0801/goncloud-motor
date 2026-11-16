@@ -216,11 +216,11 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
   - `validar` rechaza si F no existe, si hay proceso vivo o `reserva`, si F ya está en
     `canceladas`, o si el encargo está `cancelado`, `detenido` o `deteniendo`. Acepta sobre un
     `terminado`. En `detenido` o `deteniendo`, la decisión es `Esperar` hasta el `continuar`.
-  - F pasa a `estado="bloqueada"`, con `evidencia` `pr-cerrado:<numero>` y `bloqueo_causa`
-    "David cerró el PR #N" (causa `pr_cerrado`) o "depende de la fase <origen>, que se canceló"
-    (causa `depende`, con el `origen` de la carga), y entra a `canceladas`. `ESTADOS_FASE` no
-    cambia. Con causa `depende`, la carga lleva `numero` null si la fase no tiene PR, y la
-    `evidencia` es `depende:<origen>`.
+  - F pasa a `estado="bloqueada"` y entra a `canceladas`. `ESTADOS_FASE` no cambia. Su
+    `evidencia` y su `bloqueo_causa` salen de la causa de la carga:
+    - causa `pr_cerrado`: `evidencia` `pr-cerrado:<numero>` y `bloqueo_causa` "David cerró el PR #N";
+    - causa `depende`: `evidencia` `depende:<origen>` y `bloqueo_causa` "depende de la fase
+      <origen>, que se canceló". La carga lleva `numero` null si la fase no tiene PR.
   - Si todas las fases quedan en `canceladas`, el encargo queda `Cancelado`, también si era
     `terminado`. Esta regla va antes que las de abajo.
   - Si no, y el encargo es `terminado`, sigue `terminado`, y su resultado pasa a `Parcial` con F.
@@ -309,7 +309,8 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
 - `DetenerOtraBase` no se repite para la misma fase, número y base: el `pr_otra_base` de esa
   terna ya está en el registro, y si su `aceptada_en` coincide, cuenta como aceptada. Que GitHub
   llene después un `merge_commit` vacío no vuelve a detener el encargo.
-- Fuera de la limpieza de un cancelado, `pr_observado` se escribe solo cuando el valor cambia, en tres casos: la fase activa en cada
+- `pr_observado` se escribe solo cuando el valor cambia, siempre. Lo escribe la limpieza al cerrar o
+  confirmar un PR (ver la tabla de limpieza), y la observación en tres casos: la fase activa en cada
   paso de entrega, las fases no activas, y los encargos `terminado` de nivel `pr` con algún PR
   `Abierto`, en `Borrador` o todavía sin observar (David puede pasar un PR a borrador y después
   mergearlo o cerrarlo). La cadencia de las no activas no cambia: sigue en
@@ -330,8 +331,9 @@ Va en `politica.LIMPIEZA` (decisión 2 de David). La ejecuta `motor/encargos/ent
 Antes de escribir `limpieza` con `borrado`, el motor comprueba el resultado de la regla de ese
 recurso: la rama ya no existe, el PR está `Cerrado` o `Mergeado`, la carpeta ya no existe, o en
 `despliegues/<clave>` solo quedan `recibo.json` y `pedido.json`. Cada vez que la limpieza cierra
-un PR, o lee con `ver()` que ya estaba `Cerrado` o `Mergeado`, escribe su `pr_observado` junto con
-la `limpieza`, en cualquier encargo, también en un `cancelado` (`pr_observado` se acepta ahí).
+un PR, o lee con `ver()` que ya estaba `Cerrado` o `Mergeado`, escribe su `pr_observado` (si el
+valor cambió) junto con la `limpieza`, en cualquier encargo, también en un `cancelado`
+(`pr_observado` se acepta ahí).
 Así `prs` no se queda con un `Abierto` viejo que impida `limpio`. Pruébalo también con un PR que
 ya estaba cerrado. Las
 ramas, los PR y las credenciales del turno se limpian según su regla en cualquier encargo. Las
@@ -361,10 +363,12 @@ carpetas en disco, solo en encargos finales.
   interruptor no borre todo de golpe.
 - Una rama que se conserva porque es base del PR abierto de otro encargo cuenta como cumplida.
 - `limpio` se escribe cuando ningún PR del encargo está `Abierto`, cada recurso cumplió su regla,
-  y cada fase que tiene `desplegado_recibo` pasa `despliegue.comprobar_recibo`: el recibo es lo que
-  la regla conserva, y tiene que seguir ahí. Las fases sin `desplegado_recibo` (canceladas, de un
-  encargo cancelado o que no se desplegaron) no se comprueban (extiende `comprobar_recibo` para recibir la
-  fase; hoy solo mira `fase_actual`). Lo que tiene plazo y no venció cuenta como conservado.
+  y el `recibo.json` al que apunta el `desplegado_recibo` de cada fase sigue existiendo: el recibo
+  es lo que la regla conserva. Aquí solo se mira que el archivo exista, no su identidad: una fase
+  reintegrada conserva el recibo de su despliegue anterior, y `comprobar_recibo` lo rechazaría
+  para siempre. Que el recibo sea del merge commit es parte de "entregado" (regla 6 del reporte),
+  no de `limpio`. Las fases sin `desplegado_recibo` no se miran. Lo que tiene plazo y no venció
+  cuenta como conservado.
   Cuando el plazo vence, el motor lo borra y escribe `limpieza`.
 - `tools/limpieza_pendiente.py <base>` cuenta, por recurso, lo que el motor borraría al encender
   el interruptor. Es una cota superior: no consulta GitHub, así que no ve un PR ajeno que use una
@@ -407,7 +411,8 @@ tiene `desplegado_recibo`. Gana la primera regla que se cumple:
 5. Alguna fase en `canceladas`, bloqueada o sin trabajar: "entrega parcial". Nombra cada fase y
    su causa.
 6. Por el nivel efectivo, mirando todas las fases que no están en `canceladas`:
-   - "entregado": cada fase mergeada en `base_pedida` y desplegada.
+   - "entregado": cada fase mergeada en `base_pedida` y desplegada, con su `desplegado_recibo`
+     del despliegue de su `integrado_sha` (el cierre de hoy ya lo comprueba en `cierre.py`).
    - "integrado": cada fase mergeada, sin despliegue. La causa dice por qué no se desplegó, o en
      qué base la aceptó David. En un encargo final, una fase `Mergeado` en otra base también
      cuenta como integrada, y la causa dice en qué base quedó.
@@ -481,7 +486,8 @@ orden del puntero `.actual`, `comprobar_recibo` por fase y `tools/limpieza_pendi
     argumento `fase` (`despliegue.py:497-523`).
   - Una prueba de los tres fallos hasta `agotado`, que sobrevive a reiniciar el proceso.
   - Una prueba de que se escribe `limpio` en un `terminado` desplegado, en un `cancelado` por
-    orden de David con una fase sin desplegar, y en un encargo con una fase en `canceladas`.
+    orden de David con una fase sin desplegar, en un encargo con una fase en `canceladas`, y con
+    una fase reintegrada que conserva el recibo de su despliegue anterior.
   - Una prueba de que un barrido no recrea las carpetas borradas.
 
 **4.4 Palabras del reporte.** `reporte.py`, el aviso de cierre, el aviso de `detenido`, el aviso
