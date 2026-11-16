@@ -106,6 +106,8 @@ def _variantes(kind: str, datos: dict, estado: Any):
     if kind == "comprobacion" or "ajustes_vistos" in datos:
         n = len(estado.ajustes) if estado is not None else 0
         for nombre, valor in (("menos", n - 1), ("mas", n + 1), ("texto", "no numerico")):
+            if nombre == "texto" and "ajustes_vistos" in numericos:
+                continue
             yield f"ajustes_vistos:{nombre}", {**datos, "ajustes_vistos": valor}
 
 
@@ -215,6 +217,20 @@ def _clase(base: list, arbol: list, kind: str, permitidos: set[str]) -> str:
     return "mensaje_rechazo" if base[5] != arbol[5] else ""
 
 
+def _indice_casos(archivo) -> dict[tuple[str, str], int]:
+    posiciones: dict[tuple[str, str], int] = {}
+    while True:
+        posicion = archivo.tell()
+        linea = archivo.readline()
+        if not linea:
+            return posiciones
+        caso = json.loads(linea)
+        clave = caso[0], caso[1]
+        if clave in posiciones:
+            raise ValueError("identidad de caso repetida")
+        posiciones[clave] = posicion
+
+
 def _comparar(base: Path, arbol: Path, kinds: list[str], permitidos: set[str]) -> int:
     diferencias: Counter[tuple[str, str]] = Counter()
     total: Counter[str] = Counter()
@@ -227,22 +243,25 @@ def _comparar(base: Path, arbol: Path, kinds: list[str], permitidos: set[str]) -
             print(f"firmas_estado_distintas={abs(firmas_base[1] - firmas_arbol[1])}")
             print("diferencias: 1")
             return 1
-        while True:
-            lbase, larbol = izquierda.readline(), derecha.readline()
-            if not lbase and not larbol:
-                break
-            if not lbase or not larbol:
-                diferencias["total", "casos_distintos"] += 1
-                break
-            a, b = json.loads(lbase), json.loads(larbol)
+        posiciones_base = _indice_casos(izquierda)
+        posiciones_arbol = _indice_casos(derecha)
+        for kind, variante in posiciones_base.keys() & posiciones_arbol.keys():
+            izquierda.seek(posiciones_base[kind, variante])
+            derecha.seek(posiciones_arbol[kind, variante])
+            a, b = json.loads(izquierda.readline()), json.loads(derecha.readline())
             kind = a[0]
             total[kind] += 1
             if diferencia := _clase(a, b, kind, permitidos):
                 diferencias[kind, diferencia] += 1
+        diferentes = len(posiciones_base.keys() ^ posiciones_arbol.keys())
+        if diferentes:
+            diferencias["total", "casos_distintos"] = diferentes
     for kind in kinds:
         suyas = [(clase, n) for (k, clase), n in sorted(diferencias.items()) if k == kind]
         print(f"{kind}: {total[kind]} casos" +
               "".join(f", {clase}={n}" for clase, n in suyas))
+    if diferentes:
+        print(f"casos_distintos={diferentes}")
     print(f"diferencias: {sum(diferencias.values())}")
     return int(bool(diferencias) or any(total[kind] == 0 for kind in kinds))
 
