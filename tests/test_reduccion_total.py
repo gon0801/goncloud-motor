@@ -175,8 +175,12 @@ class ReduccionTotal(unittest.TestCase):
             ("revision", {"fase": "F", "veredicto": "aprobado", "aprobadas": 1}),
             ("conciliacion_fase", {"fase": "F", "paso": "espera",
                                    "intentos": float("inf")}),
+            ("conciliacion_fase", {"fase": "F", "paso": "espera",
+                                   "intentos": "sin número"}),
             ("conciliacion_fase", {"fase": "F", "paso": "espera_agotada",
                                    "ordenes": float("inf"), "causa": "sin respuesta"}),
+            ("conciliacion_fase", {"fase": "F", "paso": "espera_agotada",
+                                   "ordenes": [1], "causa": "sin respuesta"}),
         )
         for kind, data in casos:
             with self.subTest(kind=kind, data=data):
