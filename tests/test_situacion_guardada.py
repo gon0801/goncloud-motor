@@ -94,6 +94,21 @@ class SituacionGuardada(unittest.TestCase):
         )
         self.assertEqual(proceso.returncode, 0, proceso.stdout + proceso.stderr)
 
+    def test_migrador_recorre_todas_las_rutas_que_escriben_encargos(self) -> None:
+        from tools.migrar_usos_situacion import _rutas
+
+        with tempfile.TemporaryDirectory() as temporal:
+            raiz = Path(temporal)
+            for carpeta in ("motor/encargos", "motor/integraciones", "ops", "tools", "tests"):
+                ruta = raiz / carpeta
+                ruta.mkdir(parents=True)
+                (ruta / "uso.py").write_text("replace(e, estado='detenido')\n",
+                                            encoding="utf-8")
+            self.assertEqual(
+                {ruta.parent.relative_to(raiz).as_posix() for ruta in _rutas(raiz)},
+                {"motor/encargos", "motor/integraciones", "ops", "tools", "tests"},
+            )
+
     def test_constructor_tipado_conserva_escritura_espera_y_detencion(self) -> None:
         from motor.encargos.situacion import (
             Cancelar, Deteniendo, Ejecutando, EsperandoReintento, situacion_de,
