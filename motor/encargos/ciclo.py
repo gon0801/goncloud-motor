@@ -21,6 +21,7 @@ from motor.github import Conflicto, MergeRechazado, PoliticaBloquea
 from motor.respuestas_merge import motivo_del_merge, tras_el_rechazo
 
 from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
+from .entrega.observacion import anotar_integrado, anotar_pr, preparar_pr, siguiente_fase
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
@@ -8612,20 +8613,9 @@ def _conciliar_fases(
             enc = _paso_despliegue_fase(registro, enc, fase, espacio, hora)
     if gh is None or gh is _PUERTO_DEL_REGISTRO:
         return enc
-    candidatas = [
-        fase for fase in enc.fases
-        if fase.id != enc.fase_activa
-        and fase.pr_numero
-        and nivel_de(fase) == "pr"
-        and (
-            not fase.conciliado_en
-            or _minutos_desde(fase.conciliado_en, hora)
-            >= _CONCILIACION_INTERVALO_MIN
-        )
-    ]
-    if not candidatas:
+    candidata = siguiente_fase(enc, hora, _CONCILIACION_INTERVALO_MIN, _minutos_desde)
+    if candidata is None:
         return enc
-    candidata = min(candidatas, key=lambda fase: fase.conciliado_en)
     try:
         vista = gh.ver(enc.entrega.repo, candidata.pr_numero)
     except Exception as exc:  # noqa: BLE001  una lectura caída no cambia la fase
@@ -8633,6 +8623,7 @@ def _conciliar_fases(
             registro, enc, candidata, "consulta", hora,
             resultado="error", causa=str(exc)[:300],
         )
+    enc = anotar_pr(registro, enc, candidata.id, vista, hora)
     if vista.estado != "mergeado" or vista.base != enc.entrega.base:
         return _anotar_conciliacion(
             registro, enc, candidata, "consulta", hora,
@@ -8909,12 +8900,7 @@ def _paso_entrega_paso(
         # El PR ya registrado se consulta antes que cualquier operación nueva:
         # un merge aplicado con respuesta perdida se concilia, no se repite.
         try:
-            vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
-            if vista_pr.base != base and vista_pr.estado == "abierto":
-                gh.cambiar_base(enc.entrega.repo, enc.pr_numero, base)
-                vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
-            if vista_pr.borrador and vista_pr.estado == "abierto":
-                gh.marcar_listo(enc.entrega.repo, enc.pr_numero)
+            vista_pr = preparar_pr(gh, enc, base)
         except Exception as exc:
             causa = (
                 f"no se pudo consultar o preparar el PR #{enc.pr_numero} "
@@ -8927,6 +8913,7 @@ def _paso_entrega_paso(
             )
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return _con_espera(registro.fold(enc.id) or enc)
+        enc = anotar_pr(registro, enc, enc.fase_activa, vista_pr, hora)
         numero = enc.pr_numero
         recibo = vista_pr.merge_commit or vista_pr.head
         if (
@@ -9076,6 +9063,7 @@ def _paso_entrega_paso(
             enc = registro.fold(enc.id)
             if pr.borrador:
                 gh.marcar_listo(enc.entrega.repo, numero)
+            enc = anotar_pr(registro, enc, enc.fase_activa, gh.ver(enc.entrega.repo, numero), hora)
             registro.anotar(
                 enc.id,
                 {
@@ -9480,24 +9468,7 @@ def _paso_entrega_paso(
                 f"pendiente-merge:{enc.id}:{enc.pr_sha}",
             )
             return registro.fold(enc.id) or enc, Avanzo()
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "entrega_externa",
-                "data": {
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "paso": "integrado",
-                    "repo": enc.entrega.repo,
-                    "numero": enc.pr_numero,
-                    "sha": vista_pr.merge_commit or vista_pr.head,
-                    "recibo": vista_pr.merge_commit or vista_pr.head,
-                    "hora": hora,
-                },
-            },
-            f"entrega:{enc.id}:{enc.fase_activa}:integrado:{enc.pr_sha}",
-        )
-        enc = registro.fold(enc.id)
+        enc = anotar_integrado(registro, enc, vista_pr, hora)
     enc, resultado = _paso_despliegue(registro, enc, espacio, hora)
     if nivel_cumplido(enc):
         return (

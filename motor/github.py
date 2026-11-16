@@ -1,4 +1,4 @@
-"""GitHub detrás de una interfaz de 5 métodos. Nadie fuera de aquí ve JSON de GitHub.
+"""GitHub detrás de un puerto. Nadie fuera de aquí ve JSON de GitHub.
 
 - `GhGitHub`: el real, con `gh`. Los checks requeridos parten de la protección de la rama
   base ∪ los extra del `.motor.toml` del repo, y el veredicto los amplía con toda corrida
@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .repositorios import resolver_repositorio
+from .encargos.entrega.github_port import EntregaFake, EntregaGh
 from .respuestas_merge import (
     BaseMovida,
     Borrador,
@@ -369,6 +370,10 @@ class GitHubPort(Protocol):
         self, repo: str, numero: int, sha: str, metodo: str, mensaje: str
     ) -> PrView: ...
     def ver(self, repo: str, numero: int) -> PrView: ...
+    def cerrar_pr(self, repo: str, numero: int) -> PrView: ...
+    def borrar_rama(self, repo: str, rama: str) -> None: ...
+    def prs_con_base(self, repo: str, base: str) -> tuple[int, ...]: ...
+    def rama_existe(self, repo: str, rama: str) -> bool: ...
     def es_privado(self, repo: str) -> bool: ...
     def relanzar_corrida(self, repo: str, run_id: str) -> None: ...
     def relanzar_fallidas(self, repo: str, run_id: str) -> None: ...
@@ -413,7 +418,7 @@ def _cuerpo_en_archivo(cuerpo: str):
             pass
 
 
-class GhGitHub:
+class GhGitHub(EntregaGh):
     """Contra GitHub de verdad. Se prueba con la suite de contrato solo si existe
     MOTOR_GH_SANDBOX=<dueño/repo> (un repo desechable)."""
 
@@ -535,24 +540,6 @@ class GhGitHub:
                 "pr", "edit", str(numero), "--body-file", ruta_cuerpo,
                 "-R", self.nombre(repo),
             )
-
-    @staticmethod
-    def _paginas(texto: str) -> list:
-        out, dec, i = [], json.JSONDecoder(), 0
-        texto = texto.strip()
-        while i < len(texto):
-            while i < len(texto) and texto[i].isspace():
-                i += 1
-            if i >= len(texto):
-                break
-            obj, j = dec.raw_decode(texto, i)
-            out.append(obj)
-            i = j
-        return out
-
-    def _es_404(self, e: RuntimeError) -> bool:
-        t = str(e)
-        return "HTTP 404" in t or " 404" in t
 
     @staticmethod
     def _sin_proteccion(e: RuntimeError) -> bool:
@@ -966,7 +953,7 @@ class GhGitHub:
 # --------------------------------------------------------------------------- falso
 
 
-class FakeGitHub:
+class FakeGitHub(EntregaFake):
     """Estado en `<dir>/github.json`. La "protección" y los checks salen de `<dir>/repos.json`:
     {"<repo>": {"requeridos": ["ci"], "solo_listo": ["completa"], "checks": {"ci": "./ci.sh"}, "privado": true}}.
     Los checks corren el comando en una copia limpia del SHA; los de `solo_listo` no corren en borrador.

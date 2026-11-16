@@ -252,17 +252,23 @@ class Comprobar(unittest.TestCase):
         violadas = [(v["invariante"], v["encargo"], v["evento"], v["tipo"]) for v in reg["violaciones"]]
         self.assertEqual(violadas, [("mismo_estado_con_otro_host", "sin_host", 2, "reserva")])
 
-    def test_un_cancelado_que_vuelve_a_deteniendo_viola_la_cancelacion_definitiva(self):
+    def test_un_cancelado_no_revive_por_una_orden_historica(self):
         _armar(self.registro, {
             "revive": [_ENTREGA, _CANCELAR, ("arbol", {"observacion": "ausente"}), _CANCELAR],
             "queda": [_ENTREGA, _CANCELAR, *[("arbol", {"observacion": "ausente"})] * 2],
         })
         codigo, salida = _correr("comprobar", "--json", self.registro)
-        self.assertEqual(codigo, 0)
+        self.assertEqual(codigo, 1)
         (reg,) = salida["registros"]
+        self.assertEqual(reg["pliegan"], 1)
+        self.assertEqual(
+            [(f["encargo"], f["evento"], f["tipo"], f["excepcion"])
+             for f in reg["fallos"]],
+            [("revive", 4, "orden", "HechoInaplicable")],
+        )
         violadas = [(v["invariante"], v["encargo"], v["evento"]) for v in reg["violaciones"]
                     if v["invariante"] == "cancelacion_definitiva"]
-        self.assertEqual(violadas, [("cancelacion_definitiva", "revive", 4)])
+        self.assertEqual(violadas, [])
 
     def test_una_fila_con_json_invalido_sale_con_dos_y_nombra_el_evento(self):
         _armar(self.registro, {"enc_a": [_ENTREGA, ("orden", "{no es json")]})

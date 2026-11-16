@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from motor.github import PrView
 
 
 @dataclass(frozen=True)
@@ -52,3 +55,17 @@ class PrDeFase:
     fase: str
     pr: EstadoPR
     aceptada_en: str = ""
+
+
+def estado_de(vista: PrView) -> EstadoPR:
+    if vista.estado == "mergeado":
+        return PrMergeado(vista.numero, vista.head, vista.base, vista.merge_commit)
+    if vista.estado == "cerrado":
+        return PrCerrado(vista.numero, vista.head, vista.base)
+    if vista.estado == "abierto":
+        if vista.borrador:
+            return PrBorrador(vista.numero, vista.head, vista.base)
+        return PrAbierto(vista.numero, vista.head, vista.base)
+    if vista.estado == "sin_pr":
+        return PrSin()
+    raise ValueError("estado de PR desconocido")

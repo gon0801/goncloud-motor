@@ -353,7 +353,7 @@ class ConciliacionFueraDeTurno(_Banco):
         self.assertEqual(a.estado, "preparada")
         self.assertTrue(a.desplegado_recibo)
 
-    def test_pr_cerrado_sin_merge_no_cambia_la_fase(self):  # no-roja-en-base: la base tampoco concilia un PR cerrado; la prueba guarda que el arreglo no lo cuente como integrado
+    def test_pr_cerrado_sin_merge_no_cambia_la_fase(self):
         reg, ident, gh, _ = self._preparar()
         gh.responde_ver = lambda repo, numero: PrView(
             numero, self.rama_a, "main", False, self.sha_a, "cerrado", ""
@@ -364,8 +364,12 @@ class ConciliacionFueraDeTurno(_Banco):
         self.assertEqual(a.nivel_alcanzado, "pr")
         self.assertEqual(a.integrado_sha, "")
         self.assertFalse((self.destino / "pasos").exists())
+        self.assertEqual(
+            next(pr.pr.estado for pr in reg.fold(ident).prs if pr.fase == "A"),
+            "cerrado",
+        )
 
-    def test_merge_en_otra_base_no_cuenta_como_integrado(self):  # no-roja-en-base: la base tampoco integra un PR mergeado en otra base; la prueba guarda ese límite
+    def test_merge_en_otra_base_no_cuenta_como_integrado(self):
         reg, ident, gh, fusionado = self._preparar()
         gh.responde_ver = lambda repo, numero: PrView(
             numero, self.rama_a, "otra", False, self.sha_a, "mergeado",
@@ -377,6 +381,10 @@ class ConciliacionFueraDeTurno(_Banco):
         self.assertEqual(a.nivel_alcanzado, "pr")
         self.assertEqual(a.integrado_sha, "")
         self.assertFalse((self.destino / "pasos").exists())
+        self.assertEqual(
+            next(pr.pr.estado for pr in reg.fold(ident).prs if pr.fase == "A"),
+            "mergeado",
+        )
 
 
 class ConciliacionCierre(_Banco):
