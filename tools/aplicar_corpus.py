@@ -17,6 +17,7 @@ from tools.plegado import leer_encargos, ultimo_evento  # noqa: E402
 
 
 def comprobar(corpus: Path) -> int:
+    kinds = ("entrega", *TABLA)
     casos = 0
     prefijos = 0
     truncados = 0
@@ -31,13 +32,13 @@ def comprobar(corpus: Path) -> int:
                     truncados += 1
                     break
                 prefijos += 1
-                for kind in TABLA:
+                for kind in kinds:
                     casos += 1
                     try:
                         reducir(estado, {"kind": kind, "data": {}}, nuevo=False)
                     except Exception as exc:
                         fallos[kind, type(exc).__name__] += 1
-    print(f"{len(TABLA)} kinds; {prefijos} prefijos legibles; {casos} aplicaciones; "
+    print(f"{len(kinds)} kinds; {prefijos} prefijos legibles; {casos} aplicaciones; "
           f"{truncados} registros truncados")
     for (kind, tipo), n in sorted(fallos.items()):
         print(f"{kind}: {tipo} en {n} prefijos")

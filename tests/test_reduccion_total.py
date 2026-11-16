@@ -40,7 +40,7 @@ class ReduccionTotal(unittest.TestCase):
 
     def test_aplicar_nunca_lanza_ni_con_infinity(self) -> None:
         previo = _pedido()
-        casos = [(kind, {}) for kind in sorted(TABLA)]
+        casos = [(kind, {}) for kind in sorted(set(TABLA) | {"entrega"})]
         casos += [
             ("incorporado", {"generacion": float("inf")}),
             ("quietud_vigilada", {"vueltas": float("inf")}),
