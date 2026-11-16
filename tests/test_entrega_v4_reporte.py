@@ -116,6 +116,19 @@ class PalabrasPuras(unittest.TestCase):
                 with self.subTest(activo=activo, palabra=palabra):
                     self.assertEqual(reporte(enc, activo).palabra, palabra)
 
+    def test_pr_abierto_no_oculta_otra_fase_bloqueada(self) -> None:
+        from motor.encargos.reporte import reporte
+
+        lista = Fase("F", "r", estado="preparada", evidencia="comprobado", pr_numero=7)
+        bloqueada = Fase("G", "r", estado="bloqueada", evidencia="fallo",
+                         bloqueo_causa="falta acceso")
+        enc = replace(encargo(nivel="pr", fases=(lista, bloqueada)),
+                      prs=(PrDeFase("F", PrAbierto(7, "h", "main")),))
+        rep = reporte(enc, True)
+        self.assertEqual(rep.palabra, "entrega parcial")
+        self.assertIn("G", rep.causa)
+        self.assertIn("falta acceso", rep.causa)
+
     def test_un_registro_viejo_integrado_no_se_reporta_limpio(self) -> None:
         from motor.encargos.reporte import reporte
 

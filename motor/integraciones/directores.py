@@ -24,6 +24,7 @@ from motor.encargos.ciclo import (
 from motor.encargos import politica, resumen as resumen_encargos
 from motor.encargos.entrega.avisos import (
     aviso_de as _aviso_de,
+    contexto_de_cierre,
     entrega_parcial_llana as _entrega_parcial_llana,
     id_aviso,
     titulo_del_pedido as _titulo_del_pedido,
@@ -823,30 +824,7 @@ def _cuerpo_de_cierre(enc) -> str:
     ]
     if bloqueadas:
         cuerpo += " " + _entrega_parcial_llana(enc, bloqueadas)
-    nota = " ".join(
-        nota for nota in enc.procedimiento if "intento pudo recibir" in nota
-    )
-    tiene_pendientes = bool(getattr(enc, "pendientes_entrega", ())) or any(
-        f.pendientes for f in getattr(enc, "fases", ()) or ()
-    )
-    if tiene_pendientes:
-        cuerpo += (
-            " Quedaron pendientes abiertos escritos en el PR; "
-            "no hace falta que hagas nada para que el trabajo siga."
-        )
-    if getattr(enc, "herramientas_no_disponibles", ()):
-        cuerpo += (
-            " Una herramienta no estaba disponible y se siguió con la "
-            "evidencia que había."
-        )
-    if relevo_cambio_modelo(enc):
-        cuerpo += " Se cambió de modelo para continuar sin esperar a nadie."
-    elif relevo_agotado(enc):
-        cuerpo += (
-            " Se intentó relevar el trabajo y no había otro modelo autorizado "
-            "para seguir."
-        )
-    return f"{cuerpo} {nota}".rstrip()
+    return f"{cuerpo} {contexto_de_cierre(enc)}".rstrip()
 
 
 def _config_canal(registro: Registro, canal: str) -> dict | None:
@@ -1965,13 +1943,11 @@ def _trabajos_de_encargo(
         cuerpo = (f"Tu encargo «{titulo}» quedó detenido. {frase}"
                   if aviso["tipo"] == "detenido"
                   else f"Terminó tu encargo «{titulo}». {rep.palabra.capitalize()}. {frase}")
-        if aviso["tipo"] == "cierre-v4" and enc.estado == "terminado":
-            nota = " ".join(
-                texto for texto in enc.procedimiento if "intento pudo recibir" in texto
-            )
-            if nota:
-                cuerpo += f" {nota}"
-            if enc.via == "directa":
+        if aviso["tipo"] == "cierre-v4":
+            detalle = contexto_de_cierre(enc)
+            if detalle:
+                cuerpo += f" {detalle}"
+            if enc.via == "directa" and enc.estado == "terminado":
                 resultado = _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"]))
                 if resultado:
                     cuerpo += f" {resultado}"
