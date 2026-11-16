@@ -26,7 +26,9 @@ from .entrega.ejecutar import (
     anotar_pendiente, base_objetivo_del_pr as _base_objetivo_del_pr,
     conciliar_otra_vista, conducir_pr, esperar_sin_gh, fase_final_por_sondear,
 )
-from .entrega.limpieza import barrer_limpieza, fallos_legados, limpiar_rutas_legadas
+from .entrega.limpieza import (
+    PresupuestoLimpieza, barrer_limpieza, fallos_legados, limpiar_rutas_legadas,
+)
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
@@ -1614,7 +1616,7 @@ def barrer(
     informes = []
     presupuesto = [CERRADOS_POR_PASADA]
     presupuesto_pr = CERRADOS_POR_PASADA
-    presupuesto_limpieza = [politica.LIMPIEZA_POR_PASADA]
+    presupuesto_limpieza = PresupuestoLimpieza(registro)
     for encargo_id in registro.ids():
         try:
             previo = plegar_aislado(registro, encargo_id)

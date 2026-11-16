@@ -12,6 +12,7 @@ from motor import plataforma
 
 from .. import despliegue, politica
 from ..copiar import borrar_arbol
+from ..frontera import leer_parada_local
 from motor.io import leer_json
 from .observacion import anotar_pr
 
@@ -133,15 +134,27 @@ def _ruta(registro: Registro, recurso: Recurso) -> Path:
     return base / recurso.tipo / recurso.clave
 
 
-def _despliegues(registro: Registro, enc: Encargo) -> tuple[str, ...]:
+def _claves_de_recibos(registro: Registro, enc: Encargo) -> set[str]:
     raiz = Path(registro.base) / "despliegues"
-    claves = set()
+    claves: set[str] = set()
     for fase in enc.fases:
         recibo = Path(fase.desplegado_recibo) if fase.desplegado_recibo else None
         if (recibo is not None and recibo.name == "recibo.json"
             and recibo.parent.parent == raiz
             and _CLAVE_DESPLIEGUE.fullmatch(recibo.parent.name)):
             claves.add(recibo.parent.name)
+    return claves
+
+
+def _despliegues(registro: Registro, enc: Encargo) -> tuple[str, ...]:
+    claves = _claves_de_recibos(registro, enc)
+    claves.update(_indice_despliegues(registro).get(enc.id, ()))
+    return tuple(sorted(claves))
+
+
+def _indice_despliegues(registro: Registro) -> dict[str, tuple[str, ...]]:
+    raiz = Path(registro.base) / "despliegues"
+    indice: dict[str, set[str]] = {}
     for ruta in raiz.glob("*/pedido.json"):
         if (not _CLAVE_DESPLIEGUE.fullmatch(ruta.parent.name)
             or ruta.parent.is_symlink() or ruta.is_symlink()):
@@ -151,9 +164,22 @@ def _despliegues(registro: Registro, enc: Encargo) -> tuple[str, ...]:
         except (OSError, ValueError, TypeError):
             continue
         identidad = pedido.get("identidad") if isinstance(pedido, dict) else None
-        if isinstance(identidad, dict) and identidad.get("encargo") == enc.id:
-            claves.add(ruta.parent.name)
-    return tuple(sorted(claves))
+        encargo = identidad.get("encargo") if isinstance(identidad, dict) else None
+        if isinstance(encargo, str):
+            indice.setdefault(encargo, set()).add(ruta.parent.name)
+    return {ident: tuple(sorted(claves)) for ident, claves in indice.items()}
+
+
+class PresupuestoLimpieza(list[int]):
+    def __init__(self, registro: Registro) -> None:
+        super().__init__([politica.LIMPIEZA.por_pasada])
+        self.registro = registro
+        self._indice: dict[str, tuple[str, ...]] | None = None
+
+    def despliegues(self, encargo: str) -> tuple[str, ...]:
+        if self._indice is None:
+            self._indice = _indice_despliegues(self.registro)
+        return self._indice.get(encargo, ())
 
 
 def _credenciales(registro: Registro, enc: Encargo) -> tuple[Recurso, ...]:
@@ -180,7 +206,8 @@ def _credenciales(registro: Registro, enc: Encargo) -> tuple[Recurso, ...]:
     return tuple(Recurso("credenciales", clave) for clave in sorted(claves))
 
 
-def candidatos(registro: Registro, enc: Encargo) -> tuple[Recurso, ...]:
+def candidatos(registro: Registro, enc: Encargo,
+               presupuesto: list[int] | None = None) -> tuple[Recurso, ...]:
     from ..ciclo import _rama_de_fase
 
     prs = tuple(Recurso("pr", str(f.pr_numero), f.id)
@@ -194,7 +221,11 @@ def candidatos(registro: Registro, enc: Encargo) -> tuple[Recurso, ...]:
     puntero = Path(registro.base) / "despliegues" / (enc.id + ".actual")
     despliegues = ((Recurso("despliegue", puntero.name),)
                   if puntero.exists() or puntero.is_symlink() else ())
-    despliegues += tuple(Recurso("despliegue", k) for k in _despliegues(registro, enc))
+    claves = set(presupuesto.despliegues(enc.id)
+                if isinstance(presupuesto, PresupuestoLimpieza)
+                else _despliegues(registro, enc))
+    claves.update(_claves_de_recibos(registro, enc))
+    despliegues += tuple(Recurso("despliegue", k) for k in sorted(claves))
     actual = Path(registro.base) / "ejecucion" / enc.id / "actual"
     puntero_turno = ((Recurso("ejecucion", f"{enc.id}/actual"),)
                     if actual.exists() or actual.is_symlink() else ())
@@ -267,12 +298,12 @@ def _rama(enc: Encargo, gh: GitHubPort | None,
     )
     if any(vista.estado == "abierto" for vista in propios):
         return "pendiente"
+    if not gh.rama_existe(enc.entrega.repo, recurso.clave):
+        return "borrado"
     if gh.prs_con_base(enc.entrega.repo, recurso.clave):
         return "conservado"
     if enc.estado != "cancelado" and not propios:
         return "conservado"
-    if not gh.rama_existe(enc.entrega.repo, recurso.clave):
-        return "borrado"
     if not presupuesto[0]:
         return "pendiente"
     gh.borrar_rama(enc.entrega.repo, recurso.clave)
@@ -311,7 +342,7 @@ def _despliegue(registro: Registro, enc: Encargo,
         return True
     if despliegue._observacion_en(registro, enc, ruta) in ("vivo", "incierto"):
         return False
-    for archivo in sorted(ruta.iterdir()) if ruta.is_dir() else ():
+    for archivo in sorted(ruta.iterdir(), key=lambda p: (p.name == "proceso.json", p.name)):
         if archivo.name in _CONSERVED:
             continue
         if not presupuesto[0]:
@@ -359,6 +390,29 @@ def _recibos_presentes(registro: Registro, enc: Encargo) -> bool:
     )
 
 
+def _restos_tras_limpio(registro: Registro, enc: Encargo, hora: str) -> bool:
+    base = Path(registro.base)
+    if any(pr.pr.estado in ("abierto", "borrador") for pr in enc.prs):
+        return True
+    rutas = (
+        base / "runtime" / enc.id,
+        base / "ejecucion" / enc.id / "actual",
+        base / "despliegues" / f"{enc.id}.actual",
+    )
+    if _vence(enc, hora) and not _sondeo_vigente(enc, hora):
+        rutas += (base / "espacio" / enc.id, base / "ejecucion" / enc.id)
+    if any(ruta.exists() or ruta.is_symlink() for ruta in rutas):
+        return True
+    try:
+        return any(
+            any(p.name not in _CONSERVED for p in Path(f.desplegado_recibo).parent.iterdir())
+            for f in enc.fases
+            if f.desplegado_recibo and Path(f.desplegado_recibo).parent.is_dir()
+        )
+    except OSError:
+        return True
+
+
 def _limpiar_recurso(registro: Registro, enc: Encargo, gh: GitHubPort | None,
                      recurso: Recurso, hora: str,
                      presupuesto: list[int]) -> tuple[Encargo, Cumplimiento]:
@@ -377,6 +431,11 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
                     hora: str, presupuesto: list[int]) -> Encargo:
     from ..ciclo import _cerrar_procesos_del_encargo
 
+    if leer_parada_local(registro.base) is not None:
+        return enc
+    if (enc.estado in ("terminado", "cancelado") and enc.limpio
+        and not _restos_tras_limpio(registro, enc, hora)):
+        return enc
     if enc.estado in ("terminado", "cancelado"):
         _cerrar_procesos_del_encargo(registro, enc)
     if enc.reserva:
@@ -387,7 +446,7 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
                 return enc
         except (OSError, TypeError, ValueError, KeyError):
             return enc
-    recursos = candidatos(registro, enc)
+    recursos = candidatos(registro, enc, presupuesto)
     faltan = False
     for recurso in recursos:
         resultado, _, _ = _ultimo(enc, recurso)

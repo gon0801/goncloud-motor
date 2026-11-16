@@ -205,6 +205,41 @@ class LimpiezaAlCerrar(unittest.TestCase):
                 and "limpieza(" in e["data"].get("nota", "")
             ]), 2)
 
+    def test_fallo_restauracion_y_otro_fallo_conservan_el_ciclo(self):  # no-roja-en-base: fija la rama legada de la ukey con ciclo, existente antes de 4.3
+        encargo = self._cancelar_con_archivo_abierto()
+        error = PermissionError(13, "Permission denied", "abierto.db")
+        with mock.patch.object(ciclo, "borrar_arbol", side_effect=error):
+            barrer(self.reg, ahora_iso(), time.time(), None)
+        self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 1)
+
+        barrer(self.reg, ahora_iso(), time.time(), None)
+        self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 0)
+        restauracion = self.reg.db.execute(
+            "SELECT id FROM events WHERE encargo = ? "
+            "AND ukey LIKE 'limpieza-restaurada:%' ORDER BY id DESC LIMIT 1",
+            (encargo,),
+        ).fetchone()
+        self.assertIsNotNone(restauracion)
+        runtime = self.reg.base / "runtime" / encargo
+        runtime.mkdir(parents=True)
+        (runtime / "abierto.db").write_text("abierto", encoding="utf-8")
+        with mock.patch.object(ciclo, "borrar_arbol", side_effect=error):
+            barrer(self.reg, ahora_iso(), time.time(), None)
+            barrer(self.reg, ahora_iso(), time.time(), None)
+        fallos = [
+            ukey for (ukey,) in self.reg.db.execute(
+                "SELECT ukey FROM events WHERE encargo = ? "
+                "AND ukey LIKE 'limpieza-fallida:%' ORDER BY id",
+                (encargo,),
+            )
+        ]
+        self.assertEqual(fallos[-2:], [
+            f"limpieza-fallida:{encargo}:{restauracion[0]}:1",
+            f"limpieza-fallida:{encargo}:{restauracion[0]}:2",
+        ])
+        self.assertEqual(ciclo.fallos_legados(self.reg, encargo),
+                         (2, str(restauracion[0])))
+
 
 if __name__ == "__main__":
     unittest.main()
