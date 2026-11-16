@@ -57,8 +57,14 @@ def plegar_evento(
         ):
             return aplicado
         return derivados(aplicado, evento)
-    except Exception:
+    except Exception as exc:
         if nuevo or anterior is None:
+            raise
+        from ..dominio import TransicionIlegal
+
+        # Un ciclo de fases invalida el registro: el supervisor debe aislarlo y avisar.
+        if (evento["kind"] == "fases" and isinstance(exc, TransicionIlegal)
+                and str(exc).startswith("dependencia circular en la fase ")):
             raise
         return anterior
 
