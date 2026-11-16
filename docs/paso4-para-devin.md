@@ -274,7 +274,7 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
 | Borrador | `MarcarListo` | `MarcarListo` |
 | Abierto | `SeguirRevision`. Al quedar listo y sin bloqueantes, el encargo queda `terminado` con "listo para tu merge" **y se sigue observando** | `SeguirRevision` y `Mergear`, como hoy |
 | Mergeado en `base_pedida` o en su `aceptada_en` | `AnotarMergeado` | `AnotarMergeado` y `Desplegar` si toca, como hoy, desde el merge commit |
-| Mergeado en la rama de otra fase del mismo encargo | `AnotarObservado` mientras esa otra fase no esté mergeada en `base_pedida`; `AnotarMergeado` cuando ya lo esté | Hoy no hay PR apilados con este nivel. Si aparece uno, igual que con nivel `pr`, y `Desplegar` si toca |
+| Mergeado en la rama de otra fase del mismo encargo | `AnotarObservado` mientras esa otra fase no cuente como integrada (directo en `base_pedida` o en cadena); `AnotarMergeado` cuando ya cuente | Hoy no hay PR apilados con este nivel. Si aparece uno, igual que con nivel `pr`, y `Desplegar` si toca |
 | Mergeado en otra base | `DetenerOtraBase`. Si el encargo ya es `terminado`, `AnotarObservado` | Igual |
 | Cerrado sin merge | `CancelarFase` | `CancelarFase` |
 
@@ -405,8 +405,8 @@ que sacas de `comprobar_recibo` (`despliegue.py:477-494`) y que calcula el sha25
 fase, repo, `integrado_sha` y receta. Así `reporte` sigue sin leer disco. Gana la primera regla que se cumple:
 
 1. `detenido`: dice cuál de las causas y que se reanuda con `continuar`.
-2. `terminado` de nivel `pr` con algún PR `Abierto` de una fase que no está en `canceladas`:
-   "listo para tu merge".
+2. `terminado` de nivel `pr` con algún PR `Abierto` o en `Borrador` de una fase que no está en
+   `canceladas`: "listo para tu merge".
 3. Algún recurso con su última `limpieza` en `fallo` o `agotado`, o falta `limpio`: "falta
    limpiar", y nombra lo que queda. Un plazo que venció y sigue en reintentos también cuenta.
 4. `cancelado`: "cancelado".
