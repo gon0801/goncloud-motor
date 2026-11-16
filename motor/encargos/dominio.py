@@ -1764,7 +1764,9 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
     hora = str(d.get("hora") or "")
     if kind == "entrega":
         if estado is not None:
-            raise TransicionIlegal("el encargo ya existe")
+            if nuevo:
+                raise TransicionIlegal("el encargo ya existe")
+            return estado
         via = d.get("via") or "durable"
         if via not in ("directa", "durable"):
             raise TransicionIlegal("via desconocida")
@@ -1936,7 +1938,9 @@ def _con_hechos_derivados(e: Encargo, evento: dict) -> Encargo:
 
 def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
     aplicado = _reducir_evento(estado, evento, nuevo)
-    if aplicado is estado and evento["kind"] in ("cierre_forzado", "bloqueo_fase", "producto_listo"):
+    if aplicado is estado and evento["kind"] in (
+        "entrega", "cierre_forzado", "bloqueo_fase", "producto_listo",
+    ):
         return aplicado
     return _con_hechos_derivados(aplicado, evento)
 
