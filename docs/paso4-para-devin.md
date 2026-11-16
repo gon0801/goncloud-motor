@@ -171,7 +171,8 @@ class PorOtraBase: fase: str; base: str
 - Campos nuevos de `Encargo` (`motor/encargos/encargo.py`), con valor por omisión:
   - `prs: tuple[PrDeFase, ...] = ()`: el último estado observado del PR de cada fase. Va en
     `Encargo` y no en `Fase`, porque `Fase` vive en `dominio.py`.
-  - `canceladas: tuple[str, ...] = ()`: las fases que David canceló cerrando su PR.
+  - `canceladas: tuple[str, ...] = ()`: las fases canceladas, porque David cerró su PR o porque
+    dependían de una fase cancelada.
   - `otra_base_de: tuple[str, str] = ("", "")`: fase y base de un `PorOtraBase` vigente.
   - `limpieza: tuple[tuple[str, str, str, int, str], ...] = ()`: recurso, clave, resultado,
     intento y hora del último evento de cada recurso.
@@ -258,9 +259,10 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
 - `base_pedida` es `e.entrega.base`.
 - En un encargo `cancelado`, la decisión es siempre `Nada`: no se anota ni se decide nada, y sus
   PR los cierra la limpieza. Solo un `terminado` sigue observándose y anotándose. La limpieza de
-  un cancelado no depende de esa observación: después de `cerrar_pr` lee el PR con `ver()`, y
-  cuando lo confirma `Cerrado` o `Mergeado` escribe su `pr_observado` (que se acepta también en
-  un `cancelado`) junto con la `limpieza`.
+  un cancelado no depende de esa observación: para cada PR del encargo lee su estado con `ver()`,
+  lo cierre o no (puede estar ya `Cerrado` o `Mergeado`), y cuando lo confirma `Cerrado` o
+  `Mergeado` escribe su `pr_observado` (que se acepta también en un `cancelado`) junto con la
+  `limpieza`. Pruébalo también con un PR que ya estaba cerrado.
 - `ContextoEntrega` lleva también el `EstadoPR` de las otras fases, para decidir el caso en
   cadena.
 - Un `Abierto` es `Abierto` en cualquier base. La base a la que el motor reapunta un PR sigue
@@ -303,14 +305,14 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
   `AnotarMergeado` (su contexto lo dice: la rama en la que se mergeó ya está integrada).
 - `CancelarFase` y `DetenerOtraBase` esperan a que el encargo no tenga proceso vivo
   (`proc is None` y sin `reserva`). Mientras haya proceso, la acción es `Esperar`.
-- Una fase que ya está en `canceladas` no da `CancelarFase` otra vez: con su PR `Cerrado`, la
-  decisión es `Nada`. Así la observación repetida no choca con el `validar`.
+- Una fase que ya está en `canceladas` decide `Nada` con cualquier estado de su PR: no se revisa,
+  no se mergea y no da `CancelarFase` otra vez. Su PR, si sigue abierto, lo cierra la limpieza. Así la observación repetida no choca con el `validar`.
 - Ningún camino llama a `merge` sobre un PR que no esté `Abierto`. Ningún camino abre un PR nuevo
   para una fase con `Mergeado` o `Cerrado`.
 - `DetenerOtraBase` no se repite para la misma fase, número y base: el `pr_otra_base` de esa
   terna ya está en el registro, y si su `aceptada_en` coincide, cuenta como aceptada. Que GitHub
   llene después un `merge_commit` vacío no vuelve a detener el encargo.
-- `pr_observado` se escribe solo cuando el valor cambia, en tres casos: la fase activa en cada
+- Fuera de la limpieza de un cancelado, `pr_observado` se escribe solo cuando el valor cambia, en tres casos: la fase activa en cada
   paso de entrega, las fases no activas, y los encargos `terminado` de nivel `pr` con algún PR
   `Abierto`, en `Borrador` o todavía sin observar (David puede pasar un PR a borrador y después
   mergearlo o cerrarlo). La cadencia de las no activas no cambia: sigue en
@@ -358,7 +360,7 @@ carpetas en disco, solo en encargos finales.
   interruptor no borre todo de golpe.
 - Una rama que se conserva porque es base del PR abierto de otro encargo cuenta como cumplida.
 - `limpio` se escribe cuando ningún PR del encargo está `Abierto`, cada recurso cumplió su regla,
-  y cada fase con nivel desplegado pasa `despliegue.comprobar_recibo` (extiéndela para recibir la
+  y cada fase con nivel desplegado que no está en `canceladas` pasa `despliegue.comprobar_recibo` (extiéndela para recibir la
   fase; hoy solo mira `fase_actual`). Lo que tiene plazo y no venció cuenta como conservado.
   Cuando el plazo vence, el motor lo borra y escribe `limpieza`.
 - `tools/limpieza_pendiente.py <base>` cuenta, por recurso, lo que el motor borraría al encender
@@ -547,7 +549,8 @@ Estas las tomó el revisor. David puede cambiarlas.
   fase sigue como si se hubiera mergeado en la base pedida, incluido el despliegue si se pidió, y
   no se abre otro PR. El reporte dice en qué base quedó.
 - **Un encargo `terminado` no se detiene** si David mergea su PR en otra base. Se anota y el
-  reporte dice en qué base quedó. Un `cancelado` ya no se observa.
+  reporte dice en qué base quedó. Un `cancelado` ya no se observa para decidir: solo su limpieza
+  lee sus PR.
 - **`pedido.json` se conserva junto al recibo.** El modelo dice "se conserva el recibo", pero el
   canario lee `pedido.json` para saber de qué encargo es cada carpeta. Pesa poco.
 - **Interruptor apagado al desplegar.** Al encenderlo se limpia lo viejo que ya venció. Por eso el
