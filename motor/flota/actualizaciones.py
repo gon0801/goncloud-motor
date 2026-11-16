@@ -26,7 +26,9 @@ from .distribuidores import (
     _json_url,
     _run,
     _validar_componente,
+    catalogo_deseado,
     descubrir,
+    perfiles_ajenos,
 )
 from .manifiesto import Herramienta, cargar, emitir, guardar, proyectar_tabla
 
@@ -683,9 +685,10 @@ def _reutilizar_config(
             "revision": claw_routing["revision"],
             "sha256": claw_routing["sha256"],
         }
-    perfiles = vigente / "perfiles"
-    if perfiles.is_dir():
-        _copiar_arbol(perfiles, gen / "perfiles", prefijos, nuevo)
+    omitir = _ESTADO_OPERATIVO | perfiles_ajenos(runtime["lanzadores"])
+    for perfil in sorted((vigente / "perfiles").glob("*")):
+        if perfil.name not in omitir:
+            _copiar_arbol(perfil, gen / "perfiles" / perfil.name, prefijos, nuevo)
     paquete = gen / "config/hermes/shared/sistema-agentes/poteto"
     if (paquete / "poteto.v1.json").is_file() or (
         paquete / "skills/poteto-mode/SKILL.md"
@@ -797,22 +800,17 @@ def preparar(
         Path((fuentes.get("conf") or {}).get("origen", "")) / "flota/manifesto.toml"
     )
     with _cerrojo_flota(home):
-        if fuente is None and (home / "motor").exists():
-            anterior = home / "generaciones" / asignar(home) / "runtime.json"
-            if anterior.is_file():
-                anteriores = leer_json(anterior).get(
-                    "componentes", []
-                )
-                fusion = {c["nombre"]: c for c in anteriores}
-                fusion.update({c["nombre"]: c for c in componentes})
-                componentes = [fusion[n] for n in sorted(fusion)]
-                for doc in componentes:
-                    _validar_componente(doc)
-                nombres = [c["nombre"] for c in componentes]
-                catalogo = {**catalogo, "componentes": componentes}
         if not manifiesto.is_file() and not semilla.is_file():
             raise ValueError("no se encontro la fuente compartida flota/manifesto.toml")
         politica = cargar(manifiesto if manifiesto.is_file() else semilla)
+        anteriores = []
+        if fuente is None and (home / "motor").exists():
+            anterior = home / "generaciones" / asignar(home) / "runtime.json"
+            if anterior.is_file():
+                anteriores = leer_json(anterior).get("componentes", [])
+        catalogo = catalogo_deseado(catalogo, politica, anteriores)
+        componentes = catalogo["componentes"]
+        nombres = [c["nombre"] for c in componentes]
         herramientas = {h.nombre: h for h in politica.herramientas}
         herramientas.update(
             {
