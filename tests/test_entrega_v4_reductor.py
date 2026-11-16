@@ -43,16 +43,16 @@ def _fases_independientes(dependiente: bool = False) -> Encargo:
 
 
 class ReductorEntregaV4(unittest.TestCase):
-    def test_cancelacion_de_todas_las_fases_rechaza_solo_ordenes_que_la_cambian(self) -> None:
+    def test_cancelacion_de_todas_las_fases_no_admite_ordenes_nuevas(self) -> None:
         e = reducir(_pedido(), _hecho("fase_cancelada", fase="F",
                     causa="pr_cerrado", numero=9, origen="", hora="t1"), nuevo=True)
         self.assertEqual(e.estado, "cancelado")
-        for accion in ("parar", "continuar"):
+        for accion in ("parar", "continuar", "cancelar"):
             with self.subTest(accion=accion):
                 with self.assertRaises(TransicionIlegal):
                     reducir(e, _hecho("orden", accion=accion, hora="t2"), nuevo=True)
         self.assertEqual(
-            reducir(e, _hecho("orden", accion="cancelar", hora="t2"), nuevo=True).estado,
+            reducir(e, _hecho("orden", accion="cancelar", hora="t2"), nuevo=False).estado,
             "deteniendo",
         )
 

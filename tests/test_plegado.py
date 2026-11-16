@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos.registro import ClaveOcupada, Evento, Registro
+from motor.encargos.registro import ClaveOcupada, Evento, EventoIlegal, Registro
 from tools.plegado import campos_de
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -269,6 +269,11 @@ class Comprobar(unittest.TestCase):
                             "cancelar:revive"),
             "igual",
         )
+        self.assertEqual(registro.ultimo_evento("revive"), antes)
+        self.assertEqual(registro.fold("revive").estado, "cancelado")
+        with self.assertRaises(EventoIlegal):
+            registro.anotar("revive", {"kind": "orden", "data": _CANCELAR[1]},
+                            "cancelar:revive:otra-clave")
         self.assertEqual(registro.ultimo_evento("revive"), antes)
         self.assertEqual(registro.fold("revive").estado, "cancelado")
         registro.close()
