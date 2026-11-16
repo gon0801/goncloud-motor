@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         SondeoCI, VersionProducto,
     )
     from .situacion import Situacion
+    from .entrega.tipos import PrDeFase
 
 
 def _por_defecto_entrega() -> EntregaAutorizada:
@@ -203,6 +204,12 @@ class Encargo:
     observada_version: str = ""
     fases: tuple[Fase, ...] = ()
     fase_activa: str = ""
+    prs: tuple[PrDeFase, ...] = ()
+    canceladas: tuple[str, ...] = ()
+    otra_base_de: tuple[str, str] = ("", "")
+    limpieza: tuple[tuple[str, str, str, int, str], ...] = ()
+    limpio: str = ""
+    hora_final: str = ""
     despliegue_mapa: tuple[tuple[str, str], ...] = ()
     despliegue_archivo: str = ""
     solicitudes: tuple[Solicitud, ...] = ()

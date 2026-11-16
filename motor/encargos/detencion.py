@@ -59,6 +59,17 @@ def fallo_interno(e: Encargo, d: dict, hora: str) -> Encargo:
     )
 
 
+def pr_otra_base(e: Encargo, d: dict, hora: str) -> Encargo:
+    fase, base = d["fase"], d["base"]
+    motivo = f"el PR de la fase {fase} quedó en {base}; continuar acepta esa base"
+    return evolucionar(
+        e, estado="detenido", orden_parada="otra_base",
+        otra_base_de=(fase, base), intentos_nuevos=False, escrituras=False,
+        motivo=motivo, ultimo_hecho=motivo, siguiente="detenido hasta continuar",
+        hora=hora or e.hora,
+    )
+
+
 def arbol(e: Encargo, d: dict, hora: str) -> Encargo:
     if d.get("observacion") != "ausente" or e.estado != "deteniendo" or e.reserva:
         return e
@@ -78,4 +89,5 @@ def arbol(e: Encargo, d: dict, hora: str) -> Encargo:
 DETENCIONES: dict[str, Callable[[Encargo, dict, str], Encargo]] = {
     "arbol": arbol,
     "fallo_interno": fallo_interno,
+    "pr_otra_base": pr_otra_base,
 }

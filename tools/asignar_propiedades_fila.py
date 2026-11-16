@@ -10,11 +10,11 @@ RAIZ = Path(__file__).resolve().parents[1]
 RUTA = RAIZ / "motor" / "encargos" / "reductor" / "__init__.py"
 MARCADORES = frozenset((
     "incorporado", "quietud_vigilada", "deepseek_lectura", "deepseek_cerrado",
-    "ci_sondeo", "excepcion", "conciliacion_fase",
+    "ci_sondeo", "excepcion", "conciliacion_fase", "pr_observado", "limpieza",
 ))
 ENTRE_REINTENTOS = frozenset((
     "plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
-    "contexto_entrega", "sesion_perdida",
+    "contexto_entrega", "sesion_perdida", "limpio",
 ))
 HECHOS_DE_ENCARGO = frozenset((
     "deepseek_lectura", "deepseek_cerrado", "ci_sondeo", "fases",
@@ -25,7 +25,8 @@ HECHOS_DE_ENCARGO = frozenset((
 
 def alcance(kind: str, manejador: str) -> str:
     tema = manejador.split(".", 1)[0]
-    if kind in {"ajuste", "conductor_fase"} or (
+    if kind in {"ajuste", "conductor_fase", "pr_observado", "fase_cancelada",
+                "pr_otra_base"} or (
         tema in {"fase", "revision"} and kind not in HECHOS_DE_ENCARGO
     ):
         return "fase"
@@ -41,8 +42,8 @@ def asignar(texto: str) -> str:
         n.value for n in arbol.body if isinstance(n, ast.AnnAssign)
         and isinstance(n.target, ast.Name) and n.target.id == "TABLA"
     )
-    if not isinstance(tabla, ast.Dict) or len(tabla.keys) != 81:
-        raise ValueError("se esperaban las 81 filas literales de TABLA")
+    if not isinstance(tabla, ast.Dict) or len(tabla.keys) != 86:
+        raise ValueError("se esperaban las 86 filas literales de TABLA")
     vistos: set[str] = set()
     for llave, valor in zip(tabla.keys, tabla.values, strict=True):
         if not isinstance(llave, ast.Constant) or not isinstance(llave.value, str):
@@ -90,7 +91,7 @@ def main() -> None:
             raise SystemExit("TABLA no coincide con las propiedades reproducibles")
     else:
         RUTA.write_text(esperado, encoding="utf-8")
-    print("81 filas reproducibles")
+    print("86 filas reproducibles")
 
 
 if __name__ == "__main__":

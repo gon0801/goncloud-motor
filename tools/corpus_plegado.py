@@ -329,7 +329,10 @@ def generar(ref: str, salida: Path) -> int:
 
 
 def verificar(salida: Path, raiz: Path) -> int:
-    from tools.plegado import _igual, cargar_reductor, campos_de, leer_encargos, trazar, ultimo_evento
+    from tools.plegado import (
+        _igual, cargar_reductor, campos_de, leer_encargos, sin_claves_nuevas,
+        trazar, ultimo_evento,
+    )
 
     reductor = cargar_reductor(raiz)
     with (salida / "meta.json").open(encoding="utf-8") as archivo:
@@ -367,7 +370,9 @@ def verificar(salida: Path, raiz: Path) -> int:
             if traza.fallo is not None:
                 print(f"{registro.name}/{encargo}: {traza.fallo.tipo} no pliega")
                 continue
-            presentes[encargo] = campos_de(traza.estados[-1])
+            presentes[encargo] = sin_claves_nuevas(
+                campos_de(traza.estados[-1]), esperados[encargo],
+            )
             if _igual(presentes[encargo], esperados[encargo]):
                 iguales += 1
             else:

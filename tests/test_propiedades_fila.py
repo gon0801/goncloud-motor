@@ -13,12 +13,12 @@ class PropiedadesFila(unittest.TestCase):
         self.assertCountEqual(
             _ENTRE_REINTENTOS,
             ("plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
-             "contexto_entrega", "sesion_perdida"),
+             "contexto_entrega", "sesion_perdida", "limpio"),
         )
         self.assertCountEqual(
             _EVENTOS_DE_MARCADOR,
             ("incorporado", "quietud_vigilada", "deepseek_lectura", "deepseek_cerrado",
-             "ci_sondeo", "excepcion", "conciliacion_fase"),
+             "ci_sondeo", "excepcion", "conciliacion_fase", "pr_observado", "limpieza"),
         )
 
     def test_las_tuplas_salen_de_las_propiedades_de_fila(self) -> None:
@@ -33,13 +33,14 @@ class PropiedadesFila(unittest.TestCase):
         )
         self.assertTrue(all(not fila.corta_series for fila in TABLA.values() if fila.marcador))
 
-    def test_cada_fila_declara_el_alcance_de_su_hecho(self) -> None:
+    def test_cada_fila_declara_el_alcance_de_su_hecho(self) -> None:  # no-roja-en-base: fija la propiedad de las filas viejas y las cinco nuevas se prueban aparte
         fase = set("""
             ajuste bloqueo_fase ci_pr cierre_forzado comprobaciones_supervisor
             conciliacion_fase conductor_fase entrada_incorporada entrega_bloqueada
             entrega_devuelta entrega_externa fase_desplegada fase_reabierta
             fase_reactivada inspeccion_entregada inspeccion_solicitud lectura_fallida
             nota_pr politica_despliegue producto_listo resolucion respuesta revision
+            pr_observado fase_cancelada pr_otra_base
         """.split())
         intento = set("""
             actividad colgada conductor intento_abierto intento_cerrado
