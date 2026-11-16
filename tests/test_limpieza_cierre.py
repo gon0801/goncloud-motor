@@ -48,10 +48,6 @@ class LimpiezaAlCerrar(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.reg = Registro(Path(self.tmp) / "base")
         self.addCleanup(self.reg.close)
-        fallidas = getattr(ciclo, "_LIMPIEZA_FALLIDA", None)
-        if fallidas is not None:
-            fallidas.clear()
-            self.addCleanup(fallidas.clear)
 
     def _terminar(self, encargo: str) -> None:
         self.reg.anotar(
@@ -182,24 +178,32 @@ class LimpiezaAlCerrar(unittest.TestCase):
             # El reintento logró limpiar: sin nota nueva y sin marca que
             # siga intentando en los barridos siguientes.
             self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
-            clave = (str(Path(self.reg.base)), encargo)
-            self.assertNotIn(clave, ciclo._LIMPIEZA_FALLIDA)
+            self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 0)
             # El barrido siguiente no agrega nada: sin fallo, sin nota.
             antes = self.reg.eventos(encargo)
             barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(self.reg.eventos(encargo), antes)
 
-    def test_un_arranque_nuevo_reintenta_sin_duplicar_la_nota(self):
+    def test_un_arranque_nuevo_recupera_del_registro_el_intento_pendiente(self):
         encargo = self._cancelar_con_archivo_abierto()
+        self.assertFalse(hasattr(ciclo, "_LIMPIEZA_FALLIDA"))
         error = PermissionError(13, "Permission denied", "abierto.db")
 
         with mock.patch.object(ciclo, "borrar_arbol", side_effect=error) as borrar:
             barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(borrar.call_count, 2)
-            ciclo._LIMPIEZA_FALLIDA.clear()
-            barrer(self.reg, ahora_iso(), time.time(), None)
+            self.reg.close()
+            nueva = Registro(self.reg.base)
+            self.addCleanup(nueva.close)
+            barrer(nueva, ahora_iso(), time.time(), None)
             self.assertEqual(borrar.call_count, 4, "no se reintentó tras el arranque")
-            self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
+            barrer(nueva, ahora_iso(), time.time(), None)
+            self.assertEqual(borrar.call_count, 4, "se perdió el tope tras reiniciar")
+            self.assertEqual(len([
+                e for e in nueva.eventos(encargo)
+                if e["kind"] == "procedimiento"
+                and "limpieza(" in e["data"].get("nota", "")
+            ]), 2)
 
 
 if __name__ == "__main__":
