@@ -208,7 +208,7 @@ class TurnosFlota(unittest.TestCase):
         self.assertTrue(gen_b.is_dir())
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
 
-    def test_preparar_parcial_reutiliza_config_de_vigente(self):
+    def test_preparar_parcial_reutiliza_config_de_vigente(self):  # no-roja-en-base: solo declara en el manifiesto del home la herramienta que instala; el comportamiento ya estaba en la base
         origen, a, gen_a = self._flota("origen-c")
         _runtime_preparada(self.home, gen_a, "grok", "v1")
         (self.home / "manifiesto.toml").write_text(

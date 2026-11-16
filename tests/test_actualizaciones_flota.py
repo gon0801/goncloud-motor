@@ -362,7 +362,7 @@ class ActualizacionesFlota(unittest.TestCase):
                 _run(["node", "npm-cli.js", "install"])
         self.assertIn("sin espacio en disco", str(ctx.exception))
 
-    def test_candidata_corrupta_conserva_la_generacion_vigente(self):
+    def test_candidata_corrupta_conserva_la_generacion_vigente(self):  # no-roja-en-base: solo declara en el manifiesto del home la herramienta que instala; el comportamiento ya estaba en la base
         origen = self.base / "origen2"
         origen.mkdir()
         for args in (
