@@ -12,6 +12,8 @@ from . import validacion_esperas
 from . import validacion_necesidades
 from . import validacion_fase
 from . import validacion_revision
+from . import validacion_pedido
+from . import validacion_detencion
 
 if TYPE_CHECKING:
     from ..dominio import Encargo
@@ -31,16 +33,27 @@ class Fila:
         return self.aplicar(e, d, hora, nuevo)
 
 
+def aplicar_fila(e: Encargo, kind: str, d: dict, hora: str, nuevo: bool) -> Encargo:
+    from ..dominio import TransicionIlegal
+
+    fila = TABLA.get(kind)
+    if fila is None:
+        if nuevo:
+            raise TransicionIlegal(f"evento desconocido: {kind}")
+        return e
+    return fila.reducir(e, d, hora, nuevo)
+
+
 TABLA: dict[str, Fila] = {
     "recibo": Fila(pedido.recibo),
-    "ruta_agentes": Fila(pedido.ruta_agentes),
-    "contexto_entrega": Fila(pedido.contexto_entrega, corta_series=False),
-    "proveedor_fallo": Fila(pedido.proveedor_fallo),
-    "proveedor_disponible": Fila(pedido.proveedor_disponible),
+    "ruta_agentes": Fila(pedido.ruta_agentes, validar=validacion_pedido.validar_ruta_agentes),
+    "contexto_entrega": Fila(pedido.contexto_entrega, corta_series=False, validar=validacion_pedido.validar_contexto_entrega),
+    "proveedor_fallo": Fila(pedido.proveedor_fallo, validar=validacion_pedido.validar_proveedor_fallo),
+    "proveedor_disponible": Fila(pedido.proveedor_disponible, validar=validacion_pedido.validar_proveedor_disponible),
     "falla_sesion_local": Fila(pedido.falla_sesion_local),
-    "orden": Fila(pedido.orden),
-    "ajuste": Fila(pedido.ajuste, alcance="fase"),
-    "procedimiento": Fila(pedido.procedimiento),
+    "orden": Fila(pedido.orden, validar=validacion_pedido.validar_orden),
+    "ajuste": Fila(pedido.ajuste, alcance="fase", validar=validacion_pedido.validar_ajuste),
+    "procedimiento": Fila(pedido.procedimiento, validar=validacion_pedido.validar_procedimiento),
     "migracion": Fila(pedido.migracion),
     'actividad': Fila(intento.actividad, alcance="intento", validar=validacion_intento.validar_actividad),
     'afirmacion': Fila(esperas.afirmacion, validar=validacion_esperas.validar_afirmacion),
@@ -74,7 +87,7 @@ TABLA: dict[str, Fila] = {
     'espera': Fila(esperas.espera, corta_series=False, validar=validacion_esperas.validar_espera),
     'estrategia': Fila(necesidades.estrategia, validar=validacion_necesidades.validar_estrategia),
     'excepcion': Fila(esperas.excepcion, corta_series=False, marcador=True),
-    'fallo_interno': Fila(detencion.fallo_interno),
+    'fallo_interno': Fila(detencion.fallo_interno, validar=validacion_detencion.validar_fallo_interno),
     'fase_desplegada': Fila(fase.fase_desplegada, alcance="fase", validar=validacion_fase.validar_fase_desplegada),
     'fase_reabierta': Fila(fase.fase_reabierta, alcance="fase", validar=validacion_fase.validar_fase_reabierta),
     'fase_reactivada': Fila(fase.fase_reactivada, alcance="fase", validar=validacion_fase.validar_fase_reactivada),

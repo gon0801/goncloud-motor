@@ -125,6 +125,7 @@ class Comprobacion:
     ruta: str
     plegados: tuple[Plegado, ...]
     violaciones: tuple[Violacion, ...]
+    desconocidos: Counter[str] = field(default_factory=Counter)
 
     @property
     def fallos(self) -> tuple[tuple[str, Fallo], ...]:
@@ -146,6 +147,7 @@ class Reductor:
 
     reducir: Callable[..., Any]
     estados: tuple[str, ...]
+    kinds: frozenset[str] = frozenset()
 
     def aplicar(self, estado: Any, evento: Evento) -> Any:
         resultado = self.reducir(estado, evento, nuevo=False)
@@ -160,6 +162,7 @@ class Traza:
 
     estados: list[Any] = field(default_factory=list)
     fallo: Fallo | None = None
+    desconocidos: Counter[str] = field(default_factory=Counter)
 
 
 def _no_pude(motivo: str) -> NoReturn:
@@ -174,7 +177,11 @@ def cargar_reductor(raiz: Path) -> Reductor:
     origen = Path(dominio.__file__).resolve()
     if not origen.is_relative_to(raiz.resolve()):
         _no_pude(f"el reductor se cargó de {origen}, no de {raiz}")
-    return Reductor(reducir=dominio.reducir, estados=tuple(dominio.ESTADOS))
+    kinds = frozenset()
+    if (raiz / "motor" / "encargos" / "reductor" / "__init__.py").is_file():
+        from motor.encargos.reductor import TABLA
+        kinds = frozenset(TABLA) | {"entrega"}
+    return Reductor(reducir=dominio.reducir, estados=tuple(dominio.ESTADOS), kinds=kinds)
 
 
 def _uri_solo_lectura(ruta: Path) -> str:
@@ -237,6 +244,8 @@ def trazar(reductor: Reductor, eventos: Sequence[Evento]) -> Traza:
     traza = Traza()
     estado = None
     for evento in eventos:
+        if reductor.kinds and evento["kind"] not in reductor.kinds:
+            traza.desconocidos[evento["kind"]] += 1
         try:
             estado = reductor.aplicar(estado, evento)
         except Exception as exc:
@@ -400,6 +409,7 @@ def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
     plegados: list[Plegado] = []
     violaciones: list[Violacion] = []
     observados: dict[str, tuple[bool, bool, bool]] = {}
+    desconocidos: Counter[str] = Counter()
     invariantes = tuple(
         (nombre, partial(invariante, observados=observados)
          if invariante is _datos_dependen_del_estado else invariante)
@@ -407,6 +417,7 @@ def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
     )
     for encargo, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
         traza = trazar(reductor, eventos)
+        desconocidos.update(traza.desconocidos)
         plegados.append(_plegado(encargo, eventos, traza))
         for nombre, invariante in invariantes:
             hallado = invariante(reductor, eventos, traza)
@@ -415,7 +426,7 @@ def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
                 violaciones.append(
                     Violacion(nombre, encargo, evento["id"], evento["kind"], detalle)
                 )
-    return Comprobacion(str(ruta), tuple(plegados), tuple(violaciones))
+    return Comprobacion(str(ruta), tuple(plegados), tuple(violaciones), desconocidos)
 
 
 def plegar(reductor: Reductor, ruta: Path, hasta: int) -> list[Plegado]:
@@ -545,6 +556,8 @@ def _fallos_a_json(fallos: Sequence[tuple[str, Fallo]]) -> list[dict]:
 def _texto_comprobacion(c: Comprobacion) -> list[str]:
     total, rotos = len(c.plegados), len(c.fallos)
     lineas = [c.ruta, f"  Leí {total} encargos; pliegan {total - rotos}."]
+    if c.desconocidos:
+        lineas.append(f"  Kinds desconocidos: {dict(c.desconocidos)}")
     if rotos:
         lineas.append("  No pliegan:")
         lineas.extend(_texto_fallos(c.fallos))
@@ -648,6 +661,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _imprimir({"ok": not rotos, "registros": [
                 {"ruta": c.ruta, "encargos": len(c.plegados),
                  "pliegan": len(c.plegados) - len(c.fallos),
+                 "desconocidos": dict(c.desconocidos),
                  "fallos": _fallos_a_json(c.fallos),
                  "violaciones": [dataclasses.asdict(v) for v in c.violaciones]}
                 for c in hechas]})

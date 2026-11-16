@@ -18,7 +18,7 @@ def leer_solicitud(d: dict) -> tuple[str, int, tuple[tuple[str, str], ...]] | No
             int(d.get("generacion") or 0),
             tuple((str(k), str(v)) for k, v in (d.get("parametros") or ())),
         )
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
 

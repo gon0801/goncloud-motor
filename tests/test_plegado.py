@@ -124,18 +124,24 @@ class Comprobar(unittest.TestCase):
         (reg,) = salida["registros"]
         self.assertEqual((reg["encargos"], reg["pliegan"], reg["fallos"]), (2, 2, []))
 
-    def test_un_evento_que_el_reductor_rechaza_sale_con_uno_y_se_nombra(self):
+    def test_un_reductor_sembrado_que_rechaza_un_evento_lo_nombra(self):
+        from motor.encargos.dominio import ESTADOS, TransicionIlegal, reducir
+        from tools.plegado import Reductor, comprobar
+
         _armar(self.registro, {
             "enc_a": [_ENTREGA, ("orden", {"accion": "inventada"}), *_intento("hostA")],
             "enc_b": [("entrega", {**_ENTREGA[1], "id": "enc_b"})],
         })
-        codigo, salida = _correr("comprobar", "--json", self.registro)
-        self.assertEqual(codigo, 1)
-        (reg,) = salida["registros"]
-        self.assertEqual((reg["encargos"], reg["pliegan"]), (2, 1))
-        (fallo,) = reg["fallos"]
-        self.assertEqual((fallo["encargo"], fallo["evento"], fallo["tipo"]), ("enc_a", 2, "orden"))
-        self.assertIn("TransicionIlegal", fallo["error"])
+        def sembrado(estado, evento, nuevo=False):
+            if evento["kind"] == "orden" and evento["data"].get("accion") == "inventada":
+                raise TransicionIlegal("orden desconocida: inventada")
+            return reducir(estado, evento, nuevo=nuevo)
+
+        resultado = comprobar(Reductor(sembrado, ESTADOS), self.registro)
+        self.assertEqual((len(resultado.plegados), len(resultado.fallos)), (2, 1))
+        encargo, fallo = resultado.fallos[0]
+        self.assertEqual((encargo, fallo.evento, fallo.tipo), ("enc_a", 2, "orden"))
+        self.assertIn("TransicionIlegal", fallo.error)
 
     def test_un_kind_desconocido_se_cuenta_sin_romper_el_plegado(self):
         _armar(self.registro, {"enc_a": [_ENTREGA, ("orden_inventada", {})]})
@@ -626,7 +632,7 @@ class CorpusPlegado(unittest.TestCase):
             self.assertEqual(resultado.returncode, 0, resultado.stdout + resultado.stderr)
             fuente = (RAIZ / "motor" / "encargos" / "dominio.py").read_text(encoding="utf-8")
             linea = next(i for i, texto in enumerate(fuente.splitlines(), 1)
-                         if 'raise TransicionIlegal(f"evento desconocido: {kind}")' in texto)
+                         if 'raise TransicionIlegal("no hay encargo")' in texto)
             self.assertIn(f"motor/encargos/dominio.py:{linea}:", resultado.stdout)
             ejecutada = next(i for i, texto in enumerate(fuente.splitlines(), 1)
                              if 'if kind == "entrega":' in texto)

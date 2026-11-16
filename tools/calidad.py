@@ -642,13 +642,16 @@ def kinds_escritos(fuentes: list[tuple[str, bytes]]) -> dict[str, list[str]]:
 def _plegables(raiz: Path, kinds: list[str]) -> list[str]:
     """Los `kinds` que el reductor de `raiz` pliega sobre un encargo recién recibido.
 
-    El reductor de la base no tiene una tabla de kinds que leer: se le da cada uno
-    y se mira si responde como a uno inventado."""
+    Si la ref tiene tabla, se lee directamente; las versiones previas se sondean."""
     sys.path.insert(0, str(raiz))
     from motor.encargos import dominio
 
     if not Path(dominio.__file__).resolve().is_relative_to(raiz.resolve()):
         raise SystemExit(f"kinds: el reductor se cargó de {dominio.__file__}, no de {raiz}")
+    if (raiz / "motor" / "encargos" / "reductor" / "__init__.py").is_file():
+        from motor.encargos.reductor import TABLA
+
+        return [k for k in kinds if k == "entrega" or k in TABLA]
     encargo = dominio.reducir(None, {"kind": "entrega", "data": ENTREGA_DE_SONDEO}, nuevo=False)
 
     def respuesta(kind: str) -> tuple[type, str] | None:

@@ -16,15 +16,17 @@ def recibo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 
 def ruta_agentes(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    return replace(e, agentes=tuple(d["agentes"]))
+    try:
+        agentes = tuple(d["agentes"])
+    except (KeyError, TypeError):
+        return e
+    return replace(e, agentes=agentes)
 
 
 def contexto_entrega(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal
-
     base = str(d.get("base") or "").strip()
     if not base or (e.entrega.base and e.entrega.base != base):
-        raise TransicionIlegal("el contexto no puede cambiar una base autorizada")
+        return e
     return replace(
         e, entrega=replace(e.entrega, base=base),
         causa="", motivo="", siguiente="seguir el mismo encargo", hora=hora or e.hora,
@@ -34,6 +36,8 @@ def contexto_entrega(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def proveedor_fallo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import PausaAgente, _con_pausa
 
+    if not all(campo in d for campo in ("agente", "hasta", "causa", "relevo")):
+        return e
     pausa = PausaAgente(
         d["agente"], d["hasta"], d["causa"], d["relevo"],
         str(d.get("modelo") or ""),
@@ -46,6 +50,8 @@ def proveedor_fallo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 
 def proveedor_disponible(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
+    if "agente" not in d and e.pausas:
+        return e
     modelo = str(d.get("modelo") or "")
     if not modelo:
         return replace(
@@ -79,7 +85,6 @@ def orden(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import (
-        TransicionIlegal,
         _cerrar_hallazgos,
         _con_impedimentos,
         _ids_cerrados_por_texto,
@@ -89,12 +94,14 @@ def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         _soltar_impedimento_de_inspeccion,
     )
 
+    if "texto" not in d or e.orden_parada == "cancelar":
+        return e
     if e.estado == "terminado":
         fase = e.fase_actual
         # Con el PR abierto la corrección vuelve al responsable en la misma
         # rama; integrado o desplegado ya no hay PR que corregir.
         if fase is None or not e.pr_numero or e.nivel_alcanzado in ("integrado", "desplegado"):
-            raise TransicionIlegal("el encargo ya terminó; no admite correcciones")
+            return e
         e = _reabrir_en_el_pr(
             e,
             fase,
@@ -102,8 +109,6 @@ def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
             "aplicar la corrección en la misma rama y el mismo PR",
             hora,
         )
-    if e.orden_parada == "cancelar":
-        raise TransicionIlegal("el encargo está cancelado; no admite correcciones")
     # Un ajuste trae información nueva del operador. Sólo levanta las causas
     # que el host no puede comprobar: las demás siguen hasta verificarse.
     # Con el trabajo en curso no toca el reloj del último hecho: la
@@ -144,14 +149,18 @@ def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 
 def procedimiento(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
+    if "nota" not in d:
+        return e
+    try:
+        anotados = int(d.get("ajustes_anotados", d.get("ajustes_vistos", e.ajustes_anotados)))
+    except (TypeError, ValueError, OverflowError):
+        return e
     return replace(
         e,
         procedimiento=e.procedimiento + (d["nota"],),
         # La nota de la versión anterior traía este conteo como
         # "ajustes_vistos"; sólo la escribía la nota sin intento.
-        ajustes_anotados=int(
-            d.get("ajustes_anotados", d.get("ajustes_vistos", e.ajustes_anotados))
-        ),
+        ajustes_anotados=anotados,
         hora=hora or e.hora,
     )
 

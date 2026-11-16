@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 from .catalogo_agentes import identidad_modelo
-from .reductor import ENTRE_REINTENTOS, EVENTOS_DE_MARCADOR, TABLA
+from .reductor import ENTRE_REINTENTOS, EVENTOS_DE_MARCADOR, aplicar_fila
 
 ESTADOS = (
     "recibido",
@@ -1821,10 +1821,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
     if estado is None:
         raise TransicionIlegal("no hay encargo")
     e = estado
-    fila = TABLA.get(kind)
-    if fila is None:
-        raise TransicionIlegal(f"evento desconocido: {kind}")
-    return fila.reducir(e, d, hora, nuevo)
+    return aplicar_fila(e, kind, d, hora, nuevo)
 
 
 
@@ -2662,13 +2659,13 @@ def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
 
 
 def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
-    accion = d["accion"]
+    accion = d.get("accion")
     if accion == "reabrir":
         fase = e.cierre_forzado_fase
         if e.estado != "terminado" or fase is None:
-            raise TransicionIlegal("reabrir requiere un cierre forzado vigente")
+            return e
         if d.get("fase") != fase.id or d.get("cierre") != e.cierre_forzado_huella:
-            raise TransicionIlegal("la orden no corresponde al cierre forzado vigente")
+            return e
         return replace(
             sesiones_de_fase_nueva(con_fase(e, fase)),
             estado="detenido", fase_activa=fase.id,
@@ -2683,9 +2680,9 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
         )
     if accion == "parar":
         if e.orden_parada == "cancelar":
-            raise TransicionIlegal("no se para un encargo cancelado")
+            return e
         if e.estado == "terminado":
-            raise TransicionIlegal("no se para un encargo terminado")
+            return e
         return replace(
             e,
             estado="deteniendo",
@@ -2700,7 +2697,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
         )
     if accion == "cancelar":
         if e.estado == "terminado":
-            raise TransicionIlegal("el encargo ya terminó")
+            return e
         return replace(
             e,
             estado="deteniendo",
@@ -2720,9 +2717,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
             and e.intentos_nuevos
         )
         if e.estado != "detenido" and not rearmar:
-            raise TransicionIlegal(
-                "continuar espera el estado detenido o una pausa sin proceso"
-            )
+            return e
         # Continuar rearma el trabajo y quita lo que impedía lanzarlo, pero no
         # reinicia la escalera ni la cuenta del freno: esos hechos se derivan
         # del registro y solo cambian con información nueva. La restricción
@@ -2736,7 +2731,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
             proc=None, herramienta="", conductor="", intento="",
             motivo="", causa="", reanuda_en="", orden_parada="",
         )
-    raise TransicionIlegal(f"orden desconocida: {accion}")
+    return e
 
 
 def _retomar(e: Encargo, hora: str) -> Encargo:
