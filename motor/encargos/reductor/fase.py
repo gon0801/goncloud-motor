@@ -257,10 +257,7 @@ def conciliacion_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         if (paso == "espera" and d.get("intentos")
             or paso == "espera_agotada" and str(d.get("causa") or "").strip()
             and d.get("ordenes")):
-            try:
-                int(d["intentos" if paso == "espera" else "ordenes"])
-            except OverflowError as exc:
-                raise HechoInaplicable from exc
+            leer_carga(nuevo, lambda: int(d["intentos" if paso == "espera" else "ordenes"]))
     try:
         return _conciliacion_fase(e, d, hora)
     except TransicionIlegal as exc:
