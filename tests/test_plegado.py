@@ -146,7 +146,8 @@ class Comprobar(unittest.TestCase):
     def test_un_kind_desconocido_se_cuenta_sin_romper_el_plegado(self):
         _armar(self.registro, {"enc_a": [_ENTREGA, ("orden_inventada", {})]})
         codigo, salida = _correr("comprobar", "--json", self.registro)
-        self.assertEqual(codigo, 0)
+        self.assertEqual(codigo, 2)
+        self.assertFalse(salida["ok"])
         (reg,) = salida["registros"]
         self.assertEqual((reg["pliegan"], reg["desconocidos"]), (1, {"orden_inventada": 1}))
 
