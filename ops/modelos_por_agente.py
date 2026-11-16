@@ -236,6 +236,20 @@ def comparar(
     return texto
 
 
+def _filas_de_claw(generacion: Path) -> dict[str, str]:
+    # claw-routing.json asigna fila a los agentes de claw que la herencia no nombra (main).
+    try:
+        doc = _leer_json(generacion / "config" / "hermes" / "claw-routing.json", "claw-routing.json")
+    except Ilegible:
+        return {}
+    agentes = doc.get("agents") if isinstance(doc, dict) else None
+    return {
+        nombre.lower(): datos["row"]
+        for nombre, datos in (agentes or {}).items()
+        if isinstance(datos, dict) and isinstance(datos.get("row"), str)
+    }
+
+
 def informe(home: Path, manifiesto: Path) -> list[str]:
     """Una línea `<director>: <resumen>` por director que usa el motor de esta máquina."""
     canal = home / ".motor-encargos" / "canal.json"
@@ -253,6 +267,8 @@ def informe(home: Path, manifiesto: Path) -> list[str]:
             continue
         try:
             puestos, herencia = leer_tabla(manifiesto)
+            if nombre == "claw":
+                herencia = {**herencia, **_filas_de_claw(manifiesto.parent)}
             texto = comparar(director, director.lee(home), puestos, herencia)
         except Exception as exc:
             causa = str(exc) if isinstance(exc, Ilegible) else type(exc).__name__

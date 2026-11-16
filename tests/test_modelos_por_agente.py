@@ -129,6 +129,22 @@ def test_claw_como_la_tabla_cuenta_cada_agente_y_su_modelo_por_omision(tmp_path)
     assert _informe(home) == ["claw: 3 de 3 agentes como la tabla"]
 
 
+def test_claw_toma_de_claw_routing_la_fila_del_agente_que_la_herencia_no_nombra(tmp_path):
+    home = _maquina(tmp_path, "claw")
+    _claw(home, {"main": [m for m, _ in DIRIGIR], "otro": [m for m, _ in DIRIGIR]})
+    ruteo = home / "flota" / "actual" / "config" / "hermes" / "claw-routing.json"
+    ruteo.parent.mkdir(parents=True)
+    ruteo.write_text(
+        json.dumps({"agents": {"main": {"row": "dirigir", "thinking": True}, "otro": {"row": "simples"}}}),
+        encoding="utf-8",
+    )
+
+    assert _informe(home) == [
+        "claw: 1 de 2 agentes como la tabla; difieren: otro (claude-opus-5-5 > k3.1-pro > grok-4.7"
+        " > deepseek-v4.1-flash; tabla deepseek-v4.1-flash > grok-4.7)"
+    ]
+
+
 def test_hermes_en_otro_orden_es_otra_cadena(tmp_path):
     home = _maquina(tmp_path, "hermes")
     _hermes(
