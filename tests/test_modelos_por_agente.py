@@ -1,0 +1,314 @@
+"""El aviso MODELOS del comprobador: cada agente de cada director contra la tabla de la flota."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+from contextlib import closing
+from pathlib import Path
+
+import pytest
+
+from motor.flota.manifiesto import Politica, Puesto, emitir
+from ops.modelos_por_agente import informe
+
+DIRIGIR = (
+    ("anthropic/claude-opus-5-5", "high"),
+    ("kimi/k3.1-pro", "high"),
+    ("xai/grok-4.7", "high"),
+    ("opencode-go/deepseek-v4.1-flash", "high"),
+)
+SIMPLES = (("opencode-go/deepseek-v4.1-flash", "high"), ("xai/grok-4.7", "low"))
+TABLA = Politica(
+    "v9",
+    (Puesto("dirigir", DIRIGIR), Puesto("simples", SIMPLES)),
+    (("alfa", "dirigir"), ("beta", "simples"), ("default", "simples")),
+    (),
+    (),
+    None,
+    (),
+)
+PLANTADO = "valor-plantado-que-no-sale"
+
+
+def _maquina(tmp_path: Path, *directores: str) -> Path:
+    home = tmp_path / "home"
+    (home / ".motor-encargos").mkdir(parents=True)
+    canal = {"telegram": {"token": PLANTADO}, **{d: {} for d in directores}}
+    (home / ".motor-encargos" / "canal.json").write_text(json.dumps(canal), encoding="utf-8")
+    manifiesto = home / "flota" / "actual" / "manifesto.toml"
+    manifiesto.parent.mkdir(parents=True)
+    manifiesto.write_text(emitir(TABLA), encoding="utf-8")
+    return home
+
+
+def _informe(home: Path) -> list[str]:
+    return informe(home, home / "flota" / "actual" / "manifesto.toml")
+
+
+def _claw(home: Path, agentes: dict[str, list[str]], defecto: list[str] | None = None) -> None:
+    def modelo(cadena):
+        return {"primary": cadena[0], "fallbacks": cadena[1:]}
+
+    entradas = {a: {"model": modelo(c), "name": a} for a, c in agentes.items()}
+    entradas["codex"] = {"name": "Codex (CLI)", "runtime": {"type": "acp"}}
+    doc = {"gateway": {"auth": {"token": PLANTADO}}, "agents": {"entries": entradas}}
+    if defecto:
+        doc["agents"]["defaults"] = {"model": modelo(defecto)}
+    ruta = home / ".openclaw" / "openclaw.json"
+    ruta.parent.mkdir(parents=True)
+    ruta.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _hermes(home: Path, perfiles: dict[str, list[tuple[str, str]]]) -> None:
+    """Perfiles de Hermes en JSON, que también es YAML, y un python de Hermes con un yaml mínimo."""
+    base = home / ".hermes"
+    for perfil, cadena in perfiles.items():
+        ruta = base / "config.yaml" if perfil == "default" else base / "profiles" / perfil / "config.yaml"
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        cfg = {
+            "model": {"default": cadena[0][0], "provider": "p0", "api_key": PLANTADO},
+            "fallback_providers": [
+                {"provider": "p%d" % i, "model": m, "api_key": PLANTADO}
+                for i, (m, _) in enumerate(cadena[1:], 1)
+            ],
+            "agent": {"reasoning_overrides": dict(cadena)},
+        }
+        ruta.write_text(json.dumps(cfg), encoding="utf-8")
+    stub = home.parent / "yaml-minimo"
+    stub.mkdir(exist_ok=True)
+    (stub / "yaml.py").write_text(
+        "import json\n\ndef safe_load(archivo):\n    return json.load(archivo)\n", encoding="utf-8"
+    )
+    python = base / "hermes-agent" / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        "#!/bin/sh\nPYTHONPATH='%s' exec '%s' \"$@\"\n" % (stub, sys.executable), encoding="utf-8"
+    )
+    python.chmod(0o755)
+
+
+def _openbot(home: Path, agentes: list[tuple[str, str, str]]) -> None:
+    db = home / "Library" / "Application Support" / "OpenBot" / "openbot.db"
+    db.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE projection_agents (agent_id TEXT, agent_json TEXT)")
+        for i, (nombre, modelo, esfuerzo) in enumerate(agentes):
+            agente = {
+                "name": nombre,
+                "provider": "claude",
+                "model": modelo,
+                "reasoningEffort": esfuerzo,
+                "apiKey": PLANTADO,
+            }
+            con.execute("INSERT INTO projection_agents VALUES (?, ?)", (str(i), json.dumps(agente)))
+        con.commit()
+
+
+def _mausbot(home: Path, bots: list[tuple[str, dict]]) -> None:
+    ruta = home / ".openmausbot" / "bots.json"
+    ruta.parent.mkdir(parents=True)
+    doc = [{"name": n, "modelSelection": s, "telegramToken": PLANTADO} for n, s in bots]
+    ruta.write_text(json.dumps(doc), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _sin_localappdata(monkeypatch):
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+
+def test_claw_como_la_tabla_cuenta_cada_agente_y_su_modelo_por_omision(tmp_path):
+    home = _maquina(tmp_path, "claw")
+    _claw(
+        home,
+        {"alfa": [m for m, _ in DIRIGIR], "beta": [m for m, _ in SIMPLES]},
+        defecto=[m for m, _ in SIMPLES],
+    )
+
+    assert _informe(home) == ["claw: 3 de 3 agentes como la tabla"]
+
+
+def test_hermes_en_otro_orden_es_otra_cadena(tmp_path):
+    home = _maquina(tmp_path, "hermes")
+    _hermes(
+        home,
+        {
+            "alfa": [("claude-opus-5-5", "high"), ("k3.1-pro", "high"), ("grok-4.7", "high"),
+                     ("deepseek-v4.1-flash", "high")],
+            "beta": [("grok-4.7", "low"), ("deepseek-v4.1-flash", "high")],
+        },
+    )
+
+    assert _informe(home) == [
+        "hermes: 1 de 2 agentes como la tabla; difieren: beta (grok-4.7 low > deepseek-v4.1-flash"
+        " high; tabla deepseek-v4.1-flash high > grok-4.7 low)"
+    ]
+
+
+def test_hermes_con_otro_esfuerzo_difiere_y_claw_no_mira_esfuerzos(tmp_path):
+    home = _maquina(tmp_path, "hermes", "claw")
+    _hermes(home, {"beta": [("deepseek-v4.1-flash", "medium"), ("grok-4.7", "low")]})
+    _claw(home, {"beta": [m for m, _ in SIMPLES]})
+
+    assert _informe(home) == [
+        "hermes: 0 de 1 agentes como la tabla; difieren: beta (deepseek-v4.1-flash medium >"
+        " grok-4.7 low; tabla deepseek-v4.1-flash high > grok-4.7 low)",
+        "claw: 1 de 1 agentes como la tabla",
+    ]
+
+
+@pytest.mark.parametrize(
+    "kimi", ["kimi/k3.1-pro", "kimi-code/k3.1-pro", "kimi-coding/k3.1-pro", "k3.1-pro"]
+)
+def test_el_proveedor_no_cuenta(tmp_path, kimi):
+    home = _maquina(tmp_path, "claw", "openbot")
+    _claw(
+        home,
+        {
+            "alfa": ["claude-opus-5-5", kimi, "grok-4.7", "opencode-go-2/deepseek-v4.1-flash"],
+            "beta": ["opencode-go/deepseek-v4.1-flash", "xai/grok-4.7"],
+        },
+    )
+    _openbot(home, [("alfa", "claude-opus-5-5", "high"), ("beta", "deepseek-v4.1-flash", "high")])
+
+    assert _informe(home) == [
+        "claw: 2 de 2 agentes como la tabla",
+        "openbot: 2 de 2 agentes como la tabla",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("modelo", "visto"),
+    [
+        ("deepseek/deepseek-flash", "deepseek-flash"),
+        ("alibaba-token-plan/deepseek-v4.1-flash-1017", "deepseek-v4.1-flash-1017"),
+    ],
+)
+def test_otro_modelo_con_nombre_parecido_difiere(tmp_path, modelo, visto):
+    home = _maquina(tmp_path, "claw", "openbot")
+    _claw(home, {"beta": [modelo, "xai/grok-4.7"]})
+    _openbot(home, [("beta", modelo, "high")])
+
+    assert _informe(home) == [
+        "claw: 0 de 1 agentes como la tabla; difieren: beta (%s > grok-4.7; tabla"
+        " deepseek-v4.1-flash > grok-4.7)" % visto,
+        "openbot: 0 de 1 agentes como la tabla; difieren: beta (%s high; tabla"
+        " deepseek-v4.1-flash high)" % visto,
+    ]
+
+
+def test_un_agente_sin_fila_se_nombra_aparte_y_el_nombre_va_en_minusculas(tmp_path):
+    home = _maquina(tmp_path, "openbot")
+    _openbot(home, [("Alfa", "claude-opus-5-5", "high"), ("Gamma Uno", "grok-4.7", "high")])
+
+    assert _informe(home) == [
+        "openbot: 1 de 2 agentes como la tabla; sin fila en la tabla: Gamma Uno"
+    ]
+
+
+def test_un_bot_de_un_modelo_se_compara_con_el_primero_de_la_cadena(tmp_path):
+    home = _maquina(tmp_path, "openbot", "mausbot")
+    _openbot(home, [("alfa", "claude-opus-5-5", "high"), ("beta", "deepseek-v4.1-flash", "low")])
+    _mausbot(
+        home,
+        [
+            ("alfa", {"instanceId": "claude", "model": "anthropic/claude-opus-5-5", "effort": "high"}),
+            ("beta", {"instanceId": "go", "model": "deepseek-v4.1-flash", "variant": "high"}),
+            ("Beta", {"instanceId": "claude", "model": "claude-opus-5-5"}),
+        ],
+    )
+
+    assert _informe(home) == [
+        "openbot: 1 de 2 agentes como la tabla; difieren: beta (deepseek-v4.1-flash low; tabla"
+        " deepseek-v4.1-flash high)",
+        "mausbot: 2 de 3 agentes como la tabla; difieren: Beta (claude-opus-5-5; tabla"
+        " deepseek-v4.1-flash high)",
+    ]
+
+
+def test_lo_que_no_se_puede_leer_se_dice_por_director_y_sigue(tmp_path):
+    home = _maquina(tmp_path, "hermes", "claw", "openbot", "mausbot")
+    _claw(home, {"alfa": [m for m, _ in DIRIGIR]})
+    (home / ".openmausbot").mkdir()
+    (home / ".openmausbot" / "bots.json").write_text("{no es json", encoding="utf-8")
+
+    assert _informe(home) == [
+        "hermes: no pude leer (sin el python de Hermes)",
+        "claw: 1 de 1 agentes como la tabla",
+        "openbot: no pude leer (sin openbot.db)",
+        "mausbot: no pude leer (bots.json ilegible)",
+    ]
+
+
+def test_sin_manifiesto_cada_director_lo_dice(tmp_path):
+    home = _maquina(tmp_path, "claw", "mausbot")
+    _claw(home, {"alfa": [m for m, _ in DIRIGIR]})
+    (home / "flota" / "actual" / "manifesto.toml").unlink()
+
+    assert _informe(home) == [
+        "claw: no pude leer (sin manifiesto)",
+        "mausbot: no pude leer (sin manifiesto)",
+    ]
+
+
+def test_un_config_de_hermes_roto_dice_su_tipo_y_no_su_texto(tmp_path):
+    home = _maquina(tmp_path, "hermes")
+    _hermes(home, {"alfa": list(DIRIGIR)})
+    (home / ".hermes" / "profiles" / "alfa" / "config.yaml").write_text(
+        '{"model": "%s"' % PLANTADO, encoding="utf-8"
+    )
+
+    assert _informe(home) == ["hermes: no pude leer (config.yaml ilegible: JSONDecodeError)"]
+
+
+def test_una_maquina_sin_canal_no_tiene_directores_que_revisar(tmp_path):
+    home = _maquina(tmp_path, "claw")
+    (home / ".motor-encargos" / "canal.json").unlink()
+
+    assert _informe(home) == []
+
+
+def test_ninguna_linea_lleva_llaves_ni_rutas(tmp_path):
+    home = _maquina(tmp_path, "hermes", "claw", "openbot", "mausbot")
+    _hermes(home, {"alfa": [("claude-opus-5-5", "low")]})
+    _claw(home, {"alfa": ["xai/grok-4.7"]})
+    _openbot(home, [("alfa", "grok-4.7", "high")])
+    _mausbot(home, [("alfa", {"model": "grok-4.7", "effort": "high"})])
+
+    salida = "\n".join(_informe(home))
+
+    assert salida.count("difieren: alfa") == 4
+    assert PLANTADO not in salida
+    assert str(tmp_path) not in salida
+
+
+ALFA_HERMES = [
+    ("claude-opus-5-5", "high"),
+    ("k3.1-pro", "high"),
+    ("grok-4.7", "high"),
+    ("deepseek-v4.1-flash", "high"),
+]
+
+
+@pytest.mark.parametrize(
+    "mutada",
+    [
+        [ALFA_HERMES[1], ALFA_HERMES[0], *ALFA_HERMES[2:]],
+        [("claude-opus-5-5", "xhigh"), *ALFA_HERMES[1:]],
+        [ALFA_HERMES[0], ("glm-5.3", "high"), *ALFA_HERMES[2:]],
+        ALFA_HERMES[:-1],
+        [*ALFA_HERMES, ("glm-5.3", "high")],
+    ],
+    ids=["orden", "esfuerzo", "modelo", "falta-un-respaldo", "sobra-un-respaldo"],
+)
+def test_una_mutacion_sembrada_en_una_cadena_igual_sale_como_diferencia(tmp_path, mutada):
+    igual = _maquina(tmp_path / "igual", "hermes")
+    _hermes(igual, {"alfa": ALFA_HERMES})
+    assert _informe(igual) == ["hermes: 1 de 1 agentes como la tabla"]
+
+    sembrada = _maquina(tmp_path / "sembrada", "hermes")
+    _hermes(sembrada, {"alfa": mutada})
+    [linea] = _informe(sembrada)
+
+    assert linea.startswith("hermes: 0 de 1 agentes como la tabla; difieren: alfa (")
