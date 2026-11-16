@@ -5,7 +5,7 @@ import tempfile
 from dataclasses import fields, replace
 from pathlib import Path
 
-from motor.encargos.dominio import Encargo, Fase, Proc, reducir
+from motor.encargos.dominio import Efecto, Encargo, Fase, Proc, reducir
 from tools.plegado import campos_de
 
 
@@ -16,6 +16,36 @@ def _pedido() -> Encargo:
 
 
 class SituacionGuardada(unittest.TestCase):
+    def test_constructor_tipado_no_cambia_causas_ni_efectos_en_silencio(self) -> None:
+        from motor.encargos.situacion import (
+            Conciliando, Deteniendo, Detenido, EstadoIncoherente,
+            FalloInterno, PorOrden, situacion_de,
+        )
+
+        base = dict(id="e", clave="e", huella="h", director="", texto="pedido",
+                    adjuntos=(), restricciones=(), canal="")
+        detenido = Encargo(**base, situacion=Detenido(PorOrden("parar")))
+        self.assertEqual(detenido.orden_parada, "parar")
+        self.assertEqual(situacion_de(detenido).causa, PorOrden("parar"))
+        reabierto = Encargo(**base, reaperturas=1,
+                           situacion=Detenido(PorOrden("reabrir")))
+        self.assertEqual(situacion_de(reabierto).causa, PorOrden("reabrir"))
+
+        with self.assertRaises(EstadoIncoherente):
+            Encargo(**base, situacion=Detenido(PorOrden("reabrir")))
+        with self.assertRaises(EstadoIncoherente):
+            Encargo(**base, reaperturas=1, situacion=Detenido(PorOrden("importar")))
+        fallo = FalloInterno("kind", "ukey", "ajena")
+        for situacion in (Detenido(fallo), Deteniendo(fallo, False),
+                          Conciliando("ef")):
+            with self.subTest(situacion=situacion), self.assertRaises(EstadoIncoherente):
+                Encargo(**base, situacion=situacion)
+
+        efecto = Efecto("ef", "destino", "operacion", "clave", "incierto")
+        conciliando = Encargo(**base, efectos=(efecto,),
+                             situacion=Conciliando("ef"))
+        self.assertEqual(situacion_de(conciliando).efecto, "ef")
+
     def test_migrador_ignora_contexto_y_detecta_encargo(self) -> None:
         from tools.migrar_usos_situacion import _migrar
 
