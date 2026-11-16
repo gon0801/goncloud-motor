@@ -11,7 +11,7 @@ MOVIDOS = {
     "estado", "orden_parada", "reanuda_en", "intento", "proc", "reserva",
     "intento_interrumpido", "cierre_forzado_fase", "cierre_forzado_huella",
 }
-AJENOS = {"fase", "sol", "h", "self"}
+AJENOS = {"fase", "sol", "h", "self", "contexto"}
 
 
 def _es_encargo(nodo: ast.expr) -> bool:
