@@ -77,6 +77,15 @@ def revision(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
             tuple(d.get("cubre") or ()),
             int(d.get("lector_version") or 0),
         ))
+        if (d.get("aprobadas") is not None
+            and str(d.get("veredicto") or "no_concluyente") != "no_concluyente"
+            and not (d.get("alcance") == "correccion" and e.fase_actual is not None
+                     and e.fase_actual.revisado is None)):
+            leer_carga(nuevo, lambda: tuple(
+                (str(x[0]), str(x[1]))
+                for x in (d.get("aprobadas") or ())
+                if isinstance(x, (list, tuple)) and len(x) >= 2
+            ))
     try:
         return _revision(e, d, hora)
     except TransicionIlegal as exc:

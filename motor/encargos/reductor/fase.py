@@ -109,9 +109,14 @@ def producto_listo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 def ci_pr(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _ci_pr
+    from .validacion_fase import leer_fase
 
-    if not nuevo:
-        leer_carga(nuevo, lambda: tuple(str(x) for x in (d.get("fallas") or ())))
+    if not nuevo and str(d.get("estado") or "") in (
+        "verde", "rojo", "error", "reintentando", "sin_resultado",
+    ):
+        lectura = leer_fase(e, d)
+        if lectura is not None and lectura.fase_actual is not None:
+            leer_carga(nuevo, lambda: tuple(str(x) for x in (d.get("fallas") or ())))
     return _ci_pr(e, d, hora)
 
 def entrega_externa(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
@@ -241,12 +246,21 @@ def fase_reactivada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def conciliacion_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import TransicionIlegal, _conciliacion_fase
 
-    if not nuevo:
+    if not nuevo and any(f.id == str(d.get("fase") or "") for f in e.fases):
         paso = str(d.get("paso") or "")
         campo = {"en_curso": "intentos", "reintento": "ordenes",
                  "integrado": "numero"}.get(paso)
+        if paso == "integrado" and not (d.get("recibo") or d.get("sha")):
+            campo = None
         if campo and d.get(campo):
             leer_carga(nuevo, lambda: int(d[campo]))
+        if (paso == "espera" and d.get("intentos")
+            or paso == "espera_agotada" and str(d.get("causa") or "").strip()
+            and d.get("ordenes")):
+            try:
+                int(d["intentos" if paso == "espera" else "ordenes"])
+            except OverflowError as exc:
+                raise HechoInaplicable from exc
     try:
         return _conciliacion_fase(e, d, hora)
     except TransicionIlegal as exc:
