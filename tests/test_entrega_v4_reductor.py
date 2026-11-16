@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from motor.encargos.dominio import Encargo, TransicionIlegal, reducir
@@ -18,13 +18,93 @@ def _hecho(kind: str, **data: object) -> dict:
 
 
 def _pedido() -> Encargo:
+    return _pedido_con_fases([{"id": "F", "resultado": "r"}])
+
+
+def _pedido_con_fases(fases: list[dict]) -> Encargo:
     e = reducir(None, _hecho("entrega", id="x", clave="k", huella="h",
                              texto="pedido", hora="t0"), nuevo=True)
-    return reducir(e, _hecho("fases", fases=[{"id": "F", "resultado": "r"}]),
-                  nuevo=True)
+    return reducir(e, _hecho("fases", fases=fases), nuevo=True)
+
+
+def _fases_independientes(dependiente: bool = False) -> Encargo:
+    fases = [
+        {"id": "P", "resultado": "p"},
+        {"id": "A", "resultado": "a", "requiere": ["P"]},
+        {"id": "B", "resultado": "b", "requiere": ["A" if dependiente else "P"]},
+    ]
+    if dependiente:
+        fases.append({"id": "C", "resultado": "c", "requiere": ["P"]})
+    enc = _pedido_con_fases(fases)
+    return replace(
+        enc, fases=(replace(enc.fases[0], estado="preparada", evidencia="ok"),
+                    *enc.fases[1:]), fase_activa="A",
+    )
 
 
 class ReductorEntregaV4(unittest.TestCase):
+    def test_cancelacion_de_todas_las_fases_no_admite_ordenes_nuevas(self) -> None:
+        e = reducir(_pedido(), _hecho("fase_cancelada", fase="F",
+                    causa="pr_cerrado", numero=9, origen="", hora="t1"), nuevo=True)
+        self.assertEqual(e.estado, "cancelado")
+        for accion in ("parar", "continuar", "cancelar"):
+            with self.subTest(accion=accion):
+                with self.assertRaises(TransicionIlegal):
+                    reducir(e, _hecho("orden", accion=accion, hora="t2"), nuevo=True)
+                self.assertEqual(
+                    reducir(e, _hecho("orden", accion=accion, hora="t2"), nuevo=False),
+                    e,
+                )
+
+    def test_reactivar_fase_cancelada_no_cancela_todo_al_cerrar_la_otra(self) -> None:
+        e = _fases_independientes()
+        e = reducir(e, _hecho("fase_cancelada", fase="A",
+                   causa="pr_cerrado", numero=9, origen="", hora="t1"), nuevo=True)
+        e = reducir(e, _hecho("fase_reactivada", fase="A", hora="t2"), nuevo=True)
+        self.assertNotIn("A", e.canceladas)
+        e = reducir(e, _hecho("fase_cancelada", fase="B",
+                   causa="pr_cerrado", numero=10, origen="", hora="t3"), nuevo=True)
+        self.assertNotEqual(e.estado, "cancelado")
+
+    def test_reabrir_cierre_forzado_quita_cancelacion_de_su_fase(self) -> None:
+        from tests.soporte_situacion import evolucionar
+
+        e = _pedido_con_fases([
+            {"id": "A", "resultado": "a"}, {"id": "B", "resultado": "b"},
+        ])
+        e = reducir(e, _hecho("fase_cancelada", fase="A",
+                   causa="pr_cerrado", numero=9, origen="", hora="t1"), nuevo=True)
+        e = evolucionar(e, estado="terminado", cierre_forzado_fase=e.fases[0],
+                       cierre_forzado_huella="h")
+        e = reducir(e, _hecho("orden", accion="reabrir", fase="A", cierre="h",
+                              hora="t2"), nuevo=True)
+        self.assertNotIn("A", e.canceladas)
+
+    def test_continuar_recuerda_base_sin_pr_observado_previo(self) -> None:
+        from motor.encargos.entrega.tipos import PrSin
+
+        e = reducir(_pedido(), _hecho("pr_otra_base", fase="F", numero=9,
+                                      base="otra", hora="t1"), nuevo=True)
+        e = reducir(e, _hecho("orden", accion="continuar", hora="t2"), nuevo=True)
+        self.assertEqual(e.prs[0].fase, "F")
+        self.assertIsInstance(e.prs[0].pr, PrSin)
+        self.assertEqual(e.prs[0].aceptada_en, "otra")
+
+    def test_cancelacion_en_cascada_y_ultima_fase(self) -> None:  # no-roja-en-base: caracteriza la cascada previa; las pruebas de reabrir y continuar prueban los arreglos
+        e = _fases_independientes(dependiente=True)
+        e = reducir(e, _hecho("fase_cancelada", fase="A",
+                   causa="pr_cerrado", numero=9, origen="", hora="t1"), nuevo=True)
+        self.assertEqual(e.fase_activa, "C")
+        e = reducir(e, _hecho("fase_cancelada", fase="B", causa="depende",
+                              numero=None, origen="A", hora="t2"), nuevo=True)
+        self.assertEqual(e.estado, "recibido")
+        e = reducir(e, _hecho("fase_cancelada", fase="C",
+                   causa="pr_cerrado", numero=10, origen="", hora="t3"), nuevo=True)
+        e = reducir(e, _hecho("fase_cancelada", fase="P",
+                   causa="pr_cerrado", numero=11, origen="", hora="t4"), nuevo=True)
+        self.assertEqual((e.estado, set(e.canceladas)),
+                         ("cancelado", {"P", "A", "B", "C"}))
+
     def test_cinco_filas_con_propiedades_y_sin_escritores(self) -> None:
         from motor.encargos.detencion import DETENCIONES
 
