@@ -175,12 +175,8 @@ class ReduccionTotal(unittest.TestCase):
             ("revision", {"fase": "F", "veredicto": "aprobado", "aprobadas": 1}),
             ("conciliacion_fase", {"fase": "F", "paso": "espera",
                                    "intentos": float("inf")}),
-            ("conciliacion_fase", {"fase": "F", "paso": "espera",
-                                   "intentos": "sin número"}),
             ("conciliacion_fase", {"fase": "F", "paso": "espera_agotada",
                                    "ordenes": float("inf"), "causa": "sin respuesta"}),
-            ("conciliacion_fase", {"fase": "F", "paso": "espera_agotada",
-                                   "ordenes": [1], "causa": "sin respuesta"}),
         )
         for kind, data in casos:
             with self.subTest(kind=kind, data=data):
@@ -189,6 +185,23 @@ class ReduccionTotal(unittest.TestCase):
                 siguiente = reducir(resultado, {"kind": "procedimiento",
                                                   "data": {"nota": "después"}}, nuevo=False)
                 self.assertEqual(siguiente.procedimiento[-1], "después")
+
+    def test_conciliacion_con_respaldo_aplica_cargas_viejas_ilegibles(self) -> None:  # no-roja-en-base: fija el respaldo de dominio que el guardia historico debe conservar
+        previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F")
+        espera = reducir(previo, {"kind": "conciliacion_fase", "data": {
+            "fase": "F", "paso": "espera", "intentos": "sin número",
+            "causa": "aún pendiente", "reanuda_en": "t1",
+        }}, nuevo=False)
+        self.assertEqual(espera.fase_actual.despliegue_espera_en, "t1")
+        self.assertEqual(espera.fase_actual.despliegue_espera_intentos, 1)
+        agotada = reducir(espera, {"kind": "conciliacion_fase", "data": {
+            "fase": "F", "paso": "espera_agotada", "ordenes": [1],
+            "causa": "sin respuesta",
+        }}, nuevo=False)
+        self.assertTrue(agotada.fase_actual.despliegue_espera_agotada)
+        self.assertEqual(agotada.fase_actual.despliegue_impedido, "sin respuesta")
+        self.assertEqual(agotada.fase_actual.despliegue_orden_consumida,
+                         espera.fase_actual.despliegue_orden_consumida)
 
     def test_noops_no_leen_campos_que_no_consumen(self) -> None:  # no-roja-en-base: preserva los derivados de no-ops que la rama anterior ya conservaba
         previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F",
