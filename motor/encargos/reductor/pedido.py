@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..catalogo_agentes import identidad_modelo
+from .errores import HechoInaplicable
 
 if TYPE_CHECKING:
     from ..dominio import Encargo
@@ -24,6 +25,8 @@ def contexto_entrega(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
     base = str(d.get("base") or "").strip()
     if not base or (e.entrega.base and e.entrega.base != base):
+        if not nuevo:
+            raise HechoInaplicable
         raise TransicionIlegal("el contexto no puede cambiar una base autorizada")
     return replace(
         e, entrega=replace(e.entrega, base=base),
@@ -72,9 +75,14 @@ def falla_sesion_local(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 
 def orden(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import _orden
+    from ..dominio import TransicionIlegal, _orden
 
-    return _orden(e, d, hora)
+    try:
+        return _orden(e, d, hora)
+    except TransicionIlegal as exc:
+        if nuevo:
+            raise
+        raise HechoInaplicable from exc
 
 
 def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
@@ -94,6 +102,8 @@ def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         # Con el PR abierto la corrección vuelve al responsable en la misma
         # rama; integrado o desplegado ya no hay PR que corregir.
         if fase is None or not e.pr_numero or e.nivel_alcanzado in ("integrado", "desplegado"):
+            if not nuevo:
+                raise HechoInaplicable
             raise TransicionIlegal("el encargo ya terminó; no admite correcciones")
         e = _reabrir_en_el_pr(
             e,
@@ -103,6 +113,8 @@ def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
             hora,
         )
     if e.orden_parada == "cancelar":
+        if not nuevo:
+            raise HechoInaplicable
         raise TransicionIlegal("el encargo está cancelado; no admite correcciones")
     # Un ajuste trae información nueva del operador. Sólo levanta las causas
     # que el host no puede comprobar: las demás siguen hasta verificarse.
