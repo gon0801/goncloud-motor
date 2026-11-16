@@ -210,6 +210,8 @@ class Encargo:
     limpieza: tuple[tuple[str, str, str, int, str], ...] = ()
     limpio: str = ""
     hora_final: str = ""
+    entrega_devuelta: tuple[str | None, int | None] | None = None
+    primer_envio_por_sha: tuple[tuple[str, str], ...] = ()
     despliegue_mapa: tuple[tuple[str, str], ...] = ()
     despliegue_archivo: str = ""
     solicitudes: tuple[Solicitud, ...] = ()

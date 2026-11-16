@@ -264,6 +264,32 @@ class Comprobar(unittest.TestCase):
                     if v["invariante"] == "cancelacion_definitiva"]
         self.assertEqual(violadas, [("cancelacion_definitiva", "revive", 4)])
 
+    def test_un_completo_con_fase_pendiente_y_un_limpio_no_final_se_detectan(self):
+        from types import SimpleNamespace
+
+        from motor.encargos.situacion import Completo, Terminado
+        from tools.plegado import INVARIANTES_COMPROBAR, Reductor, Traza
+
+        nombres = dict(INVARIANTES_COMPROBAR)
+        evento = {"id": 1, "kind": "entrega", "data": {}}
+        completo = SimpleNamespace(
+            estado="terminado",
+            situacion=Terminado(Completo(), None),
+            fases=(SimpleNamespace(estado="pendiente"),),
+        )
+        sucio = SimpleNamespace(limpio="t", estado="recibido")
+        reductor = Reductor(lambda e, ev: e, ("recibido", "terminado"))
+        self.assertIsNotNone(nombres["completo_implica_preparadas"](
+            reductor, [evento], Traza(estados=[completo]),
+        ))
+        self.assertIsNotNone(nombres["limpio_solo_en_final"](
+            reductor, [evento], Traza(estados=[sucio]),
+        ))
+        sano = SimpleNamespace(limpio="t", estado="cancelado")
+        self.assertIsNone(nombres["limpio_solo_en_final"](
+            reductor, [evento], Traza(estados=[sano]),
+        ))
+
     def test_una_fila_con_json_invalido_sale_con_dos_y_nombra_el_evento(self):
         _armar(self.registro, {"enc_a": [_ENTREGA, ("orden", "{no es json")]})
         for opciones in ((), ("--json",)):
@@ -302,6 +328,8 @@ class Comprobar(unittest.TestCase):
             "    mismo_estado_al_replegar: sin violaciones.",
             "    mismo_estado_con_otro_host: sin violaciones.",
             "    situacion_tipada: sin violaciones.",
+            "    completo_implica_preparadas: sin violaciones.",
+            "    limpio_solo_en_final: sin violaciones.",
             "    datos_dependen_del_estado: sin violaciones.",
         ])
 
