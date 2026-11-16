@@ -82,7 +82,7 @@ def falla_sesion_local(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def orden(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import TransicionIlegal, _orden
 
-    if e.estado == "cancelado":
+    if e.estado == "cancelado" and d.get("accion") != "reabrir":
         if nuevo:
             raise TransicionIlegal("el encargo está cancelado")
         raise HechoInaplicable("el encargo está cancelado")
