@@ -9,12 +9,15 @@ import random
 import tempfile
 import unittest
 from dataclasses import asdict, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
 from motor.encargos.dominio import reducir
 from motor.encargos.registro import Evento, Registro
 from motor.encargos.reductor import TABLA
+from motor.github import FakeGitHub
+from tests.test_flujo_revisiones import _entrega_pr
 
 
 def _pedido(ident: str) -> Evento:
@@ -101,6 +104,36 @@ class LecturasPlegadas(unittest.TestCase):
                 ))
             finally:
                 reg.close()
+
+    def test_espera_deepseek_usa_la_primera_hora_plegada_del_sha(self) -> None:
+        from motor.encargos import ciclo
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, recorrido = _entrega_pr(
+                self, tmp, "lectura-deepseek-plegada", FakeGitHub, nivel="pr",
+            )
+            enc = vuelta("uno")
+            sha = enc.pr_sha
+            primera = dict(enc.primer_envio_por_sha)[sha]
+            origen = datetime.fromisoformat(primera.replace("Z", "+00:00"))
+            reciente = (origen + timedelta(minutes=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            recorrido.reg.anotar(
+                recorrido.enc, {"kind": "entrega_externa", "data": {
+                    "fase": enc.fase_activa, "intento": enc.intento,
+                    "paso": "pr_listo", "repo": enc.entrega.repo,
+                    "numero": enc.pr_numero, "sha": sha, "hora": reciente,
+                }}, "pr-listo-repetido",
+            )
+            self.assertEqual(dict(recorrido.fold().primer_envio_por_sha)[sha], primera)
+            tarde = (origen + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            with mock.patch.object(ciclo, "_leer_deepseek",
+                                   wraps=ciclo._leer_deepseek) as leer:
+                final = ciclo._paso_entrega(
+                    recorrido.reg, recorrido.fold(), vuelta.gh, tarde,
+                )
+            self.assertEqual(leer.call_args.args[4], primera)
+            self.assertEqual(final.estado, "terminado")
+            self.assertTrue(any("sin revisión de DeepSeek" in n for n in final.notas_pr))
 
     def test_dos_mil_secuencias_guardadas_son_totales_y_repetibles(self) -> None:  # no-roja-en-base: esta propiedad caracteriza el plegado anterior; la mutación vecina demuestra que detecta la omisión
         azar = random.Random(4510)
