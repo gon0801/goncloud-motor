@@ -333,6 +333,40 @@ class ActualizacionesFlota(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no declara herramientas"):
             catalogo_deseado(solo_caido, semilla, [], arranque=False)
 
+    def test_preparar_desde_la_semilla_con_un_canal_caido_se_niega(self):
+        conf = self.base / "conf-semilla"
+        (conf / "flota").mkdir(parents=True)
+        for args in (
+            ("init", "-q"),
+            ("config", "user.email", "ensayo@localhost"),
+            ("config", "user.name", "Ensayo"),
+        ):
+            subprocess.run(["git", "-C", str(conf), *args], check=True, capture_output=True)
+        (conf / "flota" / "manifesto.toml").write_text(
+            'generacion="ensayo"\n[[puesto]]\nfuncion="director"\n'
+            'modelo=["p/m"]\nesfuerzo=["low"]\n',
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(conf), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(conf), "commit", "-qm", "semilla"], check=True)
+        home = self.base / "home-semilla"
+        home.mkdir()
+        grok = {
+            "nombre": "grok",
+            "tipo": "npm",
+            "paquete": "@xai-official/grok",
+            "version": "v2",
+            "fuente": "https://registry.npmjs.org/%40xai-official%2Fgrok/latest",
+            "tarball": "https://registry.npmjs.org/@xai-official/grok/-/grok-v2.tgz",
+            "integridad": "sha512-" + "A" * 86 + "==",
+        }
+        catalogo = {"componentes": [grok], "no_disponibles": [{"nombre": "codex"}]}
+        with patch("motor.flota.actualizaciones._preparar_componente") as componente:
+            with self.assertRaisesRegex(ValueError, "sin resolver: codex"):
+                preparar(home, catalogo, motor_origen=conf, repos={"conf": conf})
+        componente.assert_not_called()
+        self.assertFalse((home / "manifiesto.toml").exists())
+
     def test_la_generacion_lleva_carpetas_de_hermes_y_openclaw_solo_si_los_instala(self):
         gen = self.base / "generacion"
         entorno = _entorno_generacion(gen)
