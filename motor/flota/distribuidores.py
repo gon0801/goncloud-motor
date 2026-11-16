@@ -15,6 +15,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from .manifiesto import Politica
+
 NPM = {
     "openclaw": "openclaw",
     "codex": "@openai/codex",
@@ -26,6 +28,16 @@ NPM = {
 }
 HERMES = "https://github.com/NousResearch/hermes-agent.git"
 REGISTRY = "https://registry.npmjs.org/"
+# Las carpetas que Hermes y OpenClaw usan dentro de la generación, por variable
+# de entorno. Solo existen en una generación que instala esa herramienta.
+CARPETAS_PROPIAS = {
+    "hermes": {
+        "HERMES_HOME": "perfiles/hermes",
+        "HERMES_PROFILES_DIR": "perfiles/hermes/profiles",
+        "HERMES_RUNTIME_DIR": "herramientas/hermes/tools",
+    },
+    "openclaw": {"OPENCLAW_STATE_DIR": "perfiles/claw"},
+}
 
 
 def _run(
@@ -192,6 +204,52 @@ def _validar_componente(doc: dict) -> None:
     version = doc.get("version")
     if not isinstance(version, str) or not version or any(c.isspace() for c in version):
         raise ValueError("version invalida")
+
+
+def catalogo_deseado(
+    catalogo: dict, politica: Politica, anteriores: list[dict], *, arranque: bool
+) -> dict:
+    """Lo que la candidata instala: el catálogo sobre los componentes de la
+    vigente, solo con las herramientas que declara el manifiesto.
+
+    Quitar una herramienta del manifiesto la deja fuera aunque el canal la siga
+    ofreciendo o la vigente la tenga. Solo la semilla del primer arranque
+    (`arranque`) puede venir sin herramientas: entonces no recorta nada.
+    """
+    fusion = {c["nombre"]: c for c in anteriores}
+    fusion.update({c["nombre"]: c for c in catalogo.get("componentes") or []})
+    deseadas = {h.nombre for h in politica.herramientas}
+    ausentes = catalogo.get("no_disponibles") or []
+    if not deseadas and not arranque:
+        raise ValueError("el manifiesto no declara herramientas")
+    if not deseadas and ausentes:
+        # El primer arranque guarda como manifiesto lo que encontró: con un canal caído,
+        # esa herramienta quedaría fuera para siempre aunque el canal vuelva.
+        faltan = ", ".join(sorted(str(a.get("nombre")) for a in ausentes))
+        raise ValueError("el primer arranque necesita todos los canales; sin resolver: " + faltan)
+
+    def pedida(nombre: object) -> bool:
+        return not deseadas or nombre in deseadas
+
+    componentes = [fusion[n] for n in sorted(fusion) if pedida(n)]
+    for doc in componentes:
+        _validar_componente(doc)
+    return {
+        **catalogo,
+        "componentes": componentes,
+        "no_disponibles": [a for a in ausentes if pedida(a.get("nombre"))],
+    }
+
+
+def perfiles_ajenos(lanzadores: dict) -> set[str]:
+    """Las carpetas de perfiles/ de las herramientas que la generación no lanza."""
+    return {
+        Path(relativo).parts[1]
+        for herramienta, carpetas in CARPETAS_PROPIAS.items()
+        if herramienta not in lanzadores
+        for relativo in carpetas.values()
+        if Path(relativo).parts[0] == "perfiles"
+    }
 
 
 def _descargar(doc: dict, cache: Path) -> Path:
@@ -485,13 +543,15 @@ def _entorno_generacion(gen: Path) -> dict:
         "UV_INSTALL_DIR": datos / "uv-bin",
         "UV_TOOL_DIR": datos / "uv-tools",
         "UV_PYTHON_INSTALL_DIR": datos / "uv-python",
-        "HERMES_HOME": gen / "perfiles/hermes",
-        "HERMES_PROFILES_DIR": gen / "perfiles/hermes/profiles",
-        "HERMES_RUNTIME_DIR": gen / "herramientas/hermes/tools",
-        "OPENCLAW_STATE_DIR": gen / "perfiles/claw",
     }
     for ruta in rutas.values():
         ruta.mkdir(parents=True, exist_ok=True)
+    for herramienta, carpetas in CARPETAS_PROPIAS.items():
+        instalada = (gen / "herramientas" / herramienta).is_dir()
+        for nombre, relativo in carpetas.items():
+            rutas[nombre] = gen / relativo
+            if instalada:
+                rutas[nombre].mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
         **{nombre: str(ruta) for nombre, ruta in rutas.items()},
