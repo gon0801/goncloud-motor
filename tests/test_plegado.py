@@ -124,6 +124,62 @@ class Comprobar(unittest.TestCase):
         (reg,) = salida["registros"]
         self.assertEqual((reg["encargos"], reg["pliegan"], reg["fallos"]), (2, 2, []))
 
+    def test_una_omision_historica_cuenta_como_fallo_sin_truncar_la_historia(self):  # no-roja-en-base: caracteriza el diagnóstico; el mutante del cálculo comprueba la compuerta
+        _armar(self.registro, {"enc_a": [
+            _ENTREGA, ("ajuste", {}), ("procedimiento", {"nota": "siguiente"}),
+        ]})
+        codigo, salida = _correr("comprobar", "--json", self.registro)
+        self.assertEqual(codigo, 1)
+        (reg,) = salida["registros"]
+        self.assertEqual(reg["pliegan"], 0)
+        self.assertEqual(
+            [(f["tipo"], f["excepcion"]) for f in reg["fallos"]],
+            [("ajuste", "KeyError")],
+        )
+
+    def test_un_mutante_del_calculo_de_ajuste_falla_la_compuerta(self):
+        from dataclasses import replace
+        from motor.encargos.dominio import reducir
+        from motor.encargos.reductor import TABLA
+        from tools.plegado import Reductor, comprobar
+
+        _armar(self.registro, {"enc_a": [
+            _ENTREGA, ("ajuste", {"texto": "válido"}),
+        ]})
+        fila = TABLA["ajuste"]
+
+        def mutante(e, d, hora, nuevo):
+            d["textos"]
+            return fila.aplicar(e, d, hora, nuevo)
+
+        with mock.patch.dict(TABLA, {"ajuste": replace(fila, aplicar=mutante)}):
+            resultado = comprobar(
+                Reductor(reducir, ("recibido", "ejecutando", "terminado"), frozenset(TABLA)),
+                self.registro,
+            )
+        self.assertEqual(
+            [(encargo, fallo.tipo, fallo.excepcion) for encargo, fallo in resultado.fallos],
+            [("enc_a", "ajuste", "KeyError")],
+        )
+
+    def test_una_fase_ilegica_no_oculta_el_procedimiento_que_le_sigue(self):
+        from tools.plegado import cargar_reductor, comprobar, plegar, ultimo_evento
+
+        _armar(self.registro, {"enc_a": [
+            _ENTREGA,
+            ("fases", {"fases": [{"id": "F", "resultado": "r",
+                                  "requiere_despliegue": "quizá"}]}),
+            ("procedimiento", {"nota": "siguiente"}),
+        ]})
+        reductor = cargar_reductor(RAIZ)
+        (final,) = plegar(reductor, self.registro, ultimo_evento(self.registro))
+        self.assertEqual(final.final["procedimiento"], ["siguiente"])
+        comprobacion = comprobar(reductor, self.registro)
+        self.assertEqual(
+            [(f.tipo, f.excepcion) for _, f in comprobacion.fallos],
+            [("fases", "TransicionIlegal")],
+        )
+
     def test_un_reductor_sembrado_que_rechaza_un_evento_lo_nombra(self):  # no-roja-en-base: prueba el reporte sin depender del guardia de orden
         from motor.encargos.dominio import ESTADOS, TransicionIlegal, reducir
         from tools.plegado import Reductor, comprobar

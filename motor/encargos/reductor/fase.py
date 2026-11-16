@@ -5,16 +5,31 @@ from ..encargo import evolucionar
 
 from typing import TYPE_CHECKING, cast
 
-from .errores import HechoInaplicable
+from .errores import HechoInaplicable, leer_carga
 
 if TYPE_CHECKING:
     from ..dominio import Encargo
 
 
 def fases(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import _adoptar_fases
+    from ..dominio import TransicionIlegal, _adoptar_fases
 
-    return _adoptar_fases(e, d, hora, nuevo)
+    try:
+        return _adoptar_fases(e, d, hora, nuevo)
+    except TransicionIlegal as exc:
+        mensaje = str(exc)
+        carga_ilegible = (
+            mensaje.startswith("requiere_despliegue debe")
+            or mensaje.startswith("lane ")
+            or mensaje.startswith("despliegue ")
+            or mensaje.startswith("despliegue.")
+            or mensaje.startswith("una fase sin despliegue")
+            or mensaje in ("requiere debe ser una lista", "dependencia de fase vacía")
+            or "requiere una fase inexistente:" in mensaje
+        )
+        if nuevo or not carga_ilegible:
+            raise
+        raise HechoInaplicable from exc
 
 def nivel_efectivo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import replace
@@ -96,12 +111,25 @@ def producto_listo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def ci_pr(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _ci_pr
 
+    if not nuevo:
+        leer_carga(nuevo, lambda: tuple(str(x) for x in (d.get("fallas") or ())))
     return _ci_pr(e, d, hora)
 
 def entrega_externa(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import _entrega_externa
+    from ..dominio import TransicionIlegal, _entrega_externa
+    from .validacion_fase import leer_fase
 
-    return _entrega_externa(e, d, hora)
+    if not nuevo:
+        if leer_fase(e, d) is None:
+            raise HechoInaplicable
+        if d.get("numero"):
+            leer_carga(nuevo, lambda: int(d["numero"]))
+    try:
+        return _entrega_externa(e, d, hora)
+    except TransicionIlegal as exc:
+        if nuevo or str(exc) != "no hay fase para la entrega":
+            raise
+        raise HechoInaplicable from exc
 
 def entrega_bloqueada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _con_progreso, con_fase, replace
@@ -214,6 +242,12 @@ def fase_reactivada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def conciliacion_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import TransicionIlegal, _conciliacion_fase
 
+    if not nuevo:
+        paso = str(d.get("paso") or "")
+        campo = {"en_curso": "intentos", "reintento": "ordenes",
+                 "integrado": "numero"}.get(paso)
+        if campo and d.get(campo):
+            leer_carga(nuevo, lambda: int(d[campo]))
     try:
         return _conciliacion_fase(e, d, hora)
     except TransicionIlegal as exc:

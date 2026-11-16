@@ -74,8 +74,6 @@ def asignar(texto: str) -> str:
                 if validador is None:
                     raise ValueError(f"validador ilegible: {kind}")
                 opciones.append(f"validar={validador}")
-            elif keyword.arg == "carga_parcial":
-                opciones.append("carga_parcial=True")
         argumentos = ", " + ", ".join(opciones) if opciones else ""
         lineas[valor.lineno - 1] = f"{prefijo}: Fila({manejador}{argumentos}),\n"
     return "".join(lineas)
