@@ -218,7 +218,7 @@ class LimpiezaPorHechos(unittest.TestCase):
         puntero = ruta.parent.parent / "x.actual"
         puntero.write_text(ruta.parent.name, encoding="utf-8")
         if presente:
-            ruta.write_text('{"encargo":"x"}', encoding="utf-8")
+            ruta.write_text('{"encargo":"x","estado":"aplicado"}', encoding="utf-8")
         for paso, recibo in (("integrado", "m"), ("desplegado", str(ruta))):
             self.reg.anotar("x", {"kind": "entrega_externa", "data": {
                 "fase": "F", "paso": paso, "numero": 1,
@@ -375,6 +375,19 @@ class LimpiezaPorHechos(unittest.TestCase):
             enc = self._limpiar()
         self.assertTrue(ruta.is_file())
         self.assertTrue(enc.limpio)
+
+    def test_un_paso_ausente_no_prueba_que_murio_el_trabajador(self) -> None:
+        ruta = self._recibo(presente=True, receta=True, terminado=True)
+        ruta.write_text('{"encargo":"x","estado":"ejecutando"}', encoding="utf-8")
+        (ruta.parent / "proceso.json").unlink()
+        (ruta.parent / "comando.json").write_text(json.dumps({
+            "estado": "enviado", "pid": 7311, "inicio": "t0",
+            "boot_id": plataforma.boot_id(),
+        }), encoding="utf-8")
+        with mock.patch.object(plataforma, "presencia_grupo", return_value="ausente"):
+            enc = self._limpiar()
+        self.assertTrue((ruta.parent / "trabajador.log").exists())
+        self.assertFalse(enc.limpio)
 
     def test_sin_metadatos_verificables_agota_sin_acreditar_limpio(self) -> None:
         ruta = self._recibo(presente=True, receta=True, terminado=True)
