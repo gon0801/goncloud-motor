@@ -56,12 +56,14 @@ def validar_politica_despliegue(e: Encargo, d: dict) -> None:
     )
 
     pedida = str(d.get("fase") or "")
+    preparado = e
     if pedida and pedida != e.fase_activa:
         fase = next((f for f in e.fases if f.id == pedida), None)
         if fase is None:
             raise TransicionIlegal("la política nombra una fase inexistente")
     else:
-        fase = _fase_de_evento(e, d).fase_actual
+        preparado = _fase_de_evento(e, d)
+        fase = preparado.fase_actual
     if fase is None or fase.estado == "preparada":
         raise TransicionIlegal("no se cambia la política de una fase cerrada")
     if not str(d.get("fuente") or "") or not str(d.get("huella") or ""):
@@ -69,7 +71,7 @@ def validar_politica_despliegue(e: Encargo, d: dict) -> None:
     datos = datos_despliegue(d)
     if "requiere_despliegue" not in datos:
         raise TransicionIlegal("política sin declaración de despliegue")
-    _correspondencia_despliegue(e, d)
+    _correspondencia_despliegue(preparado, d)
 
 
 def validar_producto_listo(e: Encargo, d: dict) -> None:
