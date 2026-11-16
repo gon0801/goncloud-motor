@@ -186,7 +186,7 @@ class ReduccionTotal(unittest.TestCase):
                                                   "data": {"nota": "después"}}, nuevo=False)
                 self.assertEqual(siguiente.procedimiento[-1], "después")
 
-    def test_noops_no_leen_campos_que_no_consumen(self) -> None:
+    def test_noops_no_leen_campos_que_no_consumen(self) -> None:  # no-roja-en-base: preserva los derivados de no-ops que la rama anterior ya conservaba
         previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F",
                          fallos_repo=("git", 2), ultima_firma="anterior")
         casos = (
