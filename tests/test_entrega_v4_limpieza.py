@@ -656,6 +656,7 @@ class LimpiezaPorHechos(unittest.TestCase):
             capture_output=True, text=True,
         )
         self.assertEqual(resultado.returncode, 2)
+        self.assertIn("no se pudo leer el registro", resultado.stderr)
         self.assertNotIn(str(base), resultado.stdout + resultado.stderr)
 
     def test_tres_fallos_agotan_y_no_reinician_al_reabrir_registro(self) -> None:
