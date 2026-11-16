@@ -159,6 +159,48 @@ contiene "la mac avisa desde su home movido" "$S/salida" \
 rm -r "$S/home-mac/.motor-encargos/flota-home.json" "$S/home-mac/flota-movida"
 flota mac v9
 
+# Cada director que usa el motor de la máquina se compara con la tabla activa. Es un aviso: un
+# agente con otra cadena o un archivo que falta no hacen fallar el despliegue.
+for host in mac mini gwpc; do
+  printf '%s\n' 'generacion = "v9"' '' '[[puesto]]' 'funcion = "dirigir"' \
+    'modelo = ["anthropic/claude-opus-5-5", "xai/grok-4.7"]' 'esfuerzo = ["high", "high"]' '' \
+    '[herencia]' 'alfa = "dirigir"' 'beta = "dirigir"' >"$S/home-$host/flota/generaciones/gen-$host/manifesto.toml"
+  cp "$S/home-$host/flota/generaciones/gen-$host/manifesto.toml" "$S/home-$host/flota/manifiesto.toml"
+done
+printf '{"openbot": {}}\n' >"$S/home-mac/.motor-encargos/canal.json"
+printf '{"telegram": {"token": "tg-no-sale"}, "claw": {}}\n' >"$S/home-mini/.motor-encargos/canal.json"
+mkdir -p "$S/home-mini/.openclaw"
+printf '%s\n' '{"gateway": {"auth": {"token": "gw-no-sale"}}, "agents": {"entries": {' \
+  '"alfa": {"model": {"primary": "anthropic/claude-opus-5-5", "fallbacks": ["xai/grok-4.7"]}},' \
+  '"beta": {"model": {"primary": "grok-4.7", "fallbacks": ["claude-opus-5-5"]}}}}}' \
+  >"$S/home-mini/.openclaw/openclaw.json"
+printf '{"mausbot": {}}\n' >"$S/home-gwpc/.motor-encargos/canal.json"
+mkdir -p "$S/home-gwpc/.openmausbot"
+printf '[{"name": "alfa", "modelSelection": {"model": "claude-opus-5-5", "effort": "high"}}]\n' \
+  >"$S/home-gwpc/.openmausbot/bots.json"
+espera "los modelos por agente avisan sin fallar el despliegue" 0 \
+  bash "$SCRIPT" --sha "$SHA" --maquina "mac mini pc"
+contiene "la mini nombra al agente con otra cadena" "$S/salida" \
+  "MODELOS mini claw: 1 de 2 agentes como la tabla; difieren: beta (grok-4.7 > claude-opus-5-5; tabla claude-opus-5-5 > grok-4.7)"
+contiene "la pc compara sus bots con el programa en base64" "$S/salida" \
+  "MODELOS pc mausbot: 1 de 1 agentes como la tabla"
+contiene "la mac dice qué no pudo leer" "$S/salida" "MODELOS mac openbot: no pude leer (sin openbot.db)"
+[ "$(grep -c '^MODELOS' "$S/salida")" -eq 3 ] \
+  || fallo "se esperaba una línea MODELOS por director: $(grep '^MODELOS' "$S/salida")"
+no_contiene "los modelos no imprimen tokens" "$S/salida" "no-sale"
+grep '^MODELOS' "$S/salida" | grep -qF "$S" && fallo "una línea MODELOS imprime una ruta: $(grep '^MODELOS' "$S/salida")"
+# Un módulo de modelos que no carga tampoco puede dejar a una máquina como "no responde".
+mkdir -p "$S/ops-roto"
+cp "$RAIZ/ops/comprueba-despliegue.sh" "$RAIZ/ops/lib.sh" "$S/ops-roto/"
+printf 'raise RuntimeError("roto")\n' >"$S/ops-roto/modelos_por_agente.py"
+espera "un módulo de modelos roto no hace fallar el despliegue" 0 \
+  bash "$S/ops-roto/comprueba-despliegue.sh" --sha "$SHA" --maquina "mac mini pc"
+contiene "la mini sigue sana con el módulo roto" "$S/salida" "OK mini:"
+contiene "la máquina dice que no pudo imprimir los modelos" "$S/salida" "MODELOS mini directores: no pude imprimir"
+rm -r "$S/ops-roto"
+rm -r "$S/home-mini/.openclaw" "$S/home-gwpc/.openmausbot" "$S"/home-*/.motor-encargos/canal.json
+for host in mac mini gwpc; do flota "$host" v9; done
+
 rm -rf "$S/home-gwpc/flota"
 espera "una máquina sin flota no revienta la comprobación" 0 \
   bash "$SCRIPT" --sha "$SHA" --maquina "mac mini pc"
