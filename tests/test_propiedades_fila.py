@@ -13,12 +13,12 @@ class PropiedadesFila(unittest.TestCase):
         self.assertCountEqual(
             _ENTRE_REINTENTOS,
             ("plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
-             "contexto_entrega", "sesion_perdida"),
+             "contexto_entrega", "sesion_perdida", "limpio"),
         )
         self.assertCountEqual(
             _EVENTOS_DE_MARCADOR,
             ("incorporado", "quietud_vigilada", "deepseek_lectura", "deepseek_cerrado",
-             "ci_sondeo", "excepcion", "conciliacion_fase"),
+             "ci_sondeo", "excepcion", "conciliacion_fase", "pr_observado", "limpieza"),
         )
 
     def test_las_tuplas_salen_de_las_propiedades_de_fila(self) -> None:
@@ -40,6 +40,7 @@ class PropiedadesFila(unittest.TestCase):
             entrega_devuelta entrega_externa fase_desplegada fase_reabierta
             fase_reactivada inspeccion_entregada inspeccion_solicitud lectura_fallida
             nota_pr politica_despliegue producto_listo resolucion respuesta revision
+            pr_observado fase_cancelada pr_otra_base
         """.split())
         intento = set("""
             actividad colgada conductor intento_abierto intento_cerrado

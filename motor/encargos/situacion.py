@@ -28,6 +28,12 @@ class FalloInterno:
 
 
 @dataclass(frozen=True)
+class PorOtraBase:
+    fase: str
+    base: str
+
+
+@dataclass(frozen=True)
 class Parar:
     accion: Literal["parar"] = "parar"
 
@@ -56,7 +62,7 @@ class CierreForzado:
 
 @dataclass(frozen=True)
 class Contexto:
-    orden_parada: Literal["", "parar", "cancelar", "fallo_interno"] = ""
+    orden_parada: Literal["", "parar", "cancelar", "fallo_interno", "otra_base"] = ""
     reanuda_en: str = ""
     intento: str = ""
     proc: Proc | None = None
@@ -108,7 +114,7 @@ class Deteniendo:
 
 @dataclass(frozen=True)
 class Detenido:
-    causa: PorOrden | FalloInterno
+    causa: PorOrden | FalloInterno | PorOtraBase
     contexto: Contexto = field(default_factory=Contexto, kw_only=True)
     estado: Literal["detenido"] = "detenido"
 
@@ -176,6 +182,10 @@ def _contexto_inicial(e: Encargo) -> Contexto:
             if any((causa.kind, causa.clase_ukey, causa.rechazo)):
                 raise EstadoIncoherente("datos de fallo interno sin proyección legada")
             orden = "fallo_interno"
+        elif isinstance(causa, PorOtraBase):
+            if (causa.fase, causa.base) != e.otra_base_de:
+                raise EstadoIncoherente("la otra base no coincide con el hecho guardado")
+            orden = "otra_base"
         else:
             if (causa.accion == "reabrir" and not e.reaperturas
                     or causa.accion == "importar" and e.reaperturas):
@@ -243,9 +253,13 @@ def materializar(e: Encargo) -> Situacion:
             orden = FalloInterno("", "", "")
         return Deteniendo(orden, e.intento_interrumpido, contexto=contexto)
     if e.estado == "detenido":
-        causa: PorOrden | FalloInterno = PorOrden("reabrir" if e.reaperturas else "importar")
+        causa: PorOrden | FalloInterno | PorOtraBase = (
+            PorOrden("reabrir" if e.reaperturas else "importar")
+        )
         if e.orden_parada == "fallo_interno":
             causa = FalloInterno("", "", "")
+        elif e.orden_parada == "otra_base":
+            causa = PorOtraBase(*e.otra_base_de)
         elif e.orden_parada == "parar":
             causa = PorOrden("parar")
         return Detenido(causa, contexto=contexto)

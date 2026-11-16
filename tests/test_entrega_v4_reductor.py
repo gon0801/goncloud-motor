@@ -90,6 +90,8 @@ class ReductorEntregaV4(unittest.TestCase):
         for kind in ("pr_observado", "fase_cancelada", "pr_otra_base", "limpieza", "limpio"):
             for data in ({}, {"fase": []}, {"fase": float("nan"),
                                            "numero": float("inf")},
+                         {"fase": "F", "estado": [], "recurso": [],
+                          "intento": float("nan")},
                          {"fase": "ajena", "intento": "ajeno"}):
                 with self.subTest(kind=kind, data=data):
                     resultado = reducir(e, {"kind": kind, "data": data}, nuevo=False)
@@ -103,6 +105,27 @@ class ReductorEntregaV4(unittest.TestCase):
         self.assertEqual((resultado.diferencias, resultado.forma), ((), ()))
         arbol = [Plegado("x", 1, {"estado": "recibido", "desconocida": ""})]
         self.assertEqual(len(diferencias("falso", base, arbol).forma), 1)
+        base = [Plegado("x", 1, {"estado": "recibido", "limpio": "t1"})]
+        arbol = [Plegado("x", 1, {"estado": "recibido", "limpio": "t2"})]
+        self.assertEqual(diferencias("falso", base, arbol).diferencias[0].campos,
+                         ("limpio",))
+
+    def test_observar_no_pierde_la_base_aceptada(self) -> None:
+        from motor.encargos.entrega.tipos import PrCerrado
+
+        e = _pedido()
+        datos = {"fase": "F", "estado": "abierto", "numero": 9,
+                 "head": "h", "base": "main", "merge_commit": "", "hora": "t1"}
+        observado = reducir(e, {"kind": "pr_observado", "data": datos}, nuevo=True)
+        observado = reducir(observado, _hecho("pr_otra_base", fase="F",
+                                              numero=9, base="otra", hora="t2"), nuevo=True)
+        aceptado = reducir(observado, _hecho("orden", accion="continuar", hora="t3"),
+                           nuevo=True)
+        cerrado = reducir(aceptado, {"kind": "pr_observado",
+                                     "data": {**datos, "estado": "cerrado"}}, nuevo=True)
+        self.assertIsInstance(cerrado.prs[0].pr, PrCerrado)
+        self.assertEqual(cerrado.prs[0].aceptada_en, "otra")
+        self.assertEqual(cerrado.otra_base_de, ("", ""))
 
     def test_terminado_reabierto_pierde_hora_final_y_limpio(self) -> None:
         from tests.soporte_situacion import evolucionar

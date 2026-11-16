@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..catalogo_agentes import identidad_modelo
+from ..entrega.tipos import PrDeFase
 from .errores import HechoInaplicable, leer_carga
 
 if TYPE_CHECKING:
@@ -84,11 +85,20 @@ def orden(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     if not nuevo:
         leer_carga(nuevo, lambda: d["accion"])
     try:
-        return _orden(e, d, hora)
+        resultado = _orden(e, d, hora)
     except TransicionIlegal as exc:
         if nuevo:
             raise
         raise HechoInaplicable from exc
+    if d["accion"] == "continuar" and e.estado == "detenido" and e.orden_parada == "otra_base":
+        fase, base = e.otra_base_de
+        return replace(
+            resultado,
+            prs=tuple(PrDeFase(p.fase, p.pr, base if p.fase == fase else p.aceptada_en)
+                      for p in resultado.prs),
+            otra_base_de=("", ""),
+        )
+    return resultado
 
 
 def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:

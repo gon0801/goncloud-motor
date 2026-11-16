@@ -65,6 +65,15 @@ RAIZ = Path(__file__).resolve().parents[1]
 
 Evento = dict[str, Any]
 Campos = dict[str, Any]
+CLAVES_NUEVAS = frozenset((
+    "prs", "canceladas", "otra_base_de", "limpieza", "limpio", "hora_final",
+))
+
+
+def sin_claves_nuevas(arbol: Campos, base: Campos) -> Campos:
+    """Quita solo las claves declaradas que la referencia todavía no conoce."""
+    return {clave: valor for clave, valor in arbol.items()
+            if clave in base or clave not in CLAVES_NUEVAS}
 
 
 @dataclass(frozen=True)
@@ -509,7 +518,7 @@ def diferencias(ruta: str, base: Sequence[Plegado], arbol: Sequence[Plegado]) ->
         if isinstance(a, dict) and isinstance(b, dict):
             forma: set[tuple[str, Lado]] = set()
             valores: set[str] = set()
-            _contrastar(a, b, "", forma, valores)
+            _contrastar(a, sin_claves_nuevas(b, a), "", forma, valores)
             cuenta.update(forma)
             if valores:
                 salida.append(Diferencia(p.encargo, tuple(sorted(valores))))

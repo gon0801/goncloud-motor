@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
-from . import detencion, esperas, fase, intento, necesidades, retirados, revision, pedido
+from . import detencion, entrega, esperas, fase, intento, necesidades, retirados, revision, pedido
 from . import validacion_intento
 from . import validacion_esperas
 from . import validacion_necesidades
@@ -60,9 +60,18 @@ def plegar_evento(
     if aplicado is anterior and (
         evento["kind"] not in TABLA
         or evento["kind"] in ("cierre_forzado", "bloqueo_fase", "producto_listo")
+        or evento["kind"] in ("pr_observado", "fase_cancelada", "pr_otra_base",
+                             "limpieza", "limpio")
     ):
         return aplicado
-    return derivados(aplicado, evento)
+    resultado = derivados(aplicado, evento)
+    if anterior is not None and resultado.estado != anterior.estado:
+        if resultado.estado in ("terminado", "cancelado"):
+            return replace(resultado, hora_final=str(evento["data"].get("hora") or ""),
+                           limpio="")
+        if anterior.estado in ("terminado", "cancelado"):
+            return replace(resultado, hora_final="", limpio="")
+    return resultado
 
 
 TABLA: dict[str, Fila] = {
@@ -105,6 +114,11 @@ TABLA: dict[str, Fila] = {
     'entrega_bloqueada': Fila(fase.entrega_bloqueada, alcance="fase", validar=validacion_fase.validar_entrega_bloqueada),
     'entrega_devuelta': Fila(revision.entrega_devuelta, alcance="fase"),
     'entrega_externa': Fila(fase.entrega_externa, alcance="fase"),
+    'pr_observado': Fila(entrega.pr_observado, alcance="fase", corta_series=False, marcador=True, validar=entrega.validar_pr_observado),
+    'fase_cancelada': Fila(entrega.fase_cancelada, alcance="fase", validar=entrega.validar_fase_cancelada),
+    'pr_otra_base': Fila(entrega.pr_otra_base, alcance="fase", validar=entrega.validar_pr_otra_base),
+    'limpieza': Fila(entrega.limpieza, corta_series=False, marcador=True, validar=entrega.validar_limpieza),
+    'limpio': Fila(entrega.limpio, corta_series=False, validar=entrega.validar_limpio),
     'espera': Fila(esperas.espera, corta_series=False, validar=validacion_esperas.validar_espera),
     'estrategia': Fila(necesidades.estrategia, validar=validacion_necesidades.validar_estrategia),
     'excepcion': Fila(esperas.excepcion, corta_series=False, marcador=True),

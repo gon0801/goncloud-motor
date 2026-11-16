@@ -10,7 +10,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 
 
 class TablaCompleta(unittest.TestCase):
-    def test_tabla_contiene_los_82_kinds_sin_ramas_pendientes(self) -> None:
+    def test_tabla_contiene_los_87_kinds_sin_ramas_pendientes(self) -> None:
         grupos = {
             "pedido": "ajuste contexto_entrega falla_sesion_local migracion orden procedimiento "
                       "proveedor_disponible proveedor_fallo recibo ruta_agentes",
@@ -31,12 +31,13 @@ class TablaCompleta(unittest.TestCase):
             "detencion": "arbol fallo_interno",
             "retirados": "autoridad_cerrada ci_pr_sondeo ci_producto ci_revision_rojo concesion "
                          "disputa respuesta_revisor_pedida",
+            "entrega": "pr_observado fase_cancelada pr_otra_base limpieza limpio",
         }
         esperados = {
             kind: f"motor.encargos.reductor.{tema}.{'registrar' if tema == 'retirados' else kind}"
             for tema, kinds in grupos.items() for kind in kinds.split()
         }
-        self.assertEqual(len(esperados), 81)
+        self.assertEqual(len(esperados), 86)
         self.assertEqual(set(TABLA) | {"entrega"}, set(esperados) | {"entrega"})
         self.assertEqual(
             {kind: f"{fila.aplicar.__module__}.{fila.aplicar.__name__}"
