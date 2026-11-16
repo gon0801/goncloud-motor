@@ -34,6 +34,17 @@ class ValidacionEsperasNecesidades(unittest.TestCase):
         with self.assertRaisesRegex(TransicionIlegal, "^solicitud sin operación$"):
             reducir(e, {"kind": "solicitud", "data": datos}, nuevo=True)
 
+    def test_solicitud_con_operacion_ausente_o_cero_conserva_su_escritura(self) -> None:
+        e = _pedido()
+        datos = {"id": "s", "fase": "", "intento": "i"}
+        with self.assertRaises(TransicionIlegal) as exc:
+            reducir(e, {"kind": "solicitud", "data": datos}, nuevo=True)
+        self.assertEqual(str(exc.exception), "la solicitud necesita operación y parámetros válidos")
+        aceptada = reducir(
+            e, {"kind": "solicitud", "data": {**datos, "operacion": 0}}, nuevo=True,
+        )
+        self.assertEqual(aceptada.solicitudes[-1].operacion, "0")
+
     def test_ajustes_no_impiden_cerrar_fase_intermedia_ni_esperar_despliegue(self) -> None:  # no-roja-en-base: preserva los retornos previos al cierre terminal
         e = _pedido()
         intermedia = replace(
