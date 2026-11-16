@@ -141,7 +141,7 @@ def _clase(base: list, arbol: list, kind: str, permitidos: set[str]) -> str:
             return "base_acepta_arbol_rechaza"
         return "estado" if base[4] != arbol[4] else ""
     if arbol[3] == "acepta":
-        return ""
+        return "base_rechaza_arbol_acepta"
     if base[4] == "TransicionIlegal":
         if arbol[4] != base[4]:
             return "tipo_transicion"
@@ -202,6 +202,8 @@ def comparar(base: str, corpus: Path, arbol: Path, kinds: list[str],
         eventos = json.load(archivo)["eventos"]
     muestras = _muestras(corpus, set(kinds))
     por_prefijo = sum(3 * len(d) + 8 for k in kinds for d in muestras[k])
+    if max_casos < por_prefijo + sum(3 * len(d) + 8 for d in muestras.get("entrega", [])):
+        raise ValueError("tope de casos menor que un prefijo de los kinds seleccionados")
     paso = max(1, (eventos * por_prefijo + max_casos - 1) // max_casos)
     sha = subprocess.check_output(
         ["git", "-C", str(RAIZ), "rev-parse", "--verify", base],
@@ -254,7 +256,8 @@ def main() -> int:
                         args.max_casos, set(args.permitir_cambio_tipo.split(",")),
                         args.estado_legado)
     except (OSError, ValueError, subprocess.CalledProcessError, RuntimeError) as exc:
-        print(f"escritura diferencial: no se pudo comparar ({type(exc).__name__})",
+        detalle = "tope de casos insuficiente" if isinstance(exc, ValueError) else type(exc).__name__
+        print(f"escritura diferencial: no se pudo comparar ({detalle})",
               file=sys.stderr)
         return 2
 
