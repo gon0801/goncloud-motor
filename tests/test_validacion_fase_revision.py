@@ -46,7 +46,7 @@ class ValidacionFaseRevision(unittest.TestCase):
                 self.assertIsNotNone(resultado)
 
     def test_conciliacion_ilegible_no_interrumpe_una_historia(self) -> None:
-        previo = replace(self.previo, fases=(Fase("F", "resultado"),), fase_activa="F")
+        previo = evolucionar(self.previo, fases=(Fase("F", "resultado"),), fase_activa="F")
         casos = (
             {"paso": "en_curso", "intentos": float("inf")},
             {"paso": "en_curso", "intentos": float("nan")},
