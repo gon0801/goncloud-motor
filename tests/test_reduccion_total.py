@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import asdict, replace
 
-from motor.encargos.dominio import TransicionIlegal, reducir
+from motor.encargos.dominio import Fase, TransicionIlegal, reducir
 from motor.encargos.reductor import TABLA
 
 
@@ -50,6 +50,23 @@ class ReduccionTotal(unittest.TestCase):
         for kind, datos in casos:
             with self.subTest(kind=kind, datos=datos):
                 reducir(previo, {"kind": kind, "data": datos}, nuevo=False)
+
+    def test_conciliacion_historica_ilegible_no_rompe_el_pliegue(self) -> None:
+        previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F",
+                         fallos_repo=("git falló", 2), ultima_firma="original")
+        casos = (
+            {"paso": "en_curso", "intentos": "no es número"},
+            {"paso": "reintento", "ordenes": "no es número"},
+            {"paso": "integrado", "recibo": "sha", "numero": "no es número"},
+            {"paso": "integrado", "recibo": "sha",
+             "correspondencia": {"archivo": "a", "fases": [["otra", "b"]]}},
+            {"paso": "integrado", "recibo": "sha", "requiere_despliegue": "quizá"},
+        )
+        for datos in casos:
+            with self.subTest(paso=datos):
+                hecho = {"kind": "conciliacion_fase",
+                         "data": {"fase": "F", "firma": "ajena", **datos}}
+                self.assertEqual(asdict(reducir(previo, hecho, nuevo=False)), asdict(previo))
 
     def test_kind_desconocido_no_modifica_nada_al_plegar(self) -> None:
         previo = _pedido()
