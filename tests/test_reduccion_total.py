@@ -40,17 +40,54 @@ class ReduccionTotal(unittest.TestCase):
                 self.assertEqual(str(exc.exception), mensaje)
 
     def test_aplicar_nunca_lanza_ni_con_infinity(self) -> None:
-        previo = _pedido()
+        previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F")
         casos = [(kind, {}) for kind in sorted(set(TABLA) | {"entrega"})]
         casos += [
             ("incorporado", {"generacion": float("inf")}),
             ("quietud_vigilada", {"vueltas": float("inf")}),
             ("solicitud", {"id": "s", "fase": "", "intento": "i",
                            "operacion": "leer", "generacion": float("inf")}),
+            ("reserva", {"generacion": float("inf")}),
+            ("ci_sondeo", {"sondeos": float("inf")}),
+            ("entrega_externa", {"numero": float("inf")}),
+            ("ajuste", {"texto": "x", "cierra": float("nan")}),
+            ("ci_pr", {"estado": "verde", "fallas": float("inf")}),
+            ("comprobaciones_supervisor", {"hallazgos": float("inf")}),
+            ("revision", {"fase": "otra"}),
+            ("intento_abierto", {"id": "i", "pid": float("inf"), "inicio": "t"}),
         ]
+        for kind in TABLA:
+            casos.extend((kind, {"fase": "F", "generacion": valor,
+                                  "sondeos": valor, "hallazgos": valor})
+                         for valor in (float("inf"), float("nan"), [], "no numerico"))
         for kind, datos in casos:
             with self.subTest(kind=kind, datos=datos):
                 reducir(previo, {"kind": kind, "data": datos}, nuevo=False)
+
+    def test_noops_conocidos_siguen_actualizando_derivados(self) -> None:  # no-roja-en-base: la rama anterior ya aplica los derivados a los no-ops
+        previo = replace(
+            _pedido(), fases=(Fase("F", "resultado"),), fase_activa="F",
+            fallos_repo=("git falló", 2), fallos_entrega=("git falló", 2),
+            ultima_firma="anterior",
+        )
+        for kind, datos in (
+            ("solicitud", {}),
+            ("incorporado", {"generacion": "ilegible", "firma": "nueva"}),
+            ("quietud_vigilada", {"vueltas": "ilegible", "firma": "nueva"}),
+            ("conciliacion_fase", {"fase": "F", "paso": "preparada", "firma": "nueva"}),
+        ):
+            with self.subTest(kind=kind):
+                resultado = reducir(previo, {"kind": kind, "data": datos}, nuevo=False)
+                fallos = ("", 0) if kind == "solicitud" else ("git falló", 2)
+                self.assertEqual(resultado.fallos_repo, fallos)
+                self.assertEqual(resultado.fallos_entrega, fallos)
+                self.assertEqual(resultado.ultima_firma,
+                                 datos.get("firma", "anterior"))
+
+    def test_ajuste_con_cierre_no_iterable_no_oculta_su_error(self) -> None:  # no-roja-en-base: fija la prioridad del error crudo de escritura en la rama anterior
+        with self.assertRaises(TypeError) as exc:
+            reducir(_pedido(), {"kind": "ajuste", "data": {"cierra": 5}}, nuevo=True)
+        self.assertIn("not iterable", str(exc.exception))
 
     def test_conciliacion_historica_ilegible_no_rompe_el_pliegue(self) -> None:
         previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F",

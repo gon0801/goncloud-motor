@@ -64,6 +64,13 @@ class EscrituraDiferencial(unittest.TestCase):
             cwd=RAIZ, capture_output=True, text=True, check=False,
         )
 
+    def correr_con_tope_normal(self, *opciones: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(HERRAMIENTA), "--base", "HEAD",
+             "--corpus", str(self.corpus), *opciones],
+            cwd=RAIZ, capture_output=True, text=True, check=False,
+        )
+
     def mutar(self, original: str, mutado: str, modulo: str) -> Path:
         arbol = self.raiz / "mutado"
         shutil.copytree(RAIZ / "motor", arbol / "motor")
@@ -171,6 +178,84 @@ class EscrituraDiferencial(unittest.TestCase):
                                 "solicitud", set()), "carga_diferente")
         self.assertEqual(_clase(base, [*base[:4], "TypeError", "x"],
                                 "solicitud", set()), "tipo_rechazo")
+
+    def test_mensaje_crudo_y_solo_transicion_declarada(self) -> None:
+        from tools.escritura_diferencial import _clase
+
+        base = ["solicitud", "real", "huella", "rechaza", "OverflowError", "antes"]
+        self.assertEqual(_clase(base, [*base[:5], "despues"],
+                                "solicitud", set()), "mensaje_rechazo")
+        self.assertEqual(_clase(base, [*base[:4], "KeyError", "antes"],
+                                "solicitud", {"solicitud"}), "tipo_rechazo")
+        self.assertEqual(_clase(base, [*base[:4], "TransicionIlegal", "otro"],
+                                "solicitud", {"solicitud"}), "")
+        base[4] = "TransicionIlegal"
+        self.assertEqual(_clase(base, [*base[:4], "KeyError", "antes"],
+                                "solicitud", {"solicitud"}), "tipo_transicion")
+
+    def test_variantes_numericas_y_pares_de_campos(self) -> None:
+        from tools.escritura_diferencial import _variantes
+
+        estado = SimpleNamespace(ajustes=(), solicitudes=(), efectos=())
+        casos = list(_variantes("reserva", {"generacion": 1, "fase": "F"}, estado))
+        for valor in (float("inf"), float("-inf"), -1, [], "no numerico"):
+            self.assertTrue(any(c.get("generacion") == valor for _, c in casos))
+        self.assertTrue(any(
+            isinstance(c.get("generacion"), float)
+            and c["generacion"] != c["generacion"] for _, c in casos
+        ))
+        pares = list(_variantes(
+            "comprobacion", {"clase": "confirmado", "fase": "F",
+                            "intento": "i", "evidencia": "comprobado"}, estado,
+        ))
+        self.assertTrue(any(c.get("evidencia") == "" and c.get("fase") == "otra_fase"
+                            for _, c in pares))
+        self.assertTrue(any(c.get("evidencia") == "" and c.get("intento") == "otro_intento"
+                            for _, c in pares))
+
+    def test_mensaje_de_solicitud_duplicada_se_detecta_con_tope_normal(self) -> None:
+        with sqlite3.connect(self.corpus / "registros/uno.sqlite") as db:
+            db.execute("UPDATE events SET id = 3006 WHERE id = 5")
+            db.executemany(
+                "INSERT INTO events VALUES (?, '', 'ejemplo', 'proveedor_disponible',"
+                " '{\"agente\":\"nadie\"}', ?)",
+                [(i, f"relleno:{i}") for i in range(5, 3006)],
+            )
+        (self.corpus / "meta.json").write_text(
+            json.dumps({"eventos": 3006}), encoding="utf-8",
+        )
+        arbol = self.mutar(
+            "la solicitud {ident} ya existe", "mensaje privado diferente",
+            "validacion_necesidades.py",
+        )
+        hecho = self.correr_con_tope_normal(
+            "--kinds", "comprobacion,solicitud", "--arbol", str(arbol),
+        )
+        self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
+        self.assertIn("mensaje_transicion=", hecho.stdout)
+        self.assertNotIn("mensaje privado diferente", hecho.stdout)
+
+    def test_prioridad_de_evidencia_detecta_dos_campos_rotos(self) -> None:
+        archivo = (RAIZ / "motor/encargos/reductor/validacion_esperas.py").read_text(
+            encoding="utf-8",
+        )
+        guardia = ('    if not str(d.get("evidencia") or ""):\n'
+                   '        raise TransicionIlegal("confirmado sin evidencia")\n')
+        self.assertIn(guardia, archivo)
+        seccion = archivo[archivo.index("def validar_comprobacion("):]
+        original = seccion[:seccion.index("    if e.fase_actual is None:")]
+        cambiado = original.replace(guardia, "").replace(
+            '    if intento and e.intento and intento != e.intento:\n'
+            '        raise TransicionIlegal("el cierre pertenece a otro intento")\n',
+            '    if intento and e.intento and intento != e.intento:\n'
+            '        raise TransicionIlegal("el cierre pertenece a otro intento")\n' + guardia,
+        )
+        arbol = self.mutar(original, cambiado, "validacion_esperas.py")
+        hecho = self.correr_con_tope_normal(
+            "--kinds", "comprobacion,solicitud", "--arbol", str(arbol),
+        )
+        self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
+        self.assertIn("mensaje_transicion=", hecho.stdout)
 
 
 if __name__ == "__main__":
