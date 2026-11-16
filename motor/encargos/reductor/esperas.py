@@ -1,6 +1,7 @@
 """Manejadores del reductor extraídos de dominio."""
 
 from __future__ import annotations
+from ..encargo import evolucionar
 
 from typing import TYPE_CHECKING
 
@@ -63,7 +64,7 @@ def sin_progreso(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
             pendiente = diagnostico or (
                 "el bloqueo sigue abierto tras el relevo: " + clave
             )
-            return replace(
+            return evolucionar(
                 con_escalon(e, rol, clave, "pendientes"),
                 estado=(
                     "recibido"
@@ -78,7 +79,7 @@ def sin_progreso(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
                 ),
                 hora=hora or e.hora,
             )
-        return replace(
+        return evolucionar(
             con_escalon(e, rol, clave, "relevo"),
             estado=(
                 "recibido"
@@ -125,7 +126,7 @@ def afirmacion(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def efecto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import Efecto, _CERRADOS, _efecto, replace
+    from ..dominio import Efecto, _CERRADOS, _efecto
 
     if "id" not in d or "estado" not in d:
         return e
@@ -150,7 +151,7 @@ def efecto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         estado = "recibido"
         motivo = ""
         siguiente = "seguir con el pedido"
-    return replace(
+    return evolucionar(
         e,
         efectos=_efecto(e, nuevo_efecto),
         estado=estado,
@@ -161,11 +162,9 @@ def efecto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def plazo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import replace
-
     if e.estado != "esperando_reintento":
         return e
-    return replace(
+    return evolucionar(
         e,
         estado="recibido",
         motivo="",
@@ -176,13 +175,13 @@ def plazo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def espera(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import _CERRADOS, replace
+    from ..dominio import _CERRADOS
 
     if e.estado in _CERRADOS:
         return e
     if not d.get("motivo") or not d.get("reanuda_en"):
         return e
-    return replace(
+    return evolucionar(
         e,
         estado="esperando_reintento",
         motivo=d["motivo"],

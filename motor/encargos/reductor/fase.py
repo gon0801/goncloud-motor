@@ -1,6 +1,7 @@
 """Manejadores del reductor extraídos de dominio."""
 
 from __future__ import annotations
+from ..encargo import evolucionar
 
 from typing import TYPE_CHECKING, cast
 
@@ -178,7 +179,7 @@ def cierre_forzado(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         return e
     e = asegurar_fase(e)
     fase = e.fase_actual
-    e = replace(e, cierre_forzado_fase=fase, cierre_forzado_huella=hashlib.sha256(
+    e = evolucionar(e, cierre_forzado_fase=fase, cierre_forzado_huella=hashlib.sha256(
         json.dumps([e.id, cast(Fase, fase).id, hora, evidencia, e.reaperturas]).encode()
     ).hexdigest())
     if fase is not None:
@@ -186,7 +187,7 @@ def cierre_forzado(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
             e,
             replace(fase, estado="preparada", evidencia=evidencia),
         )
-    return replace(
+    return evolucionar(
         e,
         estado="terminado",
         evidencia=e.evidencia + (evidencia,),
@@ -238,7 +239,7 @@ def resultado_directo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
             else f
             for f in e.fases
         )
-    return replace(
+    return evolucionar(
         e,
         fases=fases,
         estado="terminado",

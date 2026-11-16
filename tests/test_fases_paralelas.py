@@ -23,6 +23,7 @@ from motor.encargos.dominio import (
     EntregaAutorizada,
     Fase,
     VersionProducto,
+    evolucionar,
     reducir,
 )
 
@@ -105,7 +106,7 @@ class _Banco(unittest.TestCase):
             producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
         )
         c = Fase(id="C", resultado="c", estado="trabajo", requiere=requiere)
-        enc = Encargo(
+        enc = evolucionar(Encargo(
             id="enc_x",
             clave="clave-x",
             huella="huella",
@@ -119,9 +120,8 @@ class _Banco(unittest.TestCase):
             ),
             fases=(a, b, c),
             fase_activa="C",
-            estado="ejecutando",
             generacion=1,
-        )
+        ), estado="ejecutando")
         return enc, sha_a, sha_b
 
 
@@ -197,14 +197,14 @@ class LaDependenciaIntegradaPorSquashTraeSuContenido(_Banco):
             producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
         )
         c = Fase(id="C", resultado="c", estado="trabajo", requiere=requiere)
-        enc = Encargo(
+        enc = evolucionar(Encargo(
             id="enc_x", clave="clave-x", huella="huella", director="cli",
             texto="pedido", adjuntos=(), restricciones=(), canal="canal",
             entrega=EntregaAutorizada(
                 nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"
             ),
-            fases=(a, b, c), fase_activa="C", estado="ejecutando", generacion=1,
-        )
+            fases=(a, b, c), fase_activa="C", generacion=1,
+        ), estado="ejecutando")
         return enc, sha_a, squash
 
     def _comprobar_contenido(self, archivo="a.txt", texto="de A\n"):
@@ -300,15 +300,15 @@ class LaCadenaNoSeConfundeConDependenciasParalelas(_Banco):
             producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
         )
         c = Fase(id="C", resultado="c", estado="trabajo", requiere=orden)
-        enc = Encargo(
+        enc = evolucionar(Encargo(
             id=f"enc_x_{indice}", clave="clave-x", huella="huella",
             director="cli", texto="pedido", adjuntos=(), restricciones=(),
             canal="canal",
             entrega=EntregaAutorizada(
                 nivel="pr", repo="o/r", rama=base, base="main"
             ),
-            fases=(a, b, c), fase_activa="C", estado="ejecutando", generacion=1,
-        )
+            fases=(a, b, c), fase_activa="C", generacion=1,
+        ), estado="ejecutando")
         return enc, f"{base}-B"
 
     def test_a_b_c_con_cualquier_orden_usa_la_rama_de_b(self):
@@ -390,14 +390,14 @@ class LaFaseReabiertaNoIncorporaFasesPosteriores(_Banco):
             requiere=(("A", "fA"),),
             producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
         )
-        enc = Encargo(
+        enc = evolucionar(Encargo(
             id="enc_x", clave="clave-x", huella="huella", director="cli",
             texto="pedido", adjuntos=(), restricciones=(), canal="canal",
             entrega=EntregaAutorizada(
                 nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"
             ),
-            fases=(a, b), fase_activa="A", estado="recibido", generacion=1,
-        )
+            fases=(a, b), fase_activa="A", generacion=1,
+        ), estado="recibido")
 
         if hasattr(ciclo, "_entradas_de"):
             self.assertEqual(

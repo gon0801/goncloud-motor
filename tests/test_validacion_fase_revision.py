@@ -1,9 +1,10 @@
 """Una escritura se valida, pero un hecho de fase ya guardado se pliega."""
 
 from __future__ import annotations
+from motor.encargos.encargo import evolucionar
 
 import unittest
-from dataclasses import asdict, replace
+from dataclasses import asdict
 
 from motor.encargos.dominio import TransicionIlegal, reducir
 from motor.encargos.reductor import TABLA
@@ -86,7 +87,7 @@ class ValidacionFaseRevision(unittest.TestCase):
                 self.assertEqual(len(registrado.solicitudes), 1)
 
     def test_hechos_de_cierre_y_producto_ignorados_no_derivan_metadatos(self) -> None:
-        cerrado = replace(self.previo, estado="terminado", hora_cierre="2026-11-01")
+        cerrado = evolucionar(self.previo, estado="terminado", hora_cierre="2026-11-01")
         casos = (
             (cerrado, "cierre_forzado", {"hora": "2026-11-05"}),
             (cerrado, "bloqueo_fase", {"hora": "2026-11-05"}),

@@ -3,9 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import fields
 
-from motor.encargos.dominio import CAMPOS_LEGADOS, Encargo, Fase, Proc, reducir
-from motor.encargos.encargo import evolucionar
-from motor.encargos.situacion import Recibido
+from motor.encargos.dominio import Encargo, Fase, Proc, reducir
 from tools.plegado import campos_de
 
 
@@ -17,6 +15,9 @@ def _pedido() -> Encargo:
 
 class SituacionGuardada(unittest.TestCase):
     def test_estado_tiene_un_solo_dueno_y_la_proyeccion_legada_no_lo_pierde(self) -> None:
+        from motor.encargos.dominio import CAMPOS_LEGADOS
+        from motor.encargos.situacion import Recibido
+
         plano = _pedido()
         self.assertIsInstance(plano.situacion, Recibido)
         nombres = {campo.name for campo in fields(plano)}
@@ -31,6 +32,9 @@ class SituacionGuardada(unittest.TestCase):
         self.assertNotIn("situacion", campos_de(plano))
 
     def test_recibido_conserva_contexto_de_intento_y_cierre_historico(self) -> None:
+        from motor.encargos.encargo import evolucionar
+        from motor.encargos.situacion import Recibido
+
         fase = Fase("F", "resultado")
         proc = Proc(1, "inicio", "boot")
         encargo = evolucionar(

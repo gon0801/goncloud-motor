@@ -5,6 +5,7 @@ uno incierto recomienda una revisión, y un pendiente o verde no detiene nada.
 El aviso es para alguien no técnico: dice qué falló, de quién es y qué hacer."""
 
 from __future__ import annotations
+from motor.encargos.encargo import evolucionar
 
 import json
 import tempfile
@@ -719,7 +720,7 @@ class ElCierrePorAtajoConciliaLaCabeza(unittest.TestCase):
                 deepseek_sha=e.pr_sha,
                 producto=producto,
             )
-            e2 = replace(
+            e2 = evolucionar(
                 e,
                 estado="recibido",
                 fases=tuple(fase2 if f.id == fase2.id else f for f in e.fases),

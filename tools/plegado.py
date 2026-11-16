@@ -264,7 +264,15 @@ def _a_json(valor: object) -> object:
 
 def campos_de(estado: Any) -> Campos:
     """Los campos del estado como JSON, iguales en cualquier proceso."""
-    crudo = json.dumps(dataclasses.asdict(estado), default=_a_json, sort_keys=True)
+    plano = dataclasses.asdict(estado)
+    if "situacion" in plano:
+        from motor.encargos.dominio import CAMPOS_LEGADOS
+
+        plano.pop("situacion")
+        for nombre in CAMPOS_LEGADOS:
+            valor = getattr(estado, nombre)
+            plano[nombre] = dataclasses.asdict(valor) if dataclasses.is_dataclass(valor) else valor
+    crudo = json.dumps(plano, default=_a_json, sort_keys=True)
     return json.loads(crudo)
 
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from motor.encargos.encargo import evolucionar
 
 import unittest
 from dataclasses import asdict, replace
@@ -15,7 +16,7 @@ def _pedido():
 
 class ReduccionTotal(unittest.TestCase):
     def test_fallo_interno_historico_no_cambia_un_encargo_cerrado(self) -> None:
-        cerrado = replace(_pedido(), estado="terminado")
+        cerrado = evolucionar(_pedido(), estado="terminado")
         dato = {"kind": "fallo_interno", "data": {}}
         self.assertEqual(asdict(reducir(cerrado, dato, nuevo=False)), asdict(cerrado))
         with self.assertRaisesRegex(

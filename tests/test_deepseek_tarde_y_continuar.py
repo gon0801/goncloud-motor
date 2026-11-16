@@ -6,12 +6,12 @@ el encargo en `recibido` con la pregunta vieja del relevo, sin un intento.
 """
 
 from __future__ import annotations
+from motor.encargos.encargo import evolucionar
 
 import json
 import tempfile
 import time
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
@@ -1685,7 +1685,7 @@ class ContinuarRetomaElTrabajo(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = _encargo_con_pregunta_vieja(tmp, "motor/encargos/cli.py:10")
             self.addCleanup(r.reg.close)
-            trabado = replace(
+            trabado = evolucionar(
                 r.fold(),
                 estado="recibido",
                 proc=None,

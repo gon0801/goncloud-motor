@@ -1,4 +1,5 @@
 from __future__ import annotations
+from motor.encargos.encargo import evolucionar
 
 import json
 import os
@@ -31,7 +32,7 @@ from motor.encargos.sesion import herramienta_en_curso
 
 class SesionesNativas(unittest.TestCase):
     def test_razonar_sin_herramienta_no_cierra_el_intento(self):
-        enc = Encargo(
+        enc = evolucionar(Encargo(
             id="enc_demo",
             clave="demo",
             huella="demo",
@@ -40,8 +41,7 @@ class SesionesNativas(unittest.TestCase):
             adjuntos=(),
             restricciones=(),
             canal="claw",
-            estado="ejecutando",
-        )
+        ), estado="ejecutando")
         with tempfile.TemporaryDirectory() as tmp:
             for evento in (
                 {"type": "thought", "data": "estoy razonando"},
@@ -61,7 +61,7 @@ class SesionesNativas(unittest.TestCase):
                     )
                     self.assertTrue(
                         decision_proceso(
-                            replace(enc, estado="deteniendo"),
+                            evolucionar(enc, estado="deteniendo"),
                             "vivo",
                             ocupado,
                             True,

@@ -56,7 +56,8 @@ class EscrituraDiferencial(unittest.TestCase):
     def correr(self, *opciones: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(HERRAMIENTA), "--base", "HEAD",
-             "--corpus", str(self.corpus), "--max-casos", "900", *opciones],
+             "--corpus", str(self.corpus), "--max-casos", "900",
+             "--estado-legado", *opciones],
             cwd=RAIZ, capture_output=True, text=True, check=False,
         )
 

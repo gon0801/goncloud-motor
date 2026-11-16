@@ -9,11 +9,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
 from .catalogo_agentes import identidad_modelo
+from .encargo import CAMPOS_LEGADOS as CAMPOS_LEGADOS, Encargo, evolucionar
 from .reductor import ENTRE_REINTENTOS, EVENTOS_DE_MARCADOR, aplicar_fila, se_omitio
 
 ESTADOS = (
@@ -707,223 +708,6 @@ class Impedimento:
     agente: str = ""
 
 
-@dataclass(frozen=True)
-class Encargo:
-    id: str
-    clave: str
-    huella: str
-    director: str
-    texto: str
-    adjuntos: tuple[str, ...]
-    restricciones: tuple[str, ...]
-    canal: str
-    # Restricciones estructuradas desde la entrada: rutas que el pedido permite
-    # o prohíbe tocar. Se comparan por ruta, no por prosa.
-    permisos: tuple[str, ...] = ()
-    prohibiciones: tuple[str, ...] = ()
-    ajustes: tuple[str, ...] = ()
-    # Cuántos ajustes llevaba el prompt del último intento que llegó a abrirse.
-    # Un ajuste posterior no lo vio ningún intento: no se cierra ni se entrega.
-    ajustes_vistos: int = 0
-    # Cuántos ajustes lleva el prompt de la reserva en curso. Sólo pasa a
-    # `ajustes_vistos` cuando el intento se abre; si la reserva se cierra sin
-    # abrirlo, no cuenta nada.
-    ajustes_reservados: int = 0
-    # Cuántos ajustes quedaron dichos en la nota de cierre porque ningún intento
-    # podía recibirlos. No son vistos: si un intento vuelve a poder lanzarse, la
-    # corrección le llega.
-    ajustes_anotados: int = 0
-    procedimiento: tuple[str, ...] = ()
-    estado: str = "recibido"
-    ultimo_hecho: str = ""
-    hora: str = ""
-    motivo: str = ""
-    orden_parada: OrdenParada = ""
-    siguiente: str = ""
-    preguntas: tuple[str, ...] = ()
-    pendientes: tuple[str, ...] = ()
-    intento: str = ""
-    intento_interrumpido: bool = False
-    proc: Proc | None = None
-    herramienta: str = ""
-    causa: str = ""
-    estrategia: str = "investigar"
-    firma_fallo: str = ""
-    repeticiones: int = 0
-    reanuda_en: str = ""
-    escrituras: bool = True
-    intentos_nuevos: bool = True
-    evidencia: tuple[str, ...] = ()
-    efectos: tuple[Efecto, ...] = ()
-    autoridad: bool = True
-    sesion: str = ""
-    herramientas_observables: bool = True
-    reserva: bool = False
-    rol: str = ""
-    generacion: int = 0
-    conductor: str = ""
-    candidato: str = ""
-    host: str = ""
-    agentes: tuple[str, ...] = ()
-    agente: str = ""
-    pausas: tuple[PausaAgente, ...] = ()
-    via: str = "durable"
-    entrega: EntregaAutorizada = field(default_factory=EntregaAutorizada)
-    # Tope ya comprobado por una mirada de solo lectura del remoto o de la
-    # máquina: "pr" (no se puede integrar) o "integrado" (no se puede
-    # desplegar). Vacío = sin limitación conocida: el objetivo es el nivel
-    # autorizado. Nunca supera a `entrega.nivel`; su motivo vive en el evento
-    # `nivel_efectivo` que lo fijó.
-    nivel_efectivo: str = ""
-    # El motivo en palabras llanas de `nivel_efectivo`, para el aviso y `vista`.
-    nivel_efectivo_motivo: str = ""
-    modelos: tuple[tuple[str, str, str], ...] = ()
-    modelos_fase: tuple[tuple[str, str, str], ...] = ()
-    modelos_solicitados: tuple[tuple[str, str, str], ...] = ()
-    sesion_responsable: str = ""
-    sesion_revisor: str = ""
-    epoca_responsable: int = 0
-    epoca_revisor: int = 0
-    viva_responsable: bool = False
-    viva_revisor: bool = False
-    sesion_modo: str = ""
-    poteto_digest: str = ""
-    # Los bloqueos (ids) abiertos cuando el trabajo volvió al responsable por última
-    # vez: lo que el responsable ya sabe. Uno abierto que no está aquí es información
-    # nueva, no «el mismo bloqueo».
-    devuelto_con: tuple[str, ...] = ()
-    # Generación de la última vuelta que el freno ya resolvió: una vuelta cuenta una
-    # sola vez, entren las fuentes que entren en el barrido.
-    vuelta_contada: int = 0
-    # Revisiones no_concluyente seguidas sobre la misma versión que piden lo
-    # mismo, y qué pidió la última (fase, versión, texto, recurso, objetivo, huella).
-    no_concluyentes: int = 0
-    no_concluyente_ref: tuple[str, ...] = ()
-    # La escalera no se guarda como contador de vueltas: se guarda qué pasos ya
-    # gastó cada rol sobre un conjunto de ids. La clave identifica ese conjunto
-    # (los ids devueltos al responsable, o el pedido del revisor) y el número de
-    # avances registrados; un avance o un hecho nuevo la estrena sin reiniciar
-    # ningún campo.
-    escalones: tuple[tuple[str, str, str], ...] = ()
-    # Cuántos avances reales registró el encargo (bloqueante cerrado, primer
-    # bloqueante, aprobación concluyente sin bloqueos). Es la época de la
-    # escalera: crece sola con el hecho, no se reinicia a mano.
-    avances: int = 0
-    # Marcadores que antes vivían en archivos y decidían fuera del registro.
-    # Cada uno es ahora un hecho: el reducer guarda su última marca y el ciclo
-    # la lee sin recorrer eventos ni abrir un `.json`.
-    incorporado: tuple[int, ...] = ()
-    quietud_vigilada: tuple[int, int, float, float] = (0, 0, 0.0, 0.0)
-    lectura_deepseek: LecturaDeepSeek = field(default_factory=LecturaDeepSeek)
-    deepseek_cerrado: MarcasDeepSeekCerrado = field(
-        default_factory=MarcasDeepSeekCerrado
-    )
-    sondeo_ci: SondeoCI = field(default_factory=SondeoCI)
-    # Hechos derivados que antes se contaban recorriendo el log en `ciclo.py`.
-    # El reducer los actualiza al plegar; los consumidores leen el fold.
-    fallos_repo: tuple[str, int] = ("", 0)
-    fallos_entrega: tuple[str, int] = ("", 0)
-    fallos_instrumento: tuple[tuple[str, str, str, str], ...] = ()
-    apariciones: tuple[tuple[str, int], ...] = ()
-    fallos_proveedor: tuple[tuple[str, int], ...] = ()
-    fallos_barrido: int = 0
-    ultima_firma: str = ""
-    artefactos_instrumento: tuple[tuple[str, str], ...] = ()
-    lecturas_deepseek: tuple[tuple[str, str, int], ...] = ()
-    cuerpos_publicados: tuple[tuple[str, str, str], ...] = ()
-    preguntas_pedidas: tuple[str, ...] = ()
-    hora_cierre: str = ""
-    evidencias_revision: tuple[tuple[str, str], ...] = ()
-    internos_producto: tuple[str, ...] = ()
-    # Pendientes que se escriben en el cuerpo del PR cuando el encargo entrega
-    # sin que el revisor haya concluido o sin la revisión externa.
-    pendientes_entrega: tuple[str, ...] = ()
-    cierre_forzado_fase: Fase | None = None
-    cierre_forzado_huella: str = ""
-    reaperturas: int = 0
-    # Herramientas que fallaron igual tres veces y no se vuelven a usar en este
-    # encargo. El trabajo sigue con la evidencia que haya.
-    herramientas_no_disponibles: tuple[str, ...] = ()
-    # Notas que acompañan al cuerpo del PR (disputas, preguntas contestadas,
-    # herramientas caídas, tiempos agotados).
-    notas_pr: tuple[str, ...] = ()
-    # Hallazgos externos que una restricción expresa o el revisor dejaron fuera
-    # de alcance: (id, título, razón). No bloquean; se escriben en el PR.
-    fuera_de_alcance: tuple[tuple[str, str, str], ...] = ()
-    # Excepciones del check de merge derivadas de eventos `excepcion`:
-    # (tipo, sha, id, motivo, hora). Única fuente del marcador `motor:excepciones=`.
-    excepciones: tuple[tuple[str, str, str, str, str], ...] = ()
-    # Fuera de alcance heredado de un evento `hallazgo_fuera_de_alcance`:
-    # (id, motivo, hora). Solo alimenta el marcador cuando el encargo no tiene
-    # excepciones estructuradas. No incluye lo que agrega
-    # `_fuera_de_alcance_por_restricciones`, que no se juzgó en un SHA.
-    excepciones_legado: tuple[tuple[str, str, str], ...] = ()
-    # Las causas pendientes del entorno o del instrumento. Mientras haya una,
-    # ningún proceso nuevo: cada una se levanta con su propia comprobación.
-    impedimento: str = ""
-    impedimento_causa: str = ""
-    impedimento_condicion: str = ""
-    impedimento_fuente: str = ""
-    impedimentos: tuple[Impedimento, ...] = ()
-    observada_version: str = ""
-    fases: tuple[Fase, ...] = ()
-    fase_activa: str = ""
-    despliegue_mapa: tuple[tuple[str, str], ...] = ()
-    despliegue_archivo: str = ""
-    solicitudes: tuple[Solicitud, ...] = ()
-    decisiones: tuple[Decision, ...] = ()
-    autorizaciones: tuple[tuple[str, str, str, str, str, str], ...] = ()
-
-    # La fase conserva el producto, la revisión y la entrega. Estas vistas
-    # existen para los consumidores del encargo que trabajan la fase actual.
-    @property
-    def fase_actual(self) -> Fase | None:
-        for fase in self.fases:
-            if fase.id == self.fase_activa:
-                return fase
-        return self.fases[-1] if self.fases else None
-
-    @property
-    def producto(self) -> VersionProducto | None:
-        fase = self.fase_actual
-        return fase.producto if fase else None
-
-    @property
-    def revision_vigente(self) -> RefRevision | None:
-        fase = self.fase_actual
-        return fase.revision_vigente if fase else None
-
-    @property
-    def nivel_alcanzado(self) -> str:
-        return nivel_de(self.fase_actual)
-
-    @property
-    def pr_numero(self) -> int:
-        fase = self.fase_actual
-        return fase.pr_numero if fase else 0
-
-    @property
-    def pr_sha(self) -> str:
-        fase = self.fase_actual
-        return fase.pr_sha if fase else ""
-
-    @property
-    def deepseek_sha(self) -> str:
-        fase = self.fase_actual
-        return fase.deepseek_sha if fase else ""
-
-    @property
-    def deepseek_huella(self) -> str:
-        fase = self.fase_actual
-        return fase.deepseek_huella if fase else ""
-
-    def fases_preparadas(self) -> tuple[Fase, ...]:
-        return tuple(f for f in self.fases if f.estado == "preparada")
-
-    def objetivo_completo(self) -> bool:
-        return bool(self.fases) and all(
-            f.estado == "preparada" for f in self.fases
-        )
 
 
 def con_fase(e: Encargo, fase: Fase) -> Encargo:
@@ -1775,7 +1559,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 "la via directa no entrega niveles externos; usa la via durable"
             )
         if d.get("detenido"):
-            return Encargo(
+            return evolucionar(Encargo(
                 id=d["id"],
                 clave=d["clave"],
                 huella=d["huella"],
@@ -1786,7 +1570,6 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 canal=d.get("canal") or "",
                 permisos=tuple(d.get("permisos") or ()),
                 prohibiciones=tuple(d.get("prohibiciones") or ()),
-                estado="detenido",
                 ultimo_hecho="importado detenido sin escrituras",
                 hora=hora,
                 siguiente="detenido hasta continuar tras conciliar los efectos",
@@ -1796,7 +1579,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 via=via,
                 entrega=_entrega_de(d),
                 modelos_solicitados=tuple(tuple(x) for x in d.get("modelos_solicitados", ())),
-            )
+            ), estado="detenido")
         return Encargo(
             id=d["id"],
             clave=d["clave"],
@@ -2669,7 +2452,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
             return e
         if d.get("fase") != fase.id or d.get("cierre") != e.cierre_forzado_huella:
             return e
-        return replace(
+        return evolucionar(
             sesiones_de_fase_nueva(con_fase(e, fase)),
             estado="detenido", fase_activa=fase.id,
             cierre_forzado_fase=None, cierre_forzado_huella="",
@@ -2686,7 +2469,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
             return e
         if e.estado == "terminado":
             return e
-        return replace(
+        return evolucionar(
             e,
             estado="deteniendo",
             orden_parada="parar",
@@ -2701,7 +2484,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
     if accion == "cancelar":
         if e.estado == "terminado":
             return e
-        return replace(
+        return evolucionar(
             e,
             estado="deteniendo",
             orden_parada="cancelar",
@@ -2729,7 +2512,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
         e = _retomar(_fuera_de_alcance_por_restricciones(e), hora)
         if e.no_concluyentes < TOPE_NO_CONCLUYENTES:
             e = replace(e, pendientes_entrega=())
-        return replace(
+        return evolucionar(
             e,
             proc=None, herramienta="", conductor="", intento="",
             motivo="", causa="", reanuda_en="", orden_parada="",
@@ -2771,7 +2554,7 @@ def _retomar_trabajo(e: Encargo, hora: str) -> Encargo:
     disponible = _fase_disponible(e.fases)
     if disponible is not None:
         rol, estrategia = _rol_de_continuacion(e, disponible)
-        resultado = replace(
+        resultado = evolucionar(
             e,
             estado="recibido",
             fase_activa=disponible.id,
@@ -2788,7 +2571,7 @@ def _retomar_trabajo(e: Encargo, hora: str) -> Encargo:
             return sesiones_de_fase_nueva(resultado)
         return resultado
     if e.fases and all(f.estado == "preparada" for f in e.fases):
-        return replace(
+        return evolucionar(
             e,
             estado="recibido",
             rol="revisor",
@@ -2799,7 +2582,7 @@ def _retomar_trabajo(e: Encargo, hora: str) -> Encargo:
             ultimo_hecho="se continuó; todas las fases están preparadas",
             hora=hora or e.hora,
         )
-    return replace(
+    return evolucionar(
         e,
         estado="recibido",
         rol="",
@@ -2834,7 +2617,7 @@ def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
     if fase is None or fase.estado == "bloqueada":
         return e
     causa = " ".join(str(d.get("causa") or evidencia).split())
-    e = replace(
+    e = evolucionar(
         e,
         cierre_forzado_fase=fase,
         cierre_forzado_huella=hashlib.sha256(
@@ -2859,7 +2642,7 @@ def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
     )
     disponible = _fase_disponible(e.fases)
     if disponible is not None:
-        resultado = replace(
+        resultado = evolucionar(
             e,
             estado="recibido",
             fase_activa=disponible.id,
@@ -2877,7 +2660,7 @@ def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
             else resultado
         )
     if queda_trabajo(e.fases):
-        return replace(
+        return evolucionar(
             e,
             estado="recibido",
             rol="",
@@ -2887,7 +2670,7 @@ def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
         # El cierre con pendientes de una fase no abandona el despliegue ya
         # aplicado de otra: la conciliación lo completa y da el turno a su
         # dependiente, sin reabrir roles ni esperar a una persona.
-        return replace(
+        return evolucionar(
             e,
             estado="recibido",
             rol="",
@@ -2897,7 +2680,7 @@ def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
             escrituras=e.autoridad,
             devuelto_con=(),
         )
-    return replace(
+    return evolucionar(
         e,
         estado="terminado",
         evidencia=e.evidencia + (evidencia,),
@@ -2920,7 +2703,7 @@ def _fase_reactivada(e: Encargo, d: dict, hora: str) -> Encargo:
     if fase is None or fase.estado != "bloqueada" or e.estado in _CERRADOS:
         return e
     return sesiones_de_fase_nueva(
-        replace(
+        evolucionar(
             con_fase(e, replace(fase, estado="trabajo", pendientes=())),
             fase_activa=fase.id,
             estado="recibido",
@@ -2969,7 +2752,7 @@ def _dejar_fase(e: Encargo, nueva: Fase, hora: str, hecho: str) -> Encargo:
     if disponible is None:
         return resultado
     return sesiones_de_fase_nueva(
-        replace(
+        evolucionar(
             resultado,
             estado="recibido",
             fase_activa=disponible.id,
@@ -3221,7 +3004,7 @@ def _fase_desplegada(e: Encargo, d: dict, hora: str) -> Encargo:
     if disponible is None:
         return resultado
     return sesiones_de_fase_nueva(
-        replace(
+        evolucionar(
             resultado,
             estado="recibido",
             fase_activa=disponible.id,
@@ -3308,7 +3091,7 @@ def _reabrir_en_el_pr(
     """La fase vuelve al responsable en su misma rama y su mismo PR."""
     reabierta = replace(fase, estado="entrega", ultimo_paso_entrega="pr_abierto")
     return sesiones_de_fase_nueva(
-        replace(
+        evolucionar(
             con_fase(e, reabierta),
             estado="recibido",
             rol="responsable",
@@ -3569,7 +3352,7 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
         e, "revisor", "pendientes"
     ):
         # El revisor de relevo tampoco concluyó: se entrega con la nota.
-        return replace(
+        return evolucionar(
             con_escalon(e, "revisor", clave_escalera(e, "revisor"), "pendientes"),
             estado=(
                 "recibido"
@@ -3581,7 +3364,7 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
             siguiente="entregar el PR con la revisión sin veredicto",
             ultimo_hecho=motivo,
         )
-    return replace(
+    return evolucionar(
         con_escalon(e, "revisor", clave_escalera(e, "revisor"), "relevo"),
         estado=(
             "recibido"
@@ -3667,7 +3450,7 @@ def _fase_reabierta(e: Encargo, d: dict, hora: str) -> Encargo:
         return e
     causa = str(d.get("causa") or "DeepSeek dejó un hallazgo abierto")
     return sesiones_de_fase_nueva(
-        replace(
+        evolucionar(
             con_fase(e, replace(fase, estado="entrega", ultimo_paso_entrega="pr_abierto")),
             fase_activa=fase.id,
             estado="recibido",
@@ -3760,7 +3543,7 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
             )
         if disponible is not None:
             return sesiones_de_fase_nueva(
-                replace(
+                evolucionar(
                     e,
                     fases=fases,
                     estado="recibido",
@@ -3778,7 +3561,7 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 )
             )
         if pendientes and queda_trabajo(fases):
-            resultado = replace(
+            resultado = evolucionar(
                 e,
                 fases=fases,
                 estado="recibido",
@@ -3802,7 +3585,7 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
         if _espera_despliegue_pendiente(e, fases):
             # El cierre confirmado no puede abandonar una fase integrada que
             # espera su despliegue y que el cierre de main no va a reconciliar.
-            return replace(
+            return evolucionar(
                 e,
                 fases=fases,
                 estado="recibido",
@@ -3823,7 +3606,7 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
         # Con fases bloqueadas el cierre es una entrega parcial: la identidad
         # del cierre por fase se conserva para que `reabrir` la encuentre.
         completo = not pendientes
-        return replace(
+        return evolucionar(
             e,
             fases=fases,
             estado="terminado",

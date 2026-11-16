@@ -21,7 +21,7 @@ from unittest import mock
 
 from motor.__main__ import main as motor_main
 from motor.encargos import ciclo
-from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, VersionProducto
+from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, VersionProducto, evolucionar
 from motor.encargos.integracion import traer_main
 
 HORA = "2026-11-01T12:00:00Z"
@@ -49,7 +49,7 @@ class _Registro:
 
 
 def _encargo_real(fases, activa: str) -> Encargo:
-    return Encargo(
+    return evolucionar(Encargo(
         id="enc_x",
         clave="clave-x",
         huella="huella",
@@ -61,9 +61,8 @@ def _encargo_real(fases, activa: str) -> Encargo:
         entrega=EntregaAutorizada(nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"),
         fases=tuple(fases),
         fase_activa=activa,
-        estado="ejecutando",
         generacion=1,
-    )
+    ), estado="ejecutando")
 
 
 class _TraerMain(unittest.TestCase):

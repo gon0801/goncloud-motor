@@ -6,10 +6,10 @@ turno nuevo.
 """
 
 from __future__ import annotations
+from motor.encargos.encargo import evolucionar
 
 import tempfile
 import unittest
-from dataclasses import replace
 from unittest import mock
 
 from motor.encargos import dominio
@@ -28,7 +28,7 @@ class EstadosDelEncargo(unittest.TestCase):
             with mock.patch.object(
                 dominio,
                 "_reducir",
-                return_value=replace(actual, estado="necesita_usuario"),
+                return_value=evolucionar(actual, estado="necesita_usuario"),
             ):
                 with self.assertRaises(dominio.TransicionIlegal):
                     dominio.reducir(

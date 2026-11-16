@@ -1,11 +1,11 @@
 """La recuperación explícita restaura sólo la fase que cerró el atajo."""
 
+from motor.encargos.encargo import evolucionar
 import json
 from contextlib import closing
 import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from motor.encargos import ciclo
@@ -167,8 +167,7 @@ class ReabrirCierreForzado(unittest.TestCase):
     def test_cierre_normal_y_cancelacion_siguen_siendo_terminales(self):
         for estado in ("terminado", "cancelado"):
             with self.subTest(estado=estado):
-                from dataclasses import replace
-                normal = replace(self.antes, estado=estado)
+                normal = evolucionar(self.antes, estado=estado)
                 with self.assertRaisesRegex(TransicionIlegal, "cierre forzado"):
                     reducir(normal, {"kind": "orden", "data": {"accion": "reabrir"}})
 
