@@ -44,6 +44,18 @@ def aplicar_fila(e: Encargo, kind: str, d: dict, hora: str, nuevo: bool) -> Enca
     return fila.reducir(e, d, hora, nuevo)
 
 
+_OMISION_SIN_DERIVADOS = frozenset({
+    "entrega", "cierre_forzado", "bloqueo_fase", "producto_listo",
+    "orden", "ruta_agentes", "contexto_entrega", "ajuste", "procedimiento",
+    "proveedor_fallo", "fallo_interno", "incorporado", "quietud_vigilada",
+    "solicitud",
+})
+
+
+def se_omitio(kind: str, anterior: Encargo | None, aplicado: Encargo) -> bool:
+    return aplicado is anterior and (kind not in TABLA or kind in _OMISION_SIN_DERIVADOS)
+
+
 TABLA: dict[str, Fila] = {
     "recibo": Fila(pedido.recibo),
     "ruta_agentes": Fila(pedido.ruta_agentes, validar=validacion_pedido.validar_ruta_agentes),
