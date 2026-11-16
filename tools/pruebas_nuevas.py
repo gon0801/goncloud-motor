@@ -152,6 +152,7 @@ def _modulos(archivos: list[str]) -> list[tuple[str, str]]:
     pares = [
         (ruta[:-3].replace("/", "."), ruta) for ruta in archivos if ruta.endswith(".py")
     ]
+    pares.extend((Path(ruta).stem, ruta) for ruta in archivos if ruta.endswith(".py"))
     return sorted(pares, key=lambda par: len(par[0]), reverse=True)
 
 
@@ -202,7 +203,6 @@ def _corre_en_base(
             destino = worktree / ruta
             destino.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(origen, destino)
-        modulos = _modulos(copiar)
         pasaron: set[tuple[str, str]] = set()
         no_ejecutadas: list[tuple[str, str]] = []
         salida = []
@@ -243,6 +243,7 @@ def _corre_en_base(
             if error_coleccion is not None:
                 no_ejecutadas.append((ruta, error_coleccion))
             elegidas = set(seleccion[ruta])
+            modulos = _modulos([ruta])
             vistas: set[str] = set()
             for caso in ET.parse(reporte).iter("testcase"):
                 identidad = _identidad_del_caso(caso, modulos)
