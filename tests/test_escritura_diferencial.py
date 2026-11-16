@@ -100,6 +100,21 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertIn("mensaje_transicion", hecho.stdout)
         self.assertNotIn("mensaje privado cambiado", hecho.stdout)
 
+    def test_entrega_se_prueba_con_estado_vacio(self) -> None:
+        arbol = self.raiz / "mutado"
+        shutil.copytree(RAIZ / "motor", arbol / "motor")
+        archivo = arbol / "motor" / "encargos" / "dominio.py"
+        contenido = archivo.read_text(encoding="utf-8")
+        original = 'if kind == "entrega":\n        if estado is not None:'
+        self.assertIn(original, contenido)
+        archivo.write_text(
+            contenido.replace(original, original.replace("not None", "not None or nuevo"), 1),
+            encoding="utf-8",
+        )
+        hecho = self.correr("--kinds", "entrega", "--arbol", str(arbol))
+        self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
+        self.assertIn("base_acepta_arbol_rechaza", hecho.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
