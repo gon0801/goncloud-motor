@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .errores import HechoInaplicable
+from .errores import HechoInaplicable, leer_carga
 
 if TYPE_CHECKING:
     from ..dominio import Encargo
@@ -32,16 +32,15 @@ def comprobaciones_supervisor(e: Encargo, d: dict, hora: str, nuevo: bool) -> En
     fase = e.fase_actual
     if fase is None:
         return e
-    nuevos = tuple(
-        Hallazgo.desde(h)
-        for h in (d.get("hallazgos") or ())
-        if isinstance(h, dict)
+    nuevos, verdes, comandos_verdes = leer_carga(
+        nuevo, lambda: (
+            tuple(Hallazgo.desde(h) for h in (d.get("hallazgos") or ())
+                  if isinstance(h, dict)),
+            set(d.get("verdes") or ()),
+            {normaliza_comando(x) for x in (d.get("verdes_comandos") or ())},
+        ),
     )
     ids = {h.id for h in nuevos}
-    verdes = set(d.get("verdes") or ())
-    comandos_verdes = {
-        normaliza_comando(x) for x in (d.get("verdes_comandos") or ())
-    }
     con_verdes = "verdes" in d
     previos = tuple(
         replace(h, estado="resuelto")
@@ -69,6 +68,15 @@ def comprobaciones_supervisor(e: Encargo, d: dict, hora: str, nuevo: bool) -> En
 def revision(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import TransicionIlegal, _revision
 
+    if not nuevo:
+        from ..dominio import Hallazgo
+
+        leer_carga(nuevo, lambda: (
+            tuple(Hallazgo.desde(h) for h in (d.get("hallazgos") or ())
+                  if isinstance(h, dict)),
+            tuple(d.get("cubre") or ()),
+            int(d.get("lector_version") or 0),
+        ))
     try:
         return _revision(e, d, hora)
     except TransicionIlegal as exc:
@@ -89,7 +97,8 @@ def deepseek_cerrado(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def ci_sondeo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import SondeoCI, replace
 
-    return replace(e, sondeo_ci=SondeoCI.de_dict(d))
+    carga = leer_carga(nuevo, lambda: SondeoCI.de_dict(d))
+    return replace(e, sondeo_ci=carga)
 
 def nota_pr(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import con_fase, replace

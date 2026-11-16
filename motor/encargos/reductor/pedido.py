@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..catalogo_agentes import identidad_modelo
-from .errores import HechoInaplicable
+from .errores import HechoInaplicable, leer_carga
 
 if TYPE_CHECKING:
     from ..dominio import Encargo
@@ -17,7 +17,8 @@ def recibo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 
 def ruta_agentes(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    return replace(e, agentes=tuple(d["agentes"]))
+    agentes = leer_carga(nuevo, lambda: tuple(d["agentes"]))
+    return replace(e, agentes=agentes)
 
 
 def contexto_entrega(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
@@ -37,9 +38,11 @@ def contexto_entrega(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def proveedor_fallo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import PausaAgente, _con_pausa
 
-    pausa = PausaAgente(
-        d["agente"], d["hasta"], d["causa"], d["relevo"],
-        str(d.get("modelo") or ""),
+    pausa = leer_carga(
+        nuevo, lambda: PausaAgente(
+            d["agente"], d["hasta"], d["causa"], d["relevo"],
+            str(d.get("modelo") or ""),
+        ),
     )
     return replace(
         e,
@@ -49,10 +52,11 @@ def proveedor_fallo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 
 def proveedor_disponible(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
+    agente = leer_carga(nuevo, lambda: d["agente"]) if e.pausas else None
     modelo = str(d.get("modelo") or "")
     if not modelo:
         return replace(
-            e, pausas=tuple(p for p in e.pausas if p.agente != d["agente"])
+            e, pausas=tuple(p for p in e.pausas if p.agente != agente)
         )
     return replace(
         e,
@@ -60,7 +64,7 @@ def proveedor_disponible(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo
             p
             for p in e.pausas
             if not (
-                p.agente == d["agente"]
+                p.agente == agente
                 and p.modelo
                 and identidad_modelo(p.modelo) == identidad_modelo(modelo)
             )
@@ -77,6 +81,8 @@ def falla_sesion_local(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def orden(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import TransicionIlegal, _orden
 
+    if not nuevo:
+        leer_carga(nuevo, lambda: d["accion"])
     try:
         return _orden(e, d, hora)
     except TransicionIlegal as exc:
@@ -97,6 +103,8 @@ def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         _soltar_impedimento_de_inspeccion,
     )
 
+    if not nuevo:
+        leer_carga(nuevo, lambda: (d["texto"], tuple(d.get("cierra") or ())))
     if e.estado == "terminado":
         fase = e.fase_actual
         # Con el PR abierto la corrección vuelve al responsable en la misma
@@ -156,14 +164,18 @@ def ajuste(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 
 def procedimiento(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
+    nota, ajustes = leer_carga(
+        nuevo, lambda: (
+            d["nota"],
+            int(d.get("ajustes_anotados", d.get("ajustes_vistos", e.ajustes_anotados))),
+        ),
+    )
     return replace(
         e,
-        procedimiento=e.procedimiento + (d["nota"],),
+        procedimiento=e.procedimiento + (nota,),
         # La nota de la versión anterior traía este conteo como
         # "ajustes_vistos"; sólo la escribía la nota sin intento.
-        ajustes_anotados=int(
-            d.get("ajustes_anotados", d.get("ajustes_vistos", e.ajustes_anotados))
-        ),
+        ajustes_anotados=ajustes,
         hora=hora or e.hora,
     )
 

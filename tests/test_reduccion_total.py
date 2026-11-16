@@ -57,6 +57,14 @@ class ReduccionTotal(unittest.TestCase):
                     reducir(previo, {"kind": kind, "data": datos}, nuevo=True)
                 self.assertEqual(str(exc.exception), mensaje)
 
+    def test_proveedor_disponible_sin_pausas_no_necesita_agente(self) -> None:  # no-roja-en-base: conserva la escritura de una carga que no se usa
+        previo = _pedido()
+        for nuevo in (False, True):
+            with self.subTest(nuevo=nuevo):
+                resultado = reducir(previo, {"kind": "proveedor_disponible",
+                                               "data": {"modelo": "nuevo"}}, nuevo=nuevo)
+                self.assertEqual(resultado.pausas, ())
+
     def test_aplicar_nunca_lanza_ni_con_infinity(self) -> None:
         previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F")
         casos = [(kind, {}) for kind in sorted(set(TABLA) | {"entrega"})]
@@ -68,6 +76,11 @@ class ReduccionTotal(unittest.TestCase):
             ("reserva", {"generacion": float("inf")}),
             ("ci_sondeo", {"sondeos": float("inf")}),
             ("entrega_externa", {"numero": float("inf")}),
+            ("entrega_externa", {"fase": "ajena", "paso": "commit"}),
+            ("fases", {"fases": [{"id": "F", "resultado": "r",
+                                  "requiere_despliegue": "sí"}]}),
+            ("fases", {"fases": [{"id": "F", "resultado": "r",
+                                  "requiere": [{"fase": "ajena"}]}]}),
             ("ajuste", {"texto": "x", "cierra": float("nan")}),
             ("ci_pr", {"estado": "verde", "fallas": float("inf")}),
             ("comprobaciones_supervisor", {"hallazgos": float("inf")}),
@@ -126,6 +139,34 @@ class ReduccionTotal(unittest.TestCase):
                 hecho = {"kind": "conciliacion_fase",
                          "data": {"fase": "F", "firma": "ajena", **datos}}
                 self.assertEqual(asdict(reducir(previo, hecho, nuevo=False)), asdict(previo))
+
+    def test_fases_y_entrega_externa_ilegibles_permiten_el_evento_siguiente(self) -> None:
+        previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F")
+        casos = (
+            ("entrega_externa", {"fase": "otra", "paso": "commit"}),
+            ("entrega_externa", {"fase": "F", "intento": "ajeno", "paso": "commit"}),
+            ("fases", {"fases": [{"id": "F", "resultado": "r",
+                                  "requiere_despliegue": "quizá"}]}),
+            ("fases", {"fases": [{"id": "F", "resultado": "r", "lane": []}]}),
+            ("fases", {"fases": [{"id": "F", "resultado": "r", "requiere": "mal"}]}),
+            ("fases", {"fases": [{"id": "F", "resultado": "r",
+                                  "requiere": [{"fase": "ajena", "version": "v"}]}]}),
+        )
+        for kind, data in casos:
+            with self.subTest(kind=kind, data=data):
+                anterior = replace(previo, intento="vigente") if data.get("intento") else previo
+                resultado = reducir(anterior, {"kind": kind, "data": data}, nuevo=False)
+                self.assertEqual(asdict(resultado), asdict(anterior))
+                siguiente = reducir(resultado, {"kind": "procedimiento",
+                                                  "data": {"nota": "continúa"}}, nuevo=False)
+                self.assertEqual(siguiente.procedimiento[-1], "continúa")
+
+    def test_entrega_inicial_sin_estado_previo_sigue_rechazando_tipos_malos(self) -> None:  # no-roja-en-base: fija el límite sin estado previo que no se modifica
+        with self.assertRaises((TypeError, ValueError, TransicionIlegal)):
+            reducir(None, {"kind": "entrega", "data": {
+                "id": "e", "clave": "k", "huella": "h",
+                "texto": "pedido", "entrega_nivel": 17,
+            }}, nuevo=False)
 
     def test_kind_desconocido_no_modifica_nada_al_plegar(self) -> None:
         previo = _pedido()

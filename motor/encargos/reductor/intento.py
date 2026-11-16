@@ -5,6 +5,8 @@ from __future__ import annotations
 import socket
 from typing import TYPE_CHECKING
 
+from .errores import leer_carga
+
 if TYPE_CHECKING:
     from ..dominio import Encargo
 
@@ -13,7 +15,7 @@ def reserva(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import replace
     from .validacion_intento import leer_reserva
 
-    carga = leer_reserva(e, d)
+    carga = leer_carga(nuevo, lambda: leer_reserva(e, d))
     if carga is None:
         return e
     return replace(
@@ -53,7 +55,7 @@ def intento_abierto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import Proc, replace
     from .validacion_intento import leer_intento_abierto
 
-    carga = leer_intento_abierto(d)
+    carga = leer_carga(nuevo, lambda: leer_intento_abierto(d))
     if carga is None:
         return e
     rol_intento = str(d.get("rol") or e.rol or "responsable")
