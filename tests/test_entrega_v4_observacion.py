@@ -100,7 +100,7 @@ class ObservacionDelPR(unittest.TestCase):
 
 
 class PuertoDeGitHubParaLimpieza(unittest.TestCase):
-    def test_puerto_real_construye_comandos_y_distingue_404(self) -> None:
+    def test_puerto_real_construye_comandos_y_distingue_404(self) -> None:  # no-roja-en-base: protege el contrato del puerto que ya existía en main
         class GhSinRed(GhGitHub):
             def __init__(self) -> None:
                 super().__init__()
