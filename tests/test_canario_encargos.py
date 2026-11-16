@@ -25,6 +25,7 @@ from typing import get_args
 from motor import plataforma
 from motor.encargos.ciclo import recibir
 from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, Impedimento, VersionProducto
+from tests.soporte_situacion import evolucionar
 from motor.encargos.politica import CERRADOS_VENTANA_S
 from motor.encargos.registro import Registro
 from ops.agente_ensayo import APAGON, CORTES, INVOCACIONES
@@ -209,12 +210,12 @@ class Termina(unittest.TestCase):
 
 
 def _encargo(*fases: Fase, nivel: str = "desplegado", **cambios) -> Encargo:
-    return Encargo(
+    return evolucionar(Encargo(
         id="enc_x", clave="c", huella="h", director="d", texto="t", adjuntos=(),
-        restricciones=(), canal="", estado="terminado", hora_cierre=CIERRE,
+        restricciones=(), canal="", hora_cierre=CIERRE,
         entrega=EntregaAutorizada(nivel=nivel, repo="r", base="main"),
         fases=fases, fase_activa=fases[-1].id, **cambios,
-    )
+    ), estado="terminado")
 
 
 RECIBIDO_EV = [{"id": 1, "ts": RECIBIDO, "kind": "recibido", "data": {}}]
@@ -653,7 +654,7 @@ class SeDetiene(unittest.TestCase):
     def test_un_fallo_interno_no_es_la_parada_que_se_mide(self):
         """Un `detenido` por fallo interno dice su causa y no recibió órdenes, pero es un
         error del motor: el registro no guardó un hecho. No es la parada del checklist."""
-        e = dataclasses.replace(
+        e = evolucionar(
             _encargo(Fase("uno", "r", evidencia="e", estado="trabajo")),
             estado="detenido", hora_cierre="2026-01-10T10:05:00Z", orden_parada="fallo_interno",
             motivo="fallo interno: el registro rechazó el evento plazo (plazo:*) porque su "

@@ -1,5 +1,6 @@
 """Al canal solo llegan avisos para una persona no técnica, y un aviso entregado no se manda dos veces."""
 
+from tests.soporte_situacion import evolucionar
 import json
 import sys
 import tempfile
@@ -190,8 +191,8 @@ class SoloAvisosDeUsuarioFinal(Base):
             id="s1", operacion="permiso", recurso="r", fase="A", intento="i", generacion=1,
             conductor="c", motivo=texto, estado="pregunta", pregunta=texto,
         )
-        enc = replace(
-            self.b.reg.fold(ident), estado="necesita_usuario", motivo=texto, solicitudes=(solicitud,)
+        enc = evolucionar(
+            self.b.reg.fold(ident), motivo=texto, solicitudes=(solicitud,)
         )
         avisos = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "aviso"]
         self.assertEqual(avisos, [f"Aviso: el trabajo sigue sin esperarte. {texto}"])
@@ -202,8 +203,8 @@ class SoloAvisosDeUsuarioFinal(Base):
             id="s1", operacion="permiso", recurso="r", fase="A", intento="i", generacion=1,
             conductor="c", motivo="uno", estado="pregunta", pregunta="¿Publico el informe?",
         )
-        enc = replace(
-            self.b.reg.fold(ident), estado="necesita_usuario", motivo="¿Cambio el título?",
+        enc = evolucionar(
+            self.b.reg.fold(ident), motivo="¿Cambio el título?",
             solicitudes=(solicitud,),
         )
         avisos = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "aviso"]

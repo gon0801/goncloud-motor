@@ -6,13 +6,13 @@ a ella no deje un registro que la compuerta de plegado del despliegue rechace.
 """
 
 from __future__ import annotations
+from tests.soporte_situacion import evolucionar
 
 import json
 import shutil
 import sqlite3
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 
 from motor.encargos.ciclo import ordenar, recibir
@@ -74,9 +74,9 @@ class ConUnProcesoVivo(unittest.TestCase):
             "rechazo": "ilegal", "kind": "estrategia", "ukey": "estrategia:*", "hora": HORA,
         }}
 
-        deteniendo = reducir(replace(enc, reserva=True), fallo, nuevo=False)
+        deteniendo = reducir(evolucionar(enc, reserva=True), fallo, nuevo=False)
         detenido = reducir(
-            replace(deteniendo, reserva=False),
+            evolucionar(deteniendo, reserva=False),
             {"kind": "arbol", "data": {"observacion": "ausente", "hora": DESPUES}},
             nuevo=False,
         )

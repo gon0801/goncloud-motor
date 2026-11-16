@@ -62,7 +62,8 @@ class EscrituraDiferencial(unittest.TestCase):
     def correr(self, *opciones: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(HERRAMIENTA), "--base", "HEAD",
-             "--corpus", str(self.corpus), "--max-casos", "900", *opciones],
+             "--corpus", str(self.corpus), "--max-casos", "900",
+             "--estado-legado", *opciones],
             cwd=RAIZ, capture_output=True, text=True, check=False,
         )
 
@@ -91,6 +92,28 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertIn("diferencias: 0", hecho.stdout)
         self.assertNotIn("corrección secreta", hecho.stdout)
         self.assertNotIn("evidencia secreta", hecho.stdout)
+
+    def test_estado_legado_ignora_solo_la_representacion_interna(self) -> None:
+        arbol = self.raiz / "mutado"
+        shutil.copytree(RAIZ / "motor", arbol / "motor")
+        archivo = arbol / "motor/encargos/encargo.py"
+        contenido = archivo.read_text(encoding="utf-8")
+        original = "@dataclass(frozen=True)\nclass Encargo:"
+        self.assertIn(original, contenido)
+        archivo.write_text(
+            contenido.replace(
+                original, "@dataclass(frozen=True, repr=False)\nclass Encargo:", 1,
+            ),
+            encoding="utf-8",
+        )
+        opciones = ("--kinds", "entrega", "--arbol", str(arbol))
+        legado = self.correr(*opciones)
+        self.assertEqual(legado.returncode, 0, legado.stderr + legado.stdout)
+        self.assertIn("diferencias: 0", legado.stdout)
+
+        crudo = self.correr_con_tope_normal("--max-casos", "900", *opciones)
+        self.assertEqual(crudo.returncode, 1, crudo.stderr + crudo.stdout)
+        self.assertIn("estado=", crudo.stdout)
 
     def test_el_tope_primero_cubre_todos_los_pares(self) -> None:
         from tools.escritura_diferencial import _firma_estado

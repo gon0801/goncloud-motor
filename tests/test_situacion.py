@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.soporte_situacion import evolucionar
 
 import unittest
 from dataclasses import asdict, replace
@@ -17,6 +18,12 @@ def _entrega() -> tuple[dict, object]:
     return evento, reducir(None, evento, nuevo=False)
 
 
+def _vista_situacion(e) -> dict:
+    campos = asdict(e.situacion)
+    campos.pop("contexto", None)
+    return campos
+
+
 class SituacionComoLectura(unittest.TestCase):
     def test_comprobar_no_cambia_el_veredicto_del_canario(self) -> None:
         from types import SimpleNamespace
@@ -28,7 +35,7 @@ class SituacionComoLectura(unittest.TestCase):
         evento["ts"] = "2026-11-15T00:00:00Z"
 
         def reductor(estado, hecho, nuevo=False):
-            return replace(reducir(estado, hecho, nuevo), estado="ejecutando", ultimo_hecho="")
+            return evolucionar(reducir(estado, hecho, nuevo), estado="ejecutando", ultimo_hecho="")
 
         with mock.patch.object(plegado, "cargar_reductor",
                                return_value=Reductor(reductor, ("ejecutando",))):
@@ -36,17 +43,20 @@ class SituacionComoLectura(unittest.TestCase):
         self.assertEqual(pliegue.violaciones, ())
         self.assertEqual(canario_juzgar._legible(SimpleNamespace(pliegue=pliegue), None)[0], "pasa")
 
-    def test_variantes_no_se_guardan_en_encargo(self) -> None:
+    def test_variantes_se_guardan_en_encargo_sin_duplicar_estado(self) -> None:
         from motor.encargos.situacion import Cancelado, Recibido, situacion_de
+        from dataclasses import fields
 
         _, e = _entrega()
         anterior = asdict(e)
         recibido = situacion_de(e)
         self.assertIsInstance(recibido, Recibido)
-        self.assertEqual(asdict(recibido), {"estado": "recibido"})
-        self.assertEqual(asdict(situacion_de(replace(e, estado="cancelado"))),
+        self.assertIs(e.situacion, recibido)
+        self.assertEqual(_vista_situacion(e), {"estado": "recibido"})
+        self.assertNotIn("estado", {campo.name for campo in fields(e)})
+        self.assertEqual(_vista_situacion(evolucionar(e, estado="cancelado")),
                          {"estado": "cancelado"})
-        self.assertIsInstance(situacion_de(replace(e, estado="cancelado")), Cancelado)
+        self.assertIsInstance(situacion_de(evolucionar(e, estado="cancelado")), Cancelado)
         self.assertEqual(asdict(e), anterior)
 
     def test_las_cuatro_incoherencias_conservan_sus_mensajes(self) -> None:
@@ -62,21 +72,19 @@ class SituacionComoLectura(unittest.TestCase):
         )
         for cambios, mensaje in casos:
             with self.subTest(mensaje=mensaje), self.assertRaisesRegex(EstadoIncoherente, mensaje):
-                situacion_de(replace(e, **cambios))
+                situacion_de(evolucionar(e, **cambios))
 
     def test_vista_delega_sus_errores_y_contencion_muestra_la_minima(self) -> None:
         from motor.encargos.contencion import vista_o_minima
         from motor.encargos.situacion import EstadoIncoherente
 
         _, e = _entrega()
-        roto = replace(e, estado="terminado")
+        roto = evolucionar(e, estado="terminado")
         with self.assertRaisesRegex(EstadoIncoherente, "terminado sin evidencia"):
             vista(roto)
         self.assertEqual(vista_o_minima(roto), {"encargo": e.id, "estado": "terminado"})
 
     def test_variantes_conservan_datos_reales_de_cada_estado(self) -> None:
-        from motor.encargos.situacion import situacion_de
-
         _, e = _entrega()
         casos = (
             ({"estado": "ejecutando", "fase_activa": "F", "intento": "I",
@@ -98,21 +106,21 @@ class SituacionComoLectura(unittest.TestCase):
         )
         for cambios, esperado in casos:
             with self.subTest(estado=cambios["estado"]):
-                self.assertEqual(asdict(situacion_de(replace(e, **cambios))), esperado)
+                self.assertEqual(_vista_situacion(evolucionar(e, **cambios)), esperado)
 
     def test_terminado_con_fases_completas_y_pendientes_no_es_parcial_vacio(self) -> None:
         from motor.encargos.situacion import Completo, Parcial, Terminado, situacion_de
 
         _, e = _entrega()
         fase = Fase("F", "resultado", estado="preparada", evidencia="comprobado")
-        cerrado = replace(e, estado="terminado", fases=(fase,), evidencia=("probado",),
+        cerrado = evolucionar(e, estado="terminado", fases=(fase,), evidencia=("probado",),
                           pendientes_entrega=("pendiente de entrega",))
         self.assertTrue(vista(cerrado)["objetivo"]["completo"])
         self.assertEqual(situacion_de(cerrado), Terminado(Completo(), None))
-        incompleto = replace(cerrado, fases=(Fase("F", "resultado"),),
+        incompleto = evolucionar(cerrado, fases=(Fase("F", "resultado"),),
                              cierre_forzado_fase=fase, cierre_forzado_huella="h")
         self.assertEqual(
-            asdict(situacion_de(incompleto)),
+            _vista_situacion(incompleto),
             {"resultado": asdict(Parcial(("F",))), "forzado": {"fase": "F", "huella": "h"},
              "estado": "terminado"},
         )
@@ -123,7 +131,7 @@ class SituacionComoLectura(unittest.TestCase):
         self.assertIn("situacion_tipada", nombres)
         self.assertIn("datos_dependen_del_estado", nombres)
         reductor = Reductor(reducir, ("recibido",))
-        incoherente = replace(e, estado="terminado")
+        incoherente = evolucionar(e, estado="terminado")
         hallado = nombres["situacion_tipada"](
             reductor, [evento], Traza(estados=[incoherente]),
         )
@@ -160,29 +168,29 @@ class SituacionComoLectura(unittest.TestCase):
         )
 
     def test_orden_reabrir_no_se_confunde_con_importar_ni_parar(self) -> None:
-        from motor.encargos.situacion import Detenido, PorOrden, situacion_de
+        from motor.encargos.situacion import PorOrden, situacion_de
 
         _, e = _entrega()
-        importado = replace(e, estado="detenido", orden_parada="")
-        self.assertEqual(situacion_de(importado), Detenido(PorOrden("importar")))
+        importado = evolucionar(e, estado="detenido", orden_parada="")
+        self.assertEqual(situacion_de(importado).causa, PorOrden("importar"))
         fase = Fase("F", "resultado")
-        cerrado = replace(e, estado="terminado", fases=(fase,), fase_activa=fase.id,
+        cerrado = evolucionar(e, estado="terminado", fases=(fase,), fase_activa=fase.id,
                           cierre_forzado_fase=fase, cierre_forzado_huella="huella",
                           evidencia=("comprobado",))
         reabierto = reducir(cerrado, {"kind": "orden", "data": {
             "accion": "reabrir", "fase": fase.id, "cierre": "huella",
         }}, nuevo=False)
-        self.assertEqual(situacion_de(reabierto), Detenido(PorOrden("reabrir")))
+        self.assertEqual(situacion_de(reabierto).causa, PorOrden("reabrir"))
         parado = reducir(reabierto, {"kind": "orden", "data": {"accion": "parar"}}, nuevo=False)
         self.assertEqual(
-            situacion_de(replace(parado, estado="detenido")),
-            Detenido(PorOrden("parar")),
+            situacion_de(evolucionar(parado, estado="detenido")).causa,
+            PorOrden("parar"),
         )
 
     def test_comprobar_recuerda_estados_tras_primera_divergencia(self) -> None:
         evento, e = _entrega()
         eventos_a = [evento, {"id": 2, "kind": "recibo"}, {"id": 3, "kind": "recibo"}]
-        terminado = replace(e, estado="terminado", escrituras=False,
+        terminado = evolucionar(e, estado="terminado", escrituras=False,
                             intentos_nuevos=False, evidencia=("si",))
         trazas = [
             Traza(estados=[e, replace(e, escrituras=False), terminado]),

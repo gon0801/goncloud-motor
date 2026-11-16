@@ -8,6 +8,7 @@ nombra el defecto, no por una importación ni por una firma.
 """
 
 from __future__ import annotations
+from tests.soporte_situacion import evolucionar
 
 import hashlib
 import inspect
@@ -293,7 +294,7 @@ class TablaUnica(unittest.TestCase):
             origen="deepseek",
         )
         e = con_fase(e, replace(e.fase_actual, hallazgos=(h,)))
-        e = replace(
+        e = evolucionar(
             e, estado="detenido", proc=None, reserva=False, intentos_nuevos=True
         )
         evento = {"kind": "orden", "data": {"accion": "continuar", "hora": e.hora}}

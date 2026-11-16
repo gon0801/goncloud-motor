@@ -11,9 +11,9 @@ importa `dominio` solo dentro de sus funciones para evitar el ciclo.
 """
 
 from __future__ import annotations
+from .encargo import evolucionar
 
 from collections.abc import Callable
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -43,7 +43,7 @@ def fallo_interno(e: Encargo, d: dict, hora: str) -> Encargo:
         raise TransicionIlegal("un encargo cerrado o que ya se detiene no cambia de causa")
     causa = causa_de_fallo_interno(d)
     vivo = e.proc is not None or e.reserva
-    return replace(
+    return evolucionar(
         e,
         estado="deteniendo" if vivo else "detenido",
         orden_parada="fallo_interno",
@@ -63,7 +63,7 @@ def arbol(e: Encargo, d: dict, hora: str) -> Encargo:
     if d.get("observacion") != "ausente" or e.estado != "deteniendo" or e.reserva:
         return e
     estado = "cancelado" if e.orden_parada == "cancelar" else "detenido"
-    return replace(
+    return evolucionar(
         e,
         estado=estado,
         proc=None,

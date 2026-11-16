@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.soporte_situacion import evolucionar
 
 import unittest
 from dataclasses import replace
@@ -37,12 +38,12 @@ class ValidacionIntento(unittest.TestCase):
     def test_los_ocho_rechazos_conservan_el_mensaje(self) -> None:  # no-roja-en-base: mensajes legados
         e = _entrega()
         casos = (
-            ("reserva", replace(e, reserva=True), {}, "ya hay un escritor"),
+            ("reserva", evolucionar(e, reserva=True), {}, "ya hay un escritor"),
             ("reserva", replace(e, intentos_nuevos=False), {},
              "no hay autorización para otro intento"),
             ("intento_abierto", replace(e, intentos_nuevos=False), {},
              "no hay autorización para otro intento"),
-            ("intento_abierto", replace(e, proc=Proc(1, "t", "b")), {},
+            ("intento_abierto", evolucionar(e, proc=Proc(1, "t", "b")), {},
              "ya hay un escritor"),
             ("intento_abierto", e, {"poteto_digest": "", "rol": "responsable"},
              "intento del responsable sin poteto verificado"),
@@ -62,10 +63,10 @@ class ValidacionIntento(unittest.TestCase):
     def test_aplicar_intentos_historicos_incompletos_no_lanza(self) -> None:
         e = _entrega()
         casos = (
-            ("reserva", replace(e, reserva=True), {}),
+            ("reserva", evolucionar(e, reserva=True), {}),
             ("reserva", e, {"generacion": "no entero", "ajustes": "no entero"}),
             ("intento_abierto", e, {}),
-            ("intento_abierto", replace(e, proc=Proc(1, "t", "b")), {}),
+            ("intento_abierto", evolucionar(e, proc=Proc(1, "t", "b")), {}),
             ("conductor_fase", e, {}),
             ("conductor", e, {}),
             ("actividad", e, {"observada": True}),

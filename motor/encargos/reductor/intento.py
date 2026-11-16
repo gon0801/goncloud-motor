@@ -1,6 +1,7 @@
 """Manejadores del reductor extraídos de dominio."""
 
 from __future__ import annotations
+from ..encargo import evolucionar
 
 import socket
 from typing import TYPE_CHECKING
@@ -12,13 +13,12 @@ if TYPE_CHECKING:
 
 
 def reserva(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import replace
     from .validacion_intento import leer_reserva
 
     carga = leer_carga(nuevo, lambda: leer_reserva(e, d))
     if carga is None:
         return e
-    return replace(
+    return evolucionar(
         e,
         reserva=True,
         ajustes_reservados=carga[0],
@@ -33,9 +33,7 @@ def reserva(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def reserva_cerrada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import replace
-
-    return replace(
+    return evolucionar(
         e,
         reserva=False,
         candidato="",
@@ -52,7 +50,7 @@ def conductor(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def intento_abierto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import Proc, replace
+    from ..dominio import Proc
     from .validacion_intento import leer_intento_abierto
 
     carga = leer_carga(nuevo, lambda: leer_intento_abierto(d))
@@ -74,7 +72,7 @@ def intento_abierto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         if rol_intento == "revisor"
         else {"viva_responsable": True}
     )
-    return replace(
+    return evolucionar(
         e,
         reserva=False,
         ajustes_vistos=max(e.ajustes_vistos, e.ajustes_reservados),
@@ -101,13 +99,13 @@ def intento_abierto(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def actividad(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import _CERRADOS, replace
+    from ..dominio import _CERRADOS
 
     if e.estado in _CERRADOS or e.estado == "esperando_reintento":
         return e
     if not d.get("observada"):
         return e
-    return replace(
+    return evolucionar(
         e,
         estado="ejecutando",
         ultimo_hecho=d.get("hecho", ""),
@@ -129,8 +127,6 @@ def colgada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def intento_cerrado(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import replace
-
     sesion_runtime = str(d.get("sesion_runtime") or "")
     cambios = {}
     if sesion_runtime:
@@ -138,7 +134,7 @@ def intento_cerrado(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
             cambios["sesion_revisor"] = sesion_runtime
         else:
             cambios["sesion_responsable"] = sesion_runtime
-    return replace(
+    return evolucionar(
         e,
         proc=None,
         herramienta="",

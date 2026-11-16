@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.soporte_situacion import evolucionar
 
 import unittest
 from dataclasses import replace
@@ -138,7 +139,7 @@ class ValidacionEsperasNecesidades(unittest.TestCase):
             ("comprobacion", e, {"clase": "confirmado"}, "confirmado sin evidencia"),
             ("comprobacion", e, {"clase": "confirmado", "evidencia": "ok",
                                 "fase": "ajena"}, "el cierre pertenece a otra fase"),
-            ("comprobacion", replace(e, intento="i"),
+            ("comprobacion", evolucionar(e, intento="i"),
              {"clase": "confirmado", "evidencia": "ok", "intento": "j"},
              "el cierre pertenece a otro intento"),
             ("comprobacion", replace(e, ajustes=("ajuste",)),
@@ -153,12 +154,12 @@ class ValidacionEsperasNecesidades(unittest.TestCase):
              "instrumento_no_disponible sin clase"),
             ("quietud", e, {}, "la quietud necesita causa"),
             ("via", e, {"via": "otra"}, "via desconocida"),
-            ("via", replace(e, estado="cancelado"), {"via": "directa"},
+            ("via", evolucionar(e, estado="cancelado"), {"via": "directa"},
              "el encargo ya cerró"),
-            ("via", replace(e, reserva=True), {"via": "directa"},
+            ("via", evolucionar(e, reserva=True), {"via": "directa"},
              "el ejecutor anterior sigue abierto"),
             ("solicitud", e, {}, "la solicitud necesita id"),
-            ("solicitud", replace(e, estado="cancelado"), {},
+            ("solicitud", evolucionar(e, estado="cancelado"), {},
              "el encargo no admite solicitudes en este estado"),
             ("solicitud", solicitud, {"id": "s"}, "la solicitud s ya existe"),
             ("solicitud", e, {"id": "s", "fase": "ajena"},

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.soporte_situacion import evolucionar
 
 import unittest
 from dataclasses import asdict, replace
@@ -16,7 +17,7 @@ def _pedido():
 
 class ReduccionTotal(unittest.TestCase):
     def test_fallo_interno_historico_no_cambia_un_encargo_cerrado(self) -> None:
-        cerrado = replace(
+        cerrado = evolucionar(
             _pedido(), estado="terminado", fallos_repo=("git falló", 2),
             fallos_entrega=("git falló", 2), ultima_firma="original",
         )
@@ -154,7 +155,7 @@ class ReduccionTotal(unittest.TestCase):
         )
         for kind, data in casos:
             with self.subTest(kind=kind, data=data):
-                anterior = replace(previo, intento="vigente") if data.get("intento") else previo
+                anterior = evolucionar(previo, intento="vigente") if data.get("intento") else previo
                 resultado = reducir(anterior, {"kind": kind, "data": data}, nuevo=False)
                 self.assertEqual(asdict(resultado), asdict(anterior))
                 siguiente = reducir(resultado, {"kind": "procedimiento",
