@@ -66,6 +66,12 @@ class SituacionGuardada(unittest.TestCase):
             ruta.write_text("replace(e, intento='I')\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "faltan 1 escrituras"):
                 _migrar(ruta, comprobar=True)
+            for texto in ("replace(detenido, estado='detenido')\n",
+                          "replace(reg.fold(ident), estado='detenido')\n"):
+                with self.subTest(texto=texto):
+                    ruta.write_text(texto, encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, "faltan 1 escrituras"):
+                        _migrar(ruta, comprobar=True)
             for texto in (
                 "import dataclasses\ndataclasses.replace(e, estado='detenido')\n",
                 "import dataclasses as dc\ndc.replace(e, estado='detenido')\n",

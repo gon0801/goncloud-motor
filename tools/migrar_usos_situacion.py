@@ -11,13 +11,20 @@ MOVIDOS = {
     "estado", "orden_parada", "reanuda_en", "intento", "proc", "reserva",
     "intento_interrumpido", "cierre_forzado_fase", "cierre_forzado_huella",
 }
-AJENOS = {"fase", "sol", "h", "self", "contexto", "detenido"}
+AJENOS = {"fase", "sol", "h", "self", "contexto"}
+PLIEGUES_DEL_CANARIO = {"detenido", "_parcial"}
 
 
-def _es_encargo(nodo: ast.expr) -> bool:
+def _es_encargo(nodo: ast.expr, ruta: Path) -> bool:
+    if ruta == RAIZ / "tests/test_canario_encargos.py":
+        if isinstance(nodo, ast.Name) and nodo.id in PLIEGUES_DEL_CANARIO:
+            return False
+        if (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)
+                and nodo.func.id in PLIEGUES_DEL_CANARIO):
+            return False
     if isinstance(nodo, ast.Name):
         return nodo.id not in AJENOS
-    if isinstance(nodo, (ast.Subscript, ast.Call)):
+    if isinstance(nodo, ast.Subscript):
         return False
     return True
 
@@ -48,7 +55,7 @@ def _migrar(ruta: Path, comprobar: bool = False) -> int:
             or isinstance(funcion, ast.Attribute) and funcion.attr == "replace"
             and isinstance(funcion.value, ast.Name) and funcion.value.id in modulos
         )
-        if not reconocido or not nodo.args or not _es_encargo(nodo.args[0]):
+        if not reconocido or not nodo.args or not _es_encargo(nodo.args[0], ruta):
             continue
         if not MOVIDOS.intersection(k.arg for k in nodo.keywords):
             continue
