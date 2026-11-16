@@ -115,7 +115,7 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertEqual(crudo.returncode, 1, crudo.stderr + crudo.stdout)
         self.assertIn("estado=", crudo.stdout)
 
-    def test_estado_legado_proyecta_solo_claves_ausentes_de_la_referencia(self) -> None:
+    def test_estado_legado_no_oculta_claves_de_base_por_corpus_antiguo(self) -> None:
         estado_base = self.corpus / "estado-base"
         estado_base.mkdir()
         (estado_base / "uno.json").write_text(
@@ -133,8 +133,8 @@ class EscrituraDiferencial(unittest.TestCase):
         )
         opciones = ("--kinds", "entrega", "--arbol", str(arbol))
         legado = self.correr(*opciones)
-        self.assertEqual(legado.returncode, 0, legado.stderr + legado.stdout)
-        self.assertIn("diferencias: 0", legado.stdout)
+        self.assertEqual(legado.returncode, 1, legado.stderr + legado.stdout)
+        self.assertIn("estado=", legado.stdout)
         crudo = self.correr_con_tope_normal("--max-casos", "900", *opciones)
         self.assertEqual(crudo.returncode, 1, crudo.stderr + crudo.stdout)
         archivo.write_text(
