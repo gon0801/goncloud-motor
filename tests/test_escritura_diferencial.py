@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import shutil
 import sqlite3
 import subprocess
@@ -10,6 +11,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -130,6 +133,44 @@ class EscrituraDiferencial(unittest.TestCase):
         hecho = self.correr("--kinds", "solicitud", "--arbol", str(arbol))
         self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
         self.assertIn("base_rechaza_arbol_acepta", hecho.stdout)
+
+    def test_el_hijo_emite_json_ascii_aun_si_el_estado_no_cabe_en_la_consola(self) -> None:
+        from tools.escritura_diferencial import _escribir_caso
+
+        flujo = io.BytesIO()
+        with io.TextIOWrapper(flujo, encoding="ascii") as consola:
+            with mock.patch.object(sys, "stdout", consola):
+                _escribir_caso(SimpleNamespace(reducir=lambda *_a, **_k: "estado 中文"),
+                               None, "entrega", "real", {"texto": "pedido 中文"}, False)
+            consola.flush()
+            self.assertIn("entrega", flujo.getvalue().decode("ascii"))
+
+    def test_meta_ilegible_no_se_confunde_con_tope_insuficiente(self) -> None:
+        (self.corpus / "meta.json").write_text("{", encoding="utf-8")
+        hecho = self.correr("--kinds", "entrega")
+        self.assertEqual(hecho.returncode, 2, hecho.stderr)
+        self.assertIn("JSONDecodeError", hecho.stderr)
+        self.assertNotIn("tope de casos insuficiente", hecho.stderr)
+
+    def test_una_escritura_aceptada_con_otro_estado_se_detecta(self) -> None:  # no-roja-en-base: mide la cobertura del comparador ya existente
+        arbol = self.mutar(
+            'ajustes=e.ajustes + (d["texto"],)',
+            'ajustes=e.ajustes + ("CAMBIO",)',
+            "pedido.py",
+        )
+        hecho = self.correr("--kinds", "ajuste", "--arbol", str(arbol))
+        self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
+        self.assertIn("estado=", hecho.stdout)
+        self.assertNotIn("corrección secreta", hecho.stdout)
+
+    def test_identidad_y_clase_de_rechazo_no_se_esconden(self) -> None:  # no-roja-en-base: caracteriza las categorías independientes del arreglo de UTF-8
+        from tools.escritura_diferencial import _clase
+
+        base = ["solicitud", "real", "huella", "rechaza", "KeyError", "x"]
+        self.assertEqual(_clase(base, ["solicitud", "real", "otra", *base[3:]],
+                                "solicitud", set()), "carga_diferente")
+        self.assertEqual(_clase(base, [*base[:4], "TypeError", "x"],
+                                "solicitud", set()), "tipo_rechazo")
 
 
 if __name__ == "__main__":
