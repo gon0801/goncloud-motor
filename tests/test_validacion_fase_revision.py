@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import asdict, replace
 
 from motor.encargos.dominio import TransicionIlegal, reducir
 from motor.encargos.reductor import TABLA
@@ -72,6 +73,29 @@ class ValidacionFaseRevision(unittest.TestCase):
             "correspondencia": {"archivo": "plan", "fases": [["fase_unica", "A"]]},
         }}, nuevo=True)
         self.assertEqual(resultado.despliegue_mapa, (("fase_unica", "A"),))
+
+    def test_hechos_invalidos_no_crean_fase_antes_de_solicitud(self) -> None:
+        solicitud = {"kind": "solicitud", "data": {
+            "id": "s", "fase": "", "intento": "i", "operacion": "leer",
+        }}
+        for kind in ("ci_pr", "politica_despliegue"):
+            with self.subTest(kind=kind):
+                ignorado = reducir(self.previo, {"kind": kind, "data": {}}, nuevo=False)
+                self.assertEqual(asdict(ignorado), asdict(self.previo))
+                registrado = reducir(ignorado, solicitud, nuevo=False)
+                self.assertEqual(len(registrado.solicitudes), 1)
+
+    def test_hechos_de_cierre_y_producto_ignorados_no_derivan_metadatos(self) -> None:
+        cerrado = replace(self.previo, estado="terminado", hora_cierre="2026-11-01")
+        casos = (
+            (cerrado, "cierre_forzado", {"hora": "2026-11-05"}),
+            (cerrado, "bloqueo_fase", {"hora": "2026-11-05"}),
+            (self.previo, "producto_listo", {"interno": "no aceptado", "manifiesto": 1}),
+        )
+        for previo, kind, datos in casos:
+            with self.subTest(kind=kind):
+                resultado = reducir(previo, {"kind": kind, "data": datos}, nuevo=False)
+                self.assertEqual(asdict(resultado), asdict(previo))
 
 
 if __name__ == "__main__":
