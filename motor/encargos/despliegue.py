@@ -282,12 +282,7 @@ def _directorio_de_fase(registro, enc, fase):
     receta = {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")}
     try:
         _rutas(receta)
-        identidad = {
-            "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
-            "sha": fase.integrado_sha, "receta": receta,
-        }
-        clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
-        return registro.base / "despliegues" / clave
+        return registro.base / "despliegues" / clave_de_recibo(enc, fase)
     except ValueError:
         return None
 
@@ -474,14 +469,26 @@ def _leer(path: Path, identidad: dict) -> dict:
     return datos
 
 
+def _identidad_de_recibo(enc, fase) -> dict:
+    return {
+        "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
+        "sha": fase.integrado_sha,
+        "receta": {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")},
+    }
+
+
+def clave_de_recibo(enc, fase) -> str:
+    return hashlib.sha256(
+        json.dumps(_identidad_de_recibo(enc, fase), sort_keys=True).encode()
+    ).hexdigest()
+
+
 def comprobar_recibo(enc) -> dict:
     fase = enc.fase_actual
     if fase is None or not fase.desplegado_recibo:
         raise ValueError("falta el recibo de ejecución real del despliegue")
-    identidad = {"encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
-                 "sha": fase.integrado_sha,
-                 "receta": {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")}}
-    clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
+    identidad = _identidad_de_recibo(enc, fase)
+    clave = clave_de_recibo(enc, fase)
     path = Path(fase.desplegado_recibo)
     if path.name != "recibo.json" or path.parent.name != clave or path.parent.parent.name != "despliegues":
         raise ValueError("un recibo de ensayo no acredita un despliegue real")

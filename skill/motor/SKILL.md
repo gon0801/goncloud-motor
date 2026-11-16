@@ -11,7 +11,7 @@ Si el pedido cabe en tus agentes y David no pidió continuidad, hazlo por la ví
 
 Hasta dónde llega la entrega se fija al encargar con `--entrega`: `terminado` (defecto) es producto aprobado por otro modelo, sin tocar GitHub. `pr` además abre el PR y espera la revisión de DeepSeek de ese SHA. `integrado` además lo mergea sobre el SHA revisado. `desplegado` además exige un efecto de despliegue con recibo. Los niveles `pr`, `integrado` y `desplegado` necesitan `--repo` y `--base-rama` desde el inicio; `--rama` es opcional.
 
-`terminado` significa nivel alcanzado igual al autorizado, no solo "el producto anda". La vista y el aviso siempre distinguen ambos niveles, más PR y DeepSeek cuando aplican. En la vía durable, el implementador trabaja con poteto-mode y revisa otro modelo siempre; las observaciones no bloqueantes no abren otra vuelta.
+`terminado` solo indica que cerró el trabajo; la entrega real depende del PR, el despliegue y la limpieza. `motor ver` da `reporte`: detenido, listo para tu merge, falta limpiar, cancelado, entrega parcial, entregado, integrado, respondido o sin cambios. La vista distingue nivel autorizado y alcanzado, PR y DeepSeek cuando aplican. En la vía durable, el implementador trabaja con poteto-mode y revisa otro modelo siempre; las observaciones no bloqueantes no abren otra vuelta.
 
 ```sh
 python3 -B -m motor director encargar \

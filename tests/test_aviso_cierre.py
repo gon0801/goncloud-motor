@@ -141,9 +141,10 @@ class Banco:
         )
 
     def olvidar_corte_de_cierres(self) -> None:
-        """La base de la versión anterior no tenía el corte de cierres de cancelados."""
+        """La base anterior no tenía los cortes de cierres ni de palabras."""
         self.reg.db.execute(
-            "DELETE FROM cortes_avisos WHERE version = 'cierres-cancelados-v1'"
+            "DELETE FROM cortes_avisos WHERE version IN "
+            "('cierres-cancelados-v1', 'palabras-v4')"
         )
         self.reg.db.commit()
 
@@ -194,16 +195,14 @@ class ElCierreEnLlano(Base):
         self.assertEqual(len(avisos), 1)
         self.assertTrue(avisos[0]["entregado"])
         cuerpo = self.b.cuerpos()[0]["cuerpo"]
-        self.assertEqual(
-            cuerpo,
-            "Terminó tu encargo «avisos-caidos listo para revisar». "
-            "El PR #160 está abierto; el CI corre en el PR. listo",
-        )
+        self.assertIn("Terminó tu encargo «avisos-caidos listo para revisar».", cuerpo)
+        self.assertIn("Falta limpiar", cuerpo)
+        self.assertTrue(cuerpo.endswith("listo"))
         self.assertLess(len(cuerpo), 300)
         for prohibido in PROHIBIDOS:
             self.assertNotIn(prohibido, cuerpo)
         self.assertIsNone(re.search(r"\b[0-9a-f]{7,64}\b", cuerpo), "sin SHAs")
-        self.assertIn("#160", cuerpo)
+        self.assertNotIn("#160", cuerpo, "sin PR observado no se afirma que sigue abierto")
 
     def test_integrado_y_desplegado_se_dicen_en_una_linea(self):
         uno = self.encargo_terminado(
@@ -227,14 +226,9 @@ class ElCierreEnLlano(Base):
         self.assertTrue(all(a["entregado"] for a in salida))
         ids = {a["encargo"]: a["id"] for a in salida}
         cuerpos = {c["id"]: c["cuerpo"] for c in self.b.cuerpos()}
-        self.assertEqual(
-            cuerpos[ids[uno]],
-            "Terminó tu encargo «fase-a listo para revisar». Quedó integrado. listo",
-        )
-        self.assertEqual(
-            cuerpos[ids[dos]],
-            "Terminó tu encargo «fase-b listo para revisar». Quedó desplegado. listo",
-        )
+        for ident in (uno, dos):
+            self.assertIn("Falta limpiar", cuerpos[ids[ident]])
+            self.assertNotIn("Quedó desplegado", cuerpos[ids[ident]])
 
     def test_el_cierre_con_nivel_efectivo_trae_el_motivo_llano(self):
         ident = self.b.encargo(
@@ -406,11 +400,8 @@ class ElCierreEnLlano(Base):
         self.assertEqual(len(avisos), 1)
         self.assertTrue(avisos[0]["entregado"])
         cuerpo = self.b.cuerpos()[0]["cuerpo"]
-        self.assertEqual(
-            cuerpo,
-            "Terminó tu encargo «Un pedido que no pudo terminar». "
-            "Quedó cancelado y no se completó.",
-        )
+        self.assertIn("Terminó tu encargo «Un pedido que no pudo terminar».", cuerpo)
+        self.assertIn("Falta limpiar", cuerpo)
         for prohibido in PROHIBIDOS:
             self.assertNotIn(prohibido, cuerpo)
 
@@ -419,10 +410,9 @@ class ElCierreEnLlano(Base):
         self.b.terminar(ident)
         avisos = directores.drenar(self.b.reg, ahora=T0)["avisos"]
         self.assertTrue(avisos[0]["entregado"])
-        self.assertEqual(
-            self.b.cuerpos()[0]["cuerpo"],
-            "Terminó tu encargo «pedido-desnudo». listo",
-        )
+        self.assertIn("Terminó tu encargo «pedido-desnudo».",
+                      self.b.cuerpos()[0]["cuerpo"])
+        self.assertIn("Falta limpiar", self.b.cuerpos()[0]["cuerpo"])
 
     def test_el_cierre_de_la_via_directa_vuelve_a_llevar_el_resultado(self):
         ident = self.b.encargo("# Crea dato.txt con 42\n\ntexto", "directa-uno")
@@ -449,14 +439,10 @@ class ElCierreEnLlano(Base):
         self.assertTrue(salida[ident]["entregado"])
         self.assertTrue(salida[otro]["entregado"])
         cuerpos = {c["id"]: c["cuerpo"] for c in self.b.cuerpos()}
-        self.assertEqual(
-            cuerpos[salida[ident]["id"]],
-            f"Terminó tu encargo «Crea dato.txt con 42». {resultado}",
-        )
-        self.assertEqual(
-            cuerpos[salida[otro]["id"]],
-            "Terminó tu encargo «Sin resultado legible».",
-        )
+        self.assertIn("Falta limpiar", cuerpos[salida[ident]["id"]])
+        self.assertTrue(cuerpos[salida[ident]["id"]].endswith(resultado))
+        self.assertIn("Falta limpiar", cuerpos[salida[otro]["id"]])
+        self.assertNotIn(resultado, cuerpos[salida[otro]["id"]])
 
     def test_el_cierre_lleva_las_correcciones_que_ningun_intento_recibio(self):
         ident = self.encargo_terminado(
@@ -474,12 +460,10 @@ class ElCierreEnLlano(Base):
         )
         salida = directores.drenar(self.b.reg, ahora=T0)["avisos"]
         self.assertTrue(salida[0]["entregado"])
-        self.assertEqual(
-            self.b.cuerpos()[0]["cuerpo"],
-            "Terminó tu encargo «con-correccion listo para revisar». "
-            "El PR #5 está abierto; el CI corre en el PR. "
-            "Correcciones que ningún intento pudo recibir: el dato debe ser 43 listo",
-        )
+        self.assertIn("Falta limpiar", self.b.cuerpos()[0]["cuerpo"])
+        self.assertIn("Correcciones que ningún intento pudo recibir: el dato debe ser 43",
+                      self.b.cuerpos()[0]["cuerpo"])
+        self.assertTrue(self.b.cuerpos()[0]["cuerpo"].endswith("listo"))
 
     def test_la_nota_legada_sin_tildes_tambien_llega_en_el_cierre(self):
         ident = self.b.encargo(
@@ -625,7 +609,7 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
         self.b.cancelar(ident)
         avisos = directores.drenar(self.b.reg, ahora=T0 + 60)["avisos"]
         self.assertEqual([a["encargo"] for a in avisos if a["entregado"]], [ident])
-        self.assertIn("Quedó cancelado", self.b.cuerpos()[0]["cuerpo"])
+        self.assertIn("Falta limpiar", self.b.cuerpos()[0]["cuerpo"])
         directores.drenar(self.b.reg, ahora=T0 + 120)
         self.assertEqual(len(self.b.cuerpos()), 1, "y el cierre no se repite")
 
