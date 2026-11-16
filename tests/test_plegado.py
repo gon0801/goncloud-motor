@@ -151,6 +151,13 @@ class Comprobar(unittest.TestCase):
         (reg,) = salida["registros"]
         self.assertEqual((reg["pliegan"], reg["desconocidos"]), (1, {"orden_inventada": 1}))
 
+    def test_la_compuerta_no_da_por_completo_un_kind_desconocido(self):
+        from ops.compuerta_plegado import NoPude, plegado
+
+        _armar(self.registro, {"enc_a": [_ENTREGA, ("orden_inventada", {})]})
+        with self.assertRaisesRegex(NoPude, "kinds desconocidos"):
+            plegado(sys.executable, RAIZ, "comprobar", "--json", str(self.registro))
+
     def test_un_fallo_interno_que_guardo_la_version_siguiente_pliega(self):
         fallo = ("fallo_interno", {"rechazo": "ilegal", "kind": "estrategia",
                                    "ukey": "estrategia:*", "hora": "t2"})
