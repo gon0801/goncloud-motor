@@ -135,9 +135,18 @@ def _casos_por_estado(kinds: list[str], muestras: dict[str, list[dict]],
                 yield kind, variante, carga
 
 
+def _claves_de_referencia(corpus: Path) -> dict[str, None] | None:
+    for ruta in sorted((corpus / "estado-base").glob("*.json")):
+        with ruta.open(encoding="utf-8") as archivo:
+            estados = json.load(archivo)
+        if estados:
+            return dict.fromkeys(next(iter(estados.values())))
+    return None
+
+
 def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
-                  carga: dict, legado: bool) -> None:
-    from tools.plegado import campos_de
+                  carga: dict, legado: bool, referencia: dict[str, None] | None = None) -> None:
+    from tools.plegado import campos_de, sin_claves_nuevas
 
     clave = hashlib.sha256(
         json.dumps(carga, sort_keys=True, default=str).encode("utf-8")
@@ -145,6 +154,8 @@ def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
     try:
         nuevo = reductor.reducir(estado, {"kind": kind, "data": carga}, nuevo=True)
         valor = campos_de(nuevo) if legado else nuevo
+        if legado and referencia is not None:
+            valor = sin_claves_nuevas(valor, referencia)
         salida = ["acepta", repr(valor)]
     except Exception as exc:
         salida = ["rechaza", type(exc).__name__, str(exc)]
@@ -156,6 +167,7 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
     from tools.plegado import cargar_reductor, leer_encargos, ultimo_evento
 
     reductor = cargar_reductor(raiz)
+    referencia = _claves_de_referencia(corpus) if legado else None
     muestras = _muestras(corpus, set(kinds))
     if faltan := sorted(k for k, datos in muestras.items() if not datos):
         raise ValueError(f"kinds sin cargas reales: {', '.join(faltan)}")
@@ -191,13 +203,14 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
     if "entrega" in muestras:
         for indice, variante, carga in entregas:
             _escribir_caso(reductor, None, "entrega",
-                           f"0:{indice}:{variante}", carga, legado)
+                           f"0:{indice}:{variante}", carga, legado, referencia)
             cuenta += 1
     for numero, estado in prefijos.values():
         for kind in kinds:
             muestra = muestras[kind][(cuenta // len(kinds)) % len(muestras[kind])]
             carga = _adaptar(muestra, estado)
-            _escribir_caso(reductor, estado, kind, f"{numero}:base", carga, legado)
+            _escribir_caso(reductor, estado, kind, f"{numero}:base", carga, legado,
+                           referencia)
             cuenta += 1
     if "solicitud" in kinds:
         for numero, estado in prefijos.values():
@@ -210,7 +223,7 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
                 if cuenta >= max_casos:
                     break
                 _escribir_caso(reductor, estado, "solicitud",
-                               f"{numero}:{variante}", carga, legado)
+                               f"{numero}:{variante}", carga, legado, referencia)
                 cuenta += 1
     disponibles = max_casos - cuenta
     cuota, resto = divmod(disponibles, len(prefijos))
@@ -224,7 +237,8 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
              )),
             cuota + (indice < resto),
         ):
-            _escribir_caso(reductor, estado, kind, f"{numero}:{variante}", carga, legado)
+            _escribir_caso(reductor, estado, kind, f"{numero}:{variante}", carga, legado,
+                           referencia)
             ordinal += 1
     return 0
 

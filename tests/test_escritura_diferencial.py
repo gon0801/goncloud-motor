@@ -115,6 +115,37 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertEqual(crudo.returncode, 1, crudo.stderr + crudo.stdout)
         self.assertIn("estado=", crudo.stdout)
 
+    def test_estado_legado_proyecta_solo_claves_ausentes_de_la_referencia(self) -> None:
+        estado_base = self.corpus / "estado-base"
+        estado_base.mkdir()
+        (estado_base / "uno.json").write_text(
+            json.dumps({"ejemplo": {"limpio": ""}}), encoding="utf-8",
+        )
+        arbol = self.raiz / "mutado"
+        shutil.copytree(RAIZ / "motor", arbol / "motor")
+        archivo = arbol / "motor/encargos/encargo.py"
+        contenido = archivo.read_text(encoding="utf-8")
+        nuevo = 'primer_envio_por_sha: tuple[tuple[str, str], ...] = ()'
+        self.assertIn(nuevo, contenido)
+        archivo.write_text(
+            contenido.replace(nuevo, nuevo.replace("= ()", '= (("h", "t"),)'), 1),
+            encoding="utf-8",
+        )
+        opciones = ("--kinds", "entrega", "--arbol", str(arbol))
+        legado = self.correr(*opciones)
+        self.assertEqual(legado.returncode, 0, legado.stderr + legado.stdout)
+        self.assertIn("diferencias: 0", legado.stdout)
+        crudo = self.correr_con_tope_normal("--max-casos", "900", *opciones)
+        self.assertEqual(crudo.returncode, 1, crudo.stderr + crudo.stdout)
+        archivo.write_text(
+            archivo.read_text(encoding="utf-8").replace(
+                'limpio: str = ""', 'limpio: str = "cambiado"', 1,
+            ), encoding="utf-8",
+        )
+        cambiado = self.correr(*opciones)
+        self.assertEqual(cambiado.returncode, 1, cambiado.stderr + cambiado.stdout)
+        self.assertIn("estado=", cambiado.stdout)
+
     def test_el_tope_primero_cubre_todos_los_pares(self) -> None:
         from tools.escritura_diferencial import _firma_estado
         from tools.plegado import cargar_reductor, leer_encargos, ultimo_evento
