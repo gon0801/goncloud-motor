@@ -115,6 +115,21 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
         self.assertIn("base_acepta_arbol_rechaza", hecho.stdout)
 
+    def test_un_tope_sin_casos_para_todos_los_kinds_es_invalido(self) -> None:
+        hecho = self.correr("--kinds", "comprobacion,solicitud", "--max-casos", "2")
+        self.assertEqual(hecho.returncode, 2, hecho.stderr + hecho.stdout)
+        self.assertIn("tope", hecho.stderr)
+
+    def test_detecta_un_rechazo_que_ahora_se_acepta(self) -> None:
+        arbol = self.mutar(
+            'if not ident:\n        raise TransicionIlegal("la solicitud necesita id")',
+            "if not ident:\n        return",
+            "validacion_necesidades.py",
+        )
+        hecho = self.correr("--kinds", "solicitud", "--arbol", str(arbol))
+        self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
+        self.assertIn("base_rechaza_arbol_acepta", hecho.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
