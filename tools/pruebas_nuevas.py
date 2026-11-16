@@ -152,6 +152,7 @@ def _modulos(archivos: list[str]) -> list[tuple[str, str]]:
     pares = [
         (ruta[:-3].replace("/", "."), ruta) for ruta in archivos if ruta.endswith(".py")
     ]
+    pares.extend((Path(ruta).stem, ruta) for ruta in archivos if ruta.endswith(".py"))
     return sorted(pares, key=lambda par: len(par[0]), reverse=True)
 
 
