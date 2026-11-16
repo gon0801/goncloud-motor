@@ -42,7 +42,7 @@ def comprobar(corpus: Path) -> int:
           f"{truncados} registros truncados")
     for (kind, tipo), n in sorted(fallos.items()):
         print(f"{kind}: {tipo} en {n} prefijos")
-    return 1 if fallos or not casos else 0
+    return 1 if fallos or truncados or not casos else 0
 
 
 if __name__ == "__main__":

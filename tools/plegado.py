@@ -657,8 +657,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         reductor = cargar_reductor(RAIZ)
         hechas = [comprobar(reductor, r) for r in args.registros]
         rotos = any(c.fallos for c in hechas)
+        incompletos = any(c.desconocidos for c in hechas)
         if args.json:
-            _imprimir({"ok": not rotos, "registros": [
+            _imprimir({"ok": not (rotos or incompletos), "registros": [
                 {"ruta": c.ruta, "encargos": len(c.plegados),
                  "pliegan": len(c.plegados) - len(c.fallos),
                  "desconocidos": dict(c.desconocidos),
@@ -667,6 +668,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for c in hechas]})
         else:
             print("\n".join(linea for c in hechas for linea in _texto_comprobacion(c)))
+        if incompletos:
+            print("plegado: hay kinds desconocidos; no se verificó el plegado completo",
+                  file=sys.stderr)
+            return 2
         return 1 if rotos else 0
 
     sha = _resolver_ref(args.base)
