@@ -150,6 +150,7 @@ def reporte(enc: Encargo, limpieza_activa: bool) -> Reporte | None:
     if enc.estado == "detenido":
         return Reporte("detenido", _detencion(enc), fases)
     if (enc.estado == "terminado" and nivel_objetivo(enc) == "pr"
+        and not any(f.palabra in ("entrega parcial", "cancelado") for f in fases)
         and any(isinstance(pr.pr, PrAbierto) and pr.fase not in enc.canceladas
                 for pr in enc.prs)):
         return Reporte("listo para tu merge",

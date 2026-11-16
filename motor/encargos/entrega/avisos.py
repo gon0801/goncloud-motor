@@ -6,7 +6,7 @@ import hashlib
 import re
 from typing import TYPE_CHECKING, Protocol
 
-from ..dominio import dependencia_bloqueada
+from ..dominio import dependencia_bloqueada, relevo_agotado, relevo_cambio_modelo
 from ..reporte import Reporte, reporte
 
 if TYPE_CHECKING:
@@ -70,6 +70,31 @@ def entrega_parcial_llana(enc: Encargo, bloqueadas: list) -> str:
             "que quedó bloqueada"
         )
     return ". ".join(partes) + "."
+
+
+def contexto_de_cierre(enc: Encargo) -> str:
+    partes = []
+    if enc.pendientes_entrega or any(f.pendientes for f in enc.fases):
+        partes.append(
+            "Quedaron pendientes abiertos escritos en el PR; "
+            "no hace falta que hagas nada para que el trabajo siga."
+        )
+    if enc.herramientas_no_disponibles:
+        partes.append(
+            "Una herramienta no estaba disponible y se siguió con la "
+            "evidencia que había."
+        )
+    if relevo_cambio_modelo(enc):
+        partes.append("Se cambió de modelo para continuar sin esperar a nadie.")
+    elif relevo_agotado(enc):
+        partes.append(
+            "Se intentó relevar el trabajo y no había otro modelo autorizado "
+            "para seguir."
+        )
+    partes.extend(
+        nota for nota in enc.procedimiento if "intento pudo recibir" in nota
+    )
+    return " ".join(partes)
 
 
 def _detencion_nueva(registro: Registro, enc: Encargo, corte: int) -> int:

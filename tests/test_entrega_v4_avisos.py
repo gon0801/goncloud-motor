@@ -53,6 +53,22 @@ class AvisosPorPalabra(unittest.TestCase):
         self.assertEqual(avisos[0]["palabra"], "respondido")
         self.assertEqual(directores.drenar(self.banco.reg, ahora=T0 + 2)["avisos"], [])
 
+    def test_cierre_v4_conserva_pendientes_herramienta_y_relevo(self) -> None:
+        enc = replace(
+            encargo(nivel="terminado"), pendientes_entrega=("Falta una consulta",),
+            herramientas_no_disponibles=("consulta",),
+            modelos=(("responsable", "a", "uno"), ("responsable", "b", "dos")),
+        )
+        vista = directores.VistaAvisos(self.banco.base)
+        trabajos = directores._trabajos_de_encargo(
+            self.banco.reg, enc.id, enc, 0, 0, 0, vista,
+        )
+        cierres = [cuerpo for aviso, cuerpo in trabajos if aviso.get("tipo") == "cierre-v4"]
+        self.assertEqual(len(cierres), 1)
+        self.assertIn("pendientes abiertos", cierres[0])
+        self.assertIn("herramienta no estaba disponible", cierres[0])
+        self.assertIn("cambió de modelo", cierres[0])
+
     def test_el_cierre_apagado_y_el_cambio_de_palabra_se_envian_una_vez(self) -> None:
         ident = self._terminar()
         primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
