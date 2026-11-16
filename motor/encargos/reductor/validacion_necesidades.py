@@ -8,17 +8,22 @@ if TYPE_CHECKING:
     from ..dominio import Encargo
 
 
-def leer_solicitud(d: dict) -> tuple[str, int, tuple[tuple[str, str], ...]] | None:
+def leer_solicitud(d: dict, *, permitir_vacia: bool = False) -> (
+    tuple[str, int, tuple[tuple[str, str], ...]] | None
+):
     try:
         operacion = str(d["operacion"])
-        if not operacion.strip() and str(d.get("estado") or "pendiente") == "pendiente":
+        generacion = int(d.get("generacion") or 0)
+        parametros = tuple((str(k), str(v)) for k, v in (d.get("parametros") or ()))
+        if (not permitir_vacia and not operacion.strip()
+                and str(d.get("estado") or "pendiente") == "pendiente"):
             return None
-        return (
-            operacion,
-            int(d.get("generacion") or 0),
-            tuple((str(k), str(v)) for k, v in (d.get("parametros") or ())),
-        )
-    except (KeyError, TypeError, ValueError, OverflowError):
+        return operacion, generacion, parametros
+    except (KeyError, TypeError, ValueError):
+        return None
+    except OverflowError:
+        if permitir_vacia:
+            raise
         return None
 
 
@@ -99,11 +104,11 @@ def validar_solicitud(e: Encargo, d: dict) -> None:
         raise TransicionIlegal("la solicitud no pertenece al intento vigente")
     if str(d.get("estado") or "pendiente") not in ("pendiente", "pregunta"):
         raise TransicionIlegal("una solicitud nace pendiente o a la espera del propietario")
-    if ("operacion" in d and not str(d["operacion"]).strip()
-        and str(d.get("estado") or "pendiente") == "pendiente"):
-        raise TransicionIlegal("solicitud sin operación")
-    if leer_solicitud(d) is None:
+    if leer_solicitud(d, permitir_vacia=True) is None:
         raise TransicionIlegal("la solicitud necesita operación y parámetros válidos")
+    if ("operacion" in d and not str(d["operacion"]).strip()
+            and str(d.get("estado") or "pendiente") == "pendiente"):
+        raise TransicionIlegal("solicitud sin operación")
 
 
 def validar_herramienta(e: Encargo, d: dict) -> None:

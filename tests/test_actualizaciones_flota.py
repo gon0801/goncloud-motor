@@ -318,6 +318,71 @@ class ActualizacionesFlota(unittest.TestCase):
             else:
                 toml.write_text(previo, encoding="utf-8")
 
+    def test_el_primer_arranque_con_un_canal_caido_no_fija_el_manifiesto(self):
+        from motor.flota.distribuidores import catalogo_deseado
+        from motor.flota.manifiesto import Herramienta, Politica
+
+        grok = {"nombre": "grok", "version": "1.0.0", "integridad": "sha512-AAAA"}
+        caido = {"componentes": [grok], "no_disponibles": [{"nombre": "codex", "error": "timeout"}]}
+        semilla = Politica("v9", (), (), (), (), None, ())
+        with self.assertRaisesRegex(ValueError, "sin resolver: codex"):
+            catalogo_deseado(caido, semilla, [], arranque=True)
+        fijada = Politica("v9", (), (), (Herramienta("grok", "c", "1.0.0", "sha512-AAAA"),), (), None, ())
+        solo_caido = {"componentes": [], "no_disponibles": caido["no_disponibles"]}
+        self.assertEqual(catalogo_deseado(solo_caido, fijada, [], arranque=False)["no_disponibles"], [])
+        with self.assertRaisesRegex(ValueError, "no declara herramientas"):
+            catalogo_deseado(solo_caido, semilla, [], arranque=False)
+
+    def test_preparar_desde_la_semilla_con_un_canal_caido_se_niega(self):
+        conf = self.base / "conf-semilla"
+        (conf / "flota").mkdir(parents=True)
+        for args in (
+            ("init", "-q"),
+            ("config", "user.email", "ensayo@localhost"),
+            ("config", "user.name", "Ensayo"),
+        ):
+            subprocess.run(["git", "-C", str(conf), *args], check=True, capture_output=True)
+        (conf / "flota" / "manifesto.toml").write_text(
+            'generacion="ensayo"\n[[puesto]]\nfuncion="director"\n'
+            'modelo=["p/m"]\nesfuerzo=["low"]\n',
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(conf), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(conf), "commit", "-qm", "semilla"], check=True)
+        home = self.base / "home-semilla"
+        home.mkdir()
+        grok = {
+            "nombre": "grok",
+            "tipo": "npm",
+            "paquete": "@xai-official/grok",
+            "version": "v2",
+            "fuente": "https://registry.npmjs.org/%40xai-official%2Fgrok/latest",
+            "tarball": "https://registry.npmjs.org/@xai-official/grok/-/grok-v2.tgz",
+            "integridad": "sha512-" + "A" * 86 + "==",
+        }
+        catalogo = {"componentes": [grok], "no_disponibles": [{"nombre": "codex"}]}
+        with patch("motor.flota.actualizaciones._preparar_componente") as componente:
+            with self.assertRaisesRegex(ValueError, "sin resolver: codex"):
+                preparar(home, catalogo, motor_origen=conf, repos={"conf": conf})
+        componente.assert_not_called()
+        self.assertFalse((home / "manifiesto.toml").exists())
+
+    def test_la_generacion_lleva_carpetas_de_hermes_y_openclaw_solo_si_los_instala(self):
+        gen = self.base / "generacion"
+        entorno = _entorno_generacion(gen)
+        self.assertEqual(entorno["HERMES_HOME"], str(gen / "perfiles/hermes"))
+        for carpeta in ("perfiles/hermes", "perfiles/claw", "herramientas/hermes"):
+            self.assertFalse((gen / carpeta).exists(), carpeta)
+        for programa in ("hermes", "openclaw"):
+            (gen / "herramientas" / programa).mkdir(parents=True)
+        _entorno_generacion(gen)
+        for carpeta in (
+            "perfiles/hermes/profiles",
+            "herramientas/hermes/tools",
+            "perfiles/claw",
+        ):
+            self.assertTrue((gen / carpeta).is_dir(), carpeta)
+
     def test_un_fallo_de_npm_por_disco_lleno_lo_dice(self):
         hecho = SimpleNamespace(
             returncode=1,
@@ -331,7 +396,7 @@ class ActualizacionesFlota(unittest.TestCase):
                 _run(["node", "npm-cli.js", "install"])
         self.assertIn("sin espacio en disco", str(ctx.exception))
 
-    def test_candidata_corrupta_conserva_la_generacion_vigente(self):
+    def test_candidata_corrupta_conserva_la_generacion_vigente(self):  # no-roja-en-base: solo declara en el manifiesto del home la herramienta que instala; el comportamiento ya estaba en la base
         origen = self.base / "origen2"
         origen.mkdir()
         for args in (
@@ -350,6 +415,9 @@ class ActualizacionesFlota(unittest.TestCase):
         (home / "manifiesto.toml").write_text(
             'generacion="ensayo"\n[[puesto]]\nfuncion="director"\n'
             'modelo=["p/m"]\nesfuerzo=["low"]\n'
+            '[[herramienta]]\nnombre="openclaw"\n'
+            'canal="https://registry.npmjs.org/openclaw/latest"\n'
+            'version="v0"\nintegridad="sha512-AAAA"\n'
         )
 
         def doc(v):

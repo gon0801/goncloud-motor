@@ -188,6 +188,7 @@ class RecuperaEfectosTest(unittest.TestCase):
             "vuelve-a-la-anterior.sh",
             "maquina_local.py",
             "comprueba-despliegue.sh",
+            "modelos_por_agente.py",
         ):
             shutil.copy2(RAIZ / "ops" / nombre, ops / nombre)
         (ops / "lib.sh").write_text(

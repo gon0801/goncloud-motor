@@ -204,6 +204,10 @@ def validar_conciliacion_fase(e: Encargo, d: dict) -> None:
     elif paso == "reintento":
         int(d.get("ordenes") or 0)
     elif paso == "espera":
+        try:
+            int(d.get("intentos") or 1)
+        except (TypeError, ValueError):
+            pass
         if not str(d.get("causa") or "").strip() or not str(d.get("reanuda_en") or "").strip():
             raise TransicionIlegal("la espera de conciliación necesita causa y reanudación")
     elif paso == "integrado":

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import itertools
 import json
 import os
 import subprocess
@@ -38,17 +39,20 @@ def _muestras(corpus: Path, kinds: set[str]) -> dict[str, list[dict]]:
 
     muestras: dict[str, list[dict]] = {kind: [] for kind in kinds}
     formas: dict[str, set[tuple]] = {kind: set() for kind in kinds}
+    grupos: dict[str, Counter[tuple]] = {kind: Counter() for kind in kinds}
     for ruta in sorted((corpus / "registros").glob("*.sqlite")):
         for _, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
             for evento in eventos:
                 kind, data = evento["kind"], evento["data"]
                 if kind not in muestras or not isinstance(data, dict):
                     continue
-                forma = (tuple(sorted(data)), str(data.get("clase") or ""),
-                         str(data.get("operacion") or ""))
-                if len(muestras[kind]) < 2 and forma not in formas[kind]:
+                grupo = tuple(str(data.get(campo) or "")
+                              for campo in ("paso", "clase", "operacion", "estado"))
+                forma = (grupo, tuple(sorted(data)))
+                if grupos[kind][grupo] < 2 and forma not in formas[kind]:
                     muestras[kind].append(data)
                     formas[kind].add(forma)
+                    grupos[kind][grupo] += 1
     return muestras
 
 
@@ -67,11 +71,31 @@ def _adaptar(datos: dict, estado: Any) -> dict:
 def _variantes(kind: str, datos: dict, estado: Any):
     yield "real", datos
     yield "vacio", {}
+    if kind == "comprobacion" and "evidencia" in datos:
+        for campo, valor in (("fase", "otra_fase"), ("intento", "otro_intento")):
+            yield f"evidencia_y_{campo}", {**datos, "evidencia": "", campo: valor}
+    numericos = {campo for campo, valor in datos.items()
+                 if isinstance(valor, (int, float)) and not isinstance(valor, bool)}
+    numericos.update(set(datos) & {
+        "generacion", "intentos", "ordenes", "numero", "sondeos", "fallas",
+        "ajustes_vistos", "cierra",
+    })
+    if kind == "solicitud":
+        numericos.add("generacion")
+    for campo in sorted(numericos):
+        for nombre, valor in (
+            ("infinito", float("inf")), ("menos_infinito", float("-inf")),
+            ("nan", float("nan")), ("negativo", -1),
+            ("lista", []), ("texto", "no numerico"),
+        ):
+            yield f"{campo}:{nombre}", {**datos, campo: valor}
     for campo, valor in sorted(datos.items()):
         yield f"falta:{campo}", {k: v for k, v in datos.items() if k != campo}
         yield f"vacio:{campo}", {**datos, campo: ""}
         malo = {} if not isinstance(valor, dict) else 17
         yield f"tipo:{campo}", {**datos, campo: malo}
+    for primero, segundo in itertools.combinations(sorted(datos), 2):
+        yield f"par:{primero}:{segundo}", {**datos, primero: "", segundo: ""}
     for campo, valor in (("fase", "otra_fase"), ("intento", "otro_intento")):
         yield f"{campo}:ajeno", {**datos, campo: valor}
     for campo in ("solicitudes", "efectos"):
@@ -83,6 +107,42 @@ def _variantes(kind: str, datos: dict, estado: Any):
         n = len(estado.ajustes)
         for nombre, valor in (("menos", n - 1), ("mas", n + 1), ("texto", "no numerico")):
             yield f"ajustes_vistos:{nombre}", {**datos, "ajustes_vistos": valor}
+
+
+def _firma_estado(e: Any) -> tuple:
+    return (
+        e.id, e.estado, e.fase_activa, bool(e.intento),
+        tuple((f.id, f.estado) for f in e.fases),
+        bool(e.solicitudes), bool(e.efectos), len(e.ajustes),
+    )
+
+
+def _casos_por_estado(kinds: list[str], muestras: dict[str, list[dict]],
+                      estado: Any, indice: int, total: int):
+    for desplazamiento in range(0, len(kinds), total):
+        kind = kinds[(indice + desplazamiento) % len(kinds)]
+        muestra = muestras[kind][(indice // len(kinds)) % len(muestras[kind])]
+        yield kind, "real", _adaptar(muestra, estado)
+    if "solicitud" in muestras and estado.solicitudes:
+        for muestra in muestras["solicitud"]:
+            datos = _adaptar(muestra, estado)
+            yield "solicitud", "id:repetido", {
+                **datos, "id": estado.solicitudes[0].id,
+            }
+    if "comprobacion" in muestras:
+        for muestra in muestras["comprobacion"]:
+            datos = _adaptar(muestra, estado)
+            if datos.get("clase") in ("confirmado", "cierre_comprobado"):
+                for campo, valor in (("fase", "otra_fase"), ("intento", "otro_intento")):
+                    yield "comprobacion", f"evidencia_y_{campo}", {
+                        **datos, "evidencia": "", campo: valor,
+                    }
+    for desplazamiento in range(len(kinds)):
+        kind = kinds[(indice + desplazamiento) % len(kinds)]
+        muestra = muestras[kind][(indice // len(kinds)) % len(muestras[kind])]
+        datos = _adaptar(muestra, estado)
+        for variante, carga in _variantes(kind, datos, estado):
+            yield kind, variante, carga
 
 
 def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
@@ -101,7 +161,7 @@ def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
     print(json.dumps([kind, variante, clave, *salida]))
 
 
-def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int, paso: int,
+def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int,
              legado: bool) -> int:
     from tools.plegado import cargar_reductor, leer_encargos, ultimo_evento
 
@@ -109,31 +169,35 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int, paso: i
     muestras = _muestras(corpus, set(kinds))
     if faltan := sorted(k for k, datos in muestras.items() if not datos):
         raise ValueError(f"kinds sin cargas reales: {', '.join(faltan)}")
-    cuenta = 0
+    prefijos: dict[tuple, tuple[int, Any]] = {}
     prefijo = 0
-    if "entrega" in muestras:
-        for muestra in muestras["entrega"]:
-            for variante, carga in _variantes("entrega", muestra, None):
-                _escribir_caso(reductor, None, "entrega", variante, carga, legado)
-                cuenta += 1
-                if cuenta >= max_casos:
-                    return 0
     for ruta in sorted((corpus / "registros").glob("*.sqlite")):
         for _, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
             estado = None
             for evento in eventos:
                 estado = reductor.aplicar(estado, evento)
                 prefijo += 1
-                if estado is None or (prefijo - 1) % paso:
-                    continue
-                for kind in kinds:
-                    for muestra in muestras[kind]:
-                        datos = _adaptar(muestra, estado)
-                        for variante, carga in _variantes(kind, datos, estado):
-                            _escribir_caso(reductor, estado, kind, variante, carga, legado)
-                            cuenta += 1
-                            if cuenta >= max_casos:
-                                return 0
+                if estado is not None:
+                    prefijos.setdefault(_firma_estado(estado), (prefijo, estado))
+    if not prefijos:
+        raise ValueError("sin estados previos legibles")
+    entregas = list(muestras.get("entrega", []))
+    if max_casos < (len(prefijos) * ((len(kinds) + len(prefijos) - 1) // len(prefijos))
+                    + len(entregas)):
+        return 3
+    cuenta = 0
+    if "entrega" in muestras:
+        for muestra in entregas:
+            _escribir_caso(reductor, None, "entrega", "0:real", muestra, legado)
+            cuenta += 1
+    disponibles = max_casos - cuenta
+    cuota, resto = divmod(disponibles, len(prefijos))
+    for indice, (numero, estado) in enumerate(prefijos.values()):
+        for kind, variante, carga in itertools.islice(
+            _casos_por_estado(kinds, muestras, estado, indice, len(prefijos)),
+            cuota + (indice < resto),
+        ):
+            _escribir_caso(reductor, estado, kind, f"{numero}:{variante}", carga, legado)
     return 0
 
 
@@ -150,9 +214,11 @@ def _clase(base: list, arbol: list, kind: str, permitidos: set[str]) -> str:
         if arbol[4] != base[4]:
             return "tipo_transicion"
         return "mensaje_transicion" if base[5] != arbol[5] else ""
-    if base[4] != arbol[4] and kind not in permitidos:
+    if base[4] != arbol[4]:
+        if kind in permitidos and arbol[4] == "TransicionIlegal":
+            return ""
         return "tipo_rechazo"
-    return ""
+    return "mensaje_rechazo" if base[5] != arbol[5] else ""
 
 
 def _comparar(base: Path, arbol: Path, kinds: list[str], permitidos: set[str]) -> int:
@@ -185,17 +251,19 @@ def _archivo_privado(ruta: Path):
 
 
 def _ejecutar_lado(corpus: Path, raiz: Path, destino: Path, kinds: list[str],
-                  max_casos: int, paso: int, legado: bool) -> None:
+                  max_casos: int, legado: bool) -> None:
     orden = [
         sys.executable, "-I", str(Path(__file__).resolve()), "_evaluar",
         "--corpus", str(corpus), "--arbol", str(raiz), "--kinds", ",".join(kinds),
-        "--max-casos", str(max_casos), "--paso", str(paso),
+        "--max-casos", str(max_casos),
     ]
     if legado:
         orden.append("--estado-legado")
     with _archivo_privado(destino) as archivo:
         hecho = subprocess.run(orden, stdout=archivo, stderr=subprocess.PIPE,
                                text=True, check=False)
+    if hecho.returncode == 3:
+        raise TopeInsuficiente("tope de casos menor que el número de firmas de estado")
     if hecho.returncode:
         raise RuntimeError(f"el reductor no evaluó los casos: salida {hecho.returncode}")
 
@@ -203,12 +271,10 @@ def _ejecutar_lado(corpus: Path, raiz: Path, destino: Path, kinds: list[str],
 def comparar(base: str, corpus: Path, arbol: Path, kinds: list[str],
              max_casos: int, permitidos: set[str], legado: bool) -> int:
     with (corpus / "meta.json").open(encoding="utf-8") as archivo:
-        eventos = json.load(archivo)["eventos"]
+        json.load(archivo)["eventos"]
     muestras = _muestras(corpus, set(kinds))
-    por_prefijo = sum(3 * len(d) + 8 for k in kinds for d in muestras[k])
-    if max_casos < por_prefijo + sum(3 * len(d) + 8 for d in muestras.get("entrega", [])):
-        raise TopeInsuficiente("tope de casos menor que un prefijo de los kinds seleccionados")
-    paso = max(1, (eventos * por_prefijo + max_casos - 1) // max_casos)
+    if max_casos < len(kinds) + len(muestras.get("entrega", [])):
+        raise TopeInsuficiente("tope de casos menor que los kinds seleccionados")
     sha = subprocess.check_output(
         ["git", "-C", str(RAIZ), "rev-parse", "--verify", base],
         text=True,
@@ -222,8 +288,8 @@ def comparar(base: str, corpus: Path, arbol: Path, kinds: list[str],
         with tarfile.open(fileobj=io.BytesIO(archivo.stdout)) as tar:
             tar.extractall(temporal / "base", filter="data")
         izquierda, derecha = temporal / "base.jsonl", temporal / "arbol.jsonl"
-        _ejecutar_lado(corpus, temporal / "base", izquierda, kinds, max_casos, paso, legado)
-        _ejecutar_lado(corpus, arbol, derecha, kinds, max_casos, paso, legado)
+        _ejecutar_lado(corpus, temporal / "base", izquierda, kinds, max_casos, legado)
+        _ejecutar_lado(corpus, arbol, derecha, kinds, max_casos, legado)
         return _comparar(izquierda, derecha, kinds, permitidos)
 
 
@@ -236,7 +302,6 @@ def main() -> int:
     parser.add_argument("--max-casos", type=int, default=100_000)
     parser.add_argument("--permitir-cambio-tipo", default="")
     parser.add_argument("--estado-legado", action="store_true")
-    parser.add_argument("--paso", type=int, default=1, help=argparse.SUPPRESS)
     parser.add_argument("orden", nargs="?", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.max_casos <= 0:
@@ -245,7 +310,7 @@ def main() -> int:
         if not args.kinds:
             parser.error("_evaluar necesita --kinds")
         return _evaluar(args.corpus, args.arbol, args.kinds.split(","),
-                        args.max_casos, args.paso, args.estado_legado)
+                        args.max_casos, args.estado_legado)
     if args.orden is not None or not args.base:
         parser.error("necesita --base")
     from tools.corpus_plegado import _kinds
