@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import asdict, replace
+from unittest.mock import patch
 
 from motor.encargos.dominio import Fase, PausaAgente, TransicionIlegal, reducir
-from motor.encargos.reductor import TABLA
+from motor.encargos.reductor import Fila, TABLA
 
 
 def _pedido():
@@ -15,13 +16,32 @@ def _pedido():
 
 class ReduccionTotal(unittest.TestCase):
     def test_fallo_interno_historico_no_cambia_un_encargo_cerrado(self) -> None:
-        cerrado = replace(_pedido(), estado="terminado")
-        dato = {"kind": "fallo_interno", "data": {}}
+        cerrado = replace(
+            _pedido(), estado="terminado", fallos_repo=("git falló", 2),
+            fallos_entrega=("git falló", 2), ultima_firma="original",
+        )
+        dato = {"kind": "fallo_interno", "data": {"firma": "ajena"}}
         self.assertEqual(asdict(reducir(cerrado, dato, nuevo=False)), asdict(cerrado))
         with self.assertRaisesRegex(
             TransicionIlegal, "un encargo cerrado o que ya se detiene no cambia de causa",
         ):
             reducir(cerrado, dato, nuevo=True)
+
+    def test_un_error_de_aplicacion_inesperado_no_se_oculta_al_comparador(self) -> None:  # no-roja-en-base: la rama anterior sí hace visible al comparador un fallo sembrado
+        def falla(e, d, hora, nuevo):
+            raise RuntimeError("fallo sembrado")
+
+        with patch.dict(TABLA, {"recibo": Fila(falla)}):
+            with self.assertRaisesRegex(RuntimeError, "fallo sembrado"):
+                reducir(_pedido(), {"kind": "recibo", "data": {}}, nuevo=False)
+
+    def test_dependencia_propia_historica_sigue_aislando_el_registro(self) -> None:  # no-roja-en-base: un ciclo propio ya truncaba la historia en la rama anterior
+        hecho = {"kind": "fases", "data": {
+            "fases": [{"id": "F", "resultado": "r",
+                       "requiere": [{"fase": "F", "version": ""}]}],
+        }}
+        with self.assertRaisesRegex(TransicionIlegal, "se requiere a sí misma"):
+            reducir(_pedido(), hecho, nuevo=False)
 
     def test_rechazos_de_pedido_siguen_iguales_al_escribir(self) -> None:  # no-roja-en-base: fija los guardias que se moverán a validar
         previo = _pedido()
