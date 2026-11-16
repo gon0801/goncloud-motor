@@ -269,6 +269,9 @@ def informe(home: Path, manifiesto: Path) -> list[str]:
             puestos, herencia = leer_tabla(manifiesto)
             if nombre == "claw":
                 herencia = {**herencia, **_filas_de_claw(manifiesto.parent)}
+            # El bot que lleva el nombre de su app (MausBot) es su director: la fila de claw.
+            if "claw" in herencia:
+                herencia = {nombre: herencia["claw"], **herencia}
             texto = comparar(director, director.lee(home), puestos, herencia)
         except Exception as exc:
             causa = str(exc) if isinstance(exc, Ilegible) else type(exc).__name__

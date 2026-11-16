@@ -257,6 +257,25 @@ class ModelosPorAgente(unittest.TestCase):
             " deepseek-v4.1-flash high)",
         ])
 
+    def test_el_bot_con_el_nombre_de_su_app_usa_la_fila_del_director(self):
+        home = _maquina(self.base, "mausbot")
+        manifiesto = home / "flota" / "actual" / "manifesto.toml"
+        manifiesto.write_text(
+            manifiesto.read_text(encoding="utf-8") + 'claw = "dirigir"\n', encoding="utf-8"
+        )
+        _mausbot(
+            home,
+            [
+                ("MausBot", {"instanceId": "claude", "model": "claude-opus-5-5", "effort": "high"}),
+                ("Claw", {"instanceId": "claude", "model": "claude-sonnet-5-5", "effort": "high"}),
+            ],
+        )
+
+        self.assertEqual(_informe(home), [
+            "mausbot: 1 de 2 agentes como la tabla; difieren: Claw (claude-sonnet-5-5 high; tabla"
+            " claude-opus-5-5 high)",
+        ])
+
     def test_lo_que_no_se_puede_leer_se_dice_por_director_y_sigue(self):
         home = _maquina(self.base, "hermes", "claw", "openbot", "mausbot")
         _claw(home, {"alfa": [m for m, _ in DIRIGIR]})
