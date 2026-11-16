@@ -207,15 +207,19 @@ def _credenciales(registro: Registro, enc: Encargo) -> tuple[Recurso, ...]:
     return tuple(Recurso("credenciales", clave) for clave in sorted(claves))
 
 
-def candidatos(registro: Registro, enc: Encargo,
-               presupuesto: list[int] | None = None) -> tuple[Recurso, ...]:
+def _ramas(enc: Encargo) -> tuple[Recurso, ...]:
     from ..ciclo import _rama_de_fase
 
+    nombres = {enc.entrega.rama, *(_rama_de_fase(enc, f) for f in enc.fases)}
+    return tuple(Recurso("rama", rama) for rama in sorted(nombres)
+                 if rama.startswith("encargo/"))
+
+
+def candidatos(registro: Registro, enc: Encargo,
+               presupuesto: list[int] | None = None) -> tuple[Recurso, ...]:
     prs = tuple(Recurso("pr", str(f.pr_numero), f.id)
                 for f in enc.fases if f.pr_numero)
-    ramas = {enc.entrega.rama, *(_rama_de_fase(enc, f) for f in enc.fases)}
-    ramas = tuple(Recurso("rama", rama) for rama in sorted(ramas)
-                  if rama.startswith("encargo/"))
+    ramas = _ramas(enc)
     credenciales = _credenciales(registro, enc)
     if enc.estado not in ("terminado", "cancelado"):
         return credenciales + prs + ramas
@@ -392,8 +396,17 @@ def _recibos_presentes(registro: Registro, enc: Encargo) -> bool:
 
 
 def _restos_tras_limpio(registro: Registro, enc: Encargo, hora: str) -> bool:
+    from ..ciclo import _rama_de_fase
+
     base = Path(registro.base)
     if any(pr.pr.estado in ("abierto", "borrador") for pr in enc.prs):
+        return True
+    if any(
+        _ultimo(enc, rama)[0] not in ("borrado", "agotado")
+        for rama in _ramas(enc)
+        if enc.estado == "cancelado"
+        or any(f.pr_numero and _rama_de_fase(enc, f) == rama.clave for f in enc.fases)
+    ):
         return True
     rutas = (
         base / "runtime" / enc.id,
@@ -432,13 +445,13 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
                     hora: str, presupuesto: list[int]) -> Encargo:
     from ..ciclo import _cerrar_procesos_del_encargo
 
+    if enc.estado in ("terminado", "cancelado"):
+        _cerrar_procesos_del_encargo(registro, enc)
     if leer_parada_local(registro.base) is not None:
         return enc
     if (enc.estado in ("terminado", "cancelado") and enc.limpio
         and not _restos_tras_limpio(registro, enc, hora)):
         return enc
-    if enc.estado in ("terminado", "cancelado"):
-        _cerrar_procesos_del_encargo(registro, enc)
     if enc.reserva:
         return enc
     if enc.proc is not None:

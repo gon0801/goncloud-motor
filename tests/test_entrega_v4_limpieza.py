@@ -115,6 +115,18 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertNotIn("rama", {r for r, _, _, _, _ in enc.limpieza})
         self.assertTrue(enc.limpio)
 
+    def test_rama_compartida_se_borra_cuando_termina_su_dependiente(self) -> None:
+        self._final(con_pr=True)
+        dependiente = self.gh.abrir_pr(
+            self.repo, "feat", "encargo/x", "apilado", "cuerpo",
+        ).numero
+        self.assertTrue(self._limpiar().limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
+        self.gh.cerrar_pr(self.repo, dependiente)
+        enc = self._limpiar(1)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+        self.assertTrue(enc.limpio)
+
     def test_no_borra_rama_activa_que_aun_no_tiene_pr(self) -> None:
         self._final(cancelar=False)
         enc = self._limpiar()
@@ -371,6 +383,31 @@ class LimpiezaPorHechos(unittest.TestCase):
         with mock.patch.object(politica, "ENTREGA_V4", True):
             ciclo.barrer(self.reg, hora(1), (HORA + timedelta(minutes=1)).timestamp(),
                          None, gh=self.gh)
+        self.assertEqual(self.gh.ver(self.repo, numero).estado, "abierto")
+        self.assertEqual(self.reg.eventos("x"), antes)
+
+    def test_parada_local_cierra_proceso_sin_tocar_pr_ni_registro(self) -> None:  # no-roja-en-base: la limpieza legada cerraba procesos, la ruta v4 omitía ese cierre
+        from motor.encargos.frontera import activar_parada_local
+
+        numero = self._final(con_pr=True)
+        intento = self.reg.base / "ejecucion" / "x" / "intento-1"
+        intento.mkdir(parents=True)
+        proceso = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            **plataforma.kwargs_grupo(),
+        )
+        self.addCleanup(proceso.wait)
+        self.addCleanup(lambda: proceso.poll() is None and proceso.kill())
+        (intento / "proc.json").write_text(json.dumps({
+            "pid": proceso.pid, "inicio": plataforma.hora_inicio(proceso.pid),
+            "boot_id": plataforma.boot_id(),
+        }), encoding="utf-8")
+        activar_parada_local(self.reg.base, "pausa", hora())
+        antes = self.reg.eventos("x")
+        with mock.patch.object(politica, "ENTREGA_V4", True):
+            ciclo.barrer(self.reg, hora(1), (HORA + timedelta(minutes=1)).timestamp(),
+                         None, gh=self.gh)
+        proceso.wait(timeout=10)
         self.assertEqual(self.gh.ver(self.repo, numero).estado, "abierto")
         self.assertEqual(self.reg.eventos("x"), antes)
 
