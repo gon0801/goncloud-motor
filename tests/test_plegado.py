@@ -124,7 +124,7 @@ class Comprobar(unittest.TestCase):
         (reg,) = salida["registros"]
         self.assertEqual((reg["encargos"], reg["pliegan"], reg["fallos"]), (2, 2, []))
 
-    def test_un_reductor_sembrado_que_rechaza_un_evento_lo_nombra(self):
+    def test_un_reductor_sembrado_que_rechaza_un_evento_lo_nombra(self):  # no-roja-en-base: prueba el reporte sin depender del guardia de orden
         from motor.encargos.dominio import ESTADOS, TransicionIlegal, reducir
         from tools.plegado import Reductor, comprobar
 
@@ -608,7 +608,7 @@ class CorpusPlegado(unittest.TestCase):
             )
             self.assertEqual(_kinds(raiz), {"entrega", "solo_en_ref"})
 
-    def test_verificar_cobertura_muestra_lineas_no_ejecutadas(self) -> None:
+    def test_verificar_cobertura_muestra_lineas_no_ejecutadas(self) -> None:  # no-roja-en-base: sigue midiendo un guardia que permanece en dominio
         from tools.corpus_plegado import _referencia
 
         with tempfile.TemporaryDirectory() as temporal:
