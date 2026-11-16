@@ -261,6 +261,7 @@ class OtrasRespuestasPasajerasAlMergear(unittest.TestCase):
                 final = _hasta_dejar_de_esperar(vuelta, r, e)
                 self.assertEqual(final.estado, "terminado")
                 self.assertEqual(final.nivel_alcanzado, "integrado")
+                self.assertTrue(any(pr.pr.estado == "mergeado" for pr in final.prs))
                 self.assertEqual(final.impedimentos, ())
                 self.assertEqual(final.pendientes_entrega, ())
                 self.assertEqual(vuelta.gh.intentos, [e.pr_sha, e.pr_sha])

@@ -836,7 +836,7 @@ class FlujoRevisiones(unittest.TestCase):
             e = r.incorporar()
             self.assertEqual(e.estado, "terminado")
 
-    def test_nivel_pr_con_github_falso_hasta_deepseek(self):  # no-roja-en-base: solo declara el revisor en la semilla; la espera que prueba es la de la base
+    def test_nivel_pr_con_github_falso_hasta_deepseek(self):
         with tempfile.TemporaryDirectory() as tmp:
             raiz = Path(tmp)
             bare = raiz / "repo.git"
@@ -895,6 +895,8 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertEqual(e.estado, "esperando_reintento")
             self.assertTrue(e.pr_numero)
             self.assertTrue(e.pr_sha)
+            self.assertEqual(e.prs[0].pr.estado, "abierto")
+            self.assertEqual(len(r.eventos("pr_observado")), 1)
             self.assertEqual(lanzamientos, [])
             estado_fake = json.loads((raiz / "fake" / "github.json").read_text())
             pr = next(iter(estado_fake["prs"].values()))
@@ -907,6 +909,7 @@ class FlujoRevisiones(unittest.TestCase):
             # y deja la falta escrita; no espera a ninguna persona.
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertEqual(len(r.eventos("pr_observado")), 1)
             self.assertTrue(
                 any("sin revisión de DeepSeek" in n for n in e.notas_pr), e.notas_pr
             )

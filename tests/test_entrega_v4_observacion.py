@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,12 +11,49 @@ from motor.encargos.entrega.tipos import (
     PrAbierto, PrBorrador, PrCerrado, PrMergeado, PrSin,
 )
 from motor.encargos.registro import Evento, Registro
-from motor.github import FakeGitHub, PrView
+from motor.github import FakeGitHub, GhGitHub, PrView
 from motor.workspace import git
 from tests.test_github_contrato import _bare_con_rama
 
 
 class ObservacionDelPR(unittest.TestCase):
+    def test_estado_de_lee_json_de_gh_para_todos_los_estados(self) -> None:
+        from motor.encargos.entrega.tipos import estado_de
+
+        class GhSinRed(GhGitHub):
+            def __init__(self) -> None:
+                super().__init__()
+                self.estado = "OPEN"
+                self.borrador = False
+
+            @staticmethod
+            def nombre(repo: str) -> str:
+                return repo
+
+            def _gh(self, *args: str) -> str:
+                self.assert_llamada = args
+                return json.dumps({
+                    "number": 7, "headRefName": "encargo/x",
+                    "baseRefName": "main", "isDraft": self.borrador,
+                    "headRefOid": "sha", "state": self.estado,
+                    "mergeCommit": None if self.estado != "MERGED" else {"oid": "merge"},
+                    "body": "",
+                })
+
+        gh = GhSinRed()
+        for estado, borrador, tipo in (
+            ("OPEN", False, PrAbierto), ("OPEN", True, PrBorrador),
+            ("MERGED", False, PrMergeado), ("CLOSED", False, PrCerrado),
+        ):
+            with self.subTest(estado=estado, borrador=borrador):
+                gh.estado, gh.borrador = estado, borrador
+                vista = gh.ver("o/r", 7)
+                self.assertIn("state", gh.assert_llamada[-1])
+                convertido = estado_de(vista)
+                self.assertIsInstance(convertido, tipo)
+                if isinstance(convertido, PrMergeado):
+                    self.assertEqual(convertido.merge_commit, "merge")
+
     def test_estado_de_convierte_la_vista_de_gh_sin_red(self) -> None:
         from motor.encargos.entrega.tipos import estado_de
 
@@ -33,6 +71,8 @@ class ObservacionDelPR(unittest.TestCase):
                 self.assertIsInstance(convertido, tipo)
                 if isinstance(convertido, PrMergeado):
                     self.assertEqual(convertido.merge_commit, "")
+        with self.assertRaisesRegex(ValueError, "desconocido"):
+            estado_de(PrView(7, "encargo/x", "main", False, "sha", "invalido"))
 
     def test_observar_solo_escribe_al_cambiar_y_permite_volver_al_anterior(self) -> None:
         from motor.encargos.entrega.observacion import anotar_pr
