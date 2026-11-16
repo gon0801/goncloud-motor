@@ -57,8 +57,11 @@ class ReduccionTotal(unittest.TestCase):
                          fallos_repo=("git falló", 2), ultima_firma="original")
         casos = (
             {"paso": "en_curso", "intentos": "no es número"},
+            {"paso": "en_curso", "intentos": float("inf")},
             {"paso": "reintento", "ordenes": "no es número"},
+            {"paso": "reintento", "ordenes": float("inf")},
             {"paso": "integrado", "recibo": "sha", "numero": "no es número"},
+            {"paso": "integrado", "recibo": "sha", "numero": float("inf")},
             {"paso": "integrado", "recibo": "sha",
              "correspondencia": {"archivo": "a", "fases": [["otra", "b"]]}},
             {"paso": "integrado", "recibo": "sha", "requiere_despliegue": "quizá"},

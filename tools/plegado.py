@@ -6,7 +6,9 @@ Uso, siempre en solo lectura (nunca escribe en un registro):
     python3 tools/plegado.py comparar --base <ref-de-git> <registro.sqlite>...
 
 `comprobar` pliega cada encargo con el reductor del árbol de trabajo. Sale con 1
-si algún plegado lanza o termina fuera de `ESTADOS`. Además revisa las
+si algún plegado lanza o termina fuera de `ESTADOS`, y con 2 si no hay fallos
+de plegado pero encuentra kinds desconocidos: la compuerta no puede asegurar
+que pliegue entero. Además revisa las
 invariantes de `INVARIANTES_COMPROBAR` en cada prefijo y las reporta aparte, sin cambiar
 el código de salida.
 
@@ -676,7 +678,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for c in hechas]})
         else:
             print("\n".join(linea for c in hechas for linea in _texto_comprobacion(c)))
-        if incompletos:
+        if incompletos and not rotos:
             print("plegado: hay kinds desconocidos; no se verificó el plegado completo",
                   file=sys.stderr)
             return 2

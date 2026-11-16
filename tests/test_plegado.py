@@ -158,6 +158,23 @@ class Comprobar(unittest.TestCase):
         with self.assertRaisesRegex(NoPude, "kinds desconocidos"):
             plegado(sys.executable, RAIZ, "comprobar", "--json", str(self.registro))
 
+    def test_el_fallo_de_plegado_tiene_prioridad_sobre_kind_desconocido(self):
+        from ops.compuerta_plegado import plegado
+
+        _armar(self.registro, {
+            "enc_a": [_ENTREGA],
+            "roto": [("basura", {})],
+        })
+        codigo, salida = _correr("comprobar", "--json", self.registro)
+        self.assertEqual(codigo, 1)
+        (reg,) = salida["registros"]
+        self.assertEqual((reg["encargos"], reg["pliegan"], reg["desconocidos"]),
+                         (2, 1, {"basura": 1}))
+        self.assertEqual(len(reg["fallos"]), 1)
+        self.assertEqual(
+            len(plegado(sys.executable, RAIZ, "comprobar", "--json",
+                        str(self.registro))["fallos"]), 1,
+        )
     def test_un_fallo_interno_que_guardo_la_version_siguiente_pliega(self):
         fallo = ("fallo_interno", {"rechazo": "ilegal", "kind": "estrategia",
                                    "ukey": "estrategia:*", "hora": "t2"})
