@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import json
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -117,6 +118,45 @@ class EntregaSegunPR(unittest.TestCase):
         self.assertEqual(enc.fase_activa, "G")
         self.assertEqual(gh.merges, [])
 
+    def test_barrer_reconsulta_la_base_de_un_pr_apilado(self) -> None:
+        registro, gh = self._registro(fases=[
+            {"id": "G", "resultado": "g"}, {"id": "F", "resultado": "r"},
+        ], fase_pr="G")
+        registro.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "G", "paso": "pr_con_pendientes", "numero": 7,
+            "sha": "g", "hora": "t1",
+        }}, "nivel:g")
+        registro.anotar("x", {"kind": "comprobacion", "data": {
+            "fase": "G", "clase": "cierre_comprobado",
+            "evidencia": "fase lista", "hora": "t1",
+        }}, "cierre:g")
+        registro.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "F", "paso": "pr_listo", "numero": 8,
+            "sha": "f", "hora": "t2",
+        }}, "pr:f")
+        base_integrada = False
+
+        def ver(_repo: str, numero: int) -> PrView:
+            return PrView(
+                numero, "encargo/x-F" if numero == 8 else "encargo/x-G",
+                "encargo/x-G" if numero == 8 else "main",
+                False, "f" if numero == 8 else "g",
+                "mergeado" if numero == 8 or base_integrada else "abierto",
+                "m" if numero == 8 else ("g" if base_integrada else ""),
+            )
+
+        gh.responde_ver = ver
+        ciclo.barrer(registro, "2026-11-16T12:00:00+00:00", 0, None, gh=gh)
+        self.assertEqual(registro.fold("x").fases[0].integrado_sha, "")
+        base_integrada = True
+        ciclo.barrer(registro, "2026-11-16T12:02:01+00:00", 121, None, gh=gh)
+        enc = registro.fold("x")
+        self.assertEqual(enc.fases[0].integrado_sha, "g")
+        ciclo.barrer(registro, "2026-11-16T12:04:02+00:00", 242, None, gh=gh)
+        enc = registro.fold("x")
+        self.assertEqual(enc.fases[1].integrado_sha, "m")
+        self.assertEqual(enc.estado, "terminado")
+
     def test_cerrar_una_fase_cancela_dependientes_atomicos(self) -> None:
         fases = [
             {"id": "F", "resultado": "r"},
@@ -185,6 +225,45 @@ class EntregaSegunPR(unittest.TestCase):
                          ("terminado", "integrado"))
         self.assertIsNone(enc.revision_vigente)
 
+    def test_barrer_no_consulta_un_pr_abierto_cada_segundo(self) -> None:
+        registro, gh = self._registro()
+        consultas: list[int] = []
+
+        def ver(_repo: str, numero: int) -> PrView:
+            consultas.append(numero)
+            return PrView(numero, "encargo/x", "main", False, "h", "abierto", "")
+
+        gh.responde_ver = ver
+        for segundo in (0, 1, 119, 120):
+            ciclo.barrer(registro, "2026-11-16T12:00:00+00:00",
+                         float(segundo), None, gh=gh)
+        self.assertEqual(consultas, [7, 7])
+
+    def test_merge_david_no_cierra_con_pedido_de_efecto_sin_recibo(self) -> None:
+        registro, gh = self._registro()
+        espacio = ciclo._espacio(registro.base, "x")
+        (espacio / "pedido-efecto.json").write_text(json.dumps({
+            "id": "E", "operacion": "publicar", "clave": "k", "cuerpo": "contenido",
+        }), encoding="utf-8")
+        enc, atendido = self._observar(registro, gh, "mergeado", "main")
+        self.assertNotEqual(enc.estado, "terminado")
+        self.assertEqual(enc.nivel_alcanzado, "integrado")
+        self.assertFalse(atendido)
+        registro.anotar("x", {"kind": "efecto", "data": {
+            "id": "E", "destino": "ensayo", "operacion": "publicar",
+            "clave": "k", "cuerpo": "contenido", "estado": "incierto",
+            "hora": "t3",
+        }}, "efecto:incierto")
+        enc, _ = conducir_pr(registro, registro.fold("x"), gh, "t3")
+        self.assertNotEqual(enc.estado, "terminado")
+        registro.anotar("x", {"kind": "efecto", "data": {
+            "id": "E", "destino": "ensayo", "operacion": "publicar",
+            "clave": "k", "cuerpo": "contenido", "estado": "aplicado",
+            "recibo": "confirmado", "hora": "t4",
+        }}, "efecto:aplicado")
+        enc, _ = conducir_pr(registro, registro.fold("x"), gh, "t4")
+        self.assertEqual(enc.estado, "terminado")
+
     def test_terminado_de_nivel_pr_se_sondea_solo_con_interruptor(self) -> None:
         registro, gh = self._registro()
         registro.anotar("x", {"kind": "entrega_externa", "data": {
@@ -241,6 +320,18 @@ class EntregaSegunPR(unittest.TestCase):
         self.assertFalse(consumido)
         self.assertEqual(enc.prs[-1].pr.estado, "abierto")
         self.assertEqual(enc.otra_base_de, ("", ""))
+
+    def test_error_temporal_al_consultar_la_rama_conserva_la_base_apilada(self) -> None:
+        registro, gh = self._registro()
+        enc = registro.fold("x")
+        def sin_red(_repo: str, _rama: str) -> bool:
+            raise RuntimeError("red")
+
+        gh.rama_existe = sin_red
+        gh.responde_ver = sin_red
+        with mock.patch.object(ciclo, "_base_fase", return_value="encargo/x-G"):
+            self.assertEqual(base_objetivo_del_pr(enc, gh), "encargo/x-G")
+            self.assertEqual(ciclo._base_del_pr(gh, enc), "encargo/x-G")
 
 
 if __name__ == "__main__":
