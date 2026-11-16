@@ -155,7 +155,7 @@ class ReduccionTotal(unittest.TestCase):
         )
         for kind, data in casos:
             with self.subTest(kind=kind, data=data):
-                anterior = replace(previo, intento="vigente") if data.get("intento") else previo
+                anterior = evolucionar(previo, intento="vigente") if data.get("intento") else previo
                 resultado = reducir(anterior, {"kind": kind, "data": data}, nuevo=False)
                 self.assertEqual(asdict(resultado), asdict(anterior))
                 siguiente = reducir(resultado, {"kind": "procedimiento",
