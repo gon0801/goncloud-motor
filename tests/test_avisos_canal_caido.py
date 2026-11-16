@@ -174,7 +174,8 @@ class CanalCaido(unittest.TestCase):
         self.b.terminar(ident)
         self.b.levantar()
         avisos = directores.drenar(self.b.reg, ahora=T0 + 10_000)["avisos"]
-        self.assertEqual([a.get("tipo") for a in avisos], [None])
+        self.assertEqual([a.get("tipo") for a in avisos], ["cierre-v4"])
+        self.assertEqual(avisos[0]["palabra"], "falta limpiar")
         self.assertTrue(avisos[0]["entregado"])
         self.assertEqual(len(self.b.llamadas()), 2, "un intento fallido de avance y el cierre")
         descartados = [

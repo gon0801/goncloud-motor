@@ -1965,15 +1965,16 @@ def _trabajos_de_encargo(
         cuerpo = (f"Tu encargo «{titulo}» quedó detenido. {frase}"
                   if aviso["tipo"] == "detenido"
                   else f"Terminó tu encargo «{titulo}». {rep.palabra.capitalize()}. {frase}")
-        if enc.via == "directa" and aviso["tipo"] == "cierre-v4" and enc.estado == "terminado":
+        if aviso["tipo"] == "cierre-v4" and enc.estado == "terminado":
             nota = " ".join(
                 texto for texto in enc.procedimiento if "intento pudo recibir" in texto
             )
             if nota:
                 cuerpo += f" {nota}"
-            resultado = _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"]))
-            if resultado:
-                cuerpo += f" {resultado}"
+            if enc.via == "directa":
+                resultado = _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"]))
+                if resultado:
+                    cuerpo += f" {resultado}"
         trabajos.append((aviso, cuerpo))
     apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
     for hecho in hechos_de_avance(enc, apariciones):
