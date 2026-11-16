@@ -25,6 +25,15 @@ def _pedido():
 
 
 class ValidacionEsperasNecesidades(unittest.TestCase):
+    def test_solicitud_historica_con_operacion_vacia_no_lanza(self) -> None:
+        e = _pedido()
+        datos = {"id": "s", "fase": "", "intento": "i", "operacion": ""}
+        self.assertIs(
+            reducir(e, {"kind": "solicitud", "data": datos}, nuevo=False), e,
+        )
+        with self.assertRaisesRegex(TransicionIlegal, "^solicitud sin operación$"):
+            reducir(e, {"kind": "solicitud", "data": datos}, nuevo=True)
+
     def test_ajustes_no_impiden_cerrar_fase_intermedia_ni_esperar_despliegue(self) -> None:  # no-roja-en-base: preserva los retornos previos al cierre terminal
         e = _pedido()
         intermedia = replace(
