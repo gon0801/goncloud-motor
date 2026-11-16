@@ -35,6 +35,7 @@ def politica_despliegue(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import TransicionIlegal, _correspondencia_despliegue, con_fase, datos_despliegue, replace
     from .validacion_fase import leer_fase
 
+    previo = e
     pedida = str(d.get("fase") or "")
     if pedida and pedida != e.fase_activa:
         fase = next((f for f in e.fases if f.id == pedida), None)
@@ -47,17 +48,17 @@ def politica_despliegue(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         e = lectura
         fase = e.fase_actual
     if fase is None or fase.estado == "preparada":
-        return e
+        return previo
     fuente, huella = str(d.get("fuente") or ""), str(d.get("huella") or "")
     if not fuente or not huella:
-        return e
+        return previo
     try:
         datos = datos_despliegue(d)
         correspondencia = _correspondencia_despliegue(e, d)
     except (TransicionIlegal, TypeError, ValueError):
-        return e
+        return previo
     if "requiere_despliegue" not in datos:
-        return e
+        return previo
     return replace(
         con_fase(e, replace(fase, **datos, despliegue_fuente=fuente, despliegue_huella=huella)),
         hora=hora or e.hora,
