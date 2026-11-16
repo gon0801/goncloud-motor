@@ -54,7 +54,10 @@ Dos reglas no cambian:
    - Cuando el revisor publique `Desplegado` en #502, cambia la base de tu primer PR con
      `gh pr edit <n> --base main` y haz `git merge origin/main` en tu cadena.
 3. Prepara las herramientas como en el paso 3.
-4. Empieza por la unidad 4.0.
+4. Este documento cita código del paso 3 que todavía no está en `main`: `plegar_evento`,
+   `HechoInaplicable`, `Contexto`, `situacion.py`, `encargo.py` y los módulos `reductor/validacion_*`.
+   Léelos en tu rama, que sale de la de #502, no en `origin/main`.
+5. Empieza por la unidad 4.0.
 
 ## Preaprobaciones
 
@@ -199,17 +202,18 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
 - `recurso` es uno de `rama`, `pr`, `espacio`, `ejecucion`, `runtime`, `credenciales` o
   `despliegue`. `clave` es el nombre de la rama, el número del PR, la ruta relativa a la base o el
   token. Nunca lleva textos del encargo.
-- `fase_cancelada` tiene su propio aplicador en `reductor/`. No uses el de `bloqueo_fase`: sale
-  sin cambios en un `terminado`, bloquea la fase activa y no la de la carga, y sin `evidencia` no
-  hace nada. Lo que hace, sobre la fase F de la carga:
+- `fase_cancelada` tiene su propio aplicador en `reductor/`. No uses el de `bloqueo_fase`: en un
+  `terminado` lo rechaza o no lo cambia, bloquea la fase activa y no la de la carga, y sin
+  `evidencia` no hace nada. Lo que hace, sobre la fase F de la carga, en este orden:
   - `validar` rechaza si F no existe, si hay proceso vivo o `reserva`, si F ya está en
     `canceladas`, o si el encargo está `cancelado`, `detenido` o `deteniendo`. Acepta sobre un
     `terminado`. En `detenido` o `deteniendo`, la decisión es `Esperar` hasta el `continuar`.
-  - F pasa a `estado="bloqueada"` con `bloqueo_causa` "David cerró el PR #N" (causa
-    `pr_cerrado`) o "depende de la fase <id> que David canceló" (causa `depende`), y entra a
-    `canceladas`. `ESTADOS_FASE` no cambia.
-  - Si todas las fases quedan en `canceladas`, el encargo queda `Cancelado`.
-  - Si el encargo es `terminado`, sigue `terminado`, y su resultado pasa a `Parcial` con F.
+  - F pasa a `estado="bloqueada"`, con `evidencia` `pr-cerrado:<numero>` y `bloqueo_causa`
+    "David cerró el PR #N" (causa `pr_cerrado`) o "depende de la fase <id> que David canceló"
+    (causa `depende`), y entra a `canceladas`. `ESTADOS_FASE` no cambia.
+  - Si todas las fases quedan en `canceladas`, el encargo queda `Cancelado`, también si era
+    `terminado`. Esta regla va antes que las de abajo.
+  - Si no, y el encargo es `terminado`, sigue `terminado`, y su resultado pasa a `Parcial` con F.
   - Si no es final y F es la fase activa, el encargo sigue como cuando hoy se bloquea la fase
     activa: llama a `_bloqueo_fase` de `dominio.py` con una carga armada (la fase, `evidencia`
     `pr-cerrado:<numero>` y lo demás que lea). Pasa a la siguiente fase disponible o termina.
@@ -280,6 +284,8 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
   base pedida.
 - `CancelarFase` y `DetenerOtraBase` esperan a que el encargo no tenga proceso vivo
   (`proc is None` y sin `reserva`). Mientras haya proceso, la acción es `Esperar`.
+- Una fase que ya está en `canceladas` no da `CancelarFase` otra vez: con su PR `Cerrado`, la
+  decisión es no hacer nada. Así la observación repetida no choca con el `validar`.
 - Ningún camino llama a `merge` sobre un PR que no esté `Abierto`. Ningún camino abre un PR nuevo
   para una fase con `Mergeado` o `Cerrado`.
 - `DetenerOtraBase` no se repite para la misma fase, número y base: el `pr_otra_base` de esa
@@ -385,9 +391,8 @@ Dónde sale, sin ráfagas al desplegar ni al encender:
   palabra, con la palabra en el id del aviso. Un encargo que no recibió aviso de cierre de la
   versión nueva no recibe estos avisos.
 - Hay un aviso nuevo al quedar `detenido`, solo si el encargo no estaba `detenido` al corte. Hoy
-  no sale ninguno.
-- `motor ver` agrega el campo `reporte` en `cli.py`. No toques `consultar` ni `vista`, que están en
-  `dominio.py`.
+  no sale ninguno. Los que ya estaban detenidos al corte no se avisan: avisarlos sería la ráfaga.
+- `motor ver` agrega el campo `reporte` en `cli.py`, sin tocar `dominio.vista`.
 - `skill/motor/SKILL.md` cambia la línea que dice que `terminado` significa nivel alcanzado igual
   al autorizado, y lista las nueve palabras.
 
