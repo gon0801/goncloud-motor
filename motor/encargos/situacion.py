@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
 from .dominio import TransicionIlegal
@@ -64,6 +64,7 @@ class Contexto:
     intento_interrumpido: bool = False
     cierre_forzado_fase: Fase | None = None
     cierre_forzado_huella: str = ""
+    materializado: bool = field(default=False, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,54 @@ Situacion = (
 )
 
 
+def _no_contradice(anterior: object, actual: object, campo: str) -> None:
+    if anterior not in ("", None, False) and anterior != actual:
+        raise EstadoIncoherente(f"situación y contexto difieren en {campo}")
+
+
+def _contexto_inicial(e: Encargo) -> Contexto:
+    situacion = e.situacion
+    contexto = situacion.contexto
+    if isinstance(situacion, Ejecutando):
+        _no_contradice(contexto.intento, situacion.intento, "intento")
+        _no_contradice(contexto.proc, situacion.proc, "proc")
+        _no_contradice(contexto.reserva, situacion.reservado, "reserva")
+        _no_contradice(e.fase_activa, situacion.fase, "fase")
+        object.__setattr__(e, "fase_activa", situacion.fase)
+        contexto = replace(contexto, intento=situacion.intento, proc=situacion.proc,
+                           reserva=situacion.reservado)
+    elif isinstance(situacion, EsperandoReintento):
+        _no_contradice(e.motivo, situacion.motivo, "motivo")
+        _no_contradice(contexto.reanuda_en, situacion.reanuda_en, "reanuda_en")
+        object.__setattr__(e, "motivo", situacion.motivo)
+        contexto = replace(contexto, reanuda_en=situacion.reanuda_en)
+    elif isinstance(situacion, Deteniendo):
+        orden = (situacion.orden.accion
+                 if isinstance(situacion.orden, (Parar, Cancelar)) else "fallo_interno")
+        _no_contradice(contexto.orden_parada, orden, "orden_parada")
+        _no_contradice(contexto.intento_interrumpido, situacion.interrumpido,
+                       "intento_interrumpido")
+        contexto = replace(contexto, orden_parada=orden,
+                           intento_interrumpido=situacion.interrumpido)
+    elif isinstance(situacion, Terminado):
+        if situacion.forzado is not None:
+            fase = next((f for f in e.fases if f.id == situacion.forzado.fase), None)
+            if fase is None:
+                raise EstadoIncoherente("cierre forzado sin fase")
+            _no_contradice(contexto.cierre_forzado_fase, fase, "cierre_forzado_fase")
+            _no_contradice(contexto.cierre_forzado_huella, situacion.forzado.huella,
+                           "cierre_forzado_huella")
+            contexto = replace(contexto, cierre_forzado_fase=fase,
+                               cierre_forzado_huella=situacion.forzado.huella)
+        resultado: Completo | Parcial = (
+            Completo() if e.objetivo_completo()
+            else Parcial(tuple(f.id for f in e.fases if f.estado != "preparada"))
+        )
+        if situacion.resultado != resultado:
+            raise EstadoIncoherente("resultado terminado no coincide con las fases")
+    return replace(contexto, materializado=True)
+
+
 def base_de_estado(estado: str, contexto: Contexto) -> Situacion:
     if estado == "recibido":
         return Recibido(contexto=contexto)
@@ -155,6 +204,9 @@ def base_de_estado(estado: str, contexto: Contexto) -> Situacion:
 
 def materializar(e: Encargo) -> Situacion:
     contexto = e.situacion.contexto
+    if not contexto.materializado:
+        contexto = _contexto_inicial(e)
+        object.__setattr__(e, "situacion", replace(e.situacion, contexto=contexto))
     if e.estado == "ejecutando":
         return Ejecutando(e.fase_activa, e.intento, e.proc, e.reserva, contexto=contexto)
     if e.estado == "esperando_reintento":
