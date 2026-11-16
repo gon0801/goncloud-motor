@@ -24,7 +24,7 @@ from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .entrega.observacion import anotar_integrado, anotar_pr, preparar_pr, siguiente_fase
 from .entrega.ejecutar import (
     anotar_pendiente, base_objetivo_del_pr as _base_objetivo_del_pr,
-    conciliar_otra_vista, conducir_pr, esperar_sin_gh, fase_final_por_sondear, ids_por_sondeo,
+    conciliar_otra_vista, conducir_pr, esperar_sin_gh, fase_final_pendiente, ids_por_sondeo,
 )
 from .entrega.limpieza import (
     PresupuestoLimpieza, barrer_limpieza, fallos_legados, limpiar_rutas_legadas,
@@ -1628,8 +1628,8 @@ def barrer(
             atendido = False
             if (gh is not None and leer_parada_local(registro.base) is None
                 and previo.via != "directa"):
-                fase = fase_final_por_sondear(previo) if politica.ENTREGA_V4 else ""
-                if fase and presupuesto_pr:
+                fase = fase_final_pendiente(registro, previo, epoch) if presupuesto_pr else ""
+                if fase:
                     presupuesto_pr -= 1
                     previo, _ = conducir_pr(registro, previo, gh, hora, fase, epoch=epoch)
                 elif (
