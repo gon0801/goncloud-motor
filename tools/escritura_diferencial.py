@@ -179,7 +179,7 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
     pares = len(prefijos) * len(kinds)
     if max_casos is None:
         max_casos = len(entregas) + pares + min(100_000, len(prefijos) * 32)
-    print(json.dumps(["_firmas", len(prefijos), pares, pares]))
+    print(json.dumps(["_firmas", len(prefijos)]))
     if max_casos < pares + len(entregas):
         return 3
     cuenta = 0
@@ -258,6 +258,15 @@ def _indice_casos(archivo) -> dict[tuple[str, str], int]:
         posiciones[clave] = posicion
 
 
+def _pares_emitidos(posiciones: dict[tuple[str, str], int]) -> set[tuple[str, str]]:
+    pares = set()
+    for kind, variante in posiciones:
+        prefijo, separador, nombre = variante.partition(":")
+        if separador and prefijo.isdecimal() and nombre == "base":
+            pares.add((kind, prefijo))
+    return pares
+
+
 def _comparar(base: Path, arbol: Path, kinds: list[str], permitidos: set[str]) -> int:
     diferencias: Counter[tuple[str, str]] = Counter()
     total: Counter[str] = Counter()
@@ -270,14 +279,16 @@ def _comparar(base: Path, arbol: Path, kinds: list[str], permitidos: set[str]) -
             print(f"firmas_estado_distintas={abs(firmas_base[1] - firmas_arbol[1])}")
             print("diferencias: 1")
             return 1
-        if len(firmas_base) > 2 and firmas_base[2:] != firmas_arbol[2:]:
-            print("cobertura_distinta=1")
-            print("diferencias: 1")
-            return 1
-        if len(firmas_base) > 2:
-            print(f"cubiertos {firmas_base[2]} de {firmas_base[3]} pares firma×kind")
         posiciones_base = _indice_casos(izquierda)
         posiciones_arbol = _indice_casos(derecha)
+        esperados = firmas_base[1] * len(kinds)
+        pares_base = _pares_emitidos(posiciones_base)
+        pares_arbol = _pares_emitidos(posiciones_arbol)
+        print(f"cubiertos {len(pares_base)} de {esperados} pares firma×kind")
+        if len(pares_base) != esperados or len(pares_arbol) != esperados:
+            diferencias["total", "cobertura_incompleta"] = max(
+                esperados - len(pares_base), esperados - len(pares_arbol), 1,
+            )
         for kind, variante in posiciones_base.keys() & posiciones_arbol.keys():
             izquierda.seek(posiciones_base[kind, variante])
             derecha.seek(posiciones_arbol[kind, variante])
@@ -295,6 +306,8 @@ def _comparar(base: Path, arbol: Path, kinds: list[str], permitidos: set[str]) -
               "".join(f", {clase}={n}" for clase, n in suyas))
     if diferentes:
         print(f"casos_distintos={diferentes}")
+    if diferencias["total", "cobertura_incompleta"]:
+        print(f"cobertura_incompleta={diferencias['total', 'cobertura_incompleta']}")
     print(f"diferencias: {sum(diferencias.values())}")
     return int(bool(diferencias) or any(total[kind] == 0 for kind in kinds))
 
