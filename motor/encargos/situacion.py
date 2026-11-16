@@ -154,7 +154,15 @@ def _contexto_inicial(e: Encargo) -> Contexto:
         _no_contradice(contexto.reanuda_en, situacion.reanuda_en, "reanuda_en")
         object.__setattr__(e, "motivo", situacion.motivo)
         contexto = replace(contexto, reanuda_en=situacion.reanuda_en)
+    elif isinstance(situacion, Conciliando):
+        efecto = next((x for x in e.efectos if x.estado == "incierto"), None)
+        if situacion.efecto != (efecto.id if efecto else ""):
+            raise EstadoIncoherente("conciliación sin efecto incierto correspondiente")
     elif isinstance(situacion, Deteniendo):
+        if isinstance(situacion.orden, FalloInterno) and any((
+            situacion.orden.kind, situacion.orden.clase_ukey, situacion.orden.rechazo,
+        )):
+            raise EstadoIncoherente("datos de fallo interno sin proyección legada")
         orden = (situacion.orden.accion
                  if isinstance(situacion.orden, (Parar, Cancelar)) else "fallo_interno")
         _no_contradice(contexto.orden_parada, orden, "orden_parada")
@@ -162,6 +170,19 @@ def _contexto_inicial(e: Encargo) -> Contexto:
                        "intento_interrumpido")
         contexto = replace(contexto, orden_parada=orden,
                            intento_interrumpido=situacion.interrumpido)
+    elif isinstance(situacion, Detenido):
+        causa = situacion.causa
+        if isinstance(causa, FalloInterno):
+            if any((causa.kind, causa.clase_ukey, causa.rechazo)):
+                raise EstadoIncoherente("datos de fallo interno sin proyección legada")
+            orden = "fallo_interno"
+        else:
+            if (causa.accion == "reabrir" and not e.reaperturas
+                    or causa.accion == "importar" and e.reaperturas):
+                raise EstadoIncoherente("causa detenida no coincide con reaperturas")
+            orden = "parar" if causa.accion == "parar" else ""
+        _no_contradice(contexto.orden_parada, orden, "orden_parada")
+        contexto = replace(contexto, orden_parada=orden)
     elif isinstance(situacion, Terminado):
         if situacion.forzado is not None:
             fase = next((f for f in e.fases if f.id == situacion.forzado.fase), None)

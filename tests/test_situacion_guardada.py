@@ -32,6 +32,14 @@ class SituacionGuardada(unittest.TestCase):
         reabierto = Encargo(**base, reaperturas=1,
                            situacion=Detenido(PorOrden("reabrir")))
         self.assertEqual(situacion_de(reabierto).causa, PorOrden("reabrir"))
+        fallo_vacio = FalloInterno("", "", "")
+        detenido_por_fallo = Encargo(**base, situacion=Detenido(fallo_vacio))
+        deteniendo_por_fallo = Encargo(**base,
+                                      situacion=Deteniendo(fallo_vacio, False))
+        self.assertEqual(detenido_por_fallo.orden_parada, "fallo_interno")
+        self.assertEqual(situacion_de(detenido_por_fallo).causa, fallo_vacio)
+        self.assertEqual(deteniendo_por_fallo.orden_parada, "fallo_interno")
+        self.assertEqual(situacion_de(deteniendo_por_fallo).orden, fallo_vacio)
 
         with self.assertRaises(EstadoIncoherente):
             Encargo(**base, situacion=Detenido(PorOrden("reabrir")))

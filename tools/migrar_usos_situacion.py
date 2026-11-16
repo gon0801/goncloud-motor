@@ -11,13 +11,13 @@ MOVIDOS = {
     "estado", "orden_parada", "reanuda_en", "intento", "proc", "reserva",
     "intento_interrumpido", "cierre_forzado_fase", "cierre_forzado_huella",
 }
-AJENOS = {"fase", "sol", "h", "self", "contexto"}
+AJENOS = {"fase", "sol", "h", "self", "contexto", "detenido"}
 
 
 def _es_encargo(nodo: ast.expr) -> bool:
     if isinstance(nodo, ast.Name):
         return nodo.id not in AJENOS
-    if isinstance(nodo, ast.Subscript):
+    if isinstance(nodo, (ast.Subscript, ast.Call)):
         return False
     return True
 
@@ -25,29 +25,43 @@ def _es_encargo(nodo: ast.expr) -> bool:
 def _migrar(ruta: Path, comprobar: bool = False) -> int:
     texto = ruta.read_text(encoding="utf-8")
     arbol = ast.parse(texto)
+    nombres = {"replace"}
+    modulos = {"dataclasses"}
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.ImportFrom) and nodo.module == "dataclasses":
+            nombres.update(alias.asname or alias.name for alias in nodo.names
+                           if alias.name == "replace")
+        elif isinstance(nodo, ast.Import):
+            modulos.update(alias.asname or alias.name for alias in nodo.names
+                           if alias.name == "dataclasses")
     lineas = texto.splitlines(keepends=True)
     offsets = [0]
     for linea in lineas:
         offsets.append(offsets[-1] + len(linea.encode("utf-8")))
     cambios = []
     for nodo in ast.walk(arbol):
-        if not isinstance(nodo, ast.Call) or not isinstance(nodo.func, ast.Name):
+        if not isinstance(nodo, ast.Call):
             continue
-        if nodo.func.id != "replace" or not nodo.args or not _es_encargo(nodo.args[0]):
+        funcion = nodo.func
+        reconocido = (
+            isinstance(funcion, ast.Name) and funcion.id in nombres
+            or isinstance(funcion, ast.Attribute) and funcion.attr == "replace"
+            and isinstance(funcion.value, ast.Name) and funcion.value.id in modulos
+        )
+        if not reconocido or not nodo.args or not _es_encargo(nodo.args[0]):
             continue
         if not MOVIDOS.intersection(k.arg for k in nodo.keywords):
             continue
-        inicio = offsets[nodo.func.lineno - 1] + nodo.func.col_offset
-        cambios.append(inicio)
+        inicio = offsets[funcion.lineno - 1] + funcion.col_offset
+        fin = offsets[funcion.end_lineno - 1] + funcion.end_col_offset
+        cambios.append((inicio, fin))
     if not cambios:
         return 0
     if comprobar:
         raise RuntimeError(f"faltan {len(cambios)} escrituras por migrar en {ruta}")
     crudo = texto.encode("utf-8")
-    for inicio in sorted(cambios, reverse=True):
-        if crudo[inicio:inicio + len(b"replace")] != b"replace":
-            raise RuntimeError(f"desplazamiento inesperado en {ruta}")
-        crudo = crudo[:inicio] + b"evolucionar" + crudo[inicio + len(b"replace"):]
+    for inicio, fin in sorted(cambios, reverse=True):
+        crudo = crudo[:inicio] + b"evolucionar" + crudo[fin:]
     texto = crudo.decode("utf-8")
     if ruta.name != "dominio.py":
         if "motor/encargos/reductor" in str(ruta):
