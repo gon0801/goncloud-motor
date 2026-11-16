@@ -315,6 +315,76 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertEqual(enc.fases[0].desplegado_recibo, str(ruta))
         self.assertTrue(enc.limpio)
 
+    def test_reintegrado_con_receta_sin_directorio_nuevo_limpia_el_viejo(self) -> None:
+        ruta = self._recibo(presente=True, reintegrado=True, receta=True)
+        self.reg.anotar("x", {"kind": "orden", "data": {
+            "accion": "cancelar", "hora": hora(),
+        }}, "cancelar:x")
+        self.reg.anotar("x", {"kind": "arbol", "data": {
+            "observacion": "ausente", "hora": hora(),
+        }}, "arbol:x")
+        enc = self._limpiar()
+        self.assertTrue(ruta.is_file())
+        self.assertFalse((ruta.parent / "trabajador.log").exists())
+        self.assertTrue(enc.limpio)
+
+    def test_el_presupuesto_partido_no_deja_despliegue_atascado(self) -> None:
+        ruta = self._recibo(presente=True, receta=True, terminado=True)
+        presupuesto = [4]
+        enc = self._limpiar(presupuesto=presupuesto)
+        self.assertEqual(presupuesto[0], 0)
+        self.assertFalse(enc.limpio)
+        self.assertTrue((ruta.parent / "proceso.json").exists())
+        enc = self._limpiar(1)
+        self.assertFalse((ruta.parent / "trabajador.log").exists())
+        self.assertTrue(ruta.is_file())
+        self.assertTrue(enc.limpio)
+
+    def test_limpio_no_sigue_consultando_github_ni_el_directorio_global(self) -> None:
+        self._final(con_pr=True)
+        enc = self._limpiar()
+        self.assertTrue(enc.limpio)
+        with (mock.patch.object(self.gh, "ver", side_effect=AssertionError("PR leído de nuevo")),
+              mock.patch.object(self.gh, "prs_con_base", side_effect=AssertionError("bases leídas")),
+              mock.patch("motor.encargos.entrega.limpieza._despliegues",
+                         side_effect=AssertionError("escaneo global"))):
+            self._limpiar(1)
+
+    def test_indice_de_despliegues_se_calcula_una_vez_por_pasada(self) -> None:
+        from motor.encargos.entrega import limpieza
+
+        self._final(con_pr=True)
+        presupuesto = limpieza.PresupuestoLimpieza(self.reg)
+        with mock.patch.object(limpieza, "_indice_despliegues",
+                               wraps=limpieza._indice_despliegues) as buscar:
+            enc = self.reg.fold("x")
+            for _ in range(2):
+                limpieza.barrer_limpieza(self.reg, enc, None, hora(), presupuesto)
+        self.assertEqual(buscar.call_count, 1)
+
+    def test_parada_local_no_cierra_pr_ni_escribe_limpieza(self) -> None:  # no-roja-en-base: antes de 4.3 no existía el barrido nuevo que rompía la parada
+        from motor.encargos.frontera import activar_parada_local
+
+        numero = self._final(con_pr=True)
+        activar_parada_local(self.reg.base, "pausa", hora())
+        antes = self.reg.eventos("x")
+        with mock.patch.object(politica, "ENTREGA_V4", True):
+            ciclo.barrer(self.reg, hora(1), (HORA + timedelta(minutes=1)).timestamp(),
+                         None, gh=self.gh)
+        self.assertEqual(self.gh.ver(self.repo, numero).estado, "abierto")
+        self.assertEqual(self.reg.eventos("x"), antes)
+
+    def test_tope_de_borrados_sigue_la_politica_del_turno(self) -> None:
+        self._final()
+        runtime = self.reg.base / "runtime" / "x"
+        runtime.mkdir(parents=True)
+        with (mock.patch.object(politica, "ENTREGA_V4", True),
+              mock.patch.object(politica, "LIMPIEZA",
+                                replace(politica.LIMPIEZA, por_pasada=0))):
+            ciclo.barrer(self.reg, hora(1), (HORA + timedelta(minutes=1)).timestamp(),
+                         None, gh=self.gh)
+        self.assertTrue(runtime.exists())
+
     def test_no_limpia_trabajador_vivo_de_un_sha_anterior(self) -> None:
         ruta = self._recibo(presente=True, reintegrado=True)
         (ruta.parent.parent / "x.actual").unlink()
