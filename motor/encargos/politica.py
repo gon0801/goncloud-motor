@@ -18,6 +18,7 @@ ESPERA_SIN_REVISOR_MIN = 0
 CERRADOS_VENTANA_S = 7 * 24 * 60 * 60
 CERRADOS_POR_PASADA = 5
 ENTREGA_V4 = False
+LIMPIEZA_POR_PASADA = 20
 # Cadencia del sondeo de cerrados: rápido la primera hora, espaciado después y
 # una gracia para la pausa del supervisor entre el cierre y su primera pasada.
 CERRADOS_SONDEO_RAPIDO_S = 60 * 60
@@ -47,6 +48,16 @@ class Fila:
 
 
 @dataclass(frozen=True)
+class LimitesLimpieza:
+    intentos: int = 3
+    reintento_s: int = 10 * 60
+    por_pasada: int = LIMPIEZA_POR_PASADA
+
+
+LIMPIEZA = LimitesLimpieza()
+
+
+@dataclass(frozen=True)
 class Congelamiento:
     """Rutas en las que `medium_mismo_pr` queda suspendida: su Medium va a la lista."""
 
@@ -73,6 +84,15 @@ CONGELAMIENTOS: tuple[Congelamiento, ...] = (
 
 
 FILAS: tuple[Fila, ...] = (
+    Fila(
+        id="limpieza",
+        regla="La limpieza se reintenta desde el registro, sin borrar de golpe.",
+        valor=f"{LIMPIEZA.intentos} intentos; {LIMPIEZA.reintento_s // 60} min; "
+              f"{LIMPIEZA.por_pasada} borrados por pasada",
+        decision="David, 16-nov",
+        comportamiento="el tercer fallo agota el recurso; cada reintento espera 10 min y "
+                      "una pasada borra a lo sumo 20 recursos",
+    ),
     Fila(
         id="deepseek_tope",
         regla="DeepSeek: 30 minutos y se sigue con omisión explícita.",

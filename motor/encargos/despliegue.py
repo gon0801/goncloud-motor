@@ -519,15 +519,30 @@ def observacion(registro, enc, fase=None) -> str:
 
 def _observacion_en(registro, enc, directorio: Path) -> str:
     try:
+        if not directorio.exists() and not directorio.is_symlink():
+            return "ausente"
+        # Tras la limpieza, el recibo y el pedido sobreviven al proceso del trabajador.
+        if (not (directorio / "proceso.json").exists()
+                and any(tipo == "despliegue" and clave == directorio.name and resultado == "borrado"
+                        for tipo, clave, resultado, _, _ in enc.limpieza)
+                and directorio.is_dir()
+                and {ruta.name for ruta in directorio.iterdir()} <= {"recibo.json", "pedido.json"}
+                and (directorio / "recibo.json").is_file()
+                and (directorio / "pedido.json").is_file()):
+            return "ausente"
         datos = _objeto(directorio / "recibo.json")
-        proceso = _objeto(directorio / "proceso.json")
         if datos.get("encargo") != enc.id:
             return "incierto"
-        if plataforma.estado_proc(proceso) == "vivo":
-            return "vivo"
+        proceso_path = directorio / "proceso.json"
+        if proceso_path.exists():
+            proceso = _objeto(proceso_path)
+            if plataforma.estado_proc(proceso) == "vivo":
+                return "vivo"
+        elif datos.get("estado") not in ("aplicado", "fallido", "esperando", "ocupado"):
+            return "incierto"
         comando_path = directorio / "comando.json"
         if not comando_path.exists():
-            return "ausente"
+            return "ausente" if proceso_path.exists() else "incierto"
         comando = _objeto(comando_path)
         if comando.get("estado") == "no_enviado":
             return "ausente"

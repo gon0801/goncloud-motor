@@ -48,10 +48,6 @@ class LimpiezaAlCerrar(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.reg = Registro(Path(self.tmp) / "base")
         self.addCleanup(self.reg.close)
-        fallidas = getattr(ciclo, "_LIMPIEZA_FALLIDA", None)
-        if fallidas is not None:
-            fallidas.clear()
-            self.addCleanup(fallidas.clear)
 
     def _terminar(self, encargo: str) -> None:
         self.reg.anotar(
@@ -182,24 +178,67 @@ class LimpiezaAlCerrar(unittest.TestCase):
             # El reintento logró limpiar: sin nota nueva y sin marca que
             # siga intentando en los barridos siguientes.
             self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
-            clave = (str(Path(self.reg.base)), encargo)
-            self.assertNotIn(clave, ciclo._LIMPIEZA_FALLIDA)
+            self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 0)
             # El barrido siguiente no agrega nada: sin fallo, sin nota.
             antes = self.reg.eventos(encargo)
             barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(self.reg.eventos(encargo), antes)
 
-    def test_un_arranque_nuevo_reintenta_sin_duplicar_la_nota(self):
+    def test_un_arranque_nuevo_recupera_del_registro_el_intento_pendiente(self):
         encargo = self._cancelar_con_archivo_abierto()
+        self.assertFalse(hasattr(ciclo, "_LIMPIEZA_FALLIDA"))
         error = PermissionError(13, "Permission denied", "abierto.db")
 
         with mock.patch.object(ciclo, "borrar_arbol", side_effect=error) as borrar:
             barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(borrar.call_count, 2)
-            ciclo._LIMPIEZA_FALLIDA.clear()
-            barrer(self.reg, ahora_iso(), time.time(), None)
+            self.reg.close()
+            nueva = Registro(self.reg.base)
+            self.addCleanup(nueva.close)
+            barrer(nueva, ahora_iso(), time.time(), None)
             self.assertEqual(borrar.call_count, 4, "no se reintentó tras el arranque")
-            self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
+            barrer(nueva, ahora_iso(), time.time(), None)
+            self.assertEqual(borrar.call_count, 4, "se perdió el tope tras reiniciar")
+            self.assertEqual(len([
+                e for e in nueva.eventos(encargo)
+                if e["kind"] == "procedimiento"
+                and "limpieza(" in e["data"].get("nota", "")
+            ]), 2)
+
+    def test_fallo_restauracion_y_otro_fallo_conservan_el_ciclo(self):  # no-roja-en-base: fija la rama legada de la ukey con ciclo, existente antes de 4.3
+        encargo = self._cancelar_con_archivo_abierto()
+        error = PermissionError(13, "Permission denied", "abierto.db")
+        with mock.patch.object(ciclo, "borrar_arbol", side_effect=error):
+            barrer(self.reg, ahora_iso(), time.time(), None)
+        self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 1)
+
+        barrer(self.reg, ahora_iso(), time.time(), None)
+        self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 0)
+        restauracion = self.reg.db.execute(
+            "SELECT id FROM events WHERE encargo = ? "
+            "AND ukey LIKE 'limpieza-restaurada:%' ORDER BY id DESC LIMIT 1",
+            (encargo,),
+        ).fetchone()
+        self.assertIsNotNone(restauracion)
+        runtime = self.reg.base / "runtime" / encargo
+        runtime.mkdir(parents=True)
+        (runtime / "abierto.db").write_text("abierto", encoding="utf-8")
+        with mock.patch.object(ciclo, "borrar_arbol", side_effect=error):
+            barrer(self.reg, ahora_iso(), time.time(), None)
+            barrer(self.reg, ahora_iso(), time.time(), None)
+        fallos = [
+            ukey for (ukey,) in self.reg.db.execute(
+                "SELECT ukey FROM events WHERE encargo = ? "
+                "AND ukey LIKE 'limpieza-fallida:%' ORDER BY id",
+                (encargo,),
+            )
+        ]
+        self.assertEqual(fallos[-2:], [
+            f"limpieza-fallida:{encargo}:{restauracion[0]}:1",
+            f"limpieza-fallida:{encargo}:{restauracion[0]}:2",
+        ])
+        self.assertEqual(ciclo.fallos_legados(self.reg, encargo),
+                         (2, str(restauracion[0])))
 
 
 if __name__ == "__main__":

@@ -26,6 +26,9 @@ from .entrega.ejecutar import (
     anotar_pendiente, base_objetivo_del_pr as _base_objetivo_del_pr,
     conciliar_otra_vista, conducir_pr, esperar_sin_gh, fase_final_por_sondear,
 )
+from .entrega.limpieza import (
+    PresupuestoLimpieza, barrer_limpieza, fallos_legados, limpiar_rutas_legadas,
+)
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
@@ -1331,11 +1334,6 @@ def _cerrar_procesos_del_encargo(registro: Registro, enc: Encargo) -> int:
     return cerrados
 
 
-# Encargos cuya limpieza ya falló en este proceso, con los intentos fallidos.
-# Un fallo se anota una sola vez y se permite un único reintento para el caso
-# transitorio (un handle que tarda en soltarse); después se deja de intentar.
-# Un arranque nuevo del supervisor vuelve a permitir ese reintento.
-_LIMPIEZA_FALLIDA: dict[tuple[str, str], int] = {}
 _MAX_INTENTOS_LIMPIEZA = 2
 
 
@@ -1346,6 +1344,7 @@ def _anotar_limpieza_fallida(
     exc: OSError,
     hora: str,
     intento: int = 1,
+    ciclo: str = "",
 ) -> None:
     nota = (
         f"limpieza({ruta.name}): {type(exc).__name__}: {exc}; "
@@ -1356,7 +1355,7 @@ def _anotar_limpieza_fallida(
     registro.anotar(
         enc.id,
         {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
-        f"limpieza-fallida:{enc.id}:{intento}",
+        f"limpieza-fallida:{enc.id}:{ciclo + ':' if ciclo else ''}{intento}",
     )
 
 
@@ -1368,56 +1367,26 @@ def _limpiar_encargo_cerrado(
     del producto se conserva. Lo que no se pueda borrar queda anotado una sola
     vez: se reintenta una vez más y después no se vuelve a intentar en cada
     barrido."""
-    if enc.estado not in ("terminado", "cancelado"):
+    if politica.ENTREGA_V4 or enc.estado not in ("terminado", "cancelado"):
         return False
-    clave = (str(Path(registro.base)), enc.id)
-    fallos_previos = _LIMPIEZA_FALLIDA.get(clave, 0)
+    fallos_previos, ciclo = fallos_legados(registro, enc.id)
     if fallos_previos >= _MAX_INTENTOS_LIMPIEZA:
         return False
     hora = hora or ahora_iso()
     _cerrar_procesos_del_encargo(registro, enc)
     base = Path(registro.base)
-    borrado = False
-    fallos: list[tuple[Path, OSError]] = []
-
-    def borrar(ruta: Path) -> None:
-        """Borra una ruta y guarda el error para anotarlo sin cortar el resto."""
-        nonlocal borrado
-        if not (ruta.exists() or ruta.is_symlink()):
-            return
-        try:
-            borrar_arbol(ruta)
-            borrado = True
-        except OSError as exc:
-            fallos.append((ruta, exc))
-
-    borrar(base / "runtime" / enc.id)
-    ejecucion = base / "ejecucion" / enc.id
-    try:
-        intentos = sorted(
-            (
-                ruta
-                for ruta in ejecucion.iterdir()
-                if ruta.name.startswith("intento-")
-            ),
-            key=lambda ruta: ruta.name,
-        )
-    except FileNotFoundError:
-        intentos = []
-    except OSError as exc:
-        fallos.append((ejecucion, exc))
-        intentos = []
-    for intento in intentos:
-        borrar(intento)
-    borrar(ejecucion / "actual")
+    borrado, fallos = limpiar_rutas_legadas(base, enc.id, borrar_arbol)
     if fallos:
-        _LIMPIEZA_FALLIDA[clave] = fallos_previos + 1
         ruta, exc = fallos[0]
         _anotar_limpieza_fallida(
-            registro, enc, ruta, exc, hora, intento=fallos_previos + 1
+            registro, enc, ruta, exc, hora, intento=fallos_previos + 1, ciclo=ciclo
         )
-    else:
-        _LIMPIEZA_FALLIDA.pop(clave, None)
+    elif fallos_previos:
+        registro.anotar(
+            enc.id, {"kind": "procedimiento",
+                     "data": {"nota": "limpieza restablecida", "hora": hora}},
+            f"limpieza-restaurada:{enc.id}:{registro.ultimo_evento(enc.id)}",
+        )
     return borrado
 
 
@@ -1647,6 +1616,7 @@ def barrer(
     informes = []
     presupuesto = [CERRADOS_POR_PASADA]
     presupuesto_pr = CERRADOS_POR_PASADA
+    presupuesto_limpieza = PresupuestoLimpieza(registro)
     for encargo_id in registro.ids():
         try:
             previo = plegar_aislado(registro, encargo_id)
@@ -1655,6 +1625,7 @@ def barrer(
             if aparcado_por_barrido(previo):
                 informes.append(vista_o_minima(previo))
                 continue
+            atendido = False
             if (gh is not None and leer_parada_local(registro.base) is None
                 and previo.via != "directa"):
                 fase = fase_final_por_sondear(previo) if politica.ENTREGA_V4 else ""
@@ -1668,13 +1639,20 @@ def barrer(
                     ))
                 ):
                     previo, atendido = conducir_pr(registro, previo, gh, hora, epoch=epoch)
-                    if atendido:
-                        informes.append(vista(previo))
-                        continue
-            informes += _barrer_encargos(
-                registro, [encargo_id], hora, epoch, lanzador, umbral_s, gh,
-                presupuesto,
-            )
+            if atendido:
+                informes.append(vista(previo))
+            else:
+                informes += _barrer_encargos(
+                    registro, [encargo_id], hora, epoch, lanzador, umbral_s, gh,
+                    presupuesto,
+                )
+            if politica.ENTREGA_V4:
+                enc = registro.fold(encargo_id)
+                if enc is not None:
+                    enc = barrer_limpieza(
+                        registro, enc, gh, hora, presupuesto_limpieza,
+                    )
+                    informes[-1] = vista(enc)
             _RACHA_BARRIDO.pop(encargo_id, None)
         except Exception as exc:
             informe = contener(registro, encargo_id, exc, hora)
@@ -6185,7 +6163,6 @@ def _revisar_deepseek_del_cerrado(
     ]
     if not fases:
         return enc
-    espacio = _espacio(registro.base, enc.id)
     marca = _marca_deepseek_cerrado(enc)
     if not marca["desde"]:
         marca["desde"] = epoch
@@ -6196,6 +6173,7 @@ def _revisar_deepseek_del_cerrado(
     edad = max(0.0, epoch - cierre) if cierre else 0.0
     if edad >= CERRADOS_VENTANA_S:
         return enc
+    espacio = _espacio(registro.base, enc.id)
     if presupuesto is None:
         presupuesto = [CERRADOS_POR_PASADA]
     # El cursor de lecturas empieza en lo que dice el registro (encargos
