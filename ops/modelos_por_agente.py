@@ -275,3 +275,16 @@ def informe(home: Path, manifiesto: Path) -> list[str]:
             texto = "no pude leer (%s)" % causa
         lineas.append(nombre + ": " + texto)
     return lineas
+
+
+def imprimir(lineas: list[str], salida) -> None:
+    """Escribe cada línea como `modelos <línea>` en la codificación de salida, sin fallar.
+
+    La consola de la PC es cp1252: un nombre de agente con emoji tumbaría el programa y la
+    máquina saldría como "no responde". Cada línea se codifica entera antes de escribirla, así
+    no queda un prefijo suelto si algo falla.
+    """
+    codificacion = getattr(salida, "encoding", None) or "utf-8"
+    for linea in lineas:
+        texto = "modelos " + linea + "\n"
+        salida.write(texto.encode(codificacion, "backslashreplace").decode(codificacion))

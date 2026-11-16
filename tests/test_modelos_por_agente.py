@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import io
 import json
 import os
 import sqlite3
@@ -13,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from motor.flota.manifiesto import Politica, Puesto, emitir
-from ops.modelos_por_agente import informe
+from ops.modelos_por_agente import imprimir, informe
 
 DIRIGIR = (
     ("anthropic/claude-opus-5-5", "high"),
@@ -123,6 +125,9 @@ ALFA_HERMES = [
     ("deepseek-v4.1-flash", "high"),
 ]
 
+
+
+FUENTE = Path(__file__).resolve().parent.parent / "ops" / "modelos_por_agente.py"
 
 
 class ModelosPorAgente(unittest.TestCase):
@@ -324,3 +329,43 @@ class ModelosPorAgente(unittest.TestCase):
                 [linea] = _informe(sembrada)
 
                 self.assertTrue(linea.startswith("hermes: 0 de 1 agentes como la tabla; difieren: alfa ("))
+
+    def test_un_agente_con_emoji_sale_escapado_en_una_salida_cp1252(self):
+        salida = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        lineas = ["claw: 0 de 1 agentes como la tabla; difieren: beta \U0001f600 (x; tabla y)", "hermes: ok"]
+
+        imprimir(lineas, salida)
+        salida.flush()
+
+        self.assertEqual(
+            salida.buffer.getvalue().decode("cp1252"),
+            "modelos claw: 0 de 1 agentes como la tabla; difieren: beta \\U0001f600 (x; tabla y)\n"
+            "modelos hermes: ok\n",
+        )
+
+    def test_el_modulo_corre_en_python_3_9(self):
+        texto = FUENTE.read_text(encoding="utf-8")
+        arbol = ast.parse(texto, feature_version=(3, 9))
+
+        anotaciones = []
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.AnnAssign):
+                anotaciones.append(nodo.annotation)
+            elif isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                anotaciones.append(nodo.returns)
+                argumentos = nodo.args
+                todos = [*argumentos.posonlyargs, *argumentos.args, *argumentos.kwonlyargs]
+                todos += [a for a in (argumentos.vararg, argumentos.kwarg) if a]
+                anotaciones += [a.annotation for a in todos]
+        a_futuro = any(
+            isinstance(n, ast.ImportFrom) and n.module == "__future__"
+            and any(alias.name == "annotations" for alias in n.names)
+            for n in arbol.body
+        )
+        con_barra = [
+            a.lineno
+            for a in anotaciones
+            if a is not None and any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr) for n in ast.walk(a))
+        ]
+
+        self.assertTrue(a_futuro or not con_barra, "X | Y evaluado en anotaciones, líneas %s" % con_barra)
