@@ -87,9 +87,55 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertEqual(hecho.returncode, 0, hecho.stderr + hecho.stdout)
         self.assertIn("comprobacion", hecho.stdout)
         self.assertIn("solicitud", hecho.stdout)
+        self.assertRegex(hecho.stdout, r"cubiertos \d+ de \d+ pares firma×kind")
         self.assertIn("diferencias: 0", hecho.stdout)
         self.assertNotIn("corrección secreta", hecho.stdout)
         self.assertNotIn("evidencia secreta", hecho.stdout)
+
+    def test_el_tope_primero_cubre_todos_los_pares(self) -> None:
+        from tools.escritura_diferencial import _firma_estado
+        from tools.plegado import cargar_reductor, leer_encargos, ultimo_evento
+
+        reductor = cargar_reductor(RAIZ)
+        firmas = set()
+        for ruta in (self.corpus / "registros").glob("*.sqlite"):
+            for _, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
+                estado = None
+                for evento in eventos:
+                    estado = reductor.aplicar(estado, evento)
+                    firmas.add(_firma_estado(estado))
+        pares = len(firmas) * 2
+        hecho = self.correr(
+            "--kinds", "comprobacion,solicitud", "--max-casos", str(pares),
+        )
+        self.assertEqual(hecho.returncode, 0, hecho.stderr + hecho.stdout)
+        self.assertIn(f"cubiertos {pares} de {pares} pares firma×kind", hecho.stdout)
+
+    def test_segunda_solicitud_duplicada_se_detecta_por_omision(self) -> None:
+        with sqlite3.connect(self.corpus / "registros/uno.sqlite") as db:
+            db.execute("UPDATE events SET id = 6 WHERE id = 5")
+            db.execute(
+                "INSERT INTO events VALUES (5, '', 'ejemplo', 'intento_abierto',"
+                " '{\"id\":\"i\",\"pid\":1,\"inicio\":\"t\"}', 'intento:5')",
+            )
+            db.execute(
+                "INSERT INTO events VALUES (7, '', 'ejemplo', 'solicitud', ?, 'solicitud:7')",
+                (json.dumps({
+                    "id": "s2", "fase": "b", "intento": "i", "operacion": "leer",
+                }),),
+            )
+        (self.corpus / "meta.json").write_text('{"eventos": 7}', encoding="utf-8")
+        arbol = self.mutar(
+            "if any(s.id == ident for s in e.solicitudes):",
+            "if e.solicitudes and e.solicitudes[0].id == ident:",
+            "validacion_necesidades.py",
+        )
+        hecho = self.correr_con_tope_normal(
+            "--kinds", "solicitud", "--arbol", str(arbol),
+        )
+        self.assertEqual(hecho.returncode, 1, hecho.stderr + hecho.stdout)
+        self.assertIn("base_rechaza_arbol_acepta=", hecho.stdout)
+        self.assertNotIn("s2", hecho.stdout)
 
     def test_cambio_del_orden_de_guardias_detecta_escritura_aceptada(self) -> None:
         arbol = self.mutar(
