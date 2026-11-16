@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -229,9 +231,7 @@ class EscrituraDiferencial(unittest.TestCase):
     def test_variantes_numericas_y_pares_de_campos(self) -> None:
         from tools.escritura_diferencial import _variantes
 
-        estado = SimpleNamespace(
-            ajustes=(), solicitudes=(), efectos=(), fase_activa="F", intento="",
-        )
+        estado = SimpleNamespace(ajustes=(), solicitudes=(), efectos=())
         casos = list(_variantes("reserva", {"generacion": 1, "fase": "F"}, estado))
         for valor in (float("inf"), float("-inf"), -1, [], "no numerico"):
             self.assertTrue(any(c.get("generacion") == valor for _, c in casos))
@@ -266,6 +266,33 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertIn("falta:generacion", vistos)
         self.assertIn("fase:ajeno", vistos)
         self.assertIn("ajustes_vistos:mas", vistos)
+
+    def test_compara_por_identidad_aun_si_cambia_el_orden_de_las_salidas(self) -> None:
+        from tools.escritura_diferencial import _comparar
+
+        base = self.raiz / "base.jsonl"
+        arbol = self.raiz / "arbol.jsonl"
+        cabecera = json.dumps(["_firmas", 2]) + "\n"
+        primero = ["solicitud", "1:real", "huella-a", "rechaza", "KeyError", "secreto"]
+        segundo = ["comprobacion", "2:vacio", "huella-b", "rechaza", "TypeError", "secreto"]
+        base.write_text(cabecera + json.dumps(primero) + "\n" + json.dumps(segundo) + "\n",
+                        encoding="utf-8")
+        arbol.write_text(cabecera + json.dumps(segundo) + "\n" + json.dumps(primero) + "\n",
+                         encoding="utf-8")
+        salida = StringIO()
+        with redirect_stdout(salida):
+            self.assertEqual(_comparar(base, arbol, ["solicitud", "comprobacion"], set()), 0)
+        self.assertIn("diferencias: 0", salida.getvalue())
+        self.assertNotIn("secreto", salida.getvalue())
+
+        arbol.write_text(cabecera + json.dumps(segundo) + "\n"
+                         + json.dumps(["solicitud", "3:real", *primero[2:]]) + "\n",
+                         encoding="utf-8")
+        salida = StringIO()
+        with redirect_stdout(salida):
+            self.assertEqual(_comparar(base, arbol, ["solicitud", "comprobacion"], set()), 1)
+        self.assertIn("casos_distintos=", salida.getvalue())
+        self.assertNotIn("carga_diferente=", salida.getvalue())
 
     def test_mensaje_de_solicitud_duplicada_se_detecta_con_tope_normal(self) -> None:
         with sqlite3.connect(self.corpus / "registros/uno.sqlite") as db:
