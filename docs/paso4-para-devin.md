@@ -499,6 +499,9 @@ de cambio de palabra, `motor ver` y `skill/motor/SKILL.md`.
   precedencia, con el interruptor apagado y encendido. Una prueba de que, al abrir una base con
   encargos ya detenidos y ya cerrados, no sale ningún aviso nuevo. Una prueba de que un registro viejo (sin
   `pr_observado`, con `integrado_sha` y `desplegado_recibo`) da "falta limpiar" y no "integrado".
+  Dos pruebas de "desplegada": una fase reintegrada que conserva el `desplegado_recibo` de su
+  despliegue anterior da "integrado" con la causa del recibo viejo, y la misma fase con el
+  puntero a la clave vigente da "entregado".
   En `## Tradeoffs`, la lista de pruebas viejas que cambian de texto y por qué.
 
 **4.5 Lecturas crudas de la entrega e invariantes.**
