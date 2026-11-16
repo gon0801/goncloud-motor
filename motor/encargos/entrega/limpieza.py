@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,10 @@ Tipo = Literal["pr", "rama", "despliegue", "runtime", "espacio",
 Cumplimiento = Literal["borrado", "conservado", "pendiente"]
 _CLAVE_DESPLIEGUE = re.compile(r"[0-9a-f]{64}")
 _CONSERVED = frozenset(("recibo.json", "pedido.json"))
+# El sondeo solo dosifica lecturas: reiniciar adelanta una consulta, nunca acredita un borrado.
+_SONDEOS_COMPARTIDOS: weakref.WeakKeyDictionary[Registro, dict[tuple[str, str], datetime]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def fallos_legados(registro: Registro, encargo_id: str) -> tuple[int, str]:
@@ -318,6 +323,10 @@ def _despliegue(registro: Registro, enc: Encargo,
                 ruta: Path, presupuesto: list[int]) -> bool:
     if ruta.is_symlink():
         return False
+    if (_CLAVE_DESPLIEGUE.fullmatch(ruta.name) and ruta.is_dir()
+        and not (ruta / "proceso.json").exists()
+        and despliegue._observacion_en(registro, enc, ruta) == "incierto"):
+        raise ValueError("trabajador de despliegue sin metadatos verificables")
     if any(despliegue.observacion(registro, enc, f) in ("vivo", "incierto")
            for f in enc.fases):
         return False
@@ -401,8 +410,15 @@ def _restos_tras_limpio(registro: Registro, enc: Encargo, hora: str) -> bool:
     base = Path(registro.base)
     if any(pr.pr.estado in ("abierto", "borrador") for pr in enc.prs):
         return True
-    if any(
+    ahora = _fecha(hora)
+    if not _vence(enc, hora) and any(
         _ultimo(enc, rama)[0] not in ("borrado", "agotado")
+        and (ahora is None
+             or (ultimo := _SONDEOS_COMPARTIDOS.get(registro, {}).get(
+                 (enc.id, rama.clave)
+             )) is None
+             or ahora < ultimo
+             or (ahora - ultimo).total_seconds() >= politica.LIMPIEZA.reintento_s)
         for rama in _ramas(enc)
         if enc.estado == "cancelado"
         or any(f.pr_numero and _rama_de_fase(enc, f) == rama.clave for f in enc.fases)
@@ -476,6 +492,8 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
             enc = _anotar(registro, enc, recurso, "fallo", hora)
             faltan = True
             continue
+        if recurso.tipo == "rama" and estado == "conservado" and (ahora := _fecha(hora)):
+            _SONDEOS_COMPARTIDOS.setdefault(registro, {})[(enc.id, recurso.clave)] = ahora
         if estado == "pendiente":
             faltan = True
         elif estado == "borrado" and (

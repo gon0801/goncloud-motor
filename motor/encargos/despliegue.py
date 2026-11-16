@@ -531,14 +531,16 @@ def _observacion_en(registro, enc, directorio: Path) -> str:
                 and (directorio / "pedido.json").is_file()):
             return "ausente"
         datos = _objeto(directorio / "recibo.json")
-        proceso = _objeto(directorio / "proceso.json")
         if datos.get("encargo") != enc.id:
             return "incierto"
-        if plataforma.estado_proc(proceso) == "vivo":
-            return "vivo"
+        proceso_path = directorio / "proceso.json"
+        if proceso_path.exists():
+            proceso = _objeto(proceso_path)
+            if plataforma.estado_proc(proceso) == "vivo":
+                return "vivo"
         comando_path = directorio / "comando.json"
         if not comando_path.exists():
-            return "ausente"
+            return "ausente" if proceso_path.exists() else "incierto"
         comando = _objeto(comando_path)
         if comando.get("estado") == "no_enviado":
             return "ausente"
