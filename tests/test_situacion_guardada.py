@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+import subprocess
+import sys
 from dataclasses import fields, replace
 from pathlib import Path
 
@@ -56,6 +58,27 @@ class SituacionGuardada(unittest.TestCase):
             ruta.write_text("replace(e, intento='I')\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "faltan 1 escrituras"):
                 _migrar(ruta, comprobar=True)
+            for texto in (
+                "import dataclasses\ndataclasses.replace(e, estado='detenido')\n",
+                "import dataclasses as dc\ndc.replace(e, estado='detenido')\n",
+                "from dataclasses import replace as cambiar\n"
+                "cambiar(e, estado='detenido')\n",
+            ):
+                with self.subTest(texto=texto):
+                    ruta.write_text(texto, encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, "faltan 1 escrituras"):
+                        _migrar(ruta, comprobar=True)
+                    self.assertEqual(_migrar(ruta), 1)
+                    self.assertIn("evolucionar(e, estado='detenido')",
+                                  ruta.read_text(encoding="utf-8"))
+
+    def test_migrador_vigila_escrituras_planas_en_la_suite(self) -> None:
+        raiz = Path(__file__).resolve().parents[1]
+        proceso = subprocess.run(
+            [sys.executable, str(raiz / "tools/migrar_usos_situacion.py"), "--check"],
+            cwd=raiz, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(proceso.returncode, 0, proceso.stdout + proceso.stderr)
 
     def test_constructor_tipado_conserva_escritura_espera_y_detencion(self) -> None:
         from motor.encargos.situacion import (
