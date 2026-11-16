@@ -1884,8 +1884,9 @@ def _descartar_avances_de_terminados(
     for ident, doc in candidatos:
         if (
             doc.get("encargo") not in terminados
-            or not doc.get("tipo")
-            or doc.get("tipo") == "ci_rojo"
+            or doc.get("tipo") not in (
+                "inicio", "pr", "aviso", "relevo", "herramienta", "pendientes", "trabado",
+            )
             or doc.get("estado") in ("publicado", "descartado")
         ):
             continue
@@ -1975,6 +1976,11 @@ def _trabajos_de_encargo(
                 resultado = _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"]))
                 if resultado:
                     cuerpo += f" {resultado}"
+        guardado = vista.get(aviso["id"])
+        if guardado and guardado.get("estado") == "local-pendiente":
+            ruta = registro.base / "canal" / enc.canal / aviso["id"]
+            if ruta.is_file():
+                cuerpo = leer_texto(ruta)
         trabajos.append((aviso, cuerpo))
     apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
     for hecho in hechos_de_avance(enc, apariciones):

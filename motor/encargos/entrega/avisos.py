@@ -123,6 +123,13 @@ def trabajos_nuevos(registro: Registro, enc: Encargo, corte: int,
         aviso = aviso_de(enc)
         aviso.update(id=cierre_id, tipo="cierre-v4", palabra=rep.palabra)
         return ((aviso, rep),)
+    if anterior.get("estado") in ("local-pendiente", "pendiente"):
+        aviso = aviso_de(enc)
+        aviso.update(
+            id=cierre_id, tipo="cierre-v4",
+            palabra=anterior.get("palabra") or rep.palabra,
+        )
+        return ((aviso, rep),)
     if (anterior.get("estado") != "publicado" or not anterior.get("recibo")
         or anterior.get("palabra") == rep.palabra
         or rep.palabra == "falta limpiar" and not agotado):

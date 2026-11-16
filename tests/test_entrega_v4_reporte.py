@@ -160,6 +160,35 @@ class PalabrasPuras(unittest.TestCase):
         self.assertIn("no se pudo desplegar", causa)
         self.assertIn("la máquina", causa)
 
+    def test_una_fase_sin_cambios_no_oculta_otra_integrada_o_desplegada(self) -> None:
+        from motor.encargos.despliegue import clave_de_recibo
+        from motor.encargos.reporte import reporte
+
+        f = Fase("F", "cambio", estado="preparada", evidencia="comprobado",
+                 integrado_sha="m")
+        g = Fase("G", "sin cambio", estado="preparada", evidencia="comprobado",
+                 ultimo_paso_entrega="sin_cambios")
+        pr = PrDeFase("F", PrMergeado(7, "h", "main", "m"))
+        for desplegado in (False, True):
+            base = encargo(fases=(f, g))
+            fase_f = f
+            if desplegado:
+                fase_f = replace(
+                    f, desplegado_recibo=f"despliegues/{clave_de_recibo(base, f)}/recibo.json",
+                )
+            for fases in ((fase_f, g), (g, fase_f)):
+                with self.subTest(desplegado=desplegado, primero=fases[0].id):
+                    actual = replace(base, fases=fases, prs=(pr,))
+                    rep = reporte(actual, True)
+                    self.assertEqual(
+                        rep.palabra, "entregado" if desplegado else "integrado",
+                    )
+                    self.assertEqual(
+                        {a.id: a.palabra for a in rep.fases},
+                        {"F": "entregado" if desplegado else "integrado",
+                         "G": "sin cambios"},
+                    )
+
     def test_reintegracion_con_recibo_anterior_no_acredita_despliegue(self) -> None:
         from motor.encargos.despliegue import clave_de_recibo
         from motor.encargos.reporte import reporte

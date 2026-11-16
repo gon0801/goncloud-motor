@@ -171,7 +171,8 @@ def reporte(enc: Encargo, limpieza_activa: bool) -> Reporte | None:
                            f"{f.id}: {f.causa}" for f in parciales
                        ), fases)
     nivel = nivel_objetivo(enc)
-    if fases and all(f.palabra == "entregado" for f in fases):
+    con_cambios = [f for f in fases if f.palabra != "sin cambios"]
+    if con_cambios and all(f.palabra == "entregado" for f in con_cambios):
         aceptadas = [
             f"{pr.fase} en {pr.aceptada_en}" for pr in enc.prs
             if pr.aceptada_en and isinstance(pr.pr, PrMergeado)
@@ -181,13 +182,12 @@ def reporte(enc: Encargo, limpieza_activa: bool) -> Reporte | None:
         if aceptadas:
             causa += " David aceptó " + ", ".join(aceptadas) + "."
         return Reporte("entregado", causa, fases)
-    if fases and all(f.palabra in ("entregado", "integrado") for f in fases):
-        motivos = [f"{f.id}: {f.causa}" for f in fases if f.palabra == "integrado"]
+    if con_cambios and all(f.palabra in ("entregado", "integrado") for f in con_cambios):
+        motivos = [f"{f.id}: {f.causa}" for f in con_cambios if f.palabra == "integrado"]
         return Reporte("integrado", "; ".join(motivos) or "Todas las fases están integradas.",
                        fases)
-    if enc.nivel_alcanzado == "sin_cambios" or (fases and all(
-        f.palabra == "sin cambios" for f in fases
-    )):
+    if (fases and not con_cambios
+        or not fases and enc.nivel_alcanzado == "sin_cambios"):
         return Reporte("sin cambios", "No hubo cambios que entregar.", fases)
     sin_pr = not enc.pr_numero and all(
         not isinstance(pr.pr, (PrAbierto, PrBorrador, PrMergeado, PrCerrado))

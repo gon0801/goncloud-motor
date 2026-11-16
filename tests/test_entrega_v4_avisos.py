@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from dataclasses import replace
 from unittest import mock
 
@@ -162,6 +163,45 @@ class AvisosPorPalabra(unittest.TestCase):
         self.assertEqual(aviso["tipo"], "cierre-v4")
         self.assertEqual(aviso["palabra"], rep.palabra)
         self.assertEqual(rep.palabra, "listo para tu merge")
+
+    def test_cierre_local_pendiente_no_se_descarta_al_configurar_transporte(self) -> None:
+        ident = self._terminar()
+        config = self.banco.base / "canal.json"
+        configurado = config.read_text(encoding="utf-8")
+        config.write_text(json.dumps({"tg": {}}), encoding="utf-8")
+        primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
+        self.assertEqual([a["estado"] for a in primero], ["local-pendiente"])
+        aviso = primero[0]["id"]
+        directores.drenar(self.banco.reg, ahora=T0 + 1)
+        self.assertEqual(self.banco.aviso_guardado(aviso)["estado"], "local-pendiente")
+        config.write_text(configurado, encoding="utf-8")
+        tercero = directores.drenar(self.banco.reg, ahora=T0 + 2)["avisos"]
+        self.assertEqual([a["id"] for a in tercero], [aviso])
+        self.assertEqual(tercero[0]["estado"], "publicado")
+        self.assertEqual(self.banco.aviso_guardado(aviso)["encargo"], ident)
+        self.assertEqual(len(self.banco.cuerpos()), 1)
+        directores.drenar(self.banco.reg, ahora=T0 + 3)
+        self.assertEqual(len(self.banco.cuerpos()), 1)
+
+    def test_cambio_local_pendiente_no_se_descarta_al_configurar_transporte(self) -> None:
+        ident = self._terminar()
+        self.assertEqual(len(directores.drenar(self.banco.reg, ahora=T0)["avisos"]), 1)
+        config = self.banco.base / "canal.json"
+        configurado = config.read_text(encoding="utf-8")
+        config.write_text(json.dumps({"tg": {}}), encoding="utf-8")
+        self._limpio(ident)
+        primero = directores.drenar(self.banco.reg, ahora=T0 + 1)["avisos"]
+        self.assertEqual([a["tipo"] for a in primero], ["palabra-v4"])
+        self.assertEqual(primero[0]["estado"], "local-pendiente")
+        aviso = primero[0]["id"]
+        directores.drenar(self.banco.reg, ahora=T0 + 2)
+        self.assertEqual(self.banco.aviso_guardado(aviso)["estado"], "local-pendiente")
+        config.write_text(configurado, encoding="utf-8")
+        tercero = directores.drenar(self.banco.reg, ahora=T0 + 3)["avisos"]
+        self.assertEqual([a["id"] for a in tercero], [aviso])
+        self.assertEqual(tercero[0]["estado"], "publicado")
+        directores.drenar(self.banco.reg, ahora=T0 + 4)
+        self.assertEqual(len(self.banco.cuerpos()), 2)
 
 
 if __name__ == "__main__":
