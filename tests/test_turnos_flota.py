@@ -208,6 +208,23 @@ class TurnosFlota(unittest.TestCase):
         self.assertTrue(gen_b.is_dir())
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
 
+    def test_preparar_se_niega_si_el_manifiesto_del_home_no_declara_herramientas(self):
+        origen, a, gen_a = self._flota("origen-sin-herramientas")
+        _runtime_preparada(self.home, gen_a, "grok", "v1")
+        doc = {
+            "nombre": "grok",
+            "tipo": "npm",
+            "paquete": "@xai-official/grok",
+            "version": "v2",
+            "fuente": "https://registry.npmjs.org/%40xai-official%2Fgrok/latest",
+            "tarball": "https://registry.npmjs.org/@xai-official/grok/-/grok-v2.tgz",
+            "integridad": "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        }
+        with patch("motor.flota.actualizaciones._preparar_componente") as componente:
+            with self.assertRaisesRegex(ValueError, "no declara herramientas"):
+                preparar(self.home, {"componentes": [doc]}, motor_origen=origen, repos={})
+        componente.assert_not_called()
+
     def test_preparar_parcial_reutiliza_config_de_vigente(self):  # no-roja-en-base: solo declara en el manifiesto del home la herramienta que instala; el comportamiento ya estaba en la base
         origen, a, gen_a = self._flota("origen-c")
         _runtime_preparada(self.home, gen_a, "grok", "v1")
