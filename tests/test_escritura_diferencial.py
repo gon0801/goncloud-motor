@@ -92,6 +92,28 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertNotIn("corrección secreta", hecho.stdout)
         self.assertNotIn("evidencia secreta", hecho.stdout)
 
+    def test_estado_legado_ignora_solo_la_representacion_interna(self) -> None:
+        arbol = self.raiz / "mutado"
+        shutil.copytree(RAIZ / "motor", arbol / "motor")
+        archivo = arbol / "motor/encargos/encargo.py"
+        contenido = archivo.read_text(encoding="utf-8")
+        original = "@dataclass(frozen=True)\nclass Encargo:"
+        self.assertIn(original, contenido)
+        archivo.write_text(
+            contenido.replace(
+                original, "@dataclass(frozen=True, repr=False)\nclass Encargo:", 1,
+            ),
+            encoding="utf-8",
+        )
+        opciones = ("--kinds", "entrega", "--arbol", str(arbol))
+        legado = self.correr(*opciones)
+        self.assertEqual(legado.returncode, 0, legado.stderr + legado.stdout)
+        self.assertIn("diferencias: 0", legado.stdout)
+
+        crudo = self.correr_con_tope_normal("--max-casos", "900", *opciones)
+        self.assertEqual(crudo.returncode, 1, crudo.stderr + crudo.stdout)
+        self.assertIn("estado=", crudo.stdout)
+
     def test_cambio_del_orden_de_guardias_detecta_escritura_aceptada(self) -> None:
         arbol = self.mutar(
             "if (disponible is not None or pendientes and queda_trabajo(fases)",
