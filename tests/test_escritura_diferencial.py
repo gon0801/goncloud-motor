@@ -354,9 +354,9 @@ class EscrituraDiferencial(unittest.TestCase):
 
         base = self.raiz / "base.jsonl"
         arbol = self.raiz / "arbol.jsonl"
-        cabecera = json.dumps(["_firmas", 2]) + "\n"
-        primero = ["solicitud", "1:real", "huella-a", "rechaza", "KeyError", "secreto"]
-        segundo = ["comprobacion", "2:vacio", "huella-b", "rechaza", "TypeError", "secreto"]
+        cabecera = json.dumps(["_firmas", 1]) + "\n"
+        primero = ["solicitud", "1:base", "huella-a", "rechaza", "KeyError", "secreto"]
+        segundo = ["comprobacion", "1:base", "huella-b", "rechaza", "TypeError", "secreto"]
         base.write_text(cabecera + json.dumps(primero) + "\n" + json.dumps(segundo) + "\n",
                         encoding="utf-8")
         arbol.write_text(cabecera + json.dumps(segundo) + "\n" + json.dumps(primero) + "\n",
@@ -375,6 +375,29 @@ class EscrituraDiferencial(unittest.TestCase):
             self.assertEqual(_comparar(base, arbol, ["solicitud", "comprobacion"], set()), 1)
         self.assertIn("casos_distintos=", salida.getvalue())
         self.assertNotIn("carga_diferente=", salida.getvalue())
+
+    def test_la_cobertura_sale_de_los_casos_emitidos_no_del_plan(self) -> None:
+        from tools.escritura_diferencial import _comparar
+
+        base = self.raiz / "base.jsonl"
+        arbol = self.raiz / "arbol.jsonl"
+        casos = [
+            ["solicitud", "1:base", "a", "rechaza", "KeyError", "x"],
+            ["comprobacion", "1:base", "b", "rechaza", "TypeError", "x"],
+            ["solicitud", "2:base", "c", "rechaza", "KeyError", "x"],
+            ["comprobacion", "2:vacio:base", "d", "rechaza", "TypeError", "x"],
+        ]
+        contenido = (json.dumps(["_firmas", 2, 4, 4]) + "\n"
+                     + "".join(json.dumps(caso) + "\n" for caso in casos))
+        base.write_text(contenido, encoding="utf-8")
+        arbol.write_text(contenido, encoding="utf-8")
+        salida = StringIO()
+        with redirect_stdout(salida):
+            self.assertEqual(
+                _comparar(base, arbol, ["solicitud", "comprobacion"], set()), 1,
+            )
+        self.assertIn("cubiertos 3 de 4 pares firma×kind", salida.getvalue())
+        self.assertIn("cobertura_incompleta=", salida.getvalue())
 
     def test_mensaje_de_solicitud_duplicada_se_detecta_con_tope_normal(self) -> None:
         with sqlite3.connect(self.corpus / "registros/uno.sqlite") as db:
