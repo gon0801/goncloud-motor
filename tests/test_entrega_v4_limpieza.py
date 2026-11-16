@@ -522,6 +522,24 @@ class LimpiezaPorHechos(unittest.TestCase):
                          ("agotado", 3))
         self.assertFalse(enc.limpio)
 
+    def test_timeout_de_github_se_reintenta_desde_el_registro(self) -> None:
+        self._final(con_pr=True)
+        with mock.patch.object(self.gh, "ver",
+                               side_effect=subprocess.TimeoutExpired("gh", 30)) as ver:
+            self._limpiar()
+            self.assertEqual(ver.call_count, 2)
+            self._limpiar(9)
+            self.assertEqual(ver.call_count, 2)
+            self._limpiar(10)
+            self._limpiar(20)
+        enc = self.reg.fold("x")
+        self.assertEqual(ver.call_count, 6)
+        self.assertEqual(next(
+            (resultado, intento) for recurso, _, resultado, intento, _
+            in enc.limpieza if recurso == "pr"
+        ), ("agotado", 3))
+        self.assertFalse(enc.limpio)
+
     def test_las_carpetas_vencen_a_los_siete_dias_y_no_reaparecen(self) -> None:
         self._final()
         for nombre in ("espacio", "ejecucion"):

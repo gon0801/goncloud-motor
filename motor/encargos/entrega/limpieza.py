@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -458,7 +459,7 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
             enc, estado = _limpiar_recurso(
                 registro, enc, gh, recurso, hora, presupuesto,
             )
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
             enc = _anotar(registro, enc, recurso, "fallo", hora)
             faltan = True
             continue
