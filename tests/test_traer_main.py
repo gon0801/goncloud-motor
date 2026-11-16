@@ -102,6 +102,8 @@ class _TraerMain(unittest.TestCase):
             reserva=False,
             estado="ejecutando",
             generacion=1,
+            producto=None,
+            entrega_devuelta=None,
         )
         self.reg = _Registro(self.base, self.enc)
 
