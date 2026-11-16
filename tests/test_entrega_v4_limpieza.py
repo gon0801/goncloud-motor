@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -41,7 +42,7 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.gh = FakeGitHub(self.base / "fake")
 
     def _final(self, con_pr: bool = False, cancelar: bool = True,
-               nivel: str = "") -> int:
+               nivel: str = "", receta: bool = False) -> int:
         numero = 0
         if con_pr:
             numero = self.gh.abrir_pr(self.repo, "encargo/x", "main",
@@ -53,7 +54,13 @@ class LimpiezaPorHechos(unittest.TestCase):
                 "repo": self.repo, "rama": "encargo/x", "base": "main",
                 "hora": hora(),
             }, "entrega:x"),
-            Evento("fases", {"fases": [{"id": "F", "resultado": "r"}],
+            Evento("fases", {"fases": [{
+                "id": "F", "resultado": "r",
+                **({"despliegue": {
+                    "desplegar": "deploy.sh", "checklist": "check.sh",
+                    "rollback": "rollback.sh",
+                }} if receta else {}),
+            }],
                              "hora": hora()}, "fases:x"),
         ))
         if con_pr:
@@ -156,11 +163,19 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertFalse(enc.limpio)
 
     def _recibo(self, presente: bool, terminado: bool = False,
-                reintegrado: bool = False) -> Path:
+                reintegrado: bool = False, receta: bool = False) -> Path:
         numero = self._final(
             con_pr=True, cancelar=False, nivel="desplegado" if terminado else "pr",
+            receta=receta,
         )
-        ruta = self.reg.base / "despliegues" / ("a" * 64) / "recibo.json"
+        fase = self.reg.fold("x").fases[0]
+        identidad = {
+            "encargo": "x", "fase": "F", "repo": self.repo, "sha": "m",
+            "receta": {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")},
+        }
+        clave = (hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
+                 if receta else "a" * 64)
+        ruta = self.reg.base / "despliegues" / clave / "recibo.json"
         ruta.parent.mkdir(parents=True)
         (ruta.parent / "pedido.json").write_text(
             json.dumps({"identidad": {"encargo": "x"}}), encoding="utf-8",
@@ -233,6 +248,19 @@ class LimpiezaPorHechos(unittest.TestCase):
         enc = self._limpiar()
         self.assertFalse(ruta.exists())
         self.assertFalse(enc.limpio)
+
+    def test_observacion_por_fase_no_queda_incierta_tras_limpieza(self) -> None:
+        ruta = self._recibo(presente=True, receta=True)
+        enc = self.reg.fold("x")
+        self.assertEqual(despliegue.observacion(self.reg, enc, enc.fases[0]), "ausente")
+        enc = self._limpiar()
+        self.assertFalse((ruta.parent / "proceso.json").exists())
+        self.assertEqual(despliegue.observacion(self.reg, enc), "ausente")
+        self.assertEqual(despliegue.observacion(self.reg, enc, enc.fases[0]), "ausente")
+        (ruta.parent / "comando.json").write_text(
+            '{"estado":"enviado"}', encoding="utf-8",
+        )
+        self.assertEqual(despliegue.observacion(self.reg, enc, enc.fases[0]), "incierto")
 
     def test_terminado_desplegado_con_recibo_si_queda_limpio(self) -> None:
         ruta = self._recibo(presente=True, terminado=True)
