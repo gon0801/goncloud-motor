@@ -169,6 +169,40 @@ class ReduccionTotal(unittest.TestCase):
                 "texto": "pedido", "entrega_nivel": 17,
             }}, nuevo=False)
 
+    def test_lecturas_tardias_ilegibles_no_truncan_la_historia(self) -> None:
+        previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F")
+        casos = (
+            ("revision", {"fase": "F", "veredicto": "aprobado", "aprobadas": 1}),
+            ("conciliacion_fase", {"fase": "F", "paso": "espera",
+                                   "intentos": float("inf")}),
+            ("conciliacion_fase", {"fase": "F", "paso": "espera_agotada",
+                                   "ordenes": float("inf"), "causa": "sin respuesta"}),
+        )
+        for kind, data in casos:
+            with self.subTest(kind=kind, data=data):
+                resultado = reducir(previo, {"kind": kind, "data": data}, nuevo=False)
+                self.assertEqual(asdict(resultado), asdict(previo))
+                siguiente = reducir(resultado, {"kind": "procedimiento",
+                                                  "data": {"nota": "después"}}, nuevo=False)
+                self.assertEqual(siguiente.procedimiento[-1], "después")
+
+    def test_noops_no_leen_campos_que_no_consumen(self) -> None:
+        previo = replace(_pedido(), fases=(Fase("F", "resultado"),), fase_activa="F",
+                         fallos_repo=("git", 2), ultima_firma="anterior")
+        casos = (
+            ("ci_pr", {"fase": "otra", "estado": "verde", "fallas": 1}, ("", 0)),
+            ("conciliacion_fase", {"fase": "otra", "paso": "en_curso",
+                                   "intentos": float("inf")}, ("git", 2)),
+            ("conciliacion_fase", {"fase": "F", "paso": "integrado",
+                                   "numero": float("inf")}, ("git", 2)),
+        )
+        for kind, data, serie in casos:
+            with self.subTest(kind=kind):
+                resultado = reducir(previo, {"kind": kind,
+                                               "data": {**data, "firma": "nueva"}}, nuevo=False)
+                self.assertEqual(resultado.ultima_firma, "nueva")
+                self.assertEqual(resultado.fallos_repo, serie)
+
     def test_kind_desconocido_no_modifica_nada_al_plegar(self) -> None:
         previo = _pedido()
         resultado = reducir(previo, {"kind": "orden_inventada", "data": {}}, nuevo=False)
