@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 from typing import TYPE_CHECKING
+from weakref import WeakKeyDictionary
 
 from .decision import (
-    Accion, AnotarMergeado, AnotarObservado, CancelarFase, ContextoEntrega,
+    Accion, AnotarMergeado, CancelarFase, ContextoEntrega,
     Desplegar, DetenerOtraBase, MarcarListo, decidir,
 )
 from .observacion import anotar_pr
@@ -18,6 +19,24 @@ if TYPE_CHECKING:
     from motor.encargos.dominio import Encargo, Fase
     from motor.encargos.registro import Registro
     from motor.github import GitHubPort, PrView
+
+
+_SONDEOS: WeakKeyDictionary[Registro, dict[tuple[str, str, int, int], float]] = WeakKeyDictionary()
+
+
+def _efectos_pendientes(registro: Registro, enc: Encargo) -> bool:
+    from ..ciclo import _espacio, _pedidos_efecto
+    from ..cierre import _recibos
+    from ..dominio import nivel_objetivo
+
+    try:
+        pedidos = _pedidos_efecto(_espacio(registro.base, enc.id))
+        if nivel_objetivo(enc) == "desplegado":
+            pedidos = [p for p in pedidos if p["operacion"] != "desplegar"]
+        _recibos(pedidos, enc)
+    except (ValueError, TypeError, OSError):
+        return True
+    return any(efecto.estado != "aplicado" for efecto in enc.efectos)
 
 
 def contexto_de(enc: Encargo, fase: str, vista: PrView) -> ContextoEntrega:
@@ -51,9 +70,12 @@ def base_objetivo_del_pr(enc: Encargo, gh: GitHubPort | None = None) -> str:
     if nivel_objetivo(enc) in ("integrado", "desplegado"):
         return enc.entrega.base
     base = _base_fase(enc)
-    if (gh is not None and base.startswith("encargo/")
-        and not gh.rama_existe(enc.entrega.repo, base)):
-        return enc.entrega.base
+    if gh is not None and base.startswith("encargo/"):
+        try:
+            if not gh.rama_existe(enc.entrega.repo, base):
+                return enc.entrega.base
+        except (RuntimeError, OSError):
+            pass
     return base
 
 
@@ -137,7 +159,9 @@ def _integrar_david(registro: Registro, enc: Encargo, fase: str,
         enc = registro.fold(enc.id) or enc
     if fase != enc.fase_activa or nivel_objetivo(enc) == "desplegado" and not nivel_cumplido(enc):
         return enc
-    if nivel_cumplido(enc) and enc.fase_actual is not None and enc.fase_actual.estado != "preparada":
+    if (nivel_cumplido(enc) and enc.fase_actual is not None
+            and enc.fase_actual.estado != "preparada"
+            and not _efectos_pendientes(registro, enc)):
         registro.anotar(
             enc.id, componer_por_merge(enc, vista.numero, vista.base, hora),
             f"cierre-david:{enc.id}:{fase}:{vista.numero}:{recibo}",
@@ -171,18 +195,25 @@ def ejecutar(registro: Registro, enc: Encargo, accion: Accion, vista: PrView,
         ):
             enc, _ = _paso_despliegue(registro, enc, _espacio(registro.base, enc.id), hora)
             enc = _integrar_david(registro, enc, fase, vista, hora)
-        return enc, True
-    return enc, isinstance(accion, AnotarObservado)
+        return enc, not _efectos_pendientes(registro, enc)
+    return enc, False
 
 
 def conducir_pr(registro: Registro, enc: Encargo, gh: GitHubPort,
-                hora: str, fase: str = "") -> tuple[Encargo, bool]:
+                hora: str, fase: str = "", epoch: float | None = None) -> tuple[Encargo, bool]:
     if enc.estado == "cancelado":
         return enc, False
     ident = fase or enc.fase_activa
     actual = next((f for f in enc.fases if f.id == ident), None)
     if actual is None or not actual.pr_numero:
         return enc, False
+    if epoch is not None:
+        clave = (enc.id, ident, actual.pr_numero, enc.generacion)
+        sondeos = _SONDEOS.setdefault(registro, {})
+        previo = sondeos.get(clave)
+        if previo is not None and 0 <= epoch - previo < 120:
+            return enc, False
+        sondeos[clave] = epoch
     try:
         vista = gh.ver(enc.entrega.repo, actual.pr_numero)
     except Exception:

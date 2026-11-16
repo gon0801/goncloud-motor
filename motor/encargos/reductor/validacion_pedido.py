@@ -36,6 +36,8 @@ def validar_orden(e: Encargo, d: dict) -> None:
     from ..dominio import TransicionIlegal
 
     accion = d["accion"]
+    if e.estado == "cancelado" and accion != "reabrir":
+        raise TransicionIlegal("el encargo está cancelado")
     if accion == "reabrir":
         fase = e.cierre_forzado_fase
         if e.estado != "terminado" or fase is None:

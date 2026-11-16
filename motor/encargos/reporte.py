@@ -150,11 +150,15 @@ def reporte(enc: Encargo, limpieza_activa: bool) -> Reporte | None:
     if enc.estado == "detenido":
         return Reporte("detenido", _detencion(enc), fases)
     if (enc.estado == "terminado" and nivel_objetivo(enc) == "pr"
-        and not any(f.palabra in ("entrega parcial", "cancelado") for f in fases)
-        and any(isinstance(pr.pr, PrAbierto) and pr.fase not in enc.canceladas
+        and any(isinstance(pr.pr, (PrAbierto, PrBorrador))
+                and pr.fase not in enc.canceladas
                 for pr in enc.prs)):
+        parciales = [f for f in fases if f.palabra in ("entrega parcial", "cancelado")]
+        causa = "El trabajo está listo; David puede mergear el PR."
+        if parciales:
+            causa += " Además: " + "; ".join(f"{f.id}: {f.causa}" for f in parciales)
         return Reporte("listo para tu merge",
-                       "El trabajo está listo; David puede mergear el PR.", fases)
+                       causa, fases)
     pendientes = sorted({tipo for tipo, _, resultado, _, _ in enc.limpieza
                          if resultado in ("fallo", "agotado")})
     if pendientes or not enc.limpio:

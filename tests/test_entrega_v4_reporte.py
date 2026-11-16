@@ -11,7 +11,7 @@ from dataclasses import replace
 
 from motor.encargos import cli
 from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase
-from motor.encargos.entrega.tipos import PrAbierto, PrDeFase, PrMergeado
+from motor.encargos.entrega.tipos import PrAbierto, PrBorrador, PrDeFase, PrMergeado
 from motor.encargos.situacion import (
     Cancelado, Completo, Detenido, Parcial, PorOrden, PorOtraBase, Terminado,
 )
@@ -125,9 +125,31 @@ class PalabrasPuras(unittest.TestCase):
         enc = replace(encargo(nivel="pr", fases=(lista, bloqueada)),
                       prs=(PrDeFase("F", PrAbierto(7, "h", "main")),))
         rep = reporte(enc, True)
-        self.assertEqual(rep.palabra, "entrega parcial")
+        self.assertEqual(rep.palabra, "listo para tu merge")
         self.assertIn("G", rep.causa)
         self.assertIn("falta acceso", rep.causa)
+
+    def test_borrador_y_otra_fase_cancelada_son_listos_con_causa_visible(self) -> None:
+        from motor.encargos.reporte import reporte
+
+        lista = Fase("F", "r", estado="preparada", evidencia="comprobado", pr_numero=7)
+        cancelada = Fase("G", "r", estado="bloqueada", evidencia="cerrado",
+                         bloqueo_causa="David cerró el PR")
+        for pr, canceladas in (
+            (PrBorrador(7, "h", "main"), ()),
+            (PrAbierto(7, "h", "main"), ("G",)),
+        ):
+            with self.subTest(pr=pr.estado, canceladas=canceladas):
+                enc = replace(
+                    encargo(nivel="pr", fases=(lista, cancelada)),
+                    prs=(PrDeFase("F", pr),), canceladas=canceladas,
+                )
+                rep = reporte(enc, True)
+                self.assertEqual(rep.palabra, "listo para tu merge")
+                self.assertIn("G:", rep.causa)
+                self.assertIn("David cerró el PR", rep.causa)
+                self.assertEqual(rep.fases[1].palabra,
+                                 "cancelado" if canceladas else "entrega parcial")
 
     def test_un_registro_viejo_integrado_no_se_reporta_limpio(self) -> None:
         from motor.encargos.reporte import reporte

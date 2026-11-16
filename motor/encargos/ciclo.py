@@ -1638,7 +1638,7 @@ def barrer(
                         i.clase.startswith("despliegue:") for i in previo.impedimentos
                     ))
                 ):
-                    previo, atendido = conducir_pr(registro, previo, gh, hora)
+                    previo, atendido = conducir_pr(registro, previo, gh, hora, epoch=epoch)
             if atendido:
                 informes.append(vista(previo))
             else:
