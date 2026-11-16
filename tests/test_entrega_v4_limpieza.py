@@ -401,6 +401,27 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertTrue((ruta.parent / "trabajador.log").exists())
         self.assertFalse(enc.limpio)
 
+    def test_sin_proceso_y_recibo_esperando_se_verifica_limpieza(self) -> None:
+        ruta = self._recibo(presente=True, receta=True, terminado=True)
+        ruta.write_text('{"encargo":"x","estado":"esperando"}', encoding="utf-8")
+        (ruta.parent / "proceso.json").unlink()
+        enc = self._limpiar()
+        self.assertTrue(ruta.is_file())
+        self.assertTrue(enc.limpio)
+
+    def test_sin_proceso_y_recibo_ocupado_se_verifica_limpieza(self) -> None:
+        ruta = self._recibo(presente=True, receta=True, terminado=True)
+        ruta.write_text('{"encargo":"x","estado":"ocupado"}', encoding="utf-8")
+        (ruta.parent / "proceso.json").unlink()
+        (ruta.parent / "comando.json").write_text(json.dumps({
+            "estado": "enviado", "pid": 7311, "inicio": "t0",
+            "boot_id": plataforma.boot_id(),
+        }), encoding="utf-8")
+        with mock.patch.object(plataforma, "presencia_grupo", return_value="ausente"):
+            enc = self._limpiar()
+        self.assertTrue(ruta.is_file())
+        self.assertTrue(enc.limpio)
+
     def test_sin_metadatos_verificables_agota_sin_acreditar_limpio(self) -> None:
         ruta = self._recibo(presente=True, receta=True, terminado=True)
         (ruta.parent / "proceso.json").unlink()

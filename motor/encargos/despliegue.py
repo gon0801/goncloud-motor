@@ -545,7 +545,7 @@ def _observacion_en(registro, enc, directorio: Path) -> str:
             proceso = _objeto(proceso_path)
             if plataforma.estado_proc(proceso) == "vivo":
                 return "vivo"
-        elif datos.get("estado") not in ("aplicado", "fallido"):
+        elif datos.get("estado") not in ("aplicado", "fallido", "esperando", "ocupado"):
             return "incierto"
         comando_path = directorio / "comando.json"
         if not comando_path.exists():
