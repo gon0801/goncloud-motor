@@ -66,8 +66,9 @@ Dos reglas no cambian:
 | Módulos nuevos bajo `motor/encargos/` y herramientas en `tools/` | según "Archivos" | Aprobado |
 | Los cinco kinds nuevos de la 4.0, con esas cargas | 4.0 el lector, 4.1+ los escritores | Aprobado |
 | Cambiar textos de los avisos y las pruebas que los fijan | 4.4 | Aprobado, con la lista en `## Tradeoffs` |
-| Actualizar pruebas que fijan tuplas o alcances de `TABLA` (`tests/test_propiedades_fila.py`) | 4.0 | Aprobado |
-| Regenerar la tabla de `AGENTS.md` con `python tools/calidad.py politica --actualizar` | si cambias `politica.py` | Aprobado |
+| Actualizar pruebas que fijan tuplas, alcances o kinds de `TABLA` (`tests/test_propiedades_fila.py`, `tests/test_tabla_completa.py`) | 4.0 | Aprobado |
+| Regenerar las tablas de `AGENTS.md` y `CLAUDE.md` con `python tools/calidad.py politica --actualizar` | si cambias `politica.py` | Aprobado |
+| Agregar en `motor/encargos/registro.py` el corte de avisos `palabras-v4`, igual que `cierres-cancelados-v1` | 4.4 | Aprobado, solo esas líneas |
 | Cualquier otro kind nuevo | todos | Negado |
 | Mergear, desplegar, tocar `ops/`, `.github/workflows/` o las máquinas | todos | Negado |
 | Borrar o cerrar algo real en GitHub o en disco fuera de un directorio temporal de prueba | todos | Negado |
@@ -83,7 +84,8 @@ Dos reglas no cambian:
 
 ## Reglas de trabajo
 
-1. **Tamaño.** Valen las reglas 1 a 6 de `docs/paso3-para-devin.md`. `tools/calidad.py tamano`
+1. **Tamaño.** Valen las reglas 1 a 6 de `docs/paso3-para-devin.md`. En este paso, cada
+   `--base` de esas reglas es la rama base de tu PR, salvo `kinds` (regla 2). `tools/calidad.py tamano`
    mide cada PR contra su base: `ciclo.py` y `dominio.py` no ganan líneas ni tokens, no reciben
    funciones nuevas, y una función de más de 100 líneas no crece ni un token. Cada unidad cumple
    por sí sola. Para meter una llamada en una función grande de `ciclo.py` (por ejemplo
@@ -98,7 +100,8 @@ Dos reglas no cambian:
    instalada no sabe plegar un kind, la vuelta atrás queda bloqueada. Puedes abrir la 4.1 y las
    siguientes antes. Mientras la 4.0 no esté en `main`, `tools/calidad.py kinds --base origin/main`
    sale en rojo en ellas: dilo en `## Verification` y sigue. Los escritores usan el kind como
-   literal (`"kind": "pr_observado"`), porque `kinds` solo ve literales.
+   literal (`"kind": "pr_observado"`), porque `kinds` solo ve literales. Comprueba que la 4.0 no
+   tiene escritores con `git grep -nE '"kind": "(pr_observado|fase_cancelada|pr_otra_base|limpieza|limpio)"' motor/`.
 3. **Registros guardados.** `tools/plegado.py` gana la constante `CLAVES_NUEVAS`, con las rutas de
    este paso (por ejemplo `prs`, `canceladas`, `limpieza`, `limpio`, `hora_final`). Una clave de
    esa lista que solo existe del lado del árbol se quita antes de comparar, en `comparar` y en
@@ -130,12 +133,12 @@ del revisor con `Revisión del revisor, ronda <n>` y `Atendido en <sha>`. Cambia
 
 ```python
 # motor/encargos/entrega/tipos.py: todas @dataclass(frozen=True), cada una con estado: Literal[...]
-class SinPR: ...
-class Borrador:  numero: int; head: str; base: str
-class Abierto:   numero: int; head: str; base: str
-class Mergeado:  numero: int; head: str; base: str; merge_commit: str
-class Cerrado:   numero: int; head: str; base: str
-EstadoPR = SinPR | Borrador | Abierto | Mergeado | Cerrado
+class PrSin: ...
+class PrBorrador:  numero: int; head: str; base: str
+class PrAbierto:   numero: int; head: str; base: str
+class PrMergeado:  numero: int; head: str; base: str; merge_commit: str
+class PrCerrado:   numero: int; head: str; base: str
+EstadoPR = PrSin | PrBorrador | PrAbierto | PrMergeado | PrCerrado
 def estado_de(vista: PrView) -> EstadoPR: ...   # sin red: convierte lo que ya lee ver()
 
 class PrDeFase:  fase: str; pr: EstadoPR; aceptada_en: str = ""
@@ -145,10 +148,13 @@ class PorOtraBase: fase: str; base: str
 # Detenido.causa: PorOrden | FalloInterno | PorOtraBase
 ```
 
+- Los nombres llevan el prefijo `Pr` porque `motor/github.py` ya tiene un `Borrador`. En el resto
+  del documento, `Abierto`, `Mergeado` y `Cerrado` quieren decir `PrAbierto`, `PrMergeado` y
+  `PrCerrado`.
 - `ver()` sigue devolviendo `PrView`: la usan `motor/effects.py`, `check_merge.py` y 11 llamadas
-  de `ciclo.py`. `estado_de` distingue como hoy: `state` MERGED es `Mergeado` (con
-  `merge_commit` aunque venga vacío), OPEN con `isDraft` es `Borrador`, OPEN es `Abierto` y
-  cualquier otro es `Cerrado`.
+  de `ciclo.py`. `estado_de` vive en `entrega/tipos.py` y distingue como hoy: `state` MERGED es
+  `PrMergeado` (con `merge_commit` aunque venga vacío), OPEN con `isDraft` es `PrBorrador`, OPEN
+  es `PrAbierto` y cualquier otro es `PrCerrado`.
 - Campos nuevos de `Encargo` (`motor/encargos/encargo.py`), con valor por omisión:
   - `prs: tuple[PrDeFase, ...] = ()`: el último estado observado del PR de cada fase. Va en
     `Encargo` y no en `Fase`, porque `Fase` vive en `dominio.py`.
@@ -159,15 +165,20 @@ class PorOtraBase: fase: str; base: str
   - `limpio: str = ""`: la hora de `limpio`.
   - `hora_final: str = ""`: la hora en que el encargo entró al estado final que tiene ahora.
 - `hora_final` y `limpio` se calculan en `plegar_evento` (`reductor/__init__.py`), no en
-  `dominio.py`. Al entrar a `terminado` o `cancelado`, `hora_final` toma la hora del evento
-  (`d.get("hora")` o, si falta, `evento["ts"]`). Al salir del estado final (una reapertura por
+  `dominio.py`. Al entrar a `terminado` o `cancelado`, `hora_final` toma `d.get("hora")` del
+  evento. No uses `evento["ts"]`: al escribir no viene, y guardado vale lo mismo que `hora`. Al salir del estado final (una reapertura por
   DeepSeek tardío, CI rojo o `corregir`), `hora_final` y `limpio` vuelven a `""`. `limpieza`
   conserva su historia. `hora_cierre` no cambia: la ventana de DeepSeek la sigue usando.
-- `PorOtraBase` sigue el patrón de `fallo_interno` del paso 2: `orden_parada = "otra_base"` en la
-  proyección legada (agrega el valor al `Literal` de `Contexto.orden_parada`), `otra_base_de`
-  guarda fase y base, y `materializar` arma la causa con esos dos. Revisa cada lectura de
-  `orden_parada` en `ciclo.py` y confirma en el PR que `"otra_base"` se comporta como
-  `"fallo_interno"`.
+- `PorOtraBase` sigue el patrón de `fallo_interno` del paso 2, sin pasar por `deteniendo`: el
+  kind se rechaza si hay proceso vivo, así que siempre llega directo a `detenido`.
+  - En la proyección legada, `orden_parada = "otra_base"`: agrega el valor al `Literal` de
+    `Contexto.orden_parada`. `otra_base_de` guarda fase y base.
+  - `materializar` y `_contexto_inicial` (`situacion.py`) arman la causa con esos dos. Hoy
+    `_contexto_inicial` lanza `AttributeError` con una causa que no conoce.
+  - Las lecturas de `orden_parada` están en `necesidades.py:545`, `detencion.py` (líneas 65 y 74),
+    `reductor/pedido.py:115`, `reductor/validacion_fase.py:127`,
+    `reductor/validacion_pedido.py` (líneas 46 y 68) y `reductor/fase.py:235`. En cada una,
+    `"otra_base"` se comporta como `"fallo_interno"`. Nómbralas en el PR con lo que hiciste.
 
 ## Kinds nuevos
 
@@ -176,8 +187,8 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
 
 | Kind | Alcance | `corta_series` | `marcador` | Carga | Efecto al plegar |
 |---|---|---|---|---|---|
-| `pr_observado` | fase | no | sí | `fase`, `estado` (`sin_pr`, `borrador`, `abierto`, `mergeado`, `cerrado`), `numero` (int o null), `head`, `base`, `merge_commit`, `hora` | Reemplaza la entrada de esa fase en `prs`. Nada más cambia |
-| `fase_cancelada` | fase | sí | no | `fase`, `numero`, `hora` | Aplica lo mismo que `bloqueo_fase` con la causa "David cerró el PR #N", y agrega la fase a `canceladas`. Si todas las fases quedan en `canceladas`, el encargo queda `Cancelado`. Sobre un `terminado`, el resultado se recalcula |
+| `pr_observado` | fase | no | sí | `fase`, `estado` (`sin_pr`, `borrador`, `abierto`, `mergeado`, `cerrado`), `numero` (int o null), `head`, `base`, `merge_commit`, `hora` | Reemplaza el `pr` de esa fase en `prs` y conserva su `aceptada_en`. Nada más cambia |
+| `fase_cancelada` | fase | sí | no | `fase`, `numero`, `hora` | Ver la lista de abajo |
 | `pr_otra_base` | fase | sí | no | `fase`, `numero`, `base`, `hora` | `Detenido(PorOtraBase(fase, base))`, que sale con `continuar`. Va en `DETENCIONES`. Se rechaza al escribir en `_CERRADOS`, como `fallo_interno` |
 | `limpieza` | encargo | no | sí | `recurso`, `clave`, `resultado` (`borrado`, `fallo`, `agotado`), `intento`, `hora` | Reemplaza la entrada de `(recurso, clave)` en `limpieza` |
 | `limpio` | encargo | no | no | `hora` | `limpio` toma la hora. Solo se acepta en `terminado` o `cancelado` |
@@ -185,9 +196,20 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
 - `recurso` es uno de `rama`, `pr`, `espacio`, `ejecucion`, `runtime`, `credenciales` o
   `despliegue`. `clave` es el nombre de la rama, el número del PR, la ruta relativa a la base o el
   token. Nunca lleva textos del encargo.
-- `fase_cancelada` reutiliza el estado `bloqueada` para que las fases que dependen de la
-  cancelada sigan la lógica de hoy (`dependencia_bloqueada`). `ESTADOS_FASE` no cambia. Lo que
-  distingue "cancelada por David" de "bloqueada" es `canceladas`.
+- `fase_cancelada` tiene su propio aplicador en `reductor/`. No uses el de `bloqueo_fase`: sale
+  sin cambios en un `terminado`, bloquea la fase activa y no la de la carga, y sin `evidencia` no
+  hace nada. Lo que hace, sobre la fase F de la carga:
+  - `validar` rechaza si F no existe, si hay proceso vivo o `reserva`, o si F ya está en
+    `canceladas`. Acepta sobre un `terminado`.
+  - F pasa a `estado="bloqueada"` con `bloqueo_causa` "David cerró el PR #N", y entra a
+    `canceladas`. Las fases que dependen de F siguen la lógica de hoy (`dependencia_bloqueada`).
+    `ESTADOS_FASE` no cambia.
+  - Si todas las fases quedan en `canceladas`, el encargo queda `Cancelado`.
+  - Si el encargo es `terminado`, sigue `terminado`, y su resultado pasa a `Parcial` con F.
+  - Si no es final y F es la fase activa, el encargo sigue como cuando hoy se bloquea la fase
+    activa: llama a `_bloqueo_fase` de `dominio.py` con una carga armada (la fase, `evidencia`
+    `pr-cerrado:<numero>` y lo demás que lea). Pasa a la siguiente fase disponible o termina.
+  - Si no es final y F no es la activa, solo cambia F.
 - Sobre un `continuar` que sale de un `Detenido(PorOtraBase(f, b))`, el aplicador de `orden`
   (`reductor/pedido.py`, alrededor de la llamada a `_orden`) pone `aceptada_en = b` en la
   entrada de `f` en `prs` y vacía `otra_base_de`.
@@ -198,18 +220,22 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
 
 ## Tabla de decisión
 
-`decidir(fase, nivel, pr: EstadoPR, base_esperada, base_pedida) -> Accion` es una función pura en
-`motor/encargos/entrega/decision.py`. `Accion` es una unión de dataclasses con nombre:
-`AbrirPR`, `MarcarListo`, `SeguirRevision` (el flujo de revisión de hoy), `Mergear`,
-`AnotarMergeado`, `Desplegar`, `CancelarFase`, `DetenerOtraBase` y `Esperar`.
+`decidir(c: ContextoEntrega) -> Accion` es una función pura en
+`motor/encargos/entrega/decision.py`. `ContextoEntrega` es un dataclass con lo que la tabla
+necesita: la fase, el nivel, el `EstadoPR`, `base_pedida`, las ramas de las otras fases del
+encargo, `aceptada_en`, si el encargo es final y si tiene proceso vivo o `reserva`. Agrega lo que
+haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `MarcarListo`,
+`SeguirRevision` (el flujo de revisión de hoy), `Mergear`, `AnotarMergeado`, `Desplegar`,
+`CancelarFase`, `DetenerOtraBase` y `Esperar`.
 
 - `nivel` es el nivel efectivo del encargo, con las tres bajadas de hoy (`_sondeo_nivel` y
   `requiere_despliegue` de la fase). Para nivel `pr`, "nivel" es el efectivo, no el pedido.
 - `base_pedida` es `e.entrega.base`.
-- `base_esperada` es la rama de la fase anterior si su PR está `Abierto` (PR apilados con nivel
-  `pr`, `_base_fase` en `ciclo.py`). Si no, es `base_pedida`. Con eso, un PR que GitHub reapunta
-  a `main` al borrar su base sigue siendo un `Abierto` normal, y nadie llama a `cambiar_base`
-  contra una rama que ya no existe.
+- Un `Abierto` es `Abierto` en cualquier base. La base a la que el motor reapunta un PR sigue
+  siendo la de hoy (`_base_objetivo_del_pr` y `_base_fase`), con un solo cambio: si esa base es
+  una rama `encargo/*` que ya no existe en el remoto (`rama_existe` da falso), usa
+  `base_pedida`. Así, un PR apilado que GitHub reapunta a `main` cuando se borra su base sigue su
+  revisión, y nadie llama a `cambiar_base` contra una rama que ya no existe.
 
 | PR observado | Nivel `pr` | Nivel `integrado` o `desplegado` |
 |---|---|---|
@@ -220,29 +246,41 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
 | Mergeado en otra base | `DetenerOtraBase`. Si el encargo ya es final, solo `AnotarMergeado` | Igual |
 | Cerrado sin merge | `CancelarFase` | `CancelarFase` |
 
-- `AnotarMergeado` escribe `pr_observado`. No cambia `nivel_efectivo`: "integrado por David" se
-  deriva de `prs`. Después de su propio merge, el motor también escribe `pr_observado`.
+- `AnotarMergeado` escribe `pr_observado`. En un encargo que no es final, también escribe los
+  eventos que hoy escribe la columna de nivel integrado al ver el merge: `entrega_externa` paso
+  `integrado` para la fase activa y `conciliacion_fase` paso `integrado` para las demás. Así la
+  fase queda cumplida, como hoy, en cualquier nivel. Si la validación de esos eventos los rechaza
+  con nivel `pr`, ajústala y decláralo en `## Tradeoffs`. En un encargo final solo escribe
+  `pr_observado`. No cambia `nivel_efectivo`: "integrado por David" se deriva de `prs`. Después
+  de su propio merge, el motor también escribe `pr_observado`.
 - Un PR mergeado en la rama de otra fase del mismo encargo cuenta como integrado cuando esa otra
   fase queda mergeada en `base_pedida`, y así en cadena.
 - `CancelarFase` y `DetenerOtraBase` esperan a que el encargo no tenga proceso vivo
   (`proc is None` y sin `reserva`). Mientras haya proceso, la acción es `Esperar`.
 - Ningún camino llama a `merge` sobre un PR que no esté `Abierto`. Ningún camino abre un PR nuevo
   para una fase con `Mergeado` o `Cerrado`.
+- `DetenerOtraBase` no se repite para la misma fase, número y base: el `pr_otra_base` de esa
+  terna ya está en el registro, y si su `aceptada_en` coincide, cuenta como aceptada. Que GitHub
+  llene después un `merge_commit` vacío no vuelve a detener el encargo.
 - `pr_observado` se escribe solo cuando el valor cambia, en tres casos: la fase activa en cada
   paso de entrega, las fases no activas, y los encargos `terminado` de nivel `pr` con algún PR
   `Abierto` o todavía sin observar. La cadencia de las no activas no cambia: sigue en
   `Fase.conciliado_en`, que se actualiza con `conciliacion_fase` paso `consulta` cada 2 minutos.
-  El tercer caso solo corre con el interruptor encendido, y como mucho
-  `politica.CERRADOS_POR_PASADA` encargos por pasada.
+  El tercer caso solo corre con el interruptor encendido, con su propio tope de
+  `politica.CERRADOS_POR_PASADA` encargos por pasada, aparte del sondeo de DeepSeek.
+- Las seis celdas que cambian: Abierto con nivel `pr` (se sigue observando), Mergeado en
+  `base_pedida` con nivel `pr`, Mergeado en otra base en las dos columnas, y Cerrado en las dos
+  columnas.
 - Esta tabla es la comprobación permanente 3 del modelo: una prueba de tabla con una fila por
   celda (12 filas) contra `decidir`, y una prueba de punta a punta con el doble de GitHub por
-  cada celda que cambia.
+  cada una de las seis celdas que cambian.
 
 ## Tabla de limpieza
 
 Va en `politica.LIMPIEZA` (decisión 2 de David). La ejecuta `motor/encargos/entrega/limpieza.py`.
-Antes de escribir `limpieza` con `borrado`, el motor comprueba que el recurso ya no existe. Solo
-limpia encargos finales, salvo las credenciales del turno.
+Antes de escribir `limpieza` con `borrado`, el motor comprueba que el recurso ya no existe. Las
+ramas, los PR y las credenciales del turno se limpian según su regla en cualquier encargo. Las
+carpetas en disco, solo en encargos finales.
 
 | Recurso | Vence | Se borra con | Nunca se borra si |
 |---|---|---|---|
@@ -251,12 +289,12 @@ limpia encargos finales, salvo las credenciales del turno.
 | `espacio/<id>` | `hora_final` + `CERRADOS_VENTANA_S` (7 días) | borrar la carpeta | el encargo tiene un PR `Abierto`, o su ventana de sondeo de DeepSeek sigue abierta |
 | `ejecucion/<id>` | `hora_final` + `CERRADOS_VENTANA_S` | borrar la carpeta | la ventana de sondeo de DeepSeek sigue abierta |
 | `runtime/<id>` completo (`sesion-<rol>`, `sonda` y lo demás) | Al quedar final, como hoy | borrar la carpeta | |
-| Credenciales del turno `runtime/<id>/<token>` | Al terminar de incorporar el turno: después de copiar la sesión a `sesion-<rol>` y leer `resultado.json` | borrar la carpeta | el turno no se incorporó |
+| Credenciales del turno `runtime/<id>/<token>` | Al terminar de incorporar el turno: después de copiar la sesión a `sesion-<rol>` y leer `outcome.json` | borrar la carpeta | el turno no se incorporó |
 | `despliegues/<clave>` | El encargo es final y `despliegue.observacion` no da en curso para él | borrar primero el puntero `<id>.actual`, luego todo menos `recibo.json` y `pedido.json` | |
 
 - `runtime/gh` no es de un encargo: queda fuera.
 - Después de borrar `espacio/<id>` o `ejecucion/<id>` de un encargo final, ningún camino las
-  vuelve a crear. Hoy `_espacio` y `_directorio` hacen `mkdir` en unas 20 llamadas, entre ellas el
+  vuelve a crear. Hoy `_espacio` y `_directorio` hacen `mkdir` en unas 40 llamadas, entre ellas el
   sondeo de DeepSeek y `_guardar_relectura`. Pruébalo por conducta: un barrido completo después
   de borrar no las recrea.
 - Un borrado que falla escribe `limpieza` con `fallo` y su `intento`. Se reintenta en una pasada
@@ -265,14 +303,15 @@ limpia encargos finales, salvo las credenciales del turno.
   `_LIMPIEZA_FALLIDA`, que hoy vive en la memoria del proceso.
 - Como mucho `politica.LIMPIEZA_POR_PASADA = 20` borrados por pasada, para que encender el
   interruptor no borre todo de golpe.
+- Una rama que se conserva porque es base del PR abierto de otro encargo cuenta como cumplida.
 - `limpio` se escribe cuando ningún PR del encargo está `Abierto`, cada recurso cumplió su regla,
   y cada fase con nivel desplegado pasa `despliegue.comprobar_recibo` (extiéndela para recibir la
   fase; hoy solo mira `fase_actual`). Lo que tiene plazo y no venció cuenta como conservado.
   Cuando el plazo vence, el motor lo borra y escribe `limpieza`.
 - `tools/limpieza_pendiente.py <base>` cuenta, por recurso, lo que el motor borraría al encender
   el interruptor. Lee el disco, y las ramas y PR los saca del plegado, sin llamar a GitHub. Abre
-  el registro solo para leer: SQLite con `mode=ro` en la URI, sin `Registro()`, porque
-  `Registro()` crea tablas. Solo imprime conteos y tamaños, nunca nombres ni ids. No borra nada.
+  el registro solo para leer, sin `Registro()`, porque `Registro()` crea tablas: reutiliza
+  `tools/plegado.leer_encargos`, que ya abre con `mode=ro`. Solo imprime conteos y tamaños, nunca nombres ni ids. No borra nada.
 
 ## Qué corre con el interruptor
 
@@ -281,15 +320,17 @@ limpia encargos finales, salvo las credenciales del turno.
 | `pr_observado` de la fase activa y de las no activas | Corre | Corre |
 | Celdas de decisión en encargos que no son finales, incluidos `fase_cancelada` y `pr_otra_base` | Corren, sin borrar nada | Corren y limpian |
 | Observar encargos `terminado` de nivel `pr` | No | Sí |
-| `_limpiar_encargo_cerrado` de hoy (borra `runtime/<id>` e `intento-*`) | Sigue igual | Lo reemplaza `limpieza.py` |
+| `_limpiar_encargo_cerrado` de hoy (borra `runtime/<id>` e `intento-*` al cerrar) | Sigue igual | Lo reemplaza `limpieza.py` |
+| Borrar credenciales al incorporar cada turno | No: se borran al cerrar, como hoy | Sí |
 | Limpieza nueva, `limpieza` y `limpio` | No | Sí |
-| Palabra de `reporte` | Igual. En un cerrado sin `limpio` dice "falta limpiar", con la causa "la limpieza automática no está encendida" | Igual |
+| Palabra de `reporte` | `reporte(e, limpieza_activa=False)`. En un cerrado sin `limpio` dice "falta limpiar", con la causa "la limpieza automática no está encendida" | `reporte(e, limpieza_activa=True)` |
 | Aviso de cierre | Sale al cerrar, como hoy, con la palabra de `reporte` | Sale con `limpio`, con `agotado` o con "listo para tu merge" |
+| Aviso de `detenido` y aviso de cambio de palabra | Corren | Corren |
 
 ## Palabras del reporte
 
-`reporte(e) -> Reporte | None` es una función pura en `motor/encargos/reporte.py`: solo lee el
-estado plegado. `Reporte` tiene `palabra`, `causa` y `fases` (cada fase con su palabra y su
+`reporte(e, limpieza_activa: bool) -> Reporte | None` es una función pura en
+`motor/encargos/reporte.py`: solo lee el estado plegado y el valor del interruptor. `Reporte` tiene `palabra`, `causa` y `fases` (cada fase con su palabra y su
 causa). Es `None` si el encargo no es final ni `detenido`. Una fase cuenta como mergeada si `prs`
 la tiene `Mergeado` en `base_pedida` (o en su `aceptada_en`, o en cadena), o si tiene
 `integrado_sha`, que cubre los registros viejos y los merges del motor. Cuenta como desplegada si
@@ -304,16 +345,26 @@ tiene `desplegado_recibo`. Gana la primera regla que se cumple:
 6. Por el nivel efectivo, mirando todas las fases que no están en `canceladas`:
    - "entregado": cada fase mergeada en `base_pedida` y desplegada.
    - "integrado": cada fase mergeada, sin despliegue. La causa dice por qué no se desplegó, o en
-     qué base la aceptó David.
+     qué base la aceptó David. En un encargo final, una fase `Mergeado` en otra base también
+     cuenta como integrada, y la causa dice en qué base quedó.
    - "respondido": nivel `terminado`, el resultado llegó y no hay PR.
    - "sin cambios": no hubo cambio que entregar.
 
-Dónde sale:
+Dónde sale, sin ráfagas al desplegar ni al encender:
+- `registro.py` agrega el corte `palabras-v4` en `cortes_avisos`, igual que `cierres-cancelados-v1`:
+  se fija la primera vez que la versión nueva abre la base. Los avisos de abajo comparan con el
+  plegado al corte (`registro.fold(encargo, hasta=corte)`), como hoy los cancelados.
 - El aviso de cierre (`motor/integraciones/directores.py`) usa `reporte`, cuándo según la tabla del
-  interruptor. Si la palabra de un encargo final cambia después del aviso (David mergea, o una
-  limpieza llega a `agotado`), sale un aviso más con la palabra nueva, uno por palabra.
-- Hay un aviso nuevo al quedar `detenido`. Hoy no sale ninguno.
-- `motor ver` agrega el campo `reporte`.
+  interruptor. Solo cambia para los encargos que no eran finales al corte. Los que ya lo eran
+  siguen como hoy.
+- Si la palabra de un encargo cambia después de su aviso de cierre de la versión nueva (David
+  mergea, o una limpieza llega a `agotado`), sale un aviso más con la palabra nueva. Uno por
+  palabra, con la palabra en el id del aviso. Un encargo que no recibió aviso de cierre de la
+  versión nueva no recibe estos avisos.
+- Hay un aviso nuevo al quedar `detenido`, solo si el encargo no estaba `detenido` al corte. Hoy
+  no sale ninguno.
+- `motor ver` agrega el campo `reporte` en `cli.py`. No toques `consultar` ni `vista`, que están en
+  `dominio.py`.
 - `skill/motor/SKILL.md` cambia la línea que dice que `terminado` significa nivel alcanzado igual
   al autorizado, y lista las nueve palabras.
 
@@ -367,7 +418,8 @@ orden del puntero `.actual`, `comprobar_recibo` por fase y `tools/limpieza_pendi
 **4.4 Palabras del reporte.** `reporte.py`, el aviso de cierre, el aviso de `detenido`, el aviso
 de cambio de palabra, `motor ver` y `skill/motor/SKILL.md`.
 - **Evidencia.** Una prueba de tabla con una fila por palabra y una por cada empate de la lista de
-  precedencia, con el interruptor apagado y encendido. Una prueba de que un registro viejo (sin
+  precedencia, con el interruptor apagado y encendido. Una prueba de que, al abrir una base con
+  encargos ya detenidos y ya cerrados, no sale ningún aviso nuevo. Una prueba de que un registro viejo (sin
   `pr_observado`, con `integrado_sha` y `desplegado_recibo`) da "falta limpiar" y no "integrado".
   En `## Tradeoffs`, la lista de pruebas viejas que cambian de texto y por qué.
 
@@ -380,8 +432,9 @@ de cambio de palabra, `motor ver` y `skill/motor/SKILL.md`.
   `limpio_solo_en_final`. `cancelacion_definitiva` ya existe.
 - Una prueba genera unas 2,000 secuencias de eventos con `random.Random(<semilla fija>)`, solo con
   la biblioteca estándar, y comprueba lo que pide la comprobación permanente 2: aplicar lo
-  guardado nunca lanza, el mismo registro da el mismo estado, `reducir(..., nuevo=True)` de un
-  evento ilegal lanza `TransicionIlegal` y `Registro.anotar` lanza `EventoIlegal`.
+  guardado nunca lanza y el mismo registro da el mismo estado. Al escribir, un evento se acepta o
+  lanza una excepción, que la prueba anota por tipo sin exigir uno: hoy hay cargas que dan
+  `KeyError` en vez de `TransicionIlegal`, y ordenarlas no es de este paso.
 - **Evidencia.** `comprobar` sobre el corpus sin violaciones. La prueba de secuencias, y una
   mutación sembrada que la pone en rojo.
 
@@ -400,11 +453,12 @@ de cambio de palabra, `motor ver` y `skill/motor/SKILL.md`.
 | Puede tocar | No toca |
 |---|---|
 | `motor/encargos/entrega/` (nuevo), `motor/encargos/reporte.py` (nuevo) | `ops/` completo, `.github/workflows/` |
-| `motor/encargos/situacion.py`, `encargo.py`, `reductor/`, `detencion.py`, `politica.py` | `motor/encargos/registro.py`, `lote.py` |
+| `motor/encargos/situacion.py`, `encargo.py`, `reductor/`, `detencion.py`, `politica.py` | `motor/encargos/lote.py`, el resto de `registro.py` |
 | `motor/encargos/ciclo.py` y `dominio.py` sin que crezcan | `motor/flota/` |
 | `motor/github.py`, `motor/integraciones/directores.py` | `docs/modelo-centro-encargos.md` (lo actualiza el revisor) |
-| `motor/encargos/cierre.py`, `despliegue.py`, `arranque.py` | |
-| `skill/motor/SKILL.md`, `AGENTS.md` (solo la tabla generada) | |
+| `motor/encargos/cierre.py`, `despliegue.py`, `arranque.py`, `necesidades.py`, `cli.py` | |
+| `motor/encargos/registro.py`, solo el corte `palabras-v4` | |
+| `skill/motor/SKILL.md`, `AGENTS.md` y `CLAUDE.md` (solo las tablas generadas) | |
 | `tools/plegado.py`, `tools/corpus_plegado.py`, `tools/limpieza_pendiente.py` (nuevo), `tests/` | |
 
 ## Cuando algo se atora
