@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -81,6 +82,19 @@ def _corre(repo: Path, env: dict | None = None) -> subprocess.CompletedProcess:
 
 
 class PruebasNuevasContraLaBase(unittest.TestCase):
+    def test_identifica_el_modulo_que_pytest_nombra_sin_paquete(self):
+        from tools.pruebas_nuevas import _identidad_del_caso, _modulos
+
+        ruta = "tests/test_escritura_diferencial.py"
+        caso = ET.Element("testcase", {
+            "classname": "test_escritura_diferencial.EscrituraDiferencial",
+            "name": "test_meta_ilegible",
+        })
+        self.assertEqual(
+            _identidad_del_caso(caso, _modulos([ruta])),
+            (ruta, "EscrituraDiferencial::test_meta_ilegible"),
+        )
+
     def test_marca_la_prueba_que_pasa_sin_el_arreglo(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp))
