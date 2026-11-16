@@ -318,6 +318,19 @@ class ActualizacionesFlota(unittest.TestCase):
             else:
                 toml.write_text(previo, encoding="utf-8")
 
+    def test_el_primer_arranque_con_un_canal_caido_no_fija_el_manifiesto(self):
+        from motor.flota.distribuidores import catalogo_deseado
+        from motor.flota.manifiesto import Herramienta, Politica
+
+        grok = {"nombre": "grok", "version": "1.0.0", "integridad": "sha512-AAAA"}
+        caido = {"componentes": [grok], "no_disponibles": [{"nombre": "codex", "error": "timeout"}]}
+        semilla = Politica("v9", (), (), (), (), None, ())
+        with self.assertRaisesRegex(ValueError, "sin resolver: codex"):
+            catalogo_deseado(caido, semilla, [])
+        fijada = Politica("v9", (), (), (Herramienta("grok", "c", "1.0.0", "sha512-AAAA"),), (), None, ())
+        solo_caido = {"componentes": [], "no_disponibles": caido["no_disponibles"]}
+        self.assertEqual(catalogo_deseado(solo_caido, fijada, [])["no_disponibles"], [])
+
     def test_la_generacion_lleva_carpetas_de_hermes_y_openclaw_solo_si_los_instala(self):
         gen = self.base / "generacion"
         entorno = _entorno_generacion(gen)

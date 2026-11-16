@@ -217,6 +217,12 @@ def catalogo_deseado(catalogo: dict, politica: Politica, anteriores: list[dict])
     fusion = {c["nombre"]: c for c in anteriores}
     fusion.update({c["nombre"]: c for c in catalogo.get("componentes") or []})
     deseadas = {h.nombre for h in politica.herramientas}
+    ausentes = catalogo.get("no_disponibles") or []
+    if not deseadas and ausentes:
+        # El primer arranque guarda como manifiesto lo que encontró: con un canal caído,
+        # esa herramienta quedaría fuera para siempre aunque el canal vuelva.
+        faltan = ", ".join(sorted(str(a.get("nombre")) for a in ausentes))
+        raise ValueError("el primer arranque necesita todos los canales; sin resolver: " + faltan)
 
     def pedida(nombre: object) -> bool:
         return not deseadas or nombre in deseadas
@@ -224,7 +230,6 @@ def catalogo_deseado(catalogo: dict, politica: Politica, anteriores: list[dict])
     componentes = [fusion[n] for n in sorted(fusion) if pedida(n)]
     for doc in componentes:
         _validar_componente(doc)
-    ausentes = catalogo.get("no_disponibles") or []
     return {
         **catalogo,
         "componentes": componentes,
