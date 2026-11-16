@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..catalogo_agentes import identidad_modelo
-from ..entrega.tipos import PrDeFase
+from ..entrega.tipos import PrDeFase, PrSin
 from .errores import HechoInaplicable, leer_carga
 
 if TYPE_CHECKING:
@@ -82,6 +82,10 @@ def falla_sesion_local(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 def orden(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import TransicionIlegal, _orden
 
+    if e.estado == "cancelado":
+        if nuevo:
+            raise TransicionIlegal("el encargo está cancelado")
+        raise HechoInaplicable("el encargo está cancelado")
     if not nuevo:
         leer_carga(nuevo, lambda: d["accion"])
     try:
@@ -90,12 +94,18 @@ def orden(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         if nuevo:
             raise
         raise HechoInaplicable from exc
+    if d["accion"] == "reabrir":
+        return replace(resultado, canceladas=tuple(
+            fid for fid in resultado.canceladas if fid != d.get("fase")
+        ))
     if d["accion"] == "continuar" and e.estado == "detenido" and e.orden_parada == "otra_base":
         fase, base = e.otra_base_de
+        prs = tuple(PrDeFase(p.fase, p.pr, base if p.fase == fase else p.aceptada_en)
+                    for p in resultado.prs)
+        if not any(p.fase == fase for p in prs):
+            prs += (PrDeFase(fase, PrSin(), base),)
         return replace(
-            resultado,
-            prs=tuple(PrDeFase(p.fase, p.pr, base if p.fase == fase else p.aceptada_en)
-                      for p in resultado.prs),
+            resultado, prs=prs,
             otra_base_de=("", ""),
         )
     return resultado
