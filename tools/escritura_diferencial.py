@@ -104,7 +104,7 @@ def _variantes(kind: str, datos: dict, estado: Any):
             yield "id:repetido", {**datos, "id": existentes[0].id}
             break
     if kind == "comprobacion" or "ajustes_vistos" in datos:
-        n = len(estado.ajustes)
+        n = len(estado.ajustes) if estado is not None else 0
         for nombre, valor in (("menos", n - 1), ("mas", n + 1), ("texto", "no numerico")):
             yield f"ajustes_vistos:{nombre}", {**datos, "ajustes_vistos": valor}
 
@@ -118,31 +118,18 @@ def _firma_estado(e: Any) -> tuple:
 
 
 def _casos_por_estado(kinds: list[str], muestras: dict[str, list[dict]],
-                      estado: Any, indice: int, total: int):
-    for desplazamiento in range(0, len(kinds), total):
-        kind = kinds[(indice + desplazamiento) % len(kinds)]
-        muestra = muestras[kind][(indice // len(kinds)) % len(muestras[kind])]
-        yield kind, "real", _adaptar(muestra, estado)
-    if "solicitud" in muestras and estado.solicitudes:
-        for muestra in muestras["solicitud"]:
-            datos = _adaptar(muestra, estado)
-            yield "solicitud", "id:repetido", {
-                **datos, "id": estado.solicitudes[0].id,
-            }
-    if "comprobacion" in muestras:
-        for muestra in muestras["comprobacion"]:
-            datos = _adaptar(muestra, estado)
-            if datos.get("clase") in ("confirmado", "cierre_comprobado"):
-                for campo, valor in (("fase", "otra_fase"), ("intento", "otro_intento")):
-                    yield "comprobacion", f"evidencia_y_{campo}", {
-                        **datos, "evidencia": "", campo: valor,
-                    }
+                      estado: Any, indice: int, inicio: int):
+    grupos = []
     for desplazamiento in range(len(kinds)):
-        kind = kinds[(indice + desplazamiento) % len(kinds)]
+        kind = kinds[(inicio + desplazamiento) % len(kinds)]
         muestra = muestras[kind][(indice // len(kinds)) % len(muestras[kind])]
         datos = _adaptar(muestra, estado)
-        for variante, carga in _variantes(kind, datos, estado):
-            yield kind, variante, carga
+        grupos.append((kind, list(_variantes(kind, datos, estado))))
+    for vuelta in range(max(len(variantes) for _, variantes in grupos)):
+        for kind, variantes in grupos:
+            if vuelta < len(variantes):
+                variante, carga = variantes[(indice + vuelta) % len(variantes)]
+                yield kind, variante, carga
 
 
 def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
@@ -181,23 +168,30 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int,
                     prefijos.setdefault(_firma_estado(estado), (prefijo, estado))
     if not prefijos:
         raise ValueError("sin estados previos legibles")
-    entregas = list(muestras.get("entrega", []))
-    if max_casos < (len(prefijos) * ((len(kinds) + len(prefijos) - 1) // len(prefijos))
-                    + len(entregas)):
+    print(json.dumps(["_firmas", len(prefijos)]))
+    entregas = [
+        (indice, variante, carga)
+        for indice, muestra in enumerate(muestras.get("entrega", []))
+        for variante, carga in _variantes("entrega", muestra, None)
+    ]
+    if max_casos < max(len(prefijos), len(kinds)) + len(entregas):
         return 3
     cuenta = 0
     if "entrega" in muestras:
-        for muestra in entregas:
-            _escribir_caso(reductor, None, "entrega", "0:real", muestra, legado)
+        for indice, variante, carga in entregas:
+            _escribir_caso(reductor, None, "entrega",
+                           f"0:{indice}:{variante}", carga, legado)
             cuenta += 1
     disponibles = max_casos - cuenta
     cuota, resto = divmod(disponibles, len(prefijos))
+    ordinal = 0
     for indice, (numero, estado) in enumerate(prefijos.values()):
         for kind, variante, carga in itertools.islice(
-            _casos_por_estado(kinds, muestras, estado, indice, len(prefijos)),
+            _casos_por_estado(kinds, muestras, estado, indice, ordinal),
             cuota + (indice < resto),
         ):
             _escribir_caso(reductor, estado, kind, f"{numero}:{variante}", carga, legado)
+            ordinal += 1
     return 0
 
 
@@ -225,6 +219,14 @@ def _comparar(base: Path, arbol: Path, kinds: list[str], permitidos: set[str]) -
     diferencias: Counter[tuple[str, str]] = Counter()
     total: Counter[str] = Counter()
     with base.open(encoding="utf-8") as izquierda, arbol.open(encoding="utf-8") as derecha:
+        firmas_base = json.loads(izquierda.readline())
+        firmas_arbol = json.loads(derecha.readline())
+        if firmas_base[0] != "_firmas" or firmas_arbol[0] != "_firmas":
+            raise ValueError("sin conteo de firmas")
+        if firmas_base[1] != firmas_arbol[1]:
+            print(f"firmas_estado_distintas={abs(firmas_base[1] - firmas_arbol[1])}")
+            print("diferencias: 1")
+            return 1
         while True:
             lbase, larbol = izquierda.readline(), derecha.readline()
             if not lbase and not larbol:
@@ -251,7 +253,7 @@ def _archivo_privado(ruta: Path):
 
 
 def _ejecutar_lado(corpus: Path, raiz: Path, destino: Path, kinds: list[str],
-                  max_casos: int, legado: bool) -> None:
+                  max_casos: int, legado: bool) -> int:
     orden = [
         sys.executable, "-I", str(Path(__file__).resolve()), "_evaluar",
         "--corpus", str(corpus), "--arbol", str(raiz), "--kinds", ",".join(kinds),
@@ -262,18 +264,21 @@ def _ejecutar_lado(corpus: Path, raiz: Path, destino: Path, kinds: list[str],
     with _archivo_privado(destino) as archivo:
         hecho = subprocess.run(orden, stdout=archivo, stderr=subprocess.PIPE,
                                text=True, check=False)
-    if hecho.returncode == 3:
-        raise TopeInsuficiente("tope de casos menor que el número de firmas de estado")
-    if hecho.returncode:
+    if hecho.returncode not in (0, 3):
         raise RuntimeError(f"el reductor no evaluó los casos: salida {hecho.returncode}")
+    return hecho.returncode
 
 
 def comparar(base: str, corpus: Path, arbol: Path, kinds: list[str],
              max_casos: int, permitidos: set[str], legado: bool) -> int:
     with (corpus / "meta.json").open(encoding="utf-8") as archivo:
-        json.load(archivo)["eventos"]
+        meta = json.load(archivo)
+    if not isinstance(meta, dict) or "eventos" not in meta:
+        raise ValueError("meta sin eventos")
     muestras = _muestras(corpus, set(kinds))
-    if max_casos < len(kinds) + len(muestras.get("entrega", [])):
+    entregas = sum(1 for datos in muestras.get("entrega", [])
+                   for _ in _variantes("entrega", datos, None))
+    if max_casos < len(kinds) + entregas:
         raise TopeInsuficiente("tope de casos menor que los kinds seleccionados")
     sha = subprocess.check_output(
         ["git", "-C", str(RAIZ), "rev-parse", "--verify", base],
@@ -288,8 +293,16 @@ def comparar(base: str, corpus: Path, arbol: Path, kinds: list[str],
         with tarfile.open(fileobj=io.BytesIO(archivo.stdout)) as tar:
             tar.extractall(temporal / "base", filter="data")
         izquierda, derecha = temporal / "base.jsonl", temporal / "arbol.jsonl"
-        _ejecutar_lado(corpus, temporal / "base", izquierda, kinds, max_casos, legado)
-        _ejecutar_lado(corpus, arbol, derecha, kinds, max_casos, legado)
+        codigos = (
+            _ejecutar_lado(corpus, temporal / "base", izquierda, kinds, max_casos, legado),
+            _ejecutar_lado(corpus, arbol, derecha, kinds, max_casos, legado),
+        )
+        with izquierda.open(encoding="utf-8") as archivo:
+            firmas_base = json.loads(archivo.readline())
+        with derecha.open(encoding="utf-8") as archivo:
+            firmas_arbol = json.loads(archivo.readline())
+        if firmas_base[1] == firmas_arbol[1] and 3 in codigos:
+            raise TopeInsuficiente("tope de casos menor que el número de firmas de estado")
         return _comparar(izquierda, derecha, kinds, permitidos)
 
 
