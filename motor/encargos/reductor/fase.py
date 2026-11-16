@@ -213,7 +213,7 @@ def conciliacion_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
     try:
         return _conciliacion_fase(e, d, hora)
-    except (TransicionIlegal, TypeError, ValueError):
+    except (TransicionIlegal, TypeError, ValueError, OverflowError):
         if nuevo:
             raise
         return e
