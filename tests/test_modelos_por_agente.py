@@ -276,7 +276,7 @@ class ModelosPorAgente(unittest.TestCase):
             " claude-opus-5-5 high)",
         ])
 
-    def test_si_la_herencia_nombra_al_bot_de_la_app_manda_la_herencia(self):
+    def test_si_la_herencia_nombra_al_bot_de_la_app_manda_la_herencia(self):  # no-roja-en-base: fija que la regla nueva del director no pisa una herencia explícita; la base ya respetaba la herencia porque no tenía la regla
         home = _maquina(self.base, "mausbot")
         manifiesto = home / "flota" / "actual" / "manifesto.toml"
         manifiesto.write_text(
