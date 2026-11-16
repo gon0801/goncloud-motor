@@ -225,8 +225,8 @@ Todas las cargas llevan `hora`, como los demás eventos, porque el reductor toma
     `terminado`. Esta regla va antes que las de abajo.
   - Si no, y el encargo es `terminado`, sigue `terminado`, y su resultado pasa a `Parcial` con F.
   - Si no es final y F es la fase activa, el encargo sigue como cuando hoy se bloquea la fase
-    activa: llama a `_bloqueo_fase` de `dominio.py` con una carga armada (la fase, `evidencia`
-    `pr-cerrado:<numero>` y lo demás que lea). Pasa a la siguiente fase disponible o termina.
+    activa: llama a `_bloqueo_fase` de `dominio.py` con una carga armada (la fase, la misma
+    `evidencia` de arriba, `pr-cerrado:<numero>` o `depende:<origen>`, y lo demás que lea). Pasa a la siguiente fase disponible o termina.
   - Si no es final y F no es la activa, solo cambia F.
   - **Las fases que dependen de F se cancelan también**, directa o indirectamente: con nivel `pr`
     están apiladas sobre la rama de F, y sin F no tienen sentido. Si no, quedan condenadas por
@@ -259,10 +259,7 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
 - `base_pedida` es `e.entrega.base`.
 - En un encargo `cancelado`, la decisión es siempre `Nada`: no se anota ni se decide nada, y sus
   PR los cierra la limpieza. Solo un `terminado` sigue observándose y anotándose. La limpieza de
-  un cancelado no depende de esa observación: para cada PR del encargo lee su estado con `ver()`,
-  lo cierre o no (puede estar ya `Cerrado` o `Mergeado`), y cuando lo confirma `Cerrado` o
-  `Mergeado` escribe su `pr_observado` (que se acepta también en un `cancelado`) junto con la
-  `limpieza`. Pruébalo también con un PR que ya estaba cerrado.
+  un cancelado no depende de esa observación (ver la tabla de limpieza).
 - `ContextoEntrega` lleva también el `EstadoPR` de las otras fases, para decidir el caso en
   cadena.
 - Un `Abierto` es `Abierto` en cualquier base. La base a la que el motor reapunta un PR sigue
@@ -332,7 +329,11 @@ haga falta. `Accion` es una unión de dataclasses con nombre: `AbrirPR`, `Marcar
 Va en `politica.LIMPIEZA` (decisión 2 de David). La ejecuta `motor/encargos/entrega/limpieza.py`.
 Antes de escribir `limpieza` con `borrado`, el motor comprueba el resultado de la regla de ese
 recurso: la rama ya no existe, el PR está `Cerrado` o `Mergeado`, la carpeta ya no existe, o en
-`despliegues/<clave>` solo quedan `recibo.json` y `pedido.json`. Las
+`despliegues/<clave>` solo quedan `recibo.json` y `pedido.json`. Cada vez que la limpieza cierra
+un PR, o lee con `ver()` que ya estaba `Cerrado` o `Mergeado`, escribe su `pr_observado` junto con
+la `limpieza`, en cualquier encargo, también en un `cancelado` (`pr_observado` se acepta ahí).
+Así `prs` no se queda con un `Abierto` viejo que impida `limpio`. Pruébalo también con un PR que
+ya estaba cerrado. Las
 ramas, los PR y las credenciales del turno se limpian según su regla en cualquier encargo. Las
 carpetas en disco, solo en encargos finales.
 
@@ -360,7 +361,9 @@ carpetas en disco, solo en encargos finales.
   interruptor no borre todo de golpe.
 - Una rama que se conserva porque es base del PR abierto de otro encargo cuenta como cumplida.
 - `limpio` se escribe cuando ningún PR del encargo está `Abierto`, cada recurso cumplió su regla,
-  y cada fase con nivel desplegado que no está en `canceladas` pasa `despliegue.comprobar_recibo` (extiéndela para recibir la
+  y cada fase que tiene `desplegado_recibo` pasa `despliegue.comprobar_recibo`: el recibo es lo que
+  la regla conserva, y tiene que seguir ahí. Las fases sin `desplegado_recibo` (canceladas, de un
+  encargo cancelado o que no se desplegaron) no se comprueban (extiende `comprobar_recibo` para recibir la
   fase; hoy solo mira `fase_actual`). Lo que tiene plazo y no venció cuenta como conservado.
   Cuando el plazo vence, el motor lo borra y escribe `limpieza`.
 - `tools/limpieza_pendiente.py <base>` cuenta, por recurso, lo que el motor borraría al encender
@@ -477,6 +480,8 @@ orden del puntero `.actual`, `comprobar_recibo` por fase y `tools/limpieza_pendi
   - Una prueba de que `despliegue.observacion` no da "incierto" después de limpiar, con y sin el
     argumento `fase` (`despliegue.py:497-523`).
   - Una prueba de los tres fallos hasta `agotado`, que sobrevive a reiniciar el proceso.
+  - Una prueba de que se escribe `limpio` en un `terminado` desplegado, en un `cancelado` por
+    orden de David con una fase sin desplegar, y en un encargo con una fase en `canceladas`.
   - Una prueba de que un barrido no recrea las carpetas borradas.
 
 **4.4 Palabras del reporte.** `reporte.py`, el aviso de cierre, el aviso de `detenido`, el aviso
