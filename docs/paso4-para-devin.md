@@ -474,7 +474,7 @@ entrega de `ciclo.py` llama a `decidir` y a `ejecutar`. Las celdas nuevas escrib
 
 **4.3 Limpieza.** `politica.LIMPIEZA`, `LIMPIEZA_POR_PASADA`, `limpieza.py`, los escritores de
 `limpieza` y `limpio`, los reintentos desde el registro, el fin de las carpetas recreadas, el
-orden del puntero `.actual`, `comprobar_recibo` por fase y `tools/limpieza_pendiente.py`.
+orden del puntero `.actual`, la comprobación de que cada recibo existe y `tools/limpieza_pendiente.py`.
 - **Evidencia.**
   - Por cada fila de la tabla de limpieza, una prueba con el interruptor encendido: vence, se
     borra, se comprueba y se escribe el evento. Otra con la condición de "nunca se borra si".
