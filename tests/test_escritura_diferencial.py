@@ -125,7 +125,7 @@ class EscrituraDiferencial(unittest.TestCase):
         base_anterior = introduccion[-1] + "^"
         anterior = subprocess.run(
             ["git", "show", f"{base_anterior}:motor/encargos/encargo.py"],
-            cwd=RAIZ, capture_output=True, text=True, check=True,
+            cwd=RAIZ, capture_output=True, text=True, encoding="utf-8", check=True,
         ).stdout
         self.assertNotIn("primer_envio_por_sha:", anterior)
         self.assertIn('limpio: str = ""', anterior)
