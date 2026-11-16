@@ -121,30 +121,40 @@ def entrega_devuelta(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return e
 
 def inspeccion_solicitud(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _fase_de_evento, con_fase, replace
+    from ..dominio import con_fase, replace
+    from .validacion_fase import leer_fase
 
-    e = _fase_de_evento(e, d)
+    lectura = leer_fase(e, d)
+    if lectura is None:
+        return e
+    previo = e
+    e = lectura
     fase = e.fase_actual
     if fase is None:
-        raise TransicionIlegal("no hay fase para la inspección")
+        return previo
     ident = str(d.get("solicitud") or "").strip()
     if not ident:
-        raise TransicionIlegal("la inspección necesita su solicitud")
+        return previo
     return replace(
         con_fase(e, replace(fase, inspeccion_solicitud=ident)),
         hora=hora or e.hora,
     )
 
 def inspeccion_entregada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _fase_de_evento, con_fase, replace
+    from ..dominio import con_fase, replace
+    from .validacion_fase import leer_fase
 
-    e = _fase_de_evento(e, d)
+    lectura = leer_fase(e, d)
+    if lectura is None:
+        return e
+    previo = e
+    e = lectura
     fase = e.fase_actual
     if fase is None:
-        raise TransicionIlegal("no hay fase para la entrega de la inspección")
+        return previo
     marca = str(d.get("marca") or "").strip()
     if not marca:
-        raise TransicionIlegal("la entrega de la inspección necesita su marca")
+        return previo
     consumidas = fase.inspecciones_consumidas
     if marca not in consumidas:
         consumidas = consumidas + (marca,)

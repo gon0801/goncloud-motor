@@ -14,23 +14,12 @@ def fases(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return _adoptar_fases(e, d, hora, nuevo)
 
 def nivel_efectivo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _ORDEN_NIVEL, replace
+    from ..dominio import replace
+    from .validacion_fase import leer_nivel_efectivo
 
-    nivel = str(d.get("nivel") or "")
-    if nivel not in ("", "pr", "integrado"):
-        raise TransicionIlegal(f"nivel efectivo desconocido: {nivel}")
-    if nivel and _ORDEN_NIVEL.get(nivel, 0) >= _ORDEN_NIVEL.get(
-        e.entrega.nivel, 1
-    ):
-        raise TransicionIlegal("el nivel efectivo no supera al solicitado")
-    if e.nivel_efectivo and _ORDEN_NIVEL.get(nivel, 99) > _ORDEN_NIVEL[
-        e.nivel_efectivo
-    ]:
-        # El nivel efectivo es un tope que solo se aprieta: una fuente que
-        # no vio la limitación (p. ej. el sondeo de máquina sin gh) no
-        # relaja lo que otra ya comprobó (h_6a425441). El nivel igual es
-        # un sin registro, no un error.
-        raise TransicionIlegal("el nivel efectivo solo se limita más; no se relaja")
+    nivel = leer_nivel_efectivo(e, d)
+    if nivel is None:
+        return e
     if nivel == e.nivel_efectivo:
         return e
     motivo = str(d.get("motivo") or f"nivel efectivo limitado a {nivel}")
@@ -43,25 +32,33 @@ def nivel_efectivo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def politica_despliegue(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _correspondencia_despliegue, _fase_de_evento, con_fase, datos_despliegue, replace
+    from ..dominio import TransicionIlegal, _correspondencia_despliegue, con_fase, datos_despliegue, replace
+    from .validacion_fase import leer_fase
 
+    previo = e
     pedida = str(d.get("fase") or "")
     if pedida and pedida != e.fase_activa:
         fase = next((f for f in e.fases if f.id == pedida), None)
         if fase is None:
-            raise TransicionIlegal("la política nombra una fase inexistente")
+            return e
     else:
-        e = _fase_de_evento(e, d)
+        lectura = leer_fase(e, d)
+        if lectura is None:
+            return e
+        e = lectura
         fase = e.fase_actual
     if fase is None or fase.estado == "preparada":
-        raise TransicionIlegal("no se cambia la política de una fase cerrada")
+        return previo
     fuente, huella = str(d.get("fuente") or ""), str(d.get("huella") or "")
     if not fuente or not huella:
-        raise TransicionIlegal("política de despliegue sin fuente comprobable")
-    datos = datos_despliegue(d)
+        return previo
+    try:
+        datos = datos_despliegue(d)
+        correspondencia = _correspondencia_despliegue(e, d)
+    except (TransicionIlegal, TypeError, ValueError):
+        return previo
     if "requiere_despliegue" not in datos:
-        raise TransicionIlegal("política sin declaración de despliegue")
-    correspondencia = _correspondencia_despliegue(e, d)
+        return previo
     return replace(
         con_fase(e, replace(fase, **datos, despliegue_fuente=fuente, despliegue_huella=huella)),
         hora=hora or e.hora,
@@ -69,15 +66,23 @@ def politica_despliegue(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def producto_listo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, VersionProducto, _fase_de_evento, con_fase, replace
+    from ..dominio import TransicionIlegal, VersionProducto, con_fase, replace
+    from .validacion_fase import leer_fase
 
-    e = _fase_de_evento(e, d)
+    lectura = leer_fase(e, d)
+    if lectura is None:
+        return e
+    previo = e
+    e = lectura
     fase = e.fase_actual
     if fase is None:
-        raise TransicionIlegal("no hay fase para el producto")
-    version = VersionProducto.desde(
-        d.get("version") or "", d.get("manifiesto"), d.get("sha_git") or ""
-    )
+        return previo
+    try:
+        version = VersionProducto.desde(
+            d.get("version") or "", d.get("manifiesto"), d.get("sha_git") or ""
+        )
+    except (TransicionIlegal, TypeError, ValueError):
+        return previo
     nueva = replace(fase, producto=version, estado="revision")
     return replace(
         con_fase(e, nueva),
@@ -96,12 +101,17 @@ def entrega_externa(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return _entrega_externa(e, d, hora)
 
 def entrega_bloqueada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _con_progreso, _fase_de_evento, con_fase, replace
+    from ..dominio import _con_progreso, con_fase, replace
+    from .validacion_fase import leer_fase
 
-    e = _fase_de_evento(e, d)
+    lectura = leer_fase(e, d)
+    if lectura is None:
+        return e
+    previo = e
+    e = lectura
     fase = e.fase_actual
     if fase is None:
-        raise TransicionIlegal("no hay fase para la entrega bloqueada")
+        return previo
     return _con_progreso(
         e,
         replace(
@@ -136,14 +146,19 @@ def fase_reabierta(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return _fase_reabierta(e, d, hora)
 
 def entrada_incorporada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, _fase_de_evento, replace
+    from ..dominio import replace
+    from .validacion_fase import leer_fase
 
-    e = _fase_de_evento(e, d)
+    lectura = leer_fase(e, d)
+    if lectura is None:
+        return e
+    previo = e
+    e = lectura
     fase = e.fase_actual
     dep = str(d.get("dep") or "").strip()
     version = str(d.get("version") or "").strip()
     if fase is None or not dep or not version:
-        raise TransicionIlegal("la entrada incorporada necesita fase, dep y versión")
+        return previo
     # La propuesta de fases es la que vale: incorporar una punta terminada
     # es un hecho de la entrega, no una dependencia nueva. Reescribir
     # `requiere` cambiaria el plan ya validado y podria condenar la fase
@@ -156,13 +171,11 @@ def entrada_incorporada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     )
 
 def cierre_forzado(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import Fase, TransicionIlegal, _CERRADOS, asegurar_fase, con_fase, hashlib, json, replace
+    from ..dominio import Fase, _CERRADOS, asegurar_fase, con_fase, hashlib, json, replace
 
     evidencia = str(d.get("evidencia") or "").strip()
-    if not evidencia:
-        raise TransicionIlegal("cierre forzado sin evidencia")
-    if e.estado in _CERRADOS:
-        raise TransicionIlegal("el encargo ya cerró")
+    if not evidencia or e.estado in _CERRADOS:
+        return e
     e = asegurar_fase(e)
     fase = e.fase_actual
     e = replace(e, cierre_forzado_fase=fase, cierre_forzado_huella=hashlib.sha256(
@@ -196,9 +209,14 @@ def fase_reactivada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return _fase_reactivada(e, d, hora)
 
 def conciliacion_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import _conciliacion_fase
+    from ..dominio import TransicionIlegal, _conciliacion_fase
 
-    return _conciliacion_fase(e, d, hora)
+    try:
+        return _conciliacion_fase(e, d, hora)
+    except (TransicionIlegal, TypeError, ValueError, OverflowError):
+        if nuevo:
+            raise
+        return e
 
 def fase_desplegada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _fase_desplegada
@@ -206,21 +224,14 @@ def fase_desplegada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return _fase_desplegada(e, d, hora)
 
 def resultado_directo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import TransicionIlegal, asegurar_fase, replace
+    from ..dominio import asegurar_fase, replace
 
-    if e.via != "directa":
-        raise TransicionIlegal("el resultado directo solo cierra la via directa")
-    if e.entrega.nivel != "terminado":
-        raise TransicionIlegal(
-            "el resultado directo no cumple niveles externos de entrega"
-        )
-    if e.proc is not None or e.reserva:
-        raise TransicionIlegal("hay un escritor abierto")
-    if e.orden_parada == "cancelar" or e.estado in ("cancelado", "terminado"):
-        raise TransicionIlegal("el encargo ya cerró")
     evidencia = str(d.get("evidencia") or "")
-    if not evidencia:
-        raise TransicionIlegal("terminado sin evidencia")
+    if (e.via != "directa" or e.entrega.nivel != "terminado"
+        or e.proc is not None or e.reserva
+        or e.orden_parada == "cancelar" or e.estado in ("cancelado", "terminado")
+        or not evidencia):
+        return e
     e = asegurar_fase(e)
     fase = e.fase_actual
     fases = e.fases

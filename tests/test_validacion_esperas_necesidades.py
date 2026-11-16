@@ -25,6 +25,47 @@ def _pedido():
 
 
 class ValidacionEsperasNecesidades(unittest.TestCase):
+    def test_solicitud_historica_con_operacion_vacia_no_lanza(self) -> None:
+        e = _pedido()
+        datos = {"id": "s", "fase": "", "intento": "i", "operacion": ""}
+        self.assertIs(
+            reducir(e, {"kind": "solicitud", "data": datos}, nuevo=False), e,
+        )
+        with self.assertRaisesRegex(TransicionIlegal, "^solicitud sin operación$"):
+            reducir(e, {"kind": "solicitud", "data": datos}, nuevo=True)
+
+    def test_solicitud_con_operacion_ausente_o_cero_conserva_su_escritura(self) -> None:  # no-roja-en-base: protege el comportamiento antiguo contra la nueva lectura
+        e = _pedido()
+        datos = {"id": "s", "fase": "", "intento": "i"}
+        with self.assertRaises(TransicionIlegal) as exc:
+            reducir(e, {"kind": "solicitud", "data": datos}, nuevo=True)
+        self.assertEqual(str(exc.exception), "la solicitud necesita operación y parámetros válidos")
+        aceptada = reducir(
+            e, {"kind": "solicitud", "data": {**datos, "operacion": 0}}, nuevo=True,
+        )
+        self.assertEqual(aceptada.solicitudes[-1].operacion, "0")
+
+    def test_datos_ilegibles_preceden_el_rechazo_de_operacion_vacia(self) -> None:  # no-roja-en-base: la base ya conserva este orden; protege la separación de validación
+        e = _pedido()
+        datos = {"id": "s", "fase": "", "intento": "i", "operacion": ""}
+        for generacion, tipo, mensaje in (
+            ("x", TransicionIlegal, "la solicitud necesita operación y parámetros válidos"),
+            (float("inf"), OverflowError, ""),
+        ):
+            with self.subTest(generacion=generacion), self.assertRaises(tipo) as exc:
+                reducir(e, {"kind": "solicitud", "data": {
+                    **datos, "generacion": generacion,
+                }}, nuevo=True)
+            if mensaje:
+                self.assertEqual(str(exc.exception), mensaje)
+
+    def test_conciliacion_con_infinito_conserva_el_error_previo_a_la_causa(self) -> None:  # no-roja-en-base: la base ya lanza OverflowError; evita que el validador cambie su tipo
+        e = replace(_pedido(), fases=(Fase("F", "F"),), fase_activa="F")
+        with self.assertRaises(OverflowError):
+            reducir(e, {"kind": "conciliacion_fase", "data": {
+                "fase": "F", "paso": "espera", "intentos": float("inf"),
+            }}, nuevo=True)
+
     def test_ajustes_no_impiden_cerrar_fase_intermedia_ni_esperar_despliegue(self) -> None:  # no-roja-en-base: preserva los retornos previos al cierre terminal
         e = _pedido()
         intermedia = replace(
