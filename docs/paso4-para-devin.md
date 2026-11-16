@@ -399,8 +399,10 @@ carpetas en disco, solo en encargos finales.
 causa). Es `None` si el encargo no es final ni `detenido`. Una fase cuenta como mergeada si `prs`
 la tiene `Mergeado` en `base_pedida` (o en su `aceptada_en`, o en cadena, o en cualquier base si
 el encargo es `terminado`), o si tiene
-`integrado_sha` y `prs` no tiene entrada para esa fase, que cubre los registros viejos. Cuenta como desplegada si
-tiene `desplegado_recibo`. Gana la primera regla que se cumple:
+`integrado_sha` y `prs` no tiene entrada para esa fase, que cubre los registros viejos. Cuenta como desplegada si su `desplegado_recibo` apunta a `despliegues/<clave>/recibo.json` y
+`<clave>` es la de su despliegue vigente: `despliegue.clave_de_recibo(e, fase)`, una función pura
+que sacas de `comprobar_recibo` (`despliegue.py:477-494`) y que calcula el sha256 de encargo,
+fase, repo, `integrado_sha` y receta. Así `reporte` sigue sin leer disco. Gana la primera regla que se cumple:
 
 1. `detenido`: dice cuál de las causas y que se reanuda con `continuar`.
 2. `terminado` de nivel `pr` con algún PR `Abierto` de una fase que no está en `canceladas`:
@@ -411,10 +413,10 @@ tiene `desplegado_recibo`. Gana la primera regla que se cumple:
 5. Alguna fase en `canceladas`, bloqueada o sin trabajar: "entrega parcial". Nombra cada fase y
    su causa.
 6. Por el nivel efectivo, mirando todas las fases que no están en `canceladas`:
-   - "entregado": cada fase mergeada en `base_pedida` y desplegada, con su `desplegado_recibo`
-     del despliegue de su `integrado_sha` (el cierre de hoy ya lo comprueba en `cierre.py`).
-   - "integrado": cada fase mergeada, sin despliegue. La causa dice por qué no se desplegó, o en
-     qué base la aceptó David. En un encargo final, una fase `Mergeado` en otra base también
+   - "entregado": cada fase mergeada en `base_pedida` y desplegada.
+   - "integrado": cada fase mergeada, y alguna sin desplegar. La causa dice por qué no se desplegó,
+     en qué base la aceptó David, o que el recibo es de una versión anterior y falta desplegar la
+     vigente (una fase reintegrada que conserva el recibo de su despliegue anterior). En un encargo final, una fase `Mergeado` en otra base también
      cuenta como integrada, y la causa dice en qué base quedó.
    - "respondido": nivel `terminado`, el resultado llegó y no hay PR.
    - "sin cambios": no hubo cambio que entregar.
@@ -487,7 +489,8 @@ orden del puntero `.actual`, la comprobación de que cada recibo existe y `tools
   - Una prueba de los tres fallos hasta `agotado`, que sobrevive a reiniciar el proceso.
   - Una prueba de que se escribe `limpio` en un `terminado` desplegado, en un `cancelado` por
     orden de David con una fase sin desplegar, en un encargo con una fase en `canceladas`, y con
-    una fase reintegrada que conserva el recibo de su despliegue anterior.
+    una fase reintegrada que conserva el recibo de su despliegue anterior. Y la prueba negativa:
+    con el `recibo.json` borrado, `limpio` no se escribe.
   - Una prueba de que un barrido no recrea las carpetas borradas.
 
 **4.4 Palabras del reporte.** `reporte.py`, el aviso de cierre, el aviso de `detenido`, el aviso
