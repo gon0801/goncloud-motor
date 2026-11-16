@@ -10,6 +10,7 @@ from unittest import mock
 
 from motor.encargos import politica
 from motor.encargos.entrega.tipos import PrAbierto, PrDeFase
+from motor.encargos.situacion import Cancelado
 from motor.integraciones import directores
 from tests.test_aviso_cierre import Banco, HORA, T0
 from tests.test_entrega_v4_reporte import encargo
@@ -68,6 +69,17 @@ class AvisosPorPalabra(unittest.TestCase):
         self.assertIn("pendientes abiertos", cierres[0])
         self.assertIn("herramienta no estaba disponible", cierres[0])
         self.assertIn("cambió de modelo", cierres[0])
+
+    def test_cierre_cancelado_no_promete_continuar_pendientes(self) -> None:
+        enc = replace(encargo(situacion=Cancelado()), pendientes_entrega=("revisar",))
+        vista = directores.VistaAvisos(self.banco.base)
+        trabajos = directores._trabajos_de_encargo(
+            self.banco.reg, enc.id, enc, 0, 0, 0, vista,
+        )
+        cierres = [cuerpo for aviso, cuerpo in trabajos if aviso.get("tipo") == "cierre-v4"]
+        self.assertEqual(len(cierres), 1)
+        self.assertIn("pendientes sin resolver", cierres[0])
+        self.assertNotIn("trabajo siga", cierres[0])
 
     def test_el_cierre_apagado_y_el_cambio_de_palabra_se_envian_una_vez(self) -> None:
         ident = self._terminar()
