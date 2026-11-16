@@ -519,6 +519,15 @@ def observacion(registro, enc, fase=None) -> str:
 
 def _observacion_en(registro, enc, directorio: Path) -> str:
     try:
+        # Tras la limpieza, el recibo y el pedido sobreviven al proceso del trabajador.
+        if (not (directorio / "proceso.json").exists()
+                and any(tipo == "despliegue" and clave == directorio.name and resultado == "borrado"
+                        for tipo, clave, resultado, _, _ in enc.limpieza)
+                and directorio.is_dir()
+                and {ruta.name for ruta in directorio.iterdir()} <= {"recibo.json", "pedido.json"}
+                and (directorio / "recibo.json").is_file()
+                and (directorio / "pedido.json").is_file()):
+            return "ausente"
         datos = _objeto(directorio / "recibo.json")
         proceso = _objeto(directorio / "proceso.json")
         if datos.get("encargo") != enc.id:
