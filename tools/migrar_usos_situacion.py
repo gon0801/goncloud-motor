@@ -93,14 +93,18 @@ def _migrar(ruta: Path, comprobar: bool = False) -> int:
     return len(cambios)
 
 
+def _rutas(raiz: Path = RAIZ):
+    for carpeta in ("motor/encargos", "motor/integraciones", "ops", "tools", "tests"):
+        for ruta in sorted((raiz / carpeta).rglob("*.py")):
+            if ruta.name not in {"encargo.py", "migrar_usos_situacion.py"}:
+                yield ruta
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     comprobar = parser.parse_args().check
-    for carpeta in (RAIZ / "motor" / "encargos", RAIZ / "tests"):
-        for ruta in sorted(carpeta.rglob("*.py")):
-            if ruta.name in {"encargo.py", "migrar_usos_situacion.py"}:
-                continue
-            cambios = _migrar(ruta, comprobar)
-            if cambios:
-                print(f"{ruta.relative_to(RAIZ)}: {cambios} escrituras")
+    for ruta in _rutas():
+        cambios = _migrar(ruta, comprobar)
+        if cambios:
+            print(f"{ruta.relative_to(RAIZ)}: {cambios} escrituras")
