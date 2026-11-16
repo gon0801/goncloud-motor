@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 from .catalogo_agentes import identidad_modelo
-from .reductor import ENTRE_REINTENTOS, EVENTOS_DE_MARCADOR, aplicar_fila
+from .reductor import ENTRE_REINTENTOS, EVENTOS_DE_MARCADOR, aplicar_fila, se_omitio
 
 ESTADOS = (
     "recibido",
@@ -1938,9 +1938,7 @@ def _con_hechos_derivados(e: Encargo, evento: dict) -> Encargo:
 
 def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
     aplicado = _reducir_evento(estado, evento, nuevo)
-    if aplicado is estado and evento["kind"] in (
-        "entrega", "cierre_forzado", "bloqueo_fase", "producto_listo",
-    ):
+    if se_omitio(evento["kind"], estado, aplicado):
         return aplicado
     return _con_hechos_derivados(aplicado, evento)
 

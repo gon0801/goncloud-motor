@@ -55,3 +55,20 @@ class ReduccionTotal(unittest.TestCase):
         previo = _pedido()
         resultado = reducir(previo, {"kind": "orden_inventada", "data": {}}, nuevo=False)
         self.assertEqual(asdict(resultado), asdict(previo))
+
+    def test_hechos_omitidos_no_cortan_series_ni_cambian_firma(self) -> None:
+        previo = replace(
+            _pedido(), fallos_repo=("git falló", 2),
+            fallos_entrega=("git falló", 2), ultima_firma="original",
+        )
+        casos = (
+            ("orden_inventada", {"firma": "ajena"}),
+            ("orden", {"accion": "inventada", "firma": "ajena"}),
+            ("proveedor_fallo", {"firma": "ajena"}),
+        )
+        for kind, datos in casos:
+            with self.subTest(kind=kind):
+                resultado = reducir(previo, {"kind": kind, "data": datos}, nuevo=False)
+                self.assertEqual(asdict(resultado), asdict(previo))
+        recibo = reducir(previo, {"kind": "recibo", "data": {}}, nuevo=False)
+        self.assertEqual(recibo.fallos_repo, ("", 0))
