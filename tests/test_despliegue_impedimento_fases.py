@@ -24,6 +24,7 @@ from motor.encargos.dominio import (
     impedimento_bloquea_trabajo,
 )
 from motor.encargos.registro import Registro
+from tests.soporte_situacion import evolucionar
 
 HORA = "2026-11-12T08:00:00+00:00"
 CAUSA = (
@@ -42,7 +43,8 @@ def _encargo(fases: tuple[Fase, ...], **kw) -> Encargo:
         "intentos_nuevos": True,
     }
     base.update(kw)
-    return Encargo(
+    estado = base.pop("estado")
+    return evolucionar(Encargo(
         id="enc_prueba",
         clave="prueba",
         huella="huella",
@@ -53,7 +55,7 @@ def _encargo(fases: tuple[Fase, ...], **kw) -> Encargo:
         canal="",
         fases=fases,
         **base,
-    )
+    ), estado=estado)
 
 
 def _impedimento_despliegue() -> Impedimento:

@@ -30,6 +30,7 @@ from motor.encargos.dominio import (
 from motor.encargos.registro import Registro
 from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import Recorrido, _bloqueante, _entrega_pr
+from tests.soporte_situacion import evolucionar
 
 
 HORA = "2026-11-07T10:00:00+00:00"
@@ -58,7 +59,8 @@ def _encargo(fases: tuple[Fase, ...], **kw) -> Encargo:
         "entrega": EntregaAutorizada(nivel="terminado"),
     }
     base.update(kw)
-    return Encargo(
+    estado = base.pop("estado")
+    return evolucionar(Encargo(
         id="enc_prueba",
         clave="prueba",
         huella="huella",
@@ -69,7 +71,7 @@ def _encargo(fases: tuple[Fase, ...], **kw) -> Encargo:
         canal="",
         fases=fases,
         **base,
-    )
+    ), estado=estado)
 
 
 def _preparada(fid: str, requiere: tuple = ()) -> Fase:

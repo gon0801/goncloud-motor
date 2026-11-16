@@ -192,7 +192,7 @@ class SoloAvisosDeUsuarioFinal(Base):
             conductor="c", motivo=texto, estado="pregunta", pregunta=texto,
         )
         enc = evolucionar(
-            self.b.reg.fold(ident), estado="necesita_usuario", motivo=texto, solicitudes=(solicitud,)
+            self.b.reg.fold(ident), motivo=texto, solicitudes=(solicitud,)
         )
         avisos = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "aviso"]
         self.assertEqual(avisos, [f"Aviso: el trabajo sigue sin esperarte. {texto}"])
@@ -204,7 +204,7 @@ class SoloAvisosDeUsuarioFinal(Base):
             conductor="c", motivo="uno", estado="pregunta", pregunta="¿Publico el informe?",
         )
         enc = evolucionar(
-            self.b.reg.fold(ident), estado="necesita_usuario", motivo="¿Cambio el título?",
+            self.b.reg.fold(ident), motivo="¿Cambio el título?",
             solicitudes=(solicitud,),
         )
         avisos = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "aviso"]
