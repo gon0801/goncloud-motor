@@ -6,7 +6,9 @@
 # Es idempotente: solo lee y reintenta la lectura. Si el agente arrancaría sin el token de
 # GitHub de los agentes, avisa por máquina sin fallar. Imprime la huella de la flota de
 # cada máquina y avisa, sin fallar, si no corren la misma tabla de modelos o manifiesto, o
-# si recuperar dejó una generación sin medir.
+# si recuperar dejó una generación sin medir. Por cada director que usa el motor de la
+# máquina imprime una línea MODELOS: cuántos agentes tienen los modelos de esa tabla y
+# cuáles no. Tampoco hace fallar el despliegue.
 #
 # --sha SHA     SHA que debe estar instalado (por omisión, HEAD del repo).
 # --maquina M   Una sola máquina: mac, mini o pc.
@@ -50,7 +52,7 @@ esac
 # El registro se pliega con el mismo código y el mismo intérprete que el supervisor,
 # no con una copia de la regla. El intérprete sale del LaunchAgent (Mac y Mini) o es
 # el de motor-runtime (PC).
-PROGRAMA='import hashlib,json,os,pathlib,re,subprocess,sys
+PROGRAMA='import base64,hashlib,json,os,pathlib,re,subprocess,sys
 home = pathlib.Path.home()
 recibo_viejo = sys.argv[-1] == "1"
 
@@ -253,7 +255,20 @@ print("registro", registro)
 print("token", token)
 print("flota", huella_flota())
 print("sinmedir", sin_medir())
+
+# Los modelos se comparan con la tabla que la línea flota nombra, la de la generación activa.
+# Es un aviso: un error aquí no puede cambiar el resultado del despliegue.
+try:
+    modelos = {"__name__": "modelos_por_agente"}
+    exec(compile(base64.b64decode(MODELOS_POR_AGENTE), "modelos_por_agente.py", "exec"), modelos)
+    lineas = modelos["informe"](home, home_flota() / "actual" / "manifesto.toml")
+except Exception as exc:
+    lineas = ["directores: no pude leer (" + type(exc).__name__ + ")"]
+for linea in lineas:
+    print("modelos", linea)
 '
+PROGRAMA="MODELOS_POR_AGENTE = \"$(_pc_b64 <"$aqui/modelos_por_agente.py")\"
+$PROGRAMA"
 
 PROGRAMA_PC_B64="$(printf '%s' "$PROGRAMA" | _pc_b64)"
 
@@ -381,6 +396,7 @@ for m in $maquinas; do
       huellas="$huellas$m $tabla $manifiesto"$'\n'
       ;;
   esac
+  printf '%s\n' "$estado" | awk -v m="$m" 'sub(/^modelos /, "") { print "MODELOS " m " " $0 }'
 done
 
 # Una flota distinta no hace fallar el despliegue: el código del servicio sí quedó en el SHA.
