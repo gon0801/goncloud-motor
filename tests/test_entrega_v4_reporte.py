@@ -146,6 +146,20 @@ class PalabrasPuras(unittest.TestCase):
         )
         self.assertEqual(reporte(con_pr, True).palabra, "entrega parcial")
 
+    def test_integrado_no_exige_despliegue_que_no_se_pidio(self) -> None:
+        from motor.encargos.reporte import reporte
+
+        rep = reporte(integrado(encargo(nivel="integrado")), True)
+        self.assertEqual(rep.palabra, "integrado")
+        self.assertIn("no se pidió desplegar", rep.causa)
+        limitado = replace(
+            integrado(encargo()), nivel_efectivo="integrado",
+            nivel_efectivo_motivo="la máquina no puede desplegar",
+        )
+        causa = reporte(limitado, True).causa
+        self.assertIn("no se pudo desplegar", causa)
+        self.assertIn("la máquina", causa)
+
     def test_reintegracion_con_recibo_anterior_no_acredita_despliegue(self) -> None:
         from motor.encargos.despliegue import clave_de_recibo
         from motor.encargos.reporte import reporte

@@ -72,15 +72,21 @@ def _causa_integrada(enc: Encargo, fase: Fase,
                      observada: PrDeFase | None) -> str:
     if fase.desplegado_recibo and not _desplegada(enc, fase):
         return "El recibo es de una versión anterior; falta desplegar la vigente."
+    if nivel_objetivo(enc) == "desplegado":
+        falta = "falta desplegar"
+    elif enc.entrega.nivel == "desplegado":
+        falta = f"no se pudo desplegar: {enc.nivel_efectivo_motivo or 'limitación comprobada'}"
+    else:
+        falta = "no se pidió desplegar"
     if observada is not None and isinstance(observada.pr, PrMergeado):
         if observada.aceptada_en and observada.pr.base == observada.aceptada_en:
-            return f"David aceptó la integración en {observada.aceptada_en}; falta desplegar."
+            return f"David aceptó la integración en {observada.aceptada_en}; {falta}."
         if observada.pr.base != enc.entrega.base:
             if _desplegada(enc, fase):
                 return (f"La fase quedó en {observada.pr.base}, no en {enc.entrega.base}; "
                         "el despliegue no acredita la base pedida.")
-            return f"David integró esta fase en {observada.pr.base}; falta desplegar."
-    return "La fase está integrada; falta acreditar el despliegue."
+            return f"David integró esta fase en {observada.pr.base}; {falta}."
+    return f"La fase está integrada; {falta}."
 
 
 def _fase(enc: Encargo, fase: Fase, prs: dict[str, PrDeFase]) -> ReporteFase:
