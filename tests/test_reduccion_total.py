@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import asdict, replace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from motor.encargos.dominio import Fase, PausaAgente, TransicionIlegal, reducir
 from motor.encargos.reductor import Fila, TABLA
@@ -28,12 +28,11 @@ class ReduccionTotal(unittest.TestCase):
             reducir(cerrado, dato, nuevo=True)
 
     def test_un_error_de_aplicacion_inesperado_no_se_oculta_al_comparador(self) -> None:  # no-roja-en-base: la rama anterior sí hace visible al comparador un fallo sembrado
-        def falla(e, d, hora, nuevo):
-            raise RuntimeError("fallo sembrado")
-
-        with patch.dict(TABLA, {"recibo": Fila(falla)}):
-            with self.assertRaisesRegex(RuntimeError, "fallo sembrado"):
-                reducir(_pedido(), {"kind": "recibo", "data": {}}, nuevo=False)
+        for tipo in (RuntimeError, KeyError, ValueError):
+            falla = Mock(side_effect=tipo("fallo sembrado"))
+            with self.subTest(tipo=tipo), patch.dict(TABLA, {"recibo": Fila(falla)}):
+                with self.assertRaisesRegex(tipo, "fallo sembrado"):
+                    reducir(_pedido(), {"kind": "recibo", "data": {}}, nuevo=False)
 
     def test_dependencia_propia_historica_sigue_aislando_el_registro(self) -> None:  # no-roja-en-base: un ciclo propio ya truncaba la historia en la rama anterior
         hecho = {"kind": "fases", "data": {

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from .errores import HechoInaplicable
+
 if TYPE_CHECKING:
     from ..dominio import Encargo
 
@@ -209,9 +211,14 @@ def fase_reactivada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     return _fase_reactivada(e, d, hora)
 
 def conciliacion_fase(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import _conciliacion_fase
+    from ..dominio import TransicionIlegal, _conciliacion_fase
 
-    return _conciliacion_fase(e, d, hora)
+    try:
+        return _conciliacion_fase(e, d, hora)
+    except TransicionIlegal as exc:
+        if nuevo:
+            raise
+        raise HechoInaplicable from exc
 
 def fase_desplegada(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _fase_desplegada

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .errores import HechoInaplicable
+
 if TYPE_CHECKING:
     from ..dominio import Encargo
 
@@ -65,9 +67,14 @@ def comprobaciones_supervisor(e: Encargo, d: dict, hora: str, nuevo: bool) -> En
     return actualizado
 
 def revision(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    from ..dominio import _revision
+    from ..dominio import TransicionIlegal, _revision
 
-    return _revision(e, d, hora)
+    try:
+        return _revision(e, d, hora)
+    except TransicionIlegal as exc:
+        if nuevo:
+            raise
+        raise HechoInaplicable from exc
 
 def deepseek_lectura(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import LecturaDeepSeek, replace
