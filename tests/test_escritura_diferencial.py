@@ -229,9 +229,11 @@ class EscrituraDiferencial(unittest.TestCase):
                                 "solicitud", {"solicitud"}), "tipo_transicion")
 
     def test_variantes_numericas_y_pares_de_campos(self) -> None:
-        from tools.escritura_diferencial import _variantes
+        from tools.escritura_diferencial import _casos_por_estado, _variantes
 
-        estado = SimpleNamespace(ajustes=(), solicitudes=(), efectos=())
+        estado = SimpleNamespace(
+            ajustes=(), solicitudes=(), efectos=(), fase_activa="F", intento="",
+        )
         casos = list(_variantes("reserva", {"generacion": 1, "fase": "F"}, estado))
         for valor in (float("inf"), float("-inf"), -1, [], "no numerico"):
             self.assertTrue(any(c.get("generacion") == valor for _, c in casos))
@@ -247,6 +249,17 @@ class EscrituraDiferencial(unittest.TestCase):
                             for _, c in pares))
         self.assertTrue(any(c.get("evidencia") == "" and c.get("intento") == "otro_intento"
                             for _, c in pares))
+        muestras = {"reserva": [{"generacion": 1, "fase": "F"}]}
+        programadas = {
+            variante
+            for indice in range(120)
+            for _, variante, _ in itertools.islice(
+                _casos_por_estado(["reserva"], muestras, estado, indice, indice), 2,
+            )
+        }
+        self.assertTrue({
+            "generacion:infinito", "generacion:nan", "par:fase:generacion",
+        } <= programadas)
 
     def test_tope_rota_variantes_tardias_entre_firmas(self) -> None:
         from tools.escritura_diferencial import _casos_por_estado

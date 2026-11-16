@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import asdict, replace
 
-from motor.encargos.dominio import TransicionIlegal, reducir
+from motor.encargos.dominio import Fase, TransicionIlegal, reducir
 from motor.encargos.reductor import TABLA
 
 
@@ -43,6 +43,25 @@ class ValidacionFaseRevision(unittest.TestCase):
                     self.previo, {"kind": kind, "data": {}}, nuevo=False,
                 )
                 self.assertIsNotNone(resultado)
+
+    def test_conciliacion_ilegible_no_interrumpe_una_historia(self) -> None:
+        previo = replace(self.previo, fases=(Fase("F", "resultado"),), fase_activa="F")
+        casos = (
+            {"paso": "en_curso", "intentos": float("inf")},
+            {"paso": "en_curso", "intentos": float("nan")},
+            {"paso": "reintento", "ordenes": float("inf")},
+            {"paso": "integrado", "recibo": "sha", "numero": float("inf")},
+            {"paso": "integrado", "recibo": "sha",
+             "correspondencia": {"archivo": "a", "fases": [["otra", "b"]]}},
+        )
+        for datos in casos:
+            with self.subTest(datos=datos):
+                hecho = {"kind": "conciliacion_fase", "data": {"fase": "F", **datos}}
+                self.assertEqual(asdict(reducir(previo, hecho, nuevo=False)), asdict(previo))
+        with self.assertRaises(OverflowError):
+            reducir(previo, {"kind": "conciliacion_fase", "data": {
+                "fase": "F", "paso": "en_curso", "intentos": float("inf"),
+            }}, nuevo=True)
 
     def test_rechazos_al_escribir_conservan_sus_mensajes(self) -> None:  # no-roja-en-base: fija la validación que se mueve
         casos = (
