@@ -987,6 +987,10 @@ class CorpusPlegado(unittest.TestCase):
                 "    r.append_many('hijo', [registro.Evento('procedimiento', {'nota': 'otro'}, 'nota:hijo')])\n"
                 "except registro.ClaveOcupada:\n"
                 "    pass\n"
+                "try:\n"
+                "    r.append_many('hijo', [registro.Evento('conductor_fase', {}, 'invalida:hijo')])\n"
+                "except registro.EventoIlegal:\n"
+                "    pass\n"
                 "r.close()\n"
             )
             padre = (
@@ -1020,7 +1024,14 @@ class CorpusPlegado(unittest.TestCase):
             rechazos = [json.loads(linea) for linea in
                         (corpus / "rechazos.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual([(r["tipo"], r["indice"], len(r["lote"]))
-                              for r in rechazos], [("ClaveOcupada", 0, 1)])
+                              for r in rechazos], [("ClaveOcupada", 0, 1),
+                                                   ("EventoIlegal", 0, 1)])
+            self.assertEqual(
+                [(r["tipo_origen"], r["mensaje_origen"]) for r in rechazos],
+                [("ClaveOcupada", rechazos[0]["mensaje"]),
+                 ("TransicionIlegal", "asociación sin fase")],
+            )
+            self.assertIn("asociación sin fase", rechazos[1]["mensaje"])
 
     def test_verificar_detecta_un_cambio_invisible_en_la_vista(self) -> None:
         with tempfile.TemporaryDirectory() as temporal:
@@ -1053,6 +1064,9 @@ class CorpusPlegado(unittest.TestCase):
             (corpus / "rechazos.jsonl").write_text(json.dumps({
                 "archivo": "uno.sqlite", "encargo": encargo, "conteo": 3,
                 "indice": rechazo.exception.indice, "tipo": "ClaveOcupada",
+                "mensaje": str(rechazo.exception),
+                "tipo_origen": "ClaveOcupada",
+                "mensaje_origen": str(rechazo.exception),
                 "lote": [{"kind": "procedimiento", "data": {"nota": "nueva"},
                           "ukey": "entrega:corpus", "ts": ""}],
             }) + "\n", encoding="utf-8")
@@ -1108,6 +1122,23 @@ class CorpusPlegado(unittest.TestCase):
             muchos_rechazos = verificar(RAIZ)
             self.assertNotEqual(muchos_rechazos.returncode, 0, muchos_rechazos.stdout)
             self.assertEqual(muchos_rechazos.stdout.count("cambió el rechazo"), 256)
+            ruta_rechazos.write_text(original, encoding="utf-8")
+            for campo, valor in (
+                ("mensaje", "otro mensaje"),
+                ("tipo_origen", "OtroError"),
+                ("mensaje_origen", "otra causa"),
+            ):
+                alterado = json.loads(original)
+                alterado[campo] = valor
+                ruta_rechazos.write_text(json.dumps(alterado) + "\n", encoding="utf-8")
+                mal_rechazo = verificar(RAIZ)
+                self.assertNotEqual(mal_rechazo.returncode, 0, campo)
+                self.assertIn("cambió el rechazo", mal_rechazo.stdout)
+            for campo in ("mensaje", "tipo_origen", "mensaje_origen"):
+                alterado = json.loads(original)
+                del alterado[campo]
+                ruta_rechazos.write_text(json.dumps(alterado) + "\n", encoding="utf-8")
+                self.assertNotEqual(verificar(RAIZ).returncode, 0, campo)
             ruta_rechazos.write_text(original, encoding="utf-8")
             registro_corpus = corpus / "registros" / "uno.sqlite"
             copia_sana = raiz / "uno-sano.sqlite"

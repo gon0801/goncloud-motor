@@ -382,6 +382,11 @@ def verificar(salida: Path, raiz: Path) -> int:
     with (salida / "rechazos.jsonl").open(encoding="utf-8") as archivo:
         for linea in archivo:
             intento = json.loads(linea)
+            esperado = ("tipo", "mensaje", "tipo_origen", "mensaje_origen")
+            if any(campo not in intento for campo in esperado):
+                rechazos_cambiados += 1
+                print(f"{intento['archivo']}: cambió el rechazo: faltan tipo o mensaje")
+                continue
             origen = salida / "registros" / intento["archivo"]
             with tempfile.TemporaryDirectory(prefix="corpus-rechazo-") as temporal:
                 registro = Registro(Path(temporal))
@@ -403,9 +408,13 @@ def verificar(salida: Path, raiz: Path) -> int:
                 try:
                     registro._escribir(intento["encargo"], lote)
                 except Exception as exc:
+                    origen_error = exc.__cause__ or exc
                     valido = (isinstance(exc, (EventoIlegal, ClaveOcupada))
                               and type(exc).__name__ == intento["tipo"]
-                              and exc.indice == intento["indice"])
+                              and exc.indice == intento["indice"]
+                              and str(exc) == intento["mensaje"]
+                              and type(origen_error).__name__ == intento["tipo_origen"]
+                              and str(origen_error) == intento["mensaje_origen"])
                 else:
                     valido = False
                 despues = registro.db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
