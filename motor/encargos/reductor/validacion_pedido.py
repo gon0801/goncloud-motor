@@ -35,9 +35,9 @@ def validar_proveedor_disponible(e: Encargo, d: dict) -> None:
 def validar_orden(e: Encargo, d: dict) -> None:
     from ..dominio import TransicionIlegal
 
-    if e.estado == "cancelado":
-        raise TransicionIlegal("el encargo está cancelado")
     accion = d["accion"]
+    if e.estado == "cancelado" and accion != "reabrir":
+        raise TransicionIlegal("el encargo está cancelado")
     if accion == "reabrir":
         fase = e.cierre_forzado_fase
         if e.estado != "terminado" or fase is None:

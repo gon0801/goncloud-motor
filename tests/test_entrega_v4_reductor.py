@@ -90,7 +90,7 @@ class ReductorEntregaV4(unittest.TestCase):
         self.assertIsInstance(e.prs[0].pr, PrSin)
         self.assertEqual(e.prs[0].aceptada_en, "otra")
 
-    def test_cancelacion_en_cascada_y_ultima_fase(self) -> None:
+    def test_cancelacion_en_cascada_y_ultima_fase(self) -> None:  # no-roja-en-base: caracteriza la cascada previa; las pruebas de reabrir y continuar prueban los arreglos
         e = _fases_independientes(dependiente=True)
         e = reducir(e, _hecho("fase_cancelada", fase="A",
                    causa="pr_cerrado", numero=9, origen="", hora="t1"), nuevo=True)
