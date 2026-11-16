@@ -24,6 +24,19 @@ if TYPE_CHECKING:
 _SONDEOS: WeakKeyDictionary[Registro, dict[tuple[str, str, int, int], float]] = WeakKeyDictionary()
 
 
+def ids_por_sondeo(registro: Registro) -> list[str]:
+    from .. import politica
+
+    ids = registro.ids()
+    if not politica.ENTREGA_V4:
+        return ids
+    sondeos = _SONDEOS.get(registro, {})
+    return sorted(
+        ids,
+        key=lambda ident: sondeos.get((ident, "", 0, 0), float("-inf")),
+    )
+
+
 def _efectos_pendientes(registro: Registro, enc: Encargo) -> bool:
     from ..ciclo import _espacio, _pedidos_efecto
     from ..cierre import _recibos
@@ -41,7 +54,7 @@ def _efectos_pendientes(registro: Registro, enc: Encargo) -> bool:
 
 def contexto_de(enc: Encargo, fase: str, vista: PrView) -> ContextoEntrega:
     from ..ciclo import _rama_de_fase, _revision_aprobada_vigente
-    from ..dominio import nivel_objetivo
+    from ..dominio import nivel_de, nivel_objetivo
 
     observadas = {x.fase: x for x in enc.prs}
     otras = tuple(
@@ -54,7 +67,7 @@ def contexto_de(enc: Encargo, fase: str, vista: PrView) -> ContextoEntrega:
         fase=fase, nivel=nivel_objetivo(enc), pr=estado_de(vista),
         base_pedida=enc.entrega.base, otras_ramas=otras,
         aceptada_en=actual.aceptada_en if actual else "",
-        nivel_alcanzado=enc.nivel_alcanzado,
+        nivel_alcanzado=nivel_de(next(f for f in enc.fases if f.id == fase)),
         final=enc.estado in ("terminado", "cancelado"),
         cancelado=enc.estado == "cancelado", canceladas=enc.canceladas,
         proceso_vivo=enc.proc is not None, reserva=bool(enc.reserva),
@@ -211,9 +224,11 @@ def conducir_pr(registro: Registro, enc: Encargo, gh: GitHubPort,
         clave = (enc.id, ident, actual.pr_numero, enc.generacion)
         sondeos = _SONDEOS.setdefault(registro, {})
         previo = sondeos.get(clave)
-        if previo is not None and 0 <= epoch - previo < 120:
+        if not fase and previo is not None and 0 <= epoch - previo < 120:
             return enc, False
         sondeos[clave] = epoch
+        if fase:
+            sondeos[(enc.id, "", 0, 0)] = epoch
     try:
         vista = gh.ver(enc.entrega.repo, actual.pr_numero)
     except Exception:

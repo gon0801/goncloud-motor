@@ -24,7 +24,7 @@ from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .entrega.observacion import anotar_integrado, anotar_pr, preparar_pr, siguiente_fase
 from .entrega.ejecutar import (
     anotar_pendiente, base_objetivo_del_pr as _base_objetivo_del_pr,
-    conciliar_otra_vista, conducir_pr, esperar_sin_gh, fase_final_por_sondear,
+    conciliar_otra_vista, conducir_pr, esperar_sin_gh, fase_final_por_sondear, ids_por_sondeo,
 )
 from .entrega.limpieza import (
     PresupuestoLimpieza, barrer_limpieza, fallos_legados, limpiar_rutas_legadas,
@@ -1617,7 +1617,7 @@ def barrer(
     presupuesto = [CERRADOS_POR_PASADA]
     presupuesto_pr = CERRADOS_POR_PASADA
     presupuesto_limpieza = PresupuestoLimpieza(registro)
-    for encargo_id in registro.ids():
+    for encargo_id in ids_por_sondeo(registro):
         try:
             previo = plegar_aislado(registro, encargo_id)
             if previo is None:
@@ -1629,9 +1629,9 @@ def barrer(
             if (gh is not None and leer_parada_local(registro.base) is None
                 and previo.via != "directa"):
                 fase = fase_final_por_sondear(previo) if politica.ENTREGA_V4 else ""
-                if fase and presupuesto_pr > 0:
+                if fase and presupuesto_pr:
                     presupuesto_pr -= 1
-                    previo, _ = conducir_pr(registro, previo, gh, hora, fase)
+                    previo, _ = conducir_pr(registro, previo, gh, hora, fase, epoch=epoch)
                 elif (
                     previo.estado not in ("terminado", "cancelado", "detenido", "deteniendo")
                     and not (previo.pendientes_entrega and any(
@@ -8599,12 +8599,11 @@ def _paso_entrega_paso(
     from .politica_despliegue import adoptar as adoptar_politica_despliegue
 
     enc = _conciliar_fases(registro, enc, gh, hora)
-    enc = adoptar_politica_despliegue(
-        registro, enc, _espacio(registro.base, enc.id), hora
-    )
-    enc = _refrescar_cuerpo_excepciones(
-        registro, enc, gh, _espacio(registro.base, enc.id), hora
-    )
+    if enc.estado in ("detenido", "deteniendo", "cancelado"):
+        return enc, Avanzo()
+    espacio = _espacio(registro.base, enc.id)
+    enc = adoptar_politica_despliegue(registro, enc, espacio, hora)
+    enc = _refrescar_cuerpo_excepciones(registro, enc, gh, espacio, hora)
     if enc.nivel_alcanzado == "desplegado":
         from .despliegue import comprobar_recibo
 
@@ -8629,17 +8628,17 @@ def _paso_entrega_paso(
             return desviado, Avanzo()
         return (
             _cerrar_con_veredicto(
-                registro, enc, gh, _espacio(registro.base, enc.id),
+                registro, enc, gh, espacio,
                 _directorio(registro.base, enc.id), hora,
             ),
             Avanzo(),
         )
     if enc.entrega.nivel == "desplegado" and enc.nivel_alcanzado == "integrado":
-        enc, resultado = _paso_despliegue(registro, enc, _espacio(registro.base, enc.id), hora)
+        enc, resultado = _paso_despliegue(registro, enc, espacio, hora)
         if nivel_cumplido(enc):
             return (
                 _cerrar_con_veredicto(
-                    registro, enc, gh, _espacio(registro.base, enc.id),
+                    registro, enc, gh, espacio,
                     _directorio(registro.base, enc.id), hora,
                 ),
                 Avanzo(),
@@ -8647,7 +8646,6 @@ def _paso_entrega_paso(
         return enc, resultado
     if gh is None:
         return esperar_sin_gh(registro, enc, hora)
-    espacio = _espacio(registro.base, enc.id)
     directorio = _directorio(registro.base, enc.id)
     if _git(espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0:
         causa = "hay una mezcla en curso con la base; resuélvela antes de entregar"

@@ -49,6 +49,43 @@ class EntregaSegunPR(unittest.TestCase):
         enc = registro.fold("x")
         return conducir_pr(registro, enc, gh, "t2", fase)
 
+    def _tres_fases_con_pr(self) -> tuple[Registro, FakeGitHub]:
+        registro, gh = self._registro(nivel="desplegado", fases=[
+            {"id": "Z", "resultado": "z", "requiere_despliegue": False},
+            {"id": "F", "resultado": "f"},
+            {"id": "G", "resultado": "g", "requiere": ["Z"]},
+        ], fase_pr="Z")
+        registro.anotar("x", {"kind": "politica_despliegue", "data": {
+            "fase": "Z", "requiere_despliegue": False,
+            "fuente": "prueba", "huella": "z", "hora": "t0",
+        }}, "politica:z")
+        registro.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "Z", "paso": "integrado", "numero": 7,
+            "sha": "z", "recibo": "z", "hora": "t0",
+        }}, "integrado:z")
+        registro.anotar("x", {"kind": "comprobacion", "data": {
+            "fase": "Z", "clase": "confirmado",
+            "evidencia": "fase lista", "hora": "t0",
+        }}, "cierre:z")
+        self.assertEqual(registro.fold("x").fase_activa, "F")
+        registro.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "F", "paso": "pr_listo", "numero": 8,
+            "sha": "f", "hora": "t1",
+        }}, "pr:f")
+        registro.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "F", "paso": "pr_con_pendientes", "numero": 8,
+            "sha": "f", "hora": "t1",
+        }}, "pendientes:f")
+        registro.anotar("x", {"kind": "bloqueo_fase", "data": {
+            "evidencia": "fase entregada con pendientes", "hora": "t1",
+        }}, "bloqueo:f")
+        self.assertEqual(registro.fold("x").fase_activa, "G")
+        registro.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "G", "paso": "pr_listo", "numero": 9,
+            "sha": "g", "hora": "t2",
+        }}, "pr:g")
+        return registro, gh
+
     def test_seis_celdas_cambiadas_de_punta_a_punta(self) -> None:
         casos = (
             ("pr", "abierto", "main", "recibido", (), False),
@@ -214,6 +251,37 @@ class EntregaSegunPR(unittest.TestCase):
         self.assertEqual(enc.fase_activa, "G")
         self.assertEqual(enc.prs[0].pr.estado, "mergeado")
 
+    def test_fase_anterior_mergeada_se_integra_aunque_la_activa_ya_se_integro(self) -> None:
+        registro, gh = self._tres_fases_con_pr()
+        registro.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "G", "paso": "integrado", "numero": 9,
+            "sha": "g", "recibo": "g", "hora": "t2",
+        }}, "integrado:g")
+        self.assertEqual(registro.fold("x").nivel_alcanzado, "integrado")
+        gh.responde_ver = lambda _, numero: PrView(
+            numero, "encargo/x-F", "main", False, "f", "mergeado", "m",
+        )
+        enc = ciclo._conciliar_fases(registro, registro.fold("x"), gh, "t3")
+        self.assertEqual(enc.fases[1].integrado_sha, "m")
+        self.assertEqual(enc.fase_activa, "G")
+
+    def test_conciliacion_que_detiene_no_continua_entrega_activa(self) -> None:
+        registro, gh = self._tres_fases_con_pr()
+        gh.responde_ver = lambda _, numero: PrView(
+            numero, "encargo/x-F", "otra", False, "f", "mergeado", "m",
+        )
+        with mock.patch.object(
+            ciclo, "_refrescar_cuerpo_excepciones",
+            side_effect=AssertionError("la entrega siguió tras detenerse"),
+        ) as refrescar, mock.patch.object(
+            ciclo, "_commit_push", side_effect=AssertionError("commit/push tras detenerse"),
+        ) as commit_push:
+            enc, _ = ciclo._paso_entrega_paso(registro, registro.fold("x"), gh, "t3")
+        self.assertEqual(enc.estado, "detenido")
+        refrescar.assert_not_called()
+        commit_push.assert_not_called()
+        self.assertEqual(gh.merges, [])
+
     def test_barrido_prioriza_el_merge_aunque_no_haya_revision(self) -> None:
         registro, gh = self._registro()
         gh.responde_ver = lambda _, numero: PrView(
@@ -287,6 +355,56 @@ class EntregaSegunPR(unittest.TestCase):
             ciclo.barrer(registro, "2026-11-16T12:00:01+00:00", 0, None, gh=gh)
         self.assertEqual(registro.fold("x").prs[0].pr.estado, "mergeado")
         self.assertEqual(fase_final_por_sondear(registro.fold("x")), "")
+
+    def test_seis_terminados_rotan_las_cinco_consultas_por_pasada(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        registro = Registro(Path(tmp.name))
+        self.addCleanup(registro.close)
+        gh = FakeGitHub(Path(tmp.name) / "fake")
+        for numero in range(7, 13):
+            ident = f"x{numero:02d}"
+            registro.append_many(ident, (
+                Evento("entrega", {
+                    "id": ident, "clave": "k", "huella": "h", "texto": "pedido",
+                    "entrega_nivel": "pr", "repo": "o/r", "rama": f"encargo/{ident}",
+                    "base": "main", "hora": "t0",
+                }, f"entrega:{ident}"),
+                Evento("fases", {"fases": [{"id": "F", "resultado": "r"}]},
+                       f"fases:{ident}"),
+                Evento("entrega_externa", {
+                    "fase": "F", "paso": "pr_listo", "numero": numero,
+                    "sha": "h", "hora": "t1",
+                }, f"pr:{ident}"),
+                Evento("entrega_externa", {
+                    "fase": "F", "paso": "pr_con_pendientes", "numero": numero,
+                    "sha": "h", "hora": "t1",
+                }, f"nivel:{ident}"),
+                Evento("comprobacion", {
+                    "fase": "F", "clase": "cierre_comprobado",
+                    "evidencia": "entregado", "hora": "t1",
+                }, f"cierre:{ident}"),
+            ))
+            self.assertEqual(registro.fold(ident).estado, "terminado")
+        consultas: list[int] = []
+
+        def ver(_repo: str, numero: int) -> PrView:
+            consultas.append(numero)
+            return PrView(numero, "encargo/x", "main", False, "h", "abierto", "")
+
+        gh.responde_ver = ver
+        with mock.patch.object(politica, "ENTREGA_V4", True), mock.patch.object(
+            ciclo, "barrer_limpieza", side_effect=lambda _reg, enc, *_: enc,
+        ), mock.patch.object(
+            ciclo, "_barrer_encargos",
+            side_effect=lambda reg, ids, *_args, **_kw: [ciclo.vista(reg.fold(ids[0]))],
+        ):
+            for segundo in range(3):
+                ciclo.barrer(registro, "2026-11-16T12:00:00+00:00",
+                             float(segundo), None, gh=gh)
+        self.assertEqual(consultas[:5], [7, 8, 9, 10, 11])
+        self.assertEqual(consultas[5:10], [12, 7, 8, 9, 10])
+        self.assertEqual(consultas[10:15], [11, 7, 8, 9, 10])
 
     def test_pr_apilado_reapuntado_a_main_no_cambia_a_base_borrada(self) -> None:
         fases = [
