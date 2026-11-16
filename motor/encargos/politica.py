@@ -17,6 +17,7 @@ TOPE_DEEPSEEK_MIN = 30
 ESPERA_SIN_REVISOR_MIN = 0
 CERRADOS_VENTANA_S = 7 * 24 * 60 * 60
 CERRADOS_POR_PASADA = 5
+ENTREGA_V4 = False
 # Cadencia del sondeo de cerrados: rápido la primera hora, espaciado después y
 # una gracia para la pausa del supervisor entre el cierre y su primera pasada.
 CERRADOS_SONDEO_RAPIDO_S = 60 * 60

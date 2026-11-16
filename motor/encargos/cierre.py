@@ -10,6 +10,21 @@ from .dominio import (
 from .revisor_deepseek import causa_de_la_omision
 
 
+def componer_por_merge(enc: Encargo, numero: int, base: str, hora: str) -> dict:
+    """El merge de David acredita el PR aunque la revisión siga abierta."""
+    return {
+        "kind": "comprobacion",
+        "data": {
+            "clase": "cierre_comprobado", "fase": enc.fase_activa,
+            "evidencia": (
+                f"David mergeó el PR #{numero} en {base} antes de terminar "
+                "la revisión; los hallazgos abiertos quedan pendientes."
+            ),
+            "hora": hora,
+        },
+    }
+
+
 def _recibos(pedidos: list[dict], enc: Encargo) -> list[dict]:
     recibos = []
     for pedido in pedidos:
