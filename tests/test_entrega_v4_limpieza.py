@@ -123,9 +123,25 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertTrue(self._limpiar().limpio)
         self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
         self.gh.cerrar_pr(self.repo, dependiente)
-        enc = self._limpiar(1)
+        enc = self._limpiar(10)
         self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
         self.assertTrue(enc.limpio)
+
+    def test_rama_compartida_no_consulta_github_cada_segundo(self) -> None:
+        self._final(con_pr=True)
+        dependiente = self.gh.abrir_pr(
+            self.repo, "feat", "encargo/x", "apilado", "cuerpo",
+        ).numero
+        self.assertTrue(self._limpiar().limpio)
+        with (mock.patch.object(self.gh, "ver", wraps=self.gh.ver) as ver,
+              mock.patch.object(self.gh, "rama_existe",
+                                wraps=self.gh.rama_existe) as rama):
+            for minuto in range(1, 10):
+                self._limpiar(minuto)
+            self.assertEqual((ver.call_count, rama.call_count), (0, 0))
+            self.gh.cerrar_pr(self.repo, dependiente)
+            self._limpiar(10)
+            self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
 
     def test_no_borra_rama_activa_que_aun_no_tiene_pr(self) -> None:
         self._final(cancelar=False)
@@ -351,6 +367,44 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertFalse((ruta.parent / "trabajador.log").exists())
         self.assertTrue(ruta.is_file())
         self.assertTrue(enc.limpio)
+
+    def test_sin_proceso_ni_envio_se_verifica_y_termina_limpieza(self) -> None:
+        ruta = self._recibo(presente=True, receta=True, terminado=True)
+        (ruta.parent / "proceso.json").unlink()
+        enc = self._limpiar()
+        self.assertTrue(ruta.is_file())
+        self.assertFalse((ruta.parent / "trabajador.log").exists())
+        self.assertTrue(enc.limpio)
+
+    def test_sin_proceso_con_grupo_ausente_se_verifica_limpieza(self) -> None:
+        ruta = self._recibo(presente=True, receta=True, terminado=True)
+        (ruta.parent / "proceso.json").unlink()
+        (ruta.parent / "comando.json").write_text(json.dumps({
+            "estado": "enviado", "pid": 7311, "inicio": "t0",
+            "boot_id": plataforma.boot_id(),
+        }), encoding="utf-8")
+        with mock.patch.object(plataforma, "presencia_grupo", return_value="ausente"):
+            enc = self._limpiar()
+        self.assertTrue(ruta.is_file())
+        self.assertTrue(enc.limpio)
+
+    def test_sin_metadatos_verificables_agota_sin_acreditar_limpio(self) -> None:
+        ruta = self._recibo(presente=True, receta=True, terminado=True)
+        (ruta.parent / "proceso.json").unlink()
+        (ruta.parent / "comando.json").unlink()
+        enc = self._limpiar()
+        self.assertEqual(next(
+            (resultado, intento) for tipo, clave, resultado, intento, _
+            in enc.limpieza if tipo == "despliegue" and clave == ruta.parent.name
+        ), ("fallo", 1))
+        self.assertTrue((ruta.parent / "trabajador.log").exists())
+        self.assertFalse(enc.limpio)
+        self._limpiar(10)
+        self.assertEqual(next(
+            (resultado, intento) for tipo, clave, resultado, intento, _
+            in self._limpiar(20).limpieza
+            if tipo == "despliegue" and clave == ruta.parent.name
+        ), ("agotado", 3))
 
     def test_limpio_no_sigue_consultando_github_ni_el_directorio_global(self) -> None:
         self._final(con_pr=True)
