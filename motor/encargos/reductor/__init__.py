@@ -51,7 +51,10 @@ def plegar_evento(
 ) -> Encargo:
     try:
         aplicado = reducir_evento(anterior, evento, nuevo)
-        if aplicado is anterior and evento["kind"] not in TABLA:
+        if aplicado is anterior and (
+            evento["kind"] not in TABLA
+            or evento["kind"] in ("cierre_forzado", "bloqueo_fase", "producto_listo")
+        ):
             return aplicado
         return derivados(aplicado, evento)
     except Exception:
