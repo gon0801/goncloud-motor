@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from dataclasses import fields, replace
+from pathlib import Path
 
 from motor.encargos.dominio import Encargo, Fase, Proc, reducir
 from tools.plegado import campos_de
@@ -14,6 +16,17 @@ def _pedido() -> Encargo:
 
 
 class SituacionGuardada(unittest.TestCase):
+    def test_migrador_ignora_contexto_y_detecta_encargo(self) -> None:
+        from tools.migrar_usos_situacion import _migrar
+
+        with tempfile.TemporaryDirectory() as temporal:
+            ruta = Path(temporal) / "usos.py"
+            ruta.write_text("replace(contexto, intento='I')\n", encoding="utf-8")
+            self.assertEqual(_migrar(ruta, comprobar=True), 0)
+            ruta.write_text("replace(e, intento='I')\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "faltan 1 escrituras"):
+                _migrar(ruta, comprobar=True)
+
     def test_constructor_tipado_conserva_escritura_espera_y_detencion(self) -> None:
         from motor.encargos.situacion import (
             Cancelar, Deteniendo, Ejecutando, EsperandoReintento, situacion_de,
