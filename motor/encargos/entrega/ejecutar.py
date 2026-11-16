@@ -170,6 +170,7 @@ def ejecutar(registro: Registro, enc: Encargo, accion: Accion, vista: PrView,
             enc.nivel_alcanzado == "integrado" and nivel_objetivo(enc) == "desplegado"
         ):
             enc, _ = _paso_despliegue(registro, enc, _espacio(registro.base, enc.id), hora)
+            enc = _integrar_david(registro, enc, fase, vista, hora)
         return enc, True
     return enc, isinstance(accion, AnotarObservado)
 
