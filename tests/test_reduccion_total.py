@@ -4,7 +4,7 @@ from tests.soporte_situacion import evolucionar
 import unittest
 from dataclasses import asdict, replace
 
-from motor.encargos.dominio import Fase, TransicionIlegal, reducir
+from motor.encargos.dominio import Fase, PausaAgente, TransicionIlegal, reducir
 from motor.encargos.reductor import TABLA
 
 
@@ -78,11 +78,13 @@ class ReduccionTotal(unittest.TestCase):
         previo = replace(
             _pedido(), fallos_repo=("git falló", 2),
             fallos_entrega=("git falló", 2), ultima_firma="original",
+            pausas=(PausaAgente("a", "t", "x"),),
         )
         casos = (
             ("orden_inventada", {"firma": "ajena"}),
             ("orden", {"accion": "inventada", "firma": "ajena"}),
             ("proveedor_fallo", {"firma": "ajena"}),
+            ("proveedor_disponible", {"firma": "ajena"}),
         )
         for kind, datos in casos:
             with self.subTest(kind=kind):

@@ -47,7 +47,8 @@ def aplicar_fila(e: Encargo, kind: str, d: dict, hora: str, nuevo: bool) -> Enca
 _OMISION_SIN_DERIVADOS = frozenset({
     "entrega", "cierre_forzado", "bloqueo_fase", "producto_listo",
     "orden", "ruta_agentes", "contexto_entrega", "ajuste", "procedimiento",
-    "proveedor_fallo", "fallo_interno", "incorporado", "quietud_vigilada",
+    "proveedor_fallo", "proveedor_disponible", "fallo_interno", "incorporado",
+    "quietud_vigilada",
     "solicitud", "conciliacion_fase",
 })
 
