@@ -137,6 +137,34 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertIn("base_rechaza_arbol_acepta=", hecho.stdout)
         self.assertNotIn("s2", hecho.stdout)
 
+    def test_solicitudes_acumuladas_no_agotan_las_demas_variantes(self) -> None:
+        with sqlite3.connect(self.corpus / "registros/uno.sqlite") as db:
+            db.execute("UPDATE events SET id = 6 WHERE id = 5")
+            db.execute(
+                "INSERT INTO events VALUES (5, '', 'ejemplo', 'intento_abierto',"
+                " '{\"id\":\"i\",\"pid\":1,\"inicio\":\"t\"}', 'intento:5')",
+            )
+            db.executemany(
+                "INSERT INTO events VALUES (?, '', 'ejemplo', 'solicitud', ?, ?)",
+                [(i + 7, json.dumps({
+                    "id": f"s{i}", "fase": "b", "intento": "i", "operacion": "leer",
+                }), f"solicitud:{i + 7}") for i in range(100)],
+            )
+        hecho = subprocess.run(
+            [sys.executable, str(HERRAMIENTA), "_evaluar",
+             "--corpus", str(self.corpus), "--arbol", str(RAIZ),
+             "--kinds", "solicitud,comprobacion"],
+            cwd=RAIZ, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(hecho.returncode, 0, hecho.stderr)
+        casos = [json.loads(linea) for linea in hecho.stdout.splitlines()[1:]]
+        variantes = {caso[1].split(":", 1)[1] for caso in casos}
+        self.assertIn("id:repetido:solicitudes:99", variantes)
+        self.assertIn("vacio", variantes)
+        self.assertTrue(any(v.startswith("falta:") for v in variantes))
+        self.assertTrue(any(v.endswith(":infinito") for v in variantes))
+        self.assertTrue(any(v.startswith("par:") for v in variantes))
+
     def test_cambio_del_orden_de_guardias_detecta_escritura_aceptada(self) -> None:
         arbol = self.mutar(
             "if (disponible is not None or pendientes and queda_trabajo(fases)",
