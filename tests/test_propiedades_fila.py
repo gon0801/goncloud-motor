@@ -33,7 +33,7 @@ class PropiedadesFila(unittest.TestCase):
         )
         self.assertTrue(all(not fila.corta_series for fila in TABLA.values() if fila.marcador))
 
-    def test_cada_fila_declara_el_alcance_de_su_hecho(self) -> None:
+    def test_cada_fila_declara_el_alcance_de_su_hecho(self) -> None:  # no-roja-en-base: fija la propiedad de las filas viejas y las cinco nuevas se prueban aparte
         fase = set("""
             ajuste bloqueo_fase ci_pr cierre_forzado comprobaciones_supervisor
             conciliacion_fase conductor_fase entrada_incorporada entrega_bloqueada
