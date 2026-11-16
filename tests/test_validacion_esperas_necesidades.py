@@ -45,7 +45,7 @@ class ValidacionEsperasNecesidades(unittest.TestCase):
         )
         self.assertEqual(aceptada.solicitudes[-1].operacion, "0")
 
-    def test_datos_ilegibles_preceden_el_rechazo_de_operacion_vacia(self) -> None:
+    def test_datos_ilegibles_preceden_el_rechazo_de_operacion_vacia(self) -> None:  # no-roja-en-base: la base ya conserva este orden; protege la separación de validación
         e = _pedido()
         datos = {"id": "s", "fase": "", "intento": "i", "operacion": ""}
         for generacion, tipo, mensaje in (
@@ -59,7 +59,7 @@ class ValidacionEsperasNecesidades(unittest.TestCase):
             if mensaje:
                 self.assertEqual(str(exc.exception), mensaje)
 
-    def test_conciliacion_con_infinito_conserva_el_error_previo_a_la_causa(self) -> None:
+    def test_conciliacion_con_infinito_conserva_el_error_previo_a_la_causa(self) -> None:  # no-roja-en-base: la base ya lanza OverflowError; evita que el validador cambie su tipo
         e = replace(_pedido(), fases=(Fase("F", "F"),), fase_activa="F")
         with self.assertRaises(OverflowError):
             reducir(e, {"kind": "conciliacion_fase", "data": {
