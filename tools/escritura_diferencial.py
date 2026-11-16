@@ -29,6 +29,10 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 
+class TopeInsuficiente(ValueError):
+    pass
+
+
 def _muestras(corpus: Path, kinds: set[str]) -> dict[str, list[dict]]:
     from tools.plegado import leer_encargos, ultimo_evento
 
@@ -94,7 +98,7 @@ def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
         salida = ["acepta", repr(valor)]
     except Exception as exc:
         salida = ["rechaza", type(exc).__name__, str(exc)]
-    print(json.dumps([kind, variante, clave, *salida], ensure_ascii=False))
+    print(json.dumps([kind, variante, clave, *salida]))
 
 
 def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int, paso: int,
@@ -203,7 +207,7 @@ def comparar(base: str, corpus: Path, arbol: Path, kinds: list[str],
     muestras = _muestras(corpus, set(kinds))
     por_prefijo = sum(3 * len(d) + 8 for k in kinds for d in muestras[k])
     if max_casos < por_prefijo + sum(3 * len(d) + 8 for d in muestras.get("entrega", [])):
-        raise ValueError("tope de casos menor que un prefijo de los kinds seleccionados")
+        raise TopeInsuficiente("tope de casos menor que un prefijo de los kinds seleccionados")
     paso = max(1, (eventos * por_prefijo + max_casos - 1) // max_casos)
     sha = subprocess.check_output(
         ["git", "-C", str(RAIZ), "rev-parse", "--verify", base],
@@ -256,7 +260,8 @@ def main() -> int:
                         args.max_casos, set(args.permitir_cambio_tipo.split(",")),
                         args.estado_legado)
     except (OSError, ValueError, subprocess.CalledProcessError, RuntimeError) as exc:
-        detalle = "tope de casos insuficiente" if isinstance(exc, ValueError) else type(exc).__name__
+        detalle = ("tope de casos insuficiente" if isinstance(exc, TopeInsuficiente)
+                   else type(exc).__name__)
         print(f"escritura diferencial: no se pudo comparar ({detalle})",
               file=sys.stderr)
         return 2
