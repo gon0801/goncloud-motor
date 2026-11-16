@@ -66,6 +66,13 @@ class ValidacionFaseRevision(unittest.TestCase):
                     reducir(self.previo, {"kind": kind, "data": datos}, nuevo=True)
                 self.assertEqual(str(exc.exception), mensaje)
 
+    def test_politica_sobre_fase_implicita_conserva_la_correspondencia(self) -> None:  # no-roja-en-base: conserva la fase implícita de la base
+        resultado = reducir(self.previo, {"kind": "politica_despliegue", "data": {
+            "fuente": "plan", "huella": "h", "requiere_despliegue": False,
+            "correspondencia": {"archivo": "plan", "fases": [["fase_unica", "A"]]},
+        }}, nuevo=True)
+        self.assertEqual(resultado.despliegue_mapa, (("fase_unica", "A"),))
+
 
 if __name__ == "__main__":
     unittest.main()
