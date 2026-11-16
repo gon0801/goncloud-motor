@@ -330,6 +330,10 @@ class Registro:
             "INSERT OR IGNORE INTO cortes_avisos (version, evento) "
             "SELECT 'cierres-cancelados-v1', COALESCE(MAX(id), 0) FROM events"
         )
+        self.db.execute(
+            "INSERT OR IGNORE INTO cortes_avisos (version, evento) "
+            "SELECT 'palabras-v4', COALESCE(MAX(id), 0) FROM events"
+        )
         self._cache_actual: _CacheDeLaBase | None = None
         self._ultimos: dict[str, tuple[int, int]] | None = None
         self._data_version = -1

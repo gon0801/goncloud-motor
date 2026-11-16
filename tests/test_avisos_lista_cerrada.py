@@ -384,6 +384,7 @@ class ListaCerrada(Banco):
         directores.drenar(self.reg, ahora=T0)
 
         cierre = directores._aviso_de(self.reg.fold(ident))
+        cierre["id"] = directores.id_aviso(ident, "cierre:palabras-v4")
         self.assertEqual(
             self.guardado(cierre["id"])["estado"],
             "incierto",

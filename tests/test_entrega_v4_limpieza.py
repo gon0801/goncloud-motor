@@ -270,6 +270,18 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertTrue(ruta.exists())
         self.assertTrue(enc.limpio)
 
+    def test_reporte_de_registro_viejo_no_infiere_limpieza_del_recibo(self) -> None:
+        from motor.encargos.reporte import reporte
+
+        ruta = self._recibo(presente=True, terminado=True, receta=True)
+        anterior = self.reg.fold("x")
+        self.assertEqual(anterior.prs, (), "no hay evento pr_observado")
+        self.assertTrue(ruta.exists())
+        self.assertEqual(reporte(anterior, False).palabra, "falta limpiar")
+        limpio = self._limpiar()
+        self.assertTrue(limpio.limpio)
+        self.assertEqual(reporte(limpio, True).palabra, "entregado")
+
     def test_un_barrido_completo_no_recrea_carpetas_del_terminado(self) -> None:
         self._recibo(presente=True, terminado=True)
         for nombre in ("espacio", "ejecucion"):

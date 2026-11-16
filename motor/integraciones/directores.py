@@ -21,7 +21,14 @@ from motor.encargos.ciclo import (
     recibir,
     resolver_entrega,
 )
-from motor.encargos import resumen as resumen_encargos
+from motor.encargos import politica, resumen as resumen_encargos
+from motor.encargos.entrega.avisos import (
+    aviso_de as _aviso_de,
+    entrega_parcial_llana as _entrega_parcial_llana,
+    id_aviso,
+    titulo_del_pedido as _titulo_del_pedido,
+    trabajos_nuevos,
+)
 from motor.encargos.dominio import (
     TransicionIlegal,
     espera_inspeccion_consumida,
@@ -194,10 +201,6 @@ def _epoch(hora: str) -> float | None:
 
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def id_aviso(encargo: str, evidencia: str) -> str:
-    return "av_" + hashlib.sha256(f"{encargo}:{evidencia}".encode()).hexdigest()[:16]
 
 
 def nombre_canal(canal: str) -> str:
@@ -751,30 +754,6 @@ def resultado_directo(
     return salida
 
 
-def _aviso_de(enc) -> dict:
-    if enc.estado == "cancelado":
-        # La identidad del cierre de cancelado no depende de la evidencia:
-        # si creciera, cambiaría el id y el mensaje se enviaría otra vez.
-        evidencia = "cierre:cancelado"
-    else:
-        evidencia = enc.evidencia[-1] if enc.evidencia else f"cierre:{enc.estado}"
-    return {
-        "id": id_aviso(enc.id, evidencia),
-        "encargo": enc.id,
-        "canal": enc.canal,
-        "evidencia": evidencia,
-        "estado": "pendiente",
-        "recibo": "",
-        "entrega": {
-            "nivel_autorizado": enc.entrega.nivel,
-            "nivel_alcanzado": enc.nivel_alcanzado,
-            "repo": enc.entrega.repo,
-            "pr_numero": enc.pr_numero,
-            "pr_sha": enc.pr_sha,
-        },
-    }
-
-
 def _cuerpo_del_aviso(registro: Registro, encargo: str, evidencia: str) -> str | None:
     destino = registro.base / "espacio" / encargo / "resultado.txt"
     es_hash = len(evidencia) == 64 and all(
@@ -788,15 +767,6 @@ def _cuerpo_del_aviso(registro: Registro, encargo: str, evidencia: str) -> str |
     if es_hash:
         return None
     return evidencia
-
-
-def _titulo_del_pedido(texto: str, clave: str) -> str:
-    """El primer encabezado del pedido, sin `#`; si el pedido no tiene, la clave."""
-    for linea in str(texto or "").splitlines():
-        encontrado = re.match(r"#{1,6}\s+(.+?)\s*$", linea)
-        if encontrado:
-            return encontrado.group(1).strip()
-    return clave
 
 
 def _cuerpo_de_cierre(enc) -> str:
@@ -874,28 +844,6 @@ def _cuerpo_de_cierre(enc) -> str:
             "para seguir."
         )
     return f"{cuerpo} {nota}".rstrip()
-
-
-def _entrega_parcial_llana(enc, bloqueadas) -> str:
-    """La enumeración del cierre parcial, en una frase por grupo."""
-    fases = getattr(enc, "fases", ()) or ()
-    from motor.encargos.dominio import dependencia_bloqueada
-
-    listas = [f for f in fases if f.estado == "preparada"]
-    partes = [f"Entrega parcial: {len(listas)} fases listas"]
-    for fase in bloqueadas:
-        causa = " ".join(str(fase.bloqueo_causa or "").split())
-        causa = causa.split(". ")[0] if causa else "sin causa registrada"
-        partes.append(f"la fase {fase.id} quedó bloqueada: {causa[:160]}")
-    for fase in fases:
-        if fase.estado in ("preparada", "bloqueada"):
-            continue
-        condena = dependencia_bloqueada(fases, fase)
-        partes.append(
-            f"la fase {fase.id} no se ejecutó: dependía de la fase {condena}, "
-            "que quedó bloqueada"
-        )
-    return ". ".join(partes) + "."
 
 
 def _config_canal(registro: Registro, canal: str) -> dict | None:
@@ -1983,6 +1931,61 @@ def _archivar_terminales(vista: VistaAvisos) -> None:
             vista.archivar(doc)
 
 
+def _trabajos_de_encargo(
+    registro: Registro, encargo: str, enc, corte: int,
+    corte_cierres: int, corte_palabras: int, vista: VistaAvisos,
+) -> list[tuple[dict, str | None]]:
+    anterior = registro.fold(encargo, hasta=corte)
+    historicos = {
+        _aviso_de_hecho(anterior, hecho)["id"]
+        for hecho in hechos_de_avance(anterior) if hecho["tipo"] in ("inicio", "pr")
+    } if anterior is not None else set()
+    trabajos: list[tuple[dict, str | None]] = []
+    al_corte = registro.fold(encargo, hasta=corte_palabras)
+    nuevo = al_corte is None or al_corte.estado not in ("terminado", "cancelado")
+    cerrar_cancelado = False
+    if enc.estado == "cancelado":
+        al_corte_cierres = registro.fold(encargo, hasta=corte_cierres)
+        cerrar_cancelado = al_corte_cierres is None or al_corte_cierres.estado != "cancelado"
+    if not nuevo and ((enc.estado == "terminado" and enc.evidencia) or cerrar_cancelado):
+        # Un final anterior a palabras-v4 conserva la identidad y el texto de su cierre.
+        aviso = _aviso_de(enc)
+        cuerpo = _cuerpo_de_cierre(enc)
+        if enc.via == "directa" and enc.estado == "terminado":
+            resultado = _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"]))
+            if resultado:
+                cuerpo = f"{cuerpo} {resultado}"
+        trabajos.append((aviso, cuerpo))
+    for aviso, rep in trabajos_nuevos(
+        registro, enc, corte_palabras, vista, politica.ENTREGA_V4,
+    ):
+        titulo = _titulo_del_pedido(enc.texto, enc.clave)
+        causa, tecnica = _llano(rep.causa)
+        frase = _con_remision(causa, tecnica)
+        cuerpo = (f"Tu encargo «{titulo}» quedó detenido. {frase}"
+                  if aviso["tipo"] == "detenido"
+                  else f"Terminó tu encargo «{titulo}». {rep.palabra.capitalize()}. {frase}")
+        if enc.via == "directa" and aviso["tipo"] == "cierre-v4" and enc.estado == "terminado":
+            nota = " ".join(
+                texto for texto in enc.procedimiento if "intento pudo recibir" in texto
+            )
+            if nota:
+                cuerpo += f" {nota}"
+            resultado = _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"]))
+            if resultado:
+                cuerpo += f" {resultado}"
+        trabajos.append((aviso, cuerpo))
+    apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
+    for hecho in hechos_de_avance(enc, apariciones):
+        aviso = _aviso_de_hecho(enc, hecho)
+        if aviso["id"] in historicos and not (
+            registro.base / "avisos" / f"{aviso['id']}.json"
+        ).exists():
+            continue
+        trabajos.append((aviso, hecho["texto"]))
+    return trabajos
+
+
 def drenar(
     registro: Registro,
     cortar: str = "",
@@ -2000,6 +2003,7 @@ def drenar(
     publicados = []
     corte = registro.corte_avisos()
     corte_cierres = registro.corte_avisos("cierres-cancelados-v1")
+    corte_palabras = registro.corte_avisos("palabras-v4")
     vista = VistaAvisos(registro.base)
     encargos = {
         ident: plegar_aislado(registro, ident) for ident in registro.ids()
@@ -2038,42 +2042,9 @@ def drenar(
     for encargo, enc in ([] if cortada else encargos.items()):
         if enc is None or not enc.canal:
             continue
-        anterior = registro.fold(encargo, hasta=corte)
-        historicos = {
-            _aviso_de_hecho(anterior, hecho)["id"]
-            for hecho in hechos_de_avance(anterior) if hecho["tipo"] in (
-                "inicio", "pr"
-            )
-        } if anterior is not None else set()
-        trabajos: list[tuple[dict, str | None]] = []
-        cerrar_cancelado = False
-        if enc.estado == "cancelado":
-            al_corte = registro.fold(encargo, hasta=corte_cierres)
-            cerrar_cancelado = al_corte is None or al_corte.estado != "cancelado"
-        if (enc.estado == "terminado" and enc.evidencia) or cerrar_cancelado:
-            # Un cancelado que ya lo era cuando este código abrió la base es
-            # historia: main nunca le escribió aviso de cierre y avisarlo ahora
-            # sería una ráfaga al desplegar.
-            aviso = _aviso_de(enc)
-            cuerpo = _cuerpo_de_cierre(enc)
-            if enc.via == "directa" and enc.estado == "terminado":
-                # En la vía directa el cierre es la única entrega del resultado:
-                # se lo debe al propietario, verificado contra la evidencia.
-                resultado = _cuerpo_del_aviso(
-                    registro, encargo, str(aviso["evidencia"])
-                )
-                if resultado:
-                    cuerpo = f"{cuerpo} {resultado}"
-            trabajos.append((aviso, cuerpo))
-        apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
-        for hecho in hechos_de_avance(enc, apariciones):
-            aviso = _aviso_de_hecho(enc, hecho)
-            if aviso["id"] in historicos and not (
-                registro.base / "avisos" / f"{aviso['id']}.json"
-            ).exists():
-                continue
-            trabajos.append((aviso, hecho["texto"]))
-        for aviso, cuerpo in trabajos:
+        for aviso, cuerpo in _trabajos_de_encargo(
+            registro, encargo, enc, corte, corte_cierres, corte_palabras, vista,
+        ):
             if vuelta.agotada():
                 cortada = True
                 break

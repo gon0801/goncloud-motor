@@ -1,7 +1,7 @@
 """Comandos del encargo. El texto del pedido no entra al argv remoto."""
 
 from __future__ import annotations
-from motor.io import escribir_texto, leer_json, leer_texto
+from motor.io import escribir_texto, leer_json
 
 import argparse
 import json
@@ -9,7 +9,7 @@ import os
 import socket
 import sys
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .agentes import (
@@ -43,7 +43,10 @@ from .ciclo import (
     resolver_entrega,
 )
 from .dominio import relevos_de
+from . import politica
+from .entrega.entrada import desde_cli
 from .frontera import DestinoEnsayo, despachar
+from .reporte import reporte
 from .registro import BaseProhibida, Registro, exigir_base
 from .rutas import candidatas_de, elegir, proximo, solicitado_de
 from .seleccion import solicitar_modelos
@@ -230,38 +233,17 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
             )
         )
     if args.cmd == "encargar":
-        texto = args.texto
-        adjuntos: tuple[str, ...] = ()
-        if args.archivo:
-            contenido = leer_texto(args.archivo)
-            texto = f"{texto}\n\n{contenido}" if texto else contenido
-            adjuntos = (str(args.archivo.resolve()),)
-        if not texto.strip():
+        datos = desde_cli(args, reg, hora, _puerto_github)
+        if datos is None:
             print("falta el pedido", file=sys.stderr)
             return 2
-        return _json(
-            recibir(
-                reg,
-                texto,
-                args.clave,
-                hora,
-                director=args.director,
-                adjuntos=adjuntos,
-                restricciones=tuple(args.restriccion),
-                permisos=tuple(args.permitir),
-                prohibiciones=tuple(args.prohibir),
-                canal=args.canal,
-                via=args.via,
-                entrega_nivel=resolver_entrega(args.entrega, args.repo, args.via),
-                repo=args.repo,
-                rama=args.rama,
-                base_rama=args.base_rama,
-                modelos_solicitados=solicitar_modelos(args.responsable, args.revisor),
-                gh=_puerto_github(args.base),
-            )
-        )
+        return _json(datos)
     if args.cmd == "ver":
-        return _json(consultar(reg, args.encargo))
+        datos = consultar(reg, args.encargo)
+        enc = reg.fold(args.encargo)
+        rep = reporte(enc, politica.ENTREGA_V4) if enc else None
+        datos["reporte"] = asdict(rep) if rep else None
+        return _json(datos)
     if args.cmd == "reabrir":
         return _json(ordenar(
             reg, args.encargo, args.cmd, args.clave, hora,
