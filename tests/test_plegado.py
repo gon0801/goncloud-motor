@@ -124,19 +124,113 @@ class Comprobar(unittest.TestCase):
         (reg,) = salida["registros"]
         self.assertEqual((reg["encargos"], reg["pliegan"], reg["fallos"]), (2, 2, []))
 
-    def test_un_evento_que_el_reductor_rechaza_sale_con_uno_y_se_nombra(self):
+    def test_una_omision_historica_cuenta_como_fallo_sin_truncar_la_historia(self):  # no-roja-en-base: caracteriza el diagnóstico; el mutante del cálculo comprueba la compuerta
+        _armar(self.registro, {"enc_a": [
+            _ENTREGA, ("ajuste", {}), ("procedimiento", {"nota": "siguiente"}),
+        ]})
+        codigo, salida = _correr("comprobar", "--json", self.registro)
+        self.assertEqual(codigo, 1)
+        (reg,) = salida["registros"]
+        self.assertEqual(reg["pliegan"], 0)
+        self.assertEqual(
+            [(f["tipo"], f["excepcion"]) for f in reg["fallos"]],
+            [("ajuste", "KeyError")],
+        )
+
+    def test_un_mutante_del_calculo_de_ajuste_falla_la_compuerta(self):
+        from dataclasses import replace
+        from motor.encargos.dominio import reducir
+        from motor.encargos.reductor import TABLA
+        from tools.plegado import Reductor, comprobar
+
+        _armar(self.registro, {"enc_a": [
+            _ENTREGA, ("ajuste", {"texto": "válido"}),
+        ]})
+        fila = TABLA["ajuste"]
+
+        def mutante(e, d, hora, nuevo):
+            d["textos"]
+            return fila.aplicar(e, d, hora, nuevo)
+
+        with mock.patch.dict(TABLA, {"ajuste": replace(fila, aplicar=mutante)}):
+            resultado = comprobar(
+                Reductor(reducir, ("recibido", "ejecutando", "terminado"), frozenset(TABLA)),
+                self.registro,
+            )
+        self.assertEqual(
+            [(encargo, fallo.tipo, fallo.excepcion) for encargo, fallo in resultado.fallos],
+            [("enc_a", "ajuste", "KeyError")],
+        )
+
+    def test_una_fase_ilegica_no_oculta_el_procedimiento_que_le_sigue(self):
+        from tools.plegado import cargar_reductor, comprobar, plegar, ultimo_evento
+
+        _armar(self.registro, {"enc_a": [
+            _ENTREGA,
+            ("fases", {"fases": [{"id": "F", "resultado": "r",
+                                  "requiere_despliegue": "quizá"}]}),
+            ("procedimiento", {"nota": "siguiente"}),
+        ]})
+        reductor = cargar_reductor(RAIZ)
+        (final,) = plegar(reductor, self.registro, ultimo_evento(self.registro))
+        self.assertEqual(final.final["procedimiento"], ["siguiente"])
+        comprobacion = comprobar(reductor, self.registro)
+        self.assertEqual(
+            [(f.tipo, f.excepcion) for _, f in comprobacion.fallos],
+            [("fases", "TransicionIlegal")],
+        )
+
+    def test_un_reductor_sembrado_que_rechaza_un_evento_lo_nombra(self):  # no-roja-en-base: prueba el reporte sin depender del guardia de orden
+        from motor.encargos.dominio import ESTADOS, TransicionIlegal, reducir
+        from tools.plegado import Reductor, comprobar
+
         _armar(self.registro, {
             "enc_a": [_ENTREGA, ("orden", {"accion": "inventada"}), *_intento("hostA")],
             "enc_b": [("entrega", {**_ENTREGA[1], "id": "enc_b"})],
         })
+        def sembrado(estado, evento, nuevo=False):
+            if evento["kind"] == "orden" and evento["data"].get("accion") == "inventada":
+                raise TransicionIlegal("orden desconocida: inventada")
+            return reducir(estado, evento, nuevo=nuevo)
+
+        resultado = comprobar(Reductor(sembrado, ESTADOS), self.registro)
+        self.assertEqual((len(resultado.plegados), len(resultado.fallos)), (2, 1))
+        encargo, fallo = resultado.fallos[0]
+        self.assertEqual((encargo, fallo.evento, fallo.tipo), ("enc_a", 2, "orden"))
+        self.assertIn("TransicionIlegal", fallo.error)
+
+    def test_un_kind_desconocido_se_cuenta_sin_romper_el_plegado(self):
+        _armar(self.registro, {"enc_a": [_ENTREGA, ("orden_inventada", {})]})
+        codigo, salida = _correr("comprobar", "--json", self.registro)
+        self.assertEqual(codigo, 2)
+        self.assertFalse(salida["ok"])
+        (reg,) = salida["registros"]
+        self.assertEqual((reg["pliegan"], reg["desconocidos"]), (1, {"orden_inventada": 1}))
+
+    def test_la_compuerta_no_da_por_completo_un_kind_desconocido(self):
+        from ops.compuerta_plegado import NoPude, plegado
+
+        _armar(self.registro, {"enc_a": [_ENTREGA, ("orden_inventada", {})]})
+        with self.assertRaisesRegex(NoPude, "kinds desconocidos"):
+            plegado(sys.executable, RAIZ, "comprobar", "--json", str(self.registro))
+
+    def test_el_fallo_de_plegado_tiene_prioridad_sobre_kind_desconocido(self):
+        from ops.compuerta_plegado import plegado
+
+        _armar(self.registro, {
+            "enc_a": [_ENTREGA],
+            "roto": [("basura", {})],
+        })
         codigo, salida = _correr("comprobar", "--json", self.registro)
         self.assertEqual(codigo, 1)
         (reg,) = salida["registros"]
-        self.assertEqual((reg["encargos"], reg["pliegan"]), (2, 1))
-        (fallo,) = reg["fallos"]
-        self.assertEqual((fallo["encargo"], fallo["evento"], fallo["tipo"]), ("enc_a", 2, "orden"))
-        self.assertIn("TransicionIlegal", fallo["error"])
-
+        self.assertEqual((reg["encargos"], reg["pliegan"], reg["desconocidos"]),
+                         (2, 1, {"basura": 1}))
+        self.assertEqual(len(reg["fallos"]), 1)
+        self.assertEqual(
+            len(plegado(sys.executable, RAIZ, "comprobar", "--json",
+                        str(self.registro))["fallos"]), 1,
+        )
     def test_un_fallo_interno_que_guardo_la_version_siguiente_pliega(self):
         fallo = ("fallo_interno", {"rechazo": "ilegal", "kind": "estrategia",
                                    "ukey": "estrategia:*", "hora": "t2"})
@@ -595,7 +689,7 @@ class CorpusPlegado(unittest.TestCase):
             )
             self.assertEqual(_kinds(raiz), {"entrega", "solo_en_ref"})
 
-    def test_verificar_cobertura_muestra_lineas_no_ejecutadas(self) -> None:
+    def test_verificar_cobertura_muestra_lineas_no_ejecutadas(self) -> None:  # no-roja-en-base: sigue midiendo un guardia que permanece en dominio
         from tools.corpus_plegado import _referencia
 
         with tempfile.TemporaryDirectory() as temporal:
@@ -619,7 +713,7 @@ class CorpusPlegado(unittest.TestCase):
             self.assertEqual(resultado.returncode, 0, resultado.stdout + resultado.stderr)
             fuente = (RAIZ / "motor" / "encargos" / "dominio.py").read_text(encoding="utf-8")
             linea = next(i for i, texto in enumerate(fuente.splitlines(), 1)
-                         if 'raise TransicionIlegal(f"evento desconocido: {kind}")' in texto)
+                         if 'raise TransicionIlegal("no hay encargo")' in texto)
             self.assertIn(f"motor/encargos/dominio.py:{linea}:", resultado.stdout)
             ejecutada = next(i for i, texto in enumerate(fuente.splitlines(), 1)
                              if 'if kind == "entrega":' in texto)

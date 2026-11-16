@@ -21,6 +21,10 @@ def leer_solicitud(d: dict, *, permitir_vacia: bool = False) -> (
         return operacion, generacion, parametros
     except (KeyError, TypeError, ValueError):
         return None
+    except OverflowError:
+        if permitir_vacia:
+            raise
+        return None
 
 
 def leer_fases_decision(d: dict) -> tuple[str, ...] | None:

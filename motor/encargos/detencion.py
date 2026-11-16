@@ -37,7 +37,7 @@ def causa_de_fallo_interno(d: dict) -> str:
 def fallo_interno(e: Encargo, d: dict, hora: str) -> Encargo:
     """Un proceso vivo se cierra primero, como con `parar`: `arbol` termina la
     detención y conserva la causa en `motivo`."""
-    from .dominio import _CERRADOS, TransicionIlegal
+    from .dominio import TransicionIlegal, _CERRADOS
 
     if e.estado in _CERRADOS:
         raise TransicionIlegal("un encargo cerrado o que ya se detiene no cambia de causa")

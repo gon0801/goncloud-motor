@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 from .catalogo_agentes import identidad_modelo
-from .reductor import ENTRE_REINTENTOS, EVENTOS_DE_MARCADOR, TABLA
+from .reductor import ENTRE_REINTENTOS, EVENTOS_DE_MARCADOR, aplicar_fila, plegar_evento
 
 ESTADOS = (
     "recibido",
@@ -1764,7 +1764,9 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
     hora = str(d.get("hora") or "")
     if kind == "entrega":
         if estado is not None:
-            raise TransicionIlegal("el encargo ya existe")
+            if nuevo:
+                raise TransicionIlegal("el encargo ya existe")
+            return estado
         via = d.get("via") or "durable"
         if via not in ("directa", "durable"):
             raise TransicionIlegal("via desconocida")
@@ -1821,10 +1823,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
     if estado is None:
         raise TransicionIlegal("no hay encargo")
     e = estado
-    fila = TABLA.get(kind)
-    if fila is None:
-        raise TransicionIlegal(f"evento desconocido: {kind}")
-    return fila.reducir(e, d, hora, nuevo)
+    return aplicar_fila(e, kind, d, hora, nuevo)
 
 
 
@@ -1938,10 +1937,7 @@ def _con_hechos_derivados(e: Encargo, evento: dict) -> Encargo:
 
 
 def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
-    aplicado = _reducir_evento(estado, evento, nuevo)
-    if aplicado is estado and evento["kind"] in ("cierre_forzado", "bloqueo_fase", "producto_listo"):
-        return aplicado
-    return _con_hechos_derivados(aplicado, evento)
+    return plegar_evento(estado, evento, nuevo, _reducir_evento, _con_hechos_derivados)
 
 
 def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:

@@ -6,7 +6,9 @@ Uso, siempre en solo lectura (nunca escribe en un registro):
     python3 tools/plegado.py comparar --base <ref-de-git> <registro.sqlite>...
 
 `comprobar` pliega cada encargo con el reductor del árbol de trabajo. Sale con 1
-si algún plegado lanza o termina fuera de `ESTADOS`. Además revisa las
+si algún plegado lanza, omite un hecho guardado o termina fuera de `ESTADOS`;
+sale con 2 si no hay fallos de plegado pero encuentra kinds desconocidos: no puede asegurar
+que pliegue entero. Además revisa las
 invariantes de `INVARIANTES_COMPROBAR` en cada prefijo y las reporta aparte, sin cambiar
 el código de salida.
 
@@ -125,10 +127,13 @@ class Comprobacion:
     ruta: str
     plegados: tuple[Plegado, ...]
     violaciones: tuple[Violacion, ...]
+    desconocidos: Counter[str] = field(default_factory=Counter)
+    omisiones: tuple[tuple[str, Fallo], ...] = ()
 
     @property
     def fallos(self) -> tuple[tuple[str, Fallo], ...]:
-        return tuple((p.encargo, p.final) for p in self.plegados if isinstance(p.final, Fallo))
+        rotos = tuple((p.encargo, p.final) for p in self.plegados if isinstance(p.final, Fallo))
+        return rotos + self.omisiones
 
 
 @dataclass(frozen=True)
@@ -146,6 +151,7 @@ class Reductor:
 
     reducir: Callable[..., Any]
     estados: tuple[str, ...]
+    kinds: frozenset[str] = frozenset()
 
     def aplicar(self, estado: Any, evento: Evento) -> Any:
         resultado = self.reducir(estado, evento, nuevo=False)
@@ -160,6 +166,8 @@ class Traza:
 
     estados: list[Any] = field(default_factory=list)
     fallo: Fallo | None = None
+    desconocidos: Counter[str] = field(default_factory=Counter)
+    omisiones: list[Fallo] = field(default_factory=list)
 
 
 def _no_pude(motivo: str) -> NoReturn:
@@ -174,7 +182,11 @@ def cargar_reductor(raiz: Path) -> Reductor:
     origen = Path(dominio.__file__).resolve()
     if not origen.is_relative_to(raiz.resolve()):
         _no_pude(f"el reductor se cargó de {origen}, no de {raiz}")
-    return Reductor(reducir=dominio.reducir, estados=tuple(dominio.ESTADOS))
+    kinds = frozenset()
+    if (raiz / "motor" / "encargos" / "reductor" / "__init__.py").is_file():
+        from motor.encargos.reductor import TABLA
+        kinds = frozenset(TABLA) | {"entrega"}
+    return Reductor(reducir=dominio.reducir, estados=tuple(dominio.ESTADOS), kinds=kinds)
 
 
 def _uri_solo_lectura(ruta: Path) -> str:
@@ -233,12 +245,24 @@ def leer_encargos(ruta: Path, hasta: int) -> Iterator[tuple[str, list[Evento]]]:
         db.close()
 
 
-def trazar(reductor: Reductor, eventos: Sequence[Evento]) -> Traza:
+def trazar(reductor: Reductor, eventos: Sequence[Evento],
+           registrar_omisiones: bool = False) -> Traza:
     traza = Traza()
     estado = None
     for evento in eventos:
+        if reductor.kinds and evento["kind"] not in reductor.kinds:
+            traza.desconocidos[evento["kind"]] += 1
         try:
-            estado = reductor.aplicar(estado, evento)
+            if registrar_omisiones and reductor.kinds:
+                from motor.encargos.reductor.errores import observar_omisiones
+
+                def avisar(kind: str, clase: str, id_evento: int = evento["id"]) -> None:
+                    traza.omisiones.append(Fallo(id_evento, kind, clase, clase))
+
+                with observar_omisiones(avisar):
+                    estado = reductor.aplicar(estado, evento)
+            else:
+                estado = reductor.aplicar(estado, evento)
         except Exception as exc:
             nombre = type(exc).__name__
             traza.fallo = Fallo(evento["id"], evento["kind"], nombre, f"{nombre}: {exc}")
@@ -400,13 +424,17 @@ def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
     plegados: list[Plegado] = []
     violaciones: list[Violacion] = []
     observados: dict[str, tuple[bool, bool, bool]] = {}
+    desconocidos: Counter[str] = Counter()
+    omisiones: list[tuple[str, Fallo]] = []
     invariantes = tuple(
         (nombre, partial(invariante, observados=observados)
          if invariante is _datos_dependen_del_estado else invariante)
         for nombre, invariante in INVARIANTES_COMPROBAR
     )
     for encargo, eventos in leer_encargos(ruta, ultimo_evento(ruta)):
-        traza = trazar(reductor, eventos)
+        traza = trazar(reductor, eventos, registrar_omisiones=True)
+        desconocidos.update(traza.desconocidos)
+        omisiones.extend((encargo, fallo) for fallo in traza.omisiones)
         plegados.append(_plegado(encargo, eventos, traza))
         for nombre, invariante in invariantes:
             hallado = invariante(reductor, eventos, traza)
@@ -415,7 +443,8 @@ def comprobar(reductor: Reductor, ruta: Path) -> Comprobacion:
                 violaciones.append(
                     Violacion(nombre, encargo, evento["id"], evento["kind"], detalle)
                 )
-    return Comprobacion(str(ruta), tuple(plegados), tuple(violaciones))
+    return Comprobacion(str(ruta), tuple(plegados), tuple(violaciones),
+                       desconocidos, tuple(omisiones))
 
 
 def plegar(reductor: Reductor, ruta: Path, hasta: int) -> list[Plegado]:
@@ -543,8 +572,11 @@ def _fallos_a_json(fallos: Sequence[tuple[str, Fallo]]) -> list[dict]:
 
 
 def _texto_comprobacion(c: Comprobacion) -> list[str]:
-    total, rotos = len(c.plegados), len(c.fallos)
+    total = len(c.plegados)
+    rotos = len({encargo for encargo, _ in c.fallos})
     lineas = [c.ruta, f"  Leí {total} encargos; pliegan {total - rotos}."]
+    if c.desconocidos:
+        lineas.append(f"  Kinds desconocidos: {dict(c.desconocidos)}")
     if rotos:
         lineas.append("  No pliegan:")
         lineas.extend(_texto_fallos(c.fallos))
@@ -644,15 +676,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         reductor = cargar_reductor(RAIZ)
         hechas = [comprobar(reductor, r) for r in args.registros]
         rotos = any(c.fallos for c in hechas)
+        incompletos = any(c.desconocidos for c in hechas)
         if args.json:
-            _imprimir({"ok": not rotos, "registros": [
+            _imprimir({"ok": not (rotos or incompletos), "registros": [
                 {"ruta": c.ruta, "encargos": len(c.plegados),
-                 "pliegan": len(c.plegados) - len(c.fallos),
+                 "pliegan": len(c.plegados) - len({encargo for encargo, _ in c.fallos}),
+                 "desconocidos": dict(c.desconocidos),
                  "fallos": _fallos_a_json(c.fallos),
                  "violaciones": [dataclasses.asdict(v) for v in c.violaciones]}
                 for c in hechas]})
         else:
             print("\n".join(linea for c in hechas for linea in _texto_comprobacion(c)))
+        if incompletos and not rotos:
+            print("plegado: hay kinds desconocidos; no se verificó el plegado completo",
+                  file=sys.stderr)
+            return 2
         return 1 if rotos else 0
 
     sha = _resolver_ref(args.base)

@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 def leer_incorporado(d: dict) -> int | None:
     try:
         generacion = int(d.get("generacion") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return generacion if generacion >= 0 else None
 
@@ -24,7 +24,7 @@ def leer_quietud_vigilada(d: dict) -> tuple[int, int, float, float] | None:
             float(d.get("desde") or 0),
             float(d.get("visto") or 0),
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
