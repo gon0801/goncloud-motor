@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import asdict
 
-from motor.encargos.dominio import reducir
+from motor.encargos.dominio import TransicionIlegal, reducir
 from motor.encargos.reductor import TABLA
 
 
@@ -14,6 +14,21 @@ def _pedido():
 
 
 class ReduccionTotal(unittest.TestCase):
+    def test_rechazos_de_pedido_siguen_iguales_al_escribir(self) -> None:  # no-roja-en-base: fija los guardias que se moverán a validar
+        previo = _pedido()
+        casos = (
+            ("contexto_entrega", {}, TransicionIlegal, "el contexto no puede cambiar una base autorizada"),
+            ("orden", {"accion": "inventada"}, TransicionIlegal, "orden desconocida: inventada"),
+            ("proveedor_fallo", {}, KeyError, "'agente'"),
+            ("ruta_agentes", {}, KeyError, "'agentes'"),
+            ("procedimiento", {}, KeyError, "'nota'"),
+        )
+        for kind, datos, tipo, mensaje in casos:
+            with self.subTest(kind=kind):
+                with self.assertRaises(tipo) as exc:
+                    reducir(previo, {"kind": kind, "data": datos}, nuevo=True)
+                self.assertEqual(str(exc.exception), mensaje)
+
     def test_aplicar_nunca_lanza_ni_con_infinity(self) -> None:
         previo = _pedido()
         casos = [(kind, {}) for kind in sorted(TABLA)]
