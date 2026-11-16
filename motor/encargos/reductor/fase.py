@@ -12,6 +12,30 @@ if TYPE_CHECKING:
     from ..dominio import Encargo
 
 
+def hechos_de_entrega(e: Encargo, evento: dict) -> dict:
+    d = evento["data"]
+    paso = str(d.get("paso") or "")
+    fase = str(d.get("fase") or e.fase_activa)
+    cambios: dict = {}
+    if paso == "deepseek_leido":
+        sha = str(d.get("sha") or "")
+        actual = {(f, s): n for f, s, n in e.lecturas_deepseek}
+        actual[(fase, sha)] = actual.get((fase, sha), 0) + 1
+        cambios["lecturas_deepseek"] = tuple(
+            sorted((f, s, n) for (f, s), n in actual.items())
+        )
+    if paso == "pr_cuerpo":
+        marca = (fase, str(d.get("sha") or ""), str(d.get("huella") or ""))
+        if marca not in e.cuerpos_publicados:
+            cambios["cuerpos_publicados"] = e.cuerpos_publicados + (marca,)
+    if paso in ("pr_listo", "commit"):
+        sha = d.get("sha")
+        if isinstance(sha, str) and not any(s == sha for s, _ in e.primer_envio_por_sha):
+            primera = str(d.get("hora") or evento.get("ts") or "")
+            cambios["primer_envio_por_sha"] = e.primer_envio_por_sha + ((sha, primera),)
+    return cambios
+
+
 def fases(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import TransicionIlegal, _adoptar_fases
 

@@ -16,6 +16,7 @@ from typing import Literal
 from .catalogo_agentes import identidad_modelo
 from .encargo import CAMPOS_LEGADOS as CAMPOS_LEGADOS, Encargo, evolucionar
 from .reductor import ENTRE_REINTENTOS, EVENTOS_DE_MARCADOR, aplicar_fila, plegar_evento
+from .reductor.fase import hechos_de_entrega
 
 ESTADOS = (
     "recibido",
@@ -1655,19 +1656,7 @@ def _con_hechos_derivados(e: Encargo, evento: dict) -> Encargo:
             actual.pop(agente, None)
             cambios["fallos_proveedor"] = tuple(sorted(actual.items()))
     if kind == "entrega_externa":
-        paso = str(d.get("paso") or "")
-        fase = str(d.get("fase") or e.fase_activa)
-        if paso == "deepseek_leido":
-            sha = str(d.get("sha") or "")
-            actual = {(f, s): n for f, s, n in e.lecturas_deepseek}
-            actual[(fase, sha)] = actual.get((fase, sha), 0) + 1
-            cambios["lecturas_deepseek"] = tuple(
-                sorted((f, s, n) for (f, s), n in actual.items())
-            )
-        if paso == "pr_cuerpo":
-            marca = (fase, str(d.get("sha") or ""), str(d.get("huella") or ""))
-            if marca not in e.cuerpos_publicados:
-                cambios["cuerpos_publicados"] = e.cuerpos_publicados + (marca,)
+        cambios.update(hechos_de_entrega(e, evento))
     if kind == "respuesta_revisor_pedida":
         ident = str(d.get("solicitud") or "")
         if ident and ident not in e.preguntas_pedidas:

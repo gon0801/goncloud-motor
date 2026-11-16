@@ -4359,38 +4359,20 @@ def _fallos_de_entrega_seguidos(enc: Encargo, causa: str) -> int:
     return seguidos if guardada == clase else 0
 
 
-def _entrega_devuelta_pendiente(registro: Registro, enc: Encargo) -> bool:
+def _entrega_devuelta_pendiente(enc: Encargo) -> bool:
     """La ultima devolucion de entrega es de esta version y este intento: no se
     reintenta el commit hasta que el responsable haya dado su vuelta."""
-    producto = getattr(enc, "producto", None)
+    producto = enc.producto
     version = producto.firma if producto else ""
-    eventos = getattr(registro, "eventos", None)
-    if not callable(eventos):
-        return False
-    for ev in reversed(eventos(enc.id)):
-        if ev["kind"] != "entrega_devuelta":
-            continue
-        datos = ev["data"]
-        return (
-            datos.get("version") == version
-            and int(datos.get("generacion") or 0)
-            == int(getattr(enc, "generacion", 0) or 0)
-        )
-    return False
+    return enc.entrega_devuelta == (version, enc.generacion)
 
 
-def _entrega_devuelta_de_la_version(registro: Registro, enc: Encargo) -> bool:
+def _entrega_devuelta_de_la_version(enc: Encargo) -> bool:
     """Ya se devolvio la entrega de esta version: una falla posterior vuelve al
     responsable sin abrir otra espera."""
-    producto = getattr(enc, "producto", None)
+    producto = enc.producto
     version = producto.firma if producto else ""
-    eventos = getattr(registro, "eventos", None)
-    if not callable(eventos):
-        return False
-    for ev in reversed(eventos(enc.id)):
-        if ev["kind"] == "entrega_devuelta":
-            return ev["data"].get("version") == version
-    return False
+    return enc.entrega_devuelta is not None and enc.entrega_devuelta[0] == version
 
 
 def _esperar_entrega_sin_avance(
@@ -8632,7 +8614,7 @@ def _paso_entrega_paso(
             return _preguntar_despliegue(registro, enc, str(exc), hora)
     if _devolver_correcciones(registro, enc, hora):
         return registro.fold(enc.id) or enc, NecesitaAgente("responsable")
-    if _entrega_devuelta_pendiente(registro, enc):
+    if _entrega_devuelta_pendiente(enc):
         return enc, Avanzo()
     if (
         nivel_cumplido(enc)
@@ -8729,7 +8711,7 @@ def _paso_entrega_paso(
                 registro, enc, causa, hora, "push"
             ), Avanzo()
         corte = not _fallo_transitorio(causa) and (
-            _entrega_devuelta_de_la_version(registro, enc)
+            _entrega_devuelta_de_la_version(enc)
             or _fallos_de_entrega_seguidos(enc, causa) + 1
             >= TOPE_FALLOS_ENTREGA
         )
@@ -9121,17 +9103,10 @@ def _paso_entrega_paso(
         or enc.fase_actual.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION
     )
     if enc.deepseek_sha != sha or por_releer:
-        eventos = registro.eventos(enc.id)
         primera = next(
-            (
-                str(ev["data"].get("hora") or ev["ts"])
-                for ev in eventos
-                if ev["kind"] == "entrega_externa"
-                and ev["data"].get("paso") in ("pr_listo", "commit")
-                and ev["data"].get("sha") == sha
-            ),
-            hora,
+            (t for s, t in enc.primer_envio_por_sha if s == sha), hora,
         )
+        eventos = registro.eventos(enc.id)
         minutos = _minutos_desde(primera, hora)
         lectura_ds = _leer_deepseek(
             gh, enc.entrega.repo, numero, sha, primera

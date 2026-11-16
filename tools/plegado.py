@@ -67,6 +67,7 @@ Evento = dict[str, Any]
 Campos = dict[str, Any]
 CLAVES_NUEVAS = frozenset((
     "prs", "canceladas", "otra_base_de", "limpieza", "limpio", "hora_final",
+    "entrega_devuelta", "primer_envio_por_sha",
 ))
 
 
@@ -403,6 +404,29 @@ def _situacion_tipada(
     return None
 
 
+def _completo_implica_preparadas(
+    _reductor: Reductor, eventos: Sequence[Evento], traza: Traza
+) -> tuple[Evento, str] | None:
+    for evento, e in zip(eventos, traza.estados, strict=False):
+        if e.estado == "terminado":
+            from motor.encargos.situacion import Completo, Terminado
+
+            if (isinstance(e.situacion, Terminado)
+                and isinstance(e.situacion.resultado, Completo)
+                and any(f.estado != "preparada" for f in e.fases)):
+                return evento, "el resultado completo tiene fases sin preparar"
+    return None
+
+
+def _limpio_solo_en_final(
+    _reductor: Reductor, eventos: Sequence[Evento], traza: Traza
+) -> tuple[Evento, str] | None:
+    for evento, e in zip(eventos, traza.estados, strict=False):
+        if getattr(e, "limpio", "") and e.estado not in ("terminado", "cancelado"):
+            return evento, f"hay limpieza acreditada en estado {e.estado}"
+    return None
+
+
 def _datos_dependen_del_estado(
     _reductor: Reductor, eventos: Sequence[Evento], traza: Traza,
     observados: dict[str, tuple[bool, bool, bool]] | None = None,
@@ -428,6 +452,8 @@ INVARIANTES: tuple[tuple[str, Invariante], ...] = (
 
 INVARIANTES_COMPROBAR: tuple[tuple[str, Invariante], ...] = INVARIANTES + (
     ("situacion_tipada", _situacion_tipada),
+    ("completo_implica_preparadas", _completo_implica_preparadas),
+    ("limpio_solo_en_final", _limpio_solo_en_final),
     ("datos_dependen_del_estado", _datos_dependen_del_estado),
 )
 

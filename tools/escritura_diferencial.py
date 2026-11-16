@@ -23,6 +23,7 @@ import sys
 import tarfile
 import tempfile
 from collections import Counter
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -136,8 +137,8 @@ def _casos_por_estado(kinds: list[str], muestras: dict[str, list[dict]],
 
 
 def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
-                  carga: dict, legado: bool) -> None:
-    from tools.plegado import campos_de
+                  carga: dict, legado: bool, referencia: dict[str, None] | None = None) -> None:
+    from tools.plegado import campos_de, sin_claves_nuevas
 
     clave = hashlib.sha256(
         json.dumps(carga, sort_keys=True, default=str).encode("utf-8")
@@ -145,6 +146,8 @@ def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
     try:
         nuevo = reductor.reducir(estado, {"kind": kind, "data": carga}, nuevo=True)
         valor = campos_de(nuevo) if legado else nuevo
+        if legado and referencia is not None:
+            valor = sin_claves_nuevas(valor, referencia)
         salida = ["acepta", repr(valor)]
     except Exception as exc:
         salida = ["rechaza", type(exc).__name__, str(exc)]
@@ -152,10 +155,15 @@ def _escribir_caso(reductor: Any, estado: Any, kind: str, variante: str,
 
 
 def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
-             legado: bool) -> int:
+             legado: bool, claves_base: str | None = None) -> int:
     from tools.plegado import cargar_reductor, leer_encargos, ultimo_evento
 
     reductor = cargar_reductor(raiz)
+    from motor.encargos.encargo import Encargo
+
+    esquema = sorted(f.name for f in fields(Encargo)) if legado else []
+    referencia = (dict.fromkeys(claves_base.split(","))
+                  if claves_base is not None else dict.fromkeys(esquema)) if legado else None
     muestras = _muestras(corpus, set(kinds))
     if faltan := sorted(k for k, datos in muestras.items() if not datos):
         raise ValueError(f"kinds sin cargas reales: {', '.join(faltan)}")
@@ -184,20 +192,21 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
         )
         max_casos = (len(entregas) + pares + repetidos
                      + min(100_000, len(prefijos) * 32))
-    print(json.dumps(["_firmas", len(prefijos)]))
+    print(json.dumps(["_firmas", len(prefijos), esquema]))
     if max_casos < pares + len(entregas):
         return 3
     cuenta = 0
     if "entrega" in muestras:
         for indice, variante, carga in entregas:
             _escribir_caso(reductor, None, "entrega",
-                           f"0:{indice}:{variante}", carga, legado)
+                           f"0:{indice}:{variante}", carga, legado, referencia)
             cuenta += 1
     for numero, estado in prefijos.values():
         for kind in kinds:
             muestra = muestras[kind][(cuenta // len(kinds)) % len(muestras[kind])]
             carga = _adaptar(muestra, estado)
-            _escribir_caso(reductor, estado, kind, f"{numero}:base", carga, legado)
+            _escribir_caso(reductor, estado, kind, f"{numero}:base", carga, legado,
+                           referencia)
             cuenta += 1
     if "solicitud" in kinds:
         for numero, estado in prefijos.values():
@@ -210,7 +219,7 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
                 if cuenta >= max_casos:
                     break
                 _escribir_caso(reductor, estado, "solicitud",
-                               f"{numero}:{variante}", carga, legado)
+                               f"{numero}:{variante}", carga, legado, referencia)
                 cuenta += 1
     disponibles = max_casos - cuenta
     cuota, resto = divmod(disponibles, len(prefijos))
@@ -224,7 +233,8 @@ def _evaluar(corpus: Path, raiz: Path, kinds: list[str], max_casos: int | None,
              )),
             cuota + (indice < resto),
         ):
-            _escribir_caso(reductor, estado, kind, f"{numero}:{variante}", carga, legado)
+            _escribir_caso(reductor, estado, kind, f"{numero}:{variante}", carga, legado,
+                           referencia)
             ordinal += 1
     return 0
 
@@ -323,7 +333,8 @@ def _archivo_privado(ruta: Path):
 
 
 def _ejecutar_lado(corpus: Path, raiz: Path, destino: Path, kinds: list[str],
-                  max_casos: int | None, legado: bool) -> int:
+                  max_casos: int | None, legado: bool,
+                  claves_base: list[str] | None = None) -> int:
     orden = [
         sys.executable, "-I", str(Path(__file__).resolve()), "_evaluar",
         "--corpus", str(corpus), "--arbol", str(raiz), "--kinds", ",".join(kinds),
@@ -332,6 +343,8 @@ def _ejecutar_lado(corpus: Path, raiz: Path, destino: Path, kinds: list[str],
         orden.extend(("--max-casos", str(max_casos)))
     if legado:
         orden.append("--estado-legado")
+    if claves_base is not None:
+        orden.extend(("--claves-base", ",".join(claves_base)))
     with _archivo_privado(destino) as archivo:
         hecho = subprocess.run(orden, stdout=archivo, stderr=subprocess.PIPE,
                                text=True, check=False)
@@ -364,15 +377,18 @@ def comparar(base: str, corpus: Path, arbol: Path, kinds: list[str],
         with tarfile.open(fileobj=io.BytesIO(archivo.stdout)) as tar:
             tar.extractall(temporal / "base", filter="data")
         izquierda, derecha = temporal / "base.jsonl", temporal / "arbol.jsonl"
-        codigos = (
-            _ejecutar_lado(corpus, temporal / "base", izquierda, kinds, max_casos, legado),
-            _ejecutar_lado(corpus, arbol, derecha, kinds, max_casos, legado),
+        codigo_base = _ejecutar_lado(
+            corpus, temporal / "base", izquierda, kinds, max_casos, legado,
         )
         with izquierda.open(encoding="utf-8") as archivo:
             firmas_base = json.loads(archivo.readline())
+        codigo_arbol = _ejecutar_lado(
+            corpus, arbol, derecha, kinds, max_casos, legado,
+            firmas_base[2] if legado else None,
+        )
         with derecha.open(encoding="utf-8") as archivo:
             firmas_arbol = json.loads(archivo.readline())
-        if firmas_base[1] == firmas_arbol[1] and 3 in codigos:
+        if firmas_base[1] == firmas_arbol[1] and 3 in (codigo_base, codigo_arbol):
             raise TopeInsuficiente("tope de casos menor que el número de firmas de estado")
         return _comparar(izquierda, derecha, kinds, permitidos)
 
@@ -386,6 +402,7 @@ def main() -> int:
     parser.add_argument("--max-casos", type=int)
     parser.add_argument("--permitir-cambio-tipo", default="")
     parser.add_argument("--estado-legado", action="store_true")
+    parser.add_argument("--claves-base", help=argparse.SUPPRESS)
     parser.add_argument("orden", nargs="?", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.max_casos is not None and args.max_casos <= 0:
@@ -394,7 +411,7 @@ def main() -> int:
         if not args.kinds:
             parser.error("_evaluar necesita --kinds")
         return _evaluar(args.corpus, args.arbol, args.kinds.split(","),
-                        args.max_casos, args.estado_legado)
+                        args.max_casos, args.estado_legado, args.claves_base)
     if args.orden is not None or not args.base:
         parser.error("necesita --base")
     from tools.corpus_plegado import _kinds

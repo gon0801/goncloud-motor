@@ -115,6 +115,48 @@ class EscrituraDiferencial(unittest.TestCase):
         self.assertEqual(crudo.returncode, 1, crudo.stderr + crudo.stdout)
         self.assertIn("estado=", crudo.stdout)
 
+    def test_estado_legado_no_oculta_claves_de_base_por_corpus_antiguo(self) -> None:
+        introduccion = subprocess.run(
+            ["git", "log", "--format=%H", "-S", "primer_envio_por_sha", "--",
+             "motor/encargos/encargo.py"],
+            cwd=RAIZ, capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        self.assertTrue(introduccion)
+        base_anterior = introduccion[-1] + "^"
+        anterior = subprocess.run(
+            ["git", "show", f"{base_anterior}:motor/encargos/encargo.py"],
+            cwd=RAIZ, capture_output=True, text=True, encoding="utf-8", check=True,
+        ).stdout
+        self.assertNotIn("primer_envio_por_sha:", anterior)
+        self.assertIn('limpio: str = ""', anterior)
+        arbol = self.raiz / "mutado"
+        shutil.copytree(RAIZ / "motor", arbol / "motor")
+        archivo = arbol / "motor/encargos/encargo.py"
+        contenido = archivo.read_text(encoding="utf-8")
+        nuevo = 'primer_envio_por_sha: tuple[tuple[str, str], ...] = ()'
+        self.assertIn(nuevo, contenido)
+        archivo.write_text(
+            contenido.replace(nuevo, nuevo.replace("= ()", '= (("h", "t"),)'), 1),
+            encoding="utf-8",
+        )
+        opciones = ("--kinds", "entrega", "--arbol", str(arbol))
+        legado = self.correr(*opciones)
+        self.assertEqual(legado.returncode, 1, legado.stderr + legado.stdout)
+        self.assertIn("estado=", legado.stdout)
+        proyectado = self.correr("--base", base_anterior, *opciones)
+        self.assertEqual(proyectado.returncode, 0, proyectado.stderr + proyectado.stdout)
+        self.assertIn("diferencias: 0", proyectado.stdout)
+        crudo = self.correr_con_tope_normal("--max-casos", "900", *opciones)
+        self.assertEqual(crudo.returncode, 1, crudo.stderr + crudo.stdout)
+        archivo.write_text(
+            contenido.replace(
+                'limpio: str = ""', 'limpio: str = "cambiado"', 1,
+            ), encoding="utf-8",
+        )
+        cambiado = self.correr("--base", base_anterior, *opciones)
+        self.assertEqual(cambiado.returncode, 1, cambiado.stderr + cambiado.stdout)
+        self.assertIn("estado=", cambiado.stdout)
+
     def test_el_tope_primero_cubre_todos_los_pares(self) -> None:
         from tools.escritura_diferencial import _firma_estado
         from tools.plegado import cargar_reductor, leer_encargos, ultimo_evento

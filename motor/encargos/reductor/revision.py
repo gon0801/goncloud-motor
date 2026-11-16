@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from .errores import HechoInaplicable, leer_carga
@@ -141,9 +142,16 @@ def hallazgo_fuera_de_alcance(e: Encargo, d: dict, hora: str, nuevo: bool) -> En
     return e
 
 def entrega_devuelta(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
-    # La devolución de la entrega se lee del registro: el producto y el
-    # estado no cambian, solo deja de reintentarse hasta la próxima vuelta.
-    return e
+    version = d.get("version")
+    try:
+        generacion = int(d.get("generacion") or 0)
+    except (ValueError, TypeError, OverflowError):
+        generacion = None
+    return replace(
+        e, entrega_devuelta=(
+            version if isinstance(version, str) else None, generacion,
+        ),
+    )
 
 def inspeccion_solicitud(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import con_fase, replace
