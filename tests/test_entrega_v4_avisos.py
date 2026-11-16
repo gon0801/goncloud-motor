@@ -203,6 +203,35 @@ class AvisosPorPalabra(unittest.TestCase):
         directores.drenar(self.banco.reg, ahora=T0 + 4)
         self.assertEqual(len(self.banco.cuerpos()), 2)
 
+    def test_cierre_local_se_actualiza_si_limpieza_termina_antes_del_envio(self) -> None:
+        ident = self._terminar()
+        config = self.banco.base / "canal.json"
+        configurado = config.read_text(encoding="utf-8")
+        config.write_text(json.dumps({"tg": {}}), encoding="utf-8")
+        primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
+        self.assertEqual(primero[0]["palabra"], "falta limpiar")
+        aviso = primero[0]["id"]
+        self._limpio(ident)
+        config.write_text(configurado, encoding="utf-8")
+        tercero = directores.drenar(self.banco.reg, ahora=T0 + 1)["avisos"]
+        self.assertEqual([(a["id"], a["palabra"]) for a in tercero],
+                         [(aviso, "respondido")])
+        self.assertIn("Respondido", self.banco.cuerpos()[0]["cuerpo"])
+        self.assertNotIn("Falta limpiar", self.banco.cuerpos()[0]["cuerpo"])
+        self.assertEqual(directores.drenar(self.banco.reg, ahora=T0 + 2)["avisos"], [])
+        self.assertEqual(len(self.banco.cuerpos()), 1)
+
+    def test_aviso_detenido_pendiente_se_descarta_tras_cerrar(self) -> None:  # no-roja-en-base: el filtro legado descartaba todos los avances, el nuevo no debe perder detenido
+        ident = self._terminar()
+        aviso = "av_detenido_anterior"
+        (self.banco.base / "avisos").mkdir(parents=True, exist_ok=True)
+        self.banco.escribir_aviso(aviso, {
+            "id": aviso, "encargo": ident, "canal": "tg", "tipo": "detenido",
+            "estado": "local-pendiente", "alcance": "local", "recibo": "",
+        })
+        directores.drenar(self.banco.reg, ahora=T0)
+        self.assertEqual(self.banco.aviso_guardado(aviso)["estado"], "descartado")
+
 
 if __name__ == "__main__":
     unittest.main()

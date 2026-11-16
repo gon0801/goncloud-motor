@@ -40,6 +40,9 @@ from motor.encargos.dominio import (
 )
 from motor.encargos.registro import Registro
 from motor.integraciones import canales
+from motor.integraciones.avisos_locales import (
+    actualizar_palabra_pendiente, conciliar_cuerpo_local,
+)
 
 
 def _atomico(path: Path, doc: dict) -> None:
@@ -1753,13 +1756,13 @@ def _publicar_aviso(
         guardado["motivo"] = "el canal no es un nombre"
         guardar(guardado)
         return _cerrar_aviso(guardado, True)
-    canal_dir = registro.base / "canal" / nombre
-    entrega = canal_dir / guardado["id"]
+    entrega = registro.base / "canal" / nombre / guardado["id"]
     if cuerpo is None:
         guardado["estado"] = "incierto"
         guardado["motivo"] = "no hay un resultado legible que concuerde con la evidencia"
         guardar(guardado)
         return _cerrar_aviso(guardado, True)
+    actualizar_palabra_pendiente(guardado, aviso, cuerpo, entrega)
     try:
         intentos = int(guardado.get("intentos") or 0)
     except (TypeError, ValueError):
@@ -1824,12 +1827,7 @@ def _publicar_aviso(
         guardado["estado"] = "pendiente"
         guardar(guardado)
         return _cerrar_aviso(guardado, True)
-    if not entrega.exists():
-        canal_dir.mkdir(parents=True, exist_ok=True)
-        temporal = entrega.with_suffix(".tmp")
-        escribir_texto(temporal, cuerpo)
-        temporal.replace(entrega)
-    if leer_texto(entrega) != cuerpo:
+    if not conciliar_cuerpo_local(entrega, cuerpo):
         guardado["estado"] = "incierto"
         guardado["motivo"] = "el canal tiene otro contenido y no se puede conciliar"
         guardar(guardado)
@@ -1886,6 +1884,7 @@ def _descartar_avances_de_terminados(
             doc.get("encargo") not in terminados
             or doc.get("tipo") not in (
                 "inicio", "pr", "aviso", "relevo", "herramienta", "pendientes", "trabado",
+                "detenido",
             )
             or doc.get("estado") in ("publicado", "descartado")
         ):
@@ -1977,7 +1976,8 @@ def _trabajos_de_encargo(
                 if resultado:
                     cuerpo += f" {resultado}"
         guardado = vista.get(aviso["id"])
-        if guardado and guardado.get("estado") == "local-pendiente":
+        if (guardado and guardado.get("estado") == "local-pendiente"
+            and guardado.get("palabra") == rep.palabra):
             ruta = registro.base / "canal" / enc.canal / aviso["id"]
             if ruta.is_file():
                 cuerpo = leer_texto(ruta)

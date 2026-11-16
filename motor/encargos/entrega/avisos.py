@@ -127,7 +127,8 @@ def trabajos_nuevos(registro: Registro, enc: Encargo, corte: int,
         aviso = aviso_de(enc)
         aviso.update(
             id=cierre_id, tipo="cierre-v4",
-            palabra=anterior.get("palabra") or rep.palabra,
+            palabra=rep.palabra if anterior.get("estado") == "local-pendiente"
+            else anterior.get("palabra") or rep.palabra,
         )
         return ((aviso, rep),)
     if (anterior.get("estado") != "publicado" or not anterior.get("recibo")
