@@ -1,14 +1,33 @@
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos.copiar import borrar_arbol
+from motor.encargos.copiar import _reintentar_sin_solo_lectura, borrar_arbol
 
 
 class BorrarArbolIlegibleTest(unittest.TestCase):
+    def test_archivo_de_solo_lectura_con_1920_no_se_confunde_con_directorio(self):  # no-roja-en-base: la ruta generica ya borra este archivo; la ruta WinError 1920 no debe perderlo
+        with tempfile.TemporaryDirectory() as temporal:
+            archivo = Path(temporal) / "archivo"
+            archivo.write_text("borrar")
+            archivo.chmod(stat.S_IREAD)
+            original = Path.unlink
+            error = OSError(1920, "The file cannot be accessed by the system")
+            error.winerror = 1920
+
+            def unlink(ruta):
+                if ruta == archivo and not ruta.stat().st_mode & stat.S_IWUSR:
+                    raise PermissionError(13, "solo lectura", str(ruta))
+                return original(ruta)
+
+            with mock.patch.object(Path, "unlink", autospec=True, side_effect=unlink):
+                _reintentar_sin_solo_lectura(os.unlink, archivo, error)
+            self.assertFalse(archivo.exists())
+
     def test_entrada_inaccesible_se_quita_y_sigue_el_resto(self):
         with tempfile.TemporaryDirectory() as temporal:
             base = Path(temporal)

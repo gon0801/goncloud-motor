@@ -19,9 +19,12 @@ from pathlib import Path
 
 def _escribible(ruta: Path) -> None:
     try:
-        modo = ruta.lstat().st_mode
-        if not stat.S_ISLNK(modo):
-            os.chmod(ruta, modo | stat.S_IWRITE | stat.S_IREAD)
+        datos = ruta.lstat()
+        # 0x400 es FILE_ATTRIBUTE_REPARSE_POINT; chmod no debe seguir ese destino.
+        if not stat.S_ISLNK(datos.st_mode) and not (
+            getattr(datos, "st_file_attributes", 0) & 0x400
+        ):
+            os.chmod(ruta, datos.st_mode | stat.S_IWRITE | stat.S_IREAD)
     except OSError:
         pass
 
@@ -38,7 +41,13 @@ def _reintentar_sin_solo_lectura(funcion, ruta, excinfo) -> None:
         _escribible(ruta.parent)
         try:
             ruta.unlink()
-        except (IsADirectoryError, PermissionError):
+        except PermissionError:
+            _escribible(ruta)
+            try:
+                ruta.unlink()
+            except PermissionError:
+                ruta.rmdir()
+        except IsADirectoryError:
             ruta.rmdir()
         except FileNotFoundError:
             pass
