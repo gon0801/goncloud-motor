@@ -174,6 +174,22 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
         self.assertNotIn("rama", {tipo for tipo, _, _, _, _ in enc.limpieza})
 
+    def test_rama_conservada_por_pr_ajeno_se_borra_al_cerrar_ese_pr(self) -> None:
+        self._final(cancelar=False)
+        numero = self.gh.abrir_pr(self.repo, "encargo/x", "main", "ajeno", "cuerpo").numero
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "fase terminada", "hora": hora(),
+        }}, "cierre-con-head-ajeno:x")
+        enc = self._limpiar()
+        self.assertTrue(enc.limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
+
+        self.gh.cerrar_pr(self.repo, numero)
+        for minutos in (60, 75, 90, 120, 60 * 24):
+            enc = self._limpiar(minutos)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+        self.assertTrue(enc.limpio)
+
     def test_terminado_sin_pr_con_base_abierta_conserva_rama(self) -> None:  # no-roja-en-base: ya se conservaba la rama base de un PR abierto
         self._final(cancelar=False)
         self.gh.abrir_pr(self.repo, "feat", "encargo/x", "apilado", "cuerpo")

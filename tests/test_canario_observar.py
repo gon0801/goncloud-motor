@@ -20,13 +20,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
 import ops.canario_observar as canario
 from motor import plataforma
 from motor.encargos import sesion
+from motor.encargos.registro import Evento, Registro
 from ops.canario_encargos import main
 from ops.canario_juzgar import TABLA, Esperado, Topes, juzgar
 from ops.canario_observar import observar
@@ -74,6 +75,54 @@ def _banco_de_una_fase(tmp: Path) -> Banco:
     escenario["fases"] = escenario["fases"][:1]
     escenario["producto"] = {"uno": escenario["producto"]["uno"]}
     return Banco(tmp, escenario=escenario, gh_cls=_DeepSeekAprueba)
+
+
+class TurnoCerradoConPpidReusado(unittest.TestCase):
+    def test_procesos_distingue_descendiente_posterior_de_huerfano_del_turno(self):
+        inicio = datetime(2026, 11, 16, tzinfo=timezone.utc)
+        cierre = inicio + timedelta(hours=8)
+        with tempfile.TemporaryDirectory() as temporal:
+            base = Path(temporal)
+            registro = Registro(base)
+            try:
+                registro.append_many("x", (
+                    Evento("entrega", {
+                        "id": "x", "clave": "k", "huella": "h", "texto": "pedido",
+                        "entrega_nivel": "terminado", "hora": inicio.isoformat(),
+                    }, "entrega:x"),
+                    Evento("fases", {"fases": [{"id": "F", "resultado": "r"}],
+                                     "hora": inicio.isoformat()}, "fases:x"),
+                ))
+                registro.anotar("x", {"kind": "orden", "data": {
+                    "accion": "cancelar", "hora": cierre.isoformat(),
+                }}, "cancelar:x")
+                registro.anotar("x", {"kind": "arbol", "data": {
+                    "observacion": "ausente", "hora": cierre.isoformat(),
+                }}, "arbol:x")
+                self.assertEqual(registro.fold("x").hora_final, cierre.isoformat())
+            finally:
+                registro.close()
+            carpeta = base / "ejecucion" / "x"
+            carpeta.mkdir(parents=True)
+            (carpeta / "proc.json").write_text(
+                json.dumps({"pid": 18108, "inicio": "133100000000000000"}),
+                encoding="utf-8",
+            )
+
+            for creado, esperado in (
+                (cierre + timedelta(days=1), False),
+                (inicio + timedelta(hours=4), True),
+            ):
+                def presencia(_pid, _inicio, _job="", *, fin="", creado=creado):
+                    return ("vivo" if not fin or creado <= datetime.fromisoformat(fin)
+                            else "ausente")
+
+                with (self.subTest(creado=creado),
+                      mock.patch.object(plataforma, "estado_proc", return_value="muerto"),
+                      mock.patch.object(plataforma, "presencia_grupo", side_effect=presencia)):
+                    turnos = [resto.queda for resto in canario.procesos(base, "x")
+                              if "turnos" in resto.nombre]
+                    self.assertEqual(turnos, [esperado])
 
 
 @unittest.skipIf(os.name == "nt", "el grupo de procesos sin lanzador es de POSIX")
