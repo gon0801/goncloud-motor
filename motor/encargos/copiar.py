@@ -33,6 +33,16 @@ def _reintentar_sin_solo_lectura(funcion, ruta, excinfo) -> None:
     exc = excinfo[1] if isinstance(excinfo, tuple) else excinfo
     if isinstance(exc, FileNotFoundError):
         return
+    if getattr(exc, "winerror", None) == 1920:
+        ruta = Path(ruta)
+        _escribible(ruta.parent)
+        try:
+            ruta.unlink()
+        except (IsADirectoryError, PermissionError):
+            ruta.rmdir()
+        except FileNotFoundError:
+            pass
+        return
     if funcion not in (os.unlink, os.remove, os.rmdir):
         raise exc
     ruta = Path(ruta)
