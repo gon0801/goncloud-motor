@@ -55,7 +55,9 @@ class BorrarArbolIlegibleTest(unittest.TestCase):
                     raise error
                 return real(ruta)
 
-            with (mock.patch.object(shutil, "_use_fd_functions", False),
+            impl = "_rmtree_impl" if hasattr(shutil, "_rmtree_impl") else "_use_fd_functions"
+            doble = shutil._rmtree_unsafe if impl == "_rmtree_impl" else False
+            with (mock.patch.object(shutil, impl, doble),
                   mock.patch.object(os, "scandir", side_effect=scandir)):
                 borrar_arbol(arbol)
 
