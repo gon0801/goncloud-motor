@@ -1,6 +1,7 @@
 """Regresión: un PID reciclado no mantiene pendiente la parada de su dueño anterior."""
 
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from motor.plataforma import windows
@@ -76,6 +77,31 @@ class SinJobMataSoloElArbolConfirmadoTest(unittest.TestCase):
 
 
 class IdentidadGrupoTest(unittest.TestCase):
+    def test_pid_ausente_no_adopta_ppid_de_dia_siguiente_pero_conserva_huerfano(self):
+        inicio = datetime(2026, 11, 16, tzinfo=timezone.utc)
+        fin = inicio + timedelta(hours=8)
+
+        def filetime(hora):
+            return str(int((hora.timestamp() + 11_644_473_600) * 10_000_000))
+
+        for creado, esperado in (
+            (inicio + timedelta(days=1), "ausente"),
+            (inicio + timedelta(hours=4), "vivo"),
+        ):
+            with (
+                self.subTest(creado=creado),
+                patch.dict(windows._jobs, {}, clear=True),
+                patch.object(windows, "_consulta_pid", return_value="muerto"),
+                patch.object(windows, "_abrir_job", return_value=(None, "ausente")),
+                patch.object(windows, "_padres_procesos", return_value={20: 18108}),
+                patch.object(windows, "hora_inicio",
+                             side_effect=lambda pid, creado=creado: filetime(creado) if pid == 20 else ""),
+            ):
+                self.assertEqual(
+                    windows.presencia_grupo(18108, filetime(inicio), fin=fin.isoformat()),
+                    esperado,
+                )
+
     def test_pid_reutilizado_distingue_descendientes_anteriores_y_nuevos(self):
         for hijos, horas, esperado in (
             ([], {10: "300"}, "ausente"),
@@ -164,5 +190,3 @@ class MatarSinTocarPidReutilizadoTest(unittest.TestCase):
         padres.assert_not_called()
         self.assertEqual(correr.call_args_list, [])
         proceso.kill.assert_not_called()
-
-

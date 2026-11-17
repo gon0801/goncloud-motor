@@ -108,6 +108,36 @@ class LimpiezaPorHechos(unittest.TestCase):
                           in enc.limpieza}["pr"], "borrado")
         self.assertTrue(enc.limpio)
 
+    def test_terminado_sin_pr_registrado_borra_rama(self) -> None:
+        self._final(cancelar=False)
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "fase terminada", "hora": hora(),
+        }}, "cierre-sin-pr:x")
+        enc = self._limpiar()
+        self.assertTrue(enc.limpio)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+
+    def test_terminado_sin_pr_con_head_abierto_conserva_rama(self) -> None:
+        self._final(cancelar=False)
+        self.gh.abrir_pr(self.repo, "encargo/x", "main", "ajeno", "cuerpo")
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "fase terminada", "hora": hora(),
+        }}, "cierre-con-head:x")
+        enc = self._limpiar()
+        self.assertTrue(enc.limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
+        self.assertNotIn("rama", {tipo for tipo, _, _, _, _ in enc.limpieza})
+
+    def test_terminado_sin_pr_con_base_abierta_conserva_rama(self) -> None:  # no-roja-en-base: ya se conservaba la rama base de un PR abierto
+        self._final(cancelar=False)
+        self.gh.abrir_pr(self.repo, "feat", "encargo/x", "apilado", "cuerpo")
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "fase terminada", "hora": hora(),
+        }}, "cierre-con-base:x")
+        enc = self._limpiar()
+        self.assertTrue(enc.limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
+
     def test_cerrado_limpio_no_repliega_historia_en_otra_pasada(self) -> None:
         import motor.encargos.entrega.limpieza as limpieza
 
