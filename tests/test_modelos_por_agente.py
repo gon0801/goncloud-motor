@@ -270,6 +270,33 @@ class ModelosPorAgente(unittest.TestCase):
             "openbot: no pude leer (modelos-propios.json ilegible)",
         ])
 
+    def test_un_archivo_propio_roto_se_dice_una_vez_y_todos_siguen_contra_la_compartida(self):
+        for i, contenido in enumerate(("{no es json", json.dumps(["openbot"]))):
+            with self.subTest(contenido=contenido):
+                home = _maquina(self.base / str(i), "claw", "openbot")
+                _claw(home, {"alfa": CADENA_ALFA})
+                _openbot(home, [("alfa", "claude-opus-5-5", "high")])
+                (home / ".motor-encargos" / "modelos-propios.json").write_text(
+                    contenido, encoding="utf-8",
+                )
+
+                self.assertEqual(_informe(home), [
+                    "modelos-propios: no pude leer (modelos-propios.json ilegible)",
+                    "claw: 1 de 1 agentes como la tabla",
+                    "openbot: 1 de 1 agentes como la tabla",
+                ])
+
+    def test_una_tabla_propia_solo_fija_directores_de_un_modelo(self):
+        home = _maquina(self.base, "claw")
+        _claw(home, {"alfa": CADENA_ALFA})
+        (home / ".motor-encargos" / "modelos-propios.json").write_text(
+            json.dumps({"claw": {"alfa": ["anthropic/claude-opus-5-5", "high"]}}), encoding="utf-8",
+        )
+
+        self.assertEqual(_informe(home), [
+            "claw: no pude leer (modelos-propios.json solo fija directores de un modelo)",
+        ])
+
     def test_un_agente_sin_fila_se_nombra_aparte_y_el_nombre_va_en_minusculas(self):
         home = _maquina(self.base, "openbot")
         _openbot(home, [("Alfa", "claude-opus-5-5", "high"), ("Gamma Uno", "grok-4.7", "high")])

@@ -261,16 +261,16 @@ def informe(home: Path, manifiesto: Path) -> list[str]:
         return ["directores: no pude leer (%s)" % exc]
     if not isinstance(claves, dict):
         return ["directores: no pude leer (canal.json ilegible)"]
-    lineas = []
+    propias, error = _tablas_propias(home)
+    lineas = ["modelos-propios: no pude leer (%s)" % error] if error else []
     for nombre, director in DIRECTORES.items():
         if nombre not in claves:
             continue
         etiqueta = nombre
         try:
-            propia = _tabla_propia(home, nombre)
-            if propia is not None:
+            if nombre in propias:
                 etiqueta = nombre + " (tabla propia de esta máquina)"
-                puestos, herencia = propia
+                puestos, herencia = _tabla_propia(propias[nombre], director)
             else:
                 puestos, herencia = leer_tabla(manifiesto)
                 if nombre == "claw":
@@ -287,16 +287,25 @@ def informe(home: Path, manifiesto: Path) -> list[str]:
     return lineas
 
 
-def _tabla_propia(home: Path, director: str) -> Optional[tuple[dict[str, Cadena], dict[str, str]]]:
+def _tablas_propias(home: Path) -> tuple[dict, str]:
     # David puede dejar a un director con sus propios modelos: la tabla compartida de la flota
     # no cambia y esta máquina compara ese director contra lo que fijó aquí, fuera del repo.
+    # Un archivo ilegible se dice una vez y los directores siguen contra la tabla compartida.
     ruta = home / ".motor-encargos" / "modelos-propios.json"
     if not ruta.exists():
-        return None
-    doc = _leer_json(ruta, "modelos-propios.json")
-    agentes = doc.get(director) if isinstance(doc, dict) else None
-    if agentes is None:
-        return None
+        return {}, ""
+    try:
+        doc = _leer_json(ruta, "modelos-propios.json")
+    except Ilegible as exc:
+        return {}, str(exc)
+    if not isinstance(doc, dict):
+        return {}, "modelos-propios.json ilegible"
+    return doc, ""
+
+
+def _tabla_propia(agentes: object, director: Director) -> tuple[dict[str, Cadena], dict[str, str]]:
+    if director.pasos != 1:
+        raise Ilegible("modelos-propios.json solo fija directores de un modelo")
     if not isinstance(agentes, dict):
         raise Ilegible("modelos-propios.json ilegible")
     puestos: dict[str, Cadena] = {}
