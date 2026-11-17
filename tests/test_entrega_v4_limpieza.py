@@ -117,7 +117,7 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertTrue(enc.limpio)
         self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
 
-    def test_terminado_sin_pr_con_head_abierto_conserva_rama(self) -> None:
+    def test_terminado_sin_pr_con_head_abierto_conserva_rama(self) -> None:  # no-roja-en-base: antes conservaba toda rama sin PR propio, incluido el head abierto
         self._final(cancelar=False)
         self.gh.abrir_pr(self.repo, "encargo/x", "main", "ajeno", "cuerpo")
         self.reg.anotar("x", {"kind": "cierre_forzado", "data": {

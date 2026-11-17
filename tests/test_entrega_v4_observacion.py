@@ -17,6 +17,28 @@ from tests.test_github_contrato import _bare_con_rama
 
 
 class ObservacionDelPR(unittest.TestCase):
+    def test_el_real_consulta_head_del_repo_solo_en_pr_abiertos(self) -> None:
+        class GhSinRed(GhGitHub):
+            def __init__(self) -> None:
+                super().__init__()
+                self.llamadas: list[tuple[str, ...]] = []
+
+            @staticmethod
+            def nombre(repo: str) -> str:
+                return repo
+
+            def _gh(self, *args: str) -> str:
+                self.llamadas.append(args)
+                return "7\n8\n"
+
+        gh = GhSinRed()
+        self.assertEqual(gh.prs_con_head("o/r", "encargo/f"), (7, 8))
+        self.assertEqual(gh.llamadas, [
+            ("api", "--paginate",
+             "repos/o/r/pulls?state=open&head=o%3Aencargo%2Ff&per_page=100",
+             "--jq", ".[].number"),
+        ])
+
     def test_estado_de_lee_json_de_gh_para_todos_los_estados(self) -> None:
         from motor.encargos.entrega.tipos import estado_de
 
