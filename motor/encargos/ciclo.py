@@ -10443,7 +10443,7 @@ def _soltar_conductor(registro: Registro, enc: Encargo, hora: str) -> bool:
     token = enc.candidato or enc.conductor
     if not token:
         return True
-    directorio = _directorio(registro.base, enc.id)
+    directorio = _directorio_lectura(registro.base, enc.id)
     pendiente = enc.estado == "terminado" or _revision_aprobada_vigente(enc)
     if (
         not pendiente
@@ -10599,7 +10599,7 @@ def _resultado_desde_fold(
             ),
             None,
         )
-        espacio = _espacio(registro.base, enc.id)
+        espacio = _espacio_lectura(registro.base, enc.id)
         try:
             solicitudes = _pedidos_efecto(espacio)
         except (ValueError, TypeError):
@@ -10638,7 +10638,7 @@ def _publicar_resultado(registro: Registro, enc: Encargo, hora: str) -> bool:
         return False
     if cfg is None:
         return True
-    d = _directorio(registro.base, enc.id)
+    d = _directorio_lectura(registro.base, enc.id)
     observacion, juicio = _resultado_desde_fold(registro, enc, d)
     if juicio is None:
         return False
