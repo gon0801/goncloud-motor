@@ -434,6 +434,35 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(informe["cierre"]["parada"], "detenido")
         self.assertNotIn("falló", {b["resultado"] for b in informe["limpieza"]})
 
+    def test_espera_el_limpio_de_la_siguiente_vuelta_antes_de_juzgar(self):
+        codigo, informe = self.correr(
+            "--sin-se-detiene", "--sin-apagon", modo=("--omitir-limpieza", "1"),
+        )
+
+        ident = informe["encargo"]
+        self.assertEqual(informe["fin"], "terminado", self.avances)
+        self.assertEqual(self.filas(informe)["limpio"]["resultado"], "pasa",
+                         self.avances)
+        self.assertTrue(any(ev["kind"] == "limpio" for ev in self.eventos(ident)))
+        self.assertEqual(codigo, 1, informe["tabla"])
+
+    def test_sin_limpio_al_vencer_el_tope_falla_la_fila_con_la_causa(self):
+        esperado = self.tmp / "esperado.json"
+        datos = json.loads((RAIZ / "ops" / "canario_encargos.esperado.json").read_text(encoding="utf-8"))
+        datos["topes"]["minutos_limpio"] = 0
+        esperado.write_text(json.dumps(datos), encoding="utf-8")
+
+        codigo, informe = self.correr(
+            "--sin-se-detiene", "--sin-apagon", "--esperado", str(esperado),
+            modo=("--omitir-limpieza", "1000"),
+        )
+
+        self.assertEqual(informe["fin"], "terminado", self.avances)
+        fila = self.filas(informe)["limpio"]
+        self.assertEqual((fila["resultado"], codigo), ("falla", 1), self.avances)
+        self.assertIn("no llegó limpio", fila["observado"])
+        self.assertFalse(any(ev["kind"] == "limpio" for ev in self.eventos(informe["encargo"])))
+
     def test_un_supervisor_que_muere_a_media_corrida_no_deja_su_grupo(self):
         codigo, informe = self.correr("--sin-apagon", modo=("--muere-tras", "2"))
 

@@ -257,7 +257,7 @@ def fase_final_por_sondear(enc: Encargo) -> str:
         if not fase.pr_numero or fase.id in enc.canceladas:
             continue
         observado = next((x for x in enc.prs if x.fase == fase.id), None)
-        if observado is None or observado.pr.estado in ("abierto", "borrador"):
+        if observado is None or observado.pr.estado in ("abierto", "borrador", "cerrado"):
             return fase.id
     return ""
 

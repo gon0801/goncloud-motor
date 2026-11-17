@@ -72,7 +72,8 @@ OTRO = "b" * 40
 RECIBIDO = "2026-01-10T10:00:00Z"
 CIERRE = "2026-01-10T10:20:00Z"
 HORA = "2026-01-10T10:30:00Z"
-TOPES = Topes(minutos_termina=90, minutos=45, turnos_por_rol=2, rondas=1, minutos_se_detiene=15)
+TOPES = Topes(minutos_termina=90, minutos=45, turnos_por_rol=2, rondas=1, minutos_se_detiene=15,
+              minutos_limpio=5)
 NO_MEDIDAS = ("no pierde", "no repite", "se detiene")
 
 

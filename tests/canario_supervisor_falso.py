@@ -26,10 +26,12 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from motor import plataforma  # noqa: E402
+from motor.encargos import ciclo  # noqa: E402
 from motor.encargos.ciclo import barrer  # noqa: E402
 from motor.encargos.cli import _marcar_pasada, lanzar_de_ruta, marcar_ruta  # noqa: E402
 from motor.encargos.registro import Registro  # noqa: E402
@@ -71,6 +73,7 @@ def main() -> int:
     a.add_argument("--muere-tras", type=int, default=0)
     a.add_argument("--muere-con-turno", type=Path)
     a.add_argument("--muere-al-desplegar", action="store_true")
+    a.add_argument("--omitir-limpieza", type=int, default=0)
     args = a.parse_args()
     hijo = subprocess.Popen(["sleep", "600"])
     args.hijo.write_text(str(hijo.pid), encoding="utf-8")
@@ -82,20 +85,32 @@ def main() -> int:
     gh = _DeepSeekAprueba(Path(falso))
     hora = datetime.now(timezone.utc).replace(tzinfo=None)
     pasadas = 0
+    omitidas = 0
+    limpieza_real = ciclo.barrer_limpieza
+
+    def demorar_limpieza(registro, enc, *resto):
+        nonlocal omitidas
+        if enc.estado in ("terminado", "cancelado") and omitidas < args.omitir_limpieza:
+            omitidas += 1
+            return enc
+        return limpieza_real(registro, enc, *resto)
+
     while not args.muere_tras or pasadas < args.muere_tras:
         hora = _siguiente(reg, hora)
         marcar_ruta(reg, RUTA, _iso(hora))
-        informes = barrer(
-            reg, _iso(hora), hora.replace(tzinfo=timezone.utc).timestamp(),
-            lanzar_de_ruta(reg, RUTA), umbral_s=30.0, gh=gh,
-        )
+        antes = omitidas
+        with mock.patch.object(ciclo, "barrer_limpieza", demorar_limpieza):
+            informes = barrer(
+                reg, _iso(hora), hora.replace(tzinfo=timezone.utc).timestamp(),
+                lanzar_de_ruta(reg, RUTA), umbral_s=30.0, gh=gh,
+            )
         _marcar_pasada(args.base, _iso(hora), informes)
         pasadas += 1
         if args.muere_con_turno and _agente_corriendo(args.base, args.muere_con_turno):
             return 3
         if args.muere_al_desplegar and any(args.base.glob("despliegues/*/proceso.json")):
             return 3
-        time.sleep(0.12)
+        time.sleep(1 if omitidas > antes else 0.12)
     return 3
 
 

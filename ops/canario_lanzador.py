@@ -39,12 +39,12 @@ Una corrida da estos pasos, en este orden (`Paso`):
    toma el agente de ensayo, y `MOTOR_CANARIO_DESPLIEGUE`, la carpeta del
    despliegue, de donde las recetas propias toman su destino, y
    `MOTOR_CANARIO_APAGON`, la carpeta del encargo del apagón.
-4. esperar: `motor ver` de los encargos a la vez, hasta que cada uno cierra,
-   vence su tope o el supervisor muere. Cada tope cuenta desde que se recibió su
-   encargo, y el del que falla es más corto, para que un bucle del motor no
-   alargue la corrida. Al que vence lo para con `motor parar`, la orden del
-   canario, sin tocar el supervisor que los otros necesitan. No escribe otro evento.
-   En cada vuelta corta el supervisor si una compuerta del apagón ya espera.
+4. esperar: `motor ver` de los encargos a la vez. Tras `terminado` o `cancelado`,
+   deja vivo al supervisor hasta que llegue `limpio`, se agote la limpieza o venza
+   `minutos_limpio` desde el cierre. Los topes de ejecución cuentan desde la
+   recepción; al que no cierra a tiempo lo para con `motor parar`, sin tocar al
+   supervisor de los otros. No escribe otro evento. En cada vuelta corta el
+   supervisor si una compuerta del apagón ya espera.
 5. cerrar: mata el grupo de su supervisor y, por cada encargo, lo para si no cerró
    y espera, hasta `--tope-cierre-s`, a que no quede vivo ningún proceso de sus
    turnos ni de sus trabajadores de despliegue, que el motor lanza en sesión
@@ -100,7 +100,7 @@ import time
 import tomllib
 import traceback
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, TextIO, TypeVar, cast
@@ -123,6 +123,7 @@ from ops.canario_observacion import Momento  # noqa: E402
 Paso = Literal["preparar", "encargar", "lanzar", "esperar", "cerrar", "medir", "limpiar"]
 Fin = Literal["terminado", "detenido", "cancelado", "tope", "supervisor_muerto"]
 CERRADOS: dict[str, Fin] = {"terminado": "terminado", "detenido": "detenido", "cancelado": "cancelado"}
+EstadoLimpieza = Literal["", "limpio", "agotado", "tope", "supervisor_muerto"]
 Presencia = Literal["ausente", "vivo", "incierto"]
 """Lo que queda del grupo del supervisor, con las palabras de `plataforma.presencia_grupo`."""
 
@@ -231,6 +232,8 @@ class Espera:
     """El del encargo según `motor ver` cuando terminó su espera."""
     parada: str = ""
     """Lo que dejó `motor parar` al vencer su tope; vacío si no venció."""
+    limpieza: EstadoLimpieza = ""
+    """Lo que permitió dejar de esperar la limpieza de un encargo final."""
 
 
 @dataclass(frozen=True)
@@ -585,15 +588,31 @@ def _cortar(supervisor: Supervisor, carpeta: Path, cortados: set[Momento]) -> No
         ))
 
 
+def _limpieza_del_registro(base: Path, encargo: str) -> EstadoLimpieza:
+    registro = Registro(base)
+    try:
+        actual = registro.fold(encargo)
+    finally:
+        registro.close()
+    if actual is None:
+        return ""
+    resultados = {resultado for _, _, resultado, _, _ in actual.limpieza}
+    if "agotado" in resultados:
+        return "agotado"
+    return "limpio" if actual.limpio and "fallo" not in resultados else ""
+
+
 def esperar(
-    p: Pedido, supervisor: Supervisor, vencen: Mapping[str, float], apagon: Path | None = None,
+    p: Pedido, supervisor: Supervisor, vencen: Mapping[str, float],
+    minutos_limpio: int, apagon: Path | None = None,
 ) -> dict[str, Espera]:
     """Mira a la vez cada encargo de `vencen`, con su tope en `time.monotonic()`, hasta que
-    cierra, vence su tope o el supervisor muere. Al que vence lo para en ese momento, para
-    que no siga corriendo mientras se espera al otro. Con la carpeta del apagón, antes de
-    cada vuelta corta el supervisor si una compuerta ya espera."""
+    cierra y queda limpio, se agota la limpieza, vence su tope o muere el supervisor.
+    El tope de limpieza empieza al ver el cierre. Al que no cierra a tiempo lo para
+    sin tocar al supervisor de los otros. Con el apagón, corta si una compuerta espera."""
     estados = dict.fromkeys(vencen, "")
     esperas: dict[str, Espera] = {}
+    limpieza_vence: dict[str, float] = {}
     cortados: set[Momento] = set()
     while len(esperas) < len(vencen):
         if apagon is not None:
@@ -606,7 +625,19 @@ def esperar(
             if visto != estados[encargo]:
                 _avance("esperar", f"{encargo} {visto}")
             estados[encargo] = visto
-            if visto in CERRADOS:
+            if visto in ("terminado", "cancelado"):
+                limpieza = _limpieza_del_registro(p.base, encargo)
+                if limpieza:
+                    espera = Espera(CERRADOS[visto], visto, limpieza=limpieza)
+                elif not vivo:
+                    espera = Espera("supervisor_muerto", visto, limpieza="supervisor_muerto")
+                elif time.monotonic() >= limpieza_vence.setdefault(
+                    encargo, time.monotonic() + minutos_limpio * 60,
+                ):
+                    espera = Espera(CERRADOS[visto], visto, limpieza="tope")
+                else:
+                    continue
+            elif visto in CERRADOS:
                 espera = Espera(CERRADOS[visto], visto)
             elif not vivo:
                 espera = Espera("supervisor_muerto", visto)
@@ -617,8 +648,11 @@ def esperar(
             esperas[encargo] = espera
             _avance("esperar", f"{encargo} terminó por {espera.fin}" + (
                 f"; el canario lo paró: {espera.parada}" if espera.parada else ""
-            ))
-        if pendientes := [vence for encargo, vence in vencen.items() if encargo not in esperas]:
+            ) + (f"; limpieza {espera.limpieza}" if espera.limpieza else ""))
+        if pendientes := [
+            limpieza_vence.get(encargo, vence)
+            for encargo, vence in vencen.items() if encargo not in esperas
+        ]:
             time.sleep(max(0.0, min(p.intervalo_s, min(pendientes) - time.monotonic())))
     return esperas
 
@@ -727,6 +761,7 @@ def _sha_desplegado(viva: Path) -> str:
 def medir(
     p: Pedido, encargo: str, detencion: str, apagon: str, sin_apagon: str, maquina: str,
     gh: canario_observar.LectorPR, esperado: canario_juzgar.Esperado,
+    espera: Espera | None = None,
 ) -> tuple[canario_juzgar.Fila, ...]:
     obs = canario_observar.observar(
         p.base, encargo, gh,
@@ -742,7 +777,18 @@ def medir(
     )
     if obs.pliegue is None:
         raise NoSePuede("medir", f"el encargo {encargo} no está en el registro")
-    return canario_juzgar.juzgar(obs, esperado)
+    filas = canario_juzgar.juzgar(obs, esperado)
+    if espera is None or espera.limpieza in ("", "limpio"):
+        return filas
+    causa = {
+        "agotado": "se agotó la limpieza; no llegó limpio",
+        "tope": f"no llegó limpio antes del tope de {esperado.topes.minutos_limpio} min",
+        "supervisor_muerto": "el supervisor murió antes de que llegara limpio",
+    }[espera.limpieza]
+    return tuple(
+        replace(f, resultado="falla", observado=f"{causa}; {f.observado}")
+        if f.nombre == "limpio" else f for f in filas
+    )
 
 
 def _borrar_rama(repo: str, rama: str) -> Borrado:
@@ -965,7 +1011,10 @@ def correr(p: Pedido, gh: canario_observar.LectorPR, supervisor: Sequence[str] |
             {canario_apagon.ENTORNO: str(canario_apagon.carpeta(p.base, apagon))} if apagon else {},
         )
         _avance("lanzar", f"supervisor {lanzado.proc['pid']}")
-        esperas = esperar(p, lanzado, vencen, canario_apagon.carpeta(p.base, cortado) if cortado else None)
+        esperas = esperar(
+            p, lanzado, vencen, esperado.topes.minutos_limpio,
+            canario_apagon.carpeta(p.base, cortado) if cortado else None,
+        )
     except Exception as exc:
         fallo = _fallo(exc)
     finally:
@@ -981,7 +1030,10 @@ def correr(p: Pedido, gh: canario_observar.LectorPR, supervisor: Sequence[str] |
     if all(c.listo for c in cierres.values()):
         if fallo is None:
             try:
-                filas = medir(p, encargo, detencion, cortado, sin_apagon, maquina, gh, esperado)
+                filas = medir(
+                    p, encargo, detencion, cortado, sin_apagon, maquina, gh, esperado,
+                    esperas.get(encargo),
+                )
             except Exception as exc:
                 fallo = _fallo(exc)
         limpieza = tuple(b for e in vencen for b in limpiar(p, e))
