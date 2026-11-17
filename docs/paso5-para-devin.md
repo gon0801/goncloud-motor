@@ -46,7 +46,8 @@ Cambia la conducta en tres puntos, y solo con el interruptor encendido (regla 4)
 - volver a mirar una espera por hecho y releer DeepSeek ya no escriben eventos.
 
 No cambian:
-- el valor y la acción de los topes que ya existen (decisión 5 de David);
+- el valor y la acción de los topes que ya existen (decisión 5 de David), salvo tres que David cambió el
+  2026-11-17: `tropiezo_merge`, `repo` y el relevo agotado de `proveedor`;
 - el plegado de las claves que ya existen en un registro guardado;
 - que plegar nunca falla.
 
@@ -128,7 +129,9 @@ Forma de trabajo acordada con David el 2026-11-16:
    `tabla_esperas.ESPERAS`.
    - `TOPE_DEEPSEEK_MIN` y `ESPERA_SIN_REVISOR_MIN` se quedan en `politica.py`. Su fila los lee
      de ahí, y `revisor_deepseek.py` sigue igual.
-   - Una prueba recorre la tabla y falla si una fila no tiene tope.
+   - Una prueba recorre la tabla y falla si la `conducta` de una fila no tiene tope.
+   - La columna "Tope" y "Al tope" de la tabla de abajo son la `conducta`. La `hoy` de cada fila es
+     lo que hace f30430f: sale de los valores actuales, que la 5.1 mueve a la tabla.
 4. **Interruptor.** `politica.ESPERAS_V5 = False`.
    - Apagado, el motor escribe los campos nuevos de `espera` y nada más cambia: mismos
      intervalos, mismas acciones al tope y mismos eventos por vuelta.
@@ -150,19 +153,24 @@ ClaseEspera = Literal[
 ]
 
 @dataclass(frozen=True)
-class FilaEspera:
-    clase: ClaseEspera
-    tipo: Literal["por_hecho", "por_hora"]
+class Conducta:
     # Un int es fijo. Una tupla es una escalera, y su último valor se repite. "pasada" es cada
     # pasada del barrido, "rutas" lo decide rutas.proximo, y "orden" es el reanuda_en de la orden.
     intervalo: int | tuple[int, ...] | Literal["pasada", "rutas", "orden"]
     tope_s: int | None            # tope por tiempo
-    tope_intentos: int | None     # tope por cuenta: solo los que ya existen
-    desde: Literal["abierta", "primer_envio"]  # desde dónde cuenta tope_s
+    tope_intentos: int | None     # tope por cuenta
     al_tope: Literal["detener", "avisar", "omitir", "pendientes", "devolver", "impedimento", "seguir"]
-    legible: str                  # cómo la nombra el aviso
 
-ESPERAS: dict[ClaseEspera, FilaEspera]   # exactamente uno de tope_s / tope_intentos
+@dataclass(frozen=True)
+class FilaEspera:
+    clase: ClaseEspera
+    tipo: Literal["por_hecho", "por_hora"]
+    desde: Literal["abierta", "primer_envio"]  # desde dónde cuenta tope_s
+    legible: str                  # cómo la nombra el aviso
+    conducta: Conducta            # con ESPERAS_V5 encendido: exactamente uno de tope_s / tope_intentos
+    hoy: Conducta                 # con ESPERAS_V5 apagado: la de f30430f, que puede no tener tope
+
+ESPERAS: dict[ClaseEspera, FilaEspera]
 
 # motor/encargos/situacion.py
 @dataclass(frozen=True)
@@ -263,9 +271,10 @@ Cómo se lee la tabla:
 - Si la lectura de cierre falla y la fila no dice otra cosa, la espera cuenta como "todavía no", y
   el tope la acota.
 - Un tope en minutos cuenta desde `abierta`, salvo que la fila diga otra cosa.
-- "60 min" es `TOPE_ESPERA_MIN`. "6 h" es `TOPE_ESPERA_PASAJERA_MIN`: lo llevan las cuatro clases
-  cuya causa es externa y se arregla sola (`autoridad`, `proveedor`, `empuje_transitorio` y
-  `github_pasajero`). Así, un encargo que corre de noche aguanta una caída de GitHub o una ventana
+- "60 min" es `TOPE_ESPERA_MIN`. "6 h" es `TOPE_ESPERA_PASAJERA_MIN`: lo llevan las seis clases
+  cuya causa casi siempre es externa y se arregla sola (`autoridad`, `proveedor`,
+  `empuje_transitorio`, `github_pasajero`, `tropiezo_merge` y `repo`). Así, un encargo que corre de
+  noche aguanta una caída de GitHub o una ventana
   de cuota de 5 horas y termina solo.
 - "Hoy" da el sitio aproximado en f30430f.
 
@@ -285,12 +294,12 @@ Cómo se lee la tabla:
 | `impedimento_entorno` | por hecho | un impedimento de entorno que frena el trabajo (el encargo sigue en `recibido`) | `impedimento_resuelto` | `pasada` | 60 min | `detener` | cerca de 1928. El tope de 3 fallos de instrumento (`instrumento.py`) queda fuera de la tabla y no cambia |
 | `deteniendo` | por hecho | orden o detención con un proceso vivo | el árbol queda ausente (`arbol`) | `pasada` | 60 min | `avisar`: la orden no cambia, y una cancelación sigue siendo definitiva | cerca de 1905 |
 | `base_movida` | por hora | PR atrás o en conflicto | `traer_main` limpio; un conflicto devuelve | 120 s | 60 min | `detener` | cerca de 6913-6973. Cambia: un `estado_merge` ilegible ya no cuenta como sin conflicto, sino como "todavía no" |
-| `tropiezo_merge` | por hora | el merge falla con un pasajero de `respuestas_merge` | el merge sale | 120 s | `TOPE_TROPIEZOS_MERGE` (5 seguidos) | `pendientes`, como hoy | cerca de 9216 |
+| `tropiezo_merge` | por hora | el merge falla con un pasajero de `respuestas_merge` | el merge sale | escalera (120, 300, 900, 1800) | 6 h | `detener`. Cambia (David, 17-nov): hoy son 5 seguidos a 120 s y termina con `pendientes` | cerca de 9216; `respuestas_merge.py` |
 | `destino_ocupado` | por hora | la receta sale con 75 | la receta sale bien | escalera `ESPERAS_OCUPADO_S` | `TOPE_OCUPADO` (6) | `pendientes` o impedimento de fase, como hoy | cerca de 9528 y 8339 |
-| `proveedor` | por hora | sin modelo libre, pausa de proveedor, cuenta no disponible, `fallo_runtime` o sin ruta de agentes | vence la pausa, o `proveedor_disponible` | `rutas` | 6 h | `detener`. El relevo agotado sigue en `pendientes` | `cli.py` cerca de 450; `ciclo.py` cerca de 3311, 3326 y 10037 |
+| `proveedor` | por hora | sin modelo libre, pausa de proveedor, cuenta no disponible, `fallo_runtime`, sin ruta de agentes, o relevo agotado | vence la pausa, o `proveedor_disponible` | `rutas` | 6 h | `detener`. Cambia (David, 17-nov): hoy el relevo agotado termina con `pendientes`; ahora espera como las demás causas | `cli.py` cerca de 450 y 517; `ciclo.py` cerca de 3311, 3326 y 10037 |
 | `acceso_kimi` | por hora | el turno termina con `autenticacion_expirada` | un relanzamiento con el token renovado funciona | 0 s | 60 min | `detener` | cerca de 3259; hoy sin cuenta |
 | `sesion_local` | por hora | `fallo_runtime` local de la sesión | un relanzamiento funciona | escalera (0, 1800) | 60 min | `detener` | cerca de 1201 |
-| `repo` | por hora | `_asegurar_repo` da una causa | el repo queda listo | 300 s | `TOPE_FALLOS_REPO` (3) | `pendientes` con impedimento, como hoy | cerca de 4338 |
+| `repo` | por hora | `_asegurar_repo` da una causa | el repo queda listo | escalera (300, 900, 1800) | 6 h | `detener`. Cambia (David, 17-nov): hoy son 3 intentos a 300 s y termina con `pendientes` e impedimento | cerca de 4338 |
 | `empuje` | por hora | `_commit_push` da una causa no transitoria | el push sale | 120 s | `TOPE_FALLOS_ENTREGA` (2) | `devolver`, como hoy | cerca de 8622 |
 | `empuje_transitorio` | por hora | `_commit_push` da una causa transitoria | el push sale | 120 s | 6 h | `detener` | cerca de 8622; hoy sin tope |
 | `github_pasajero` | por hora | otro fallo pasajero de GitHub | la operación sale | 120 s | 6 h | `detener` | cerca de 8756, 9017, 7933, 6257, 6192 y 8013 |
@@ -415,7 +424,7 @@ Evidencia:
 
 Evidencia:
 - `git grep -n "marcar_espera(" motor/` muestra la clase en cada llamada.
-- Con el interruptor apagado, una prueba de tabla da por cada clase el mismo `reanuda_en` que la
+- Con el interruptor apagado, una prueba de tabla usa la `hoy` de cada clase y da el mismo `reanuda_en` que la
   base.
 - `wc -l` de `ciclo.py` baja.
 
@@ -430,6 +439,9 @@ Evidencia, con el interruptor encendido, una prueba por fila:
 - en las filas `avisar` sale un solo aviso y la espera sigue.
 
 Evidencia, además:
+- en `tropiezo_merge`, `repo` y el relevo agotado de `proveedor`: encendido, los reintentos siguen
+  la escalera hasta las 6 h y luego el encargo se detiene; apagado, hacen lo de hoy (5 intentos,
+  3 intentos y `pendientes`);
 - una prueba de `deteniendo` con un proceso que no muere;
 - con el interruptor apagado, una prueba de que nada de esto pasa.
 
@@ -475,7 +487,7 @@ Evidencia:
 | `motor/encargos/situacion.py`, `encargo.py`, `reductor/`, `detencion.py`, `politica.py`, `necesidades.py` | `motor/machine.py`, `motor/flota/`, `motor/encargos/lote.py` |
 | `motor/encargos/ciclo.py` y `dominio.py`, sin que crezcan | `docs/modelo-centro-encargos.md` (lo actualiza el revisor) |
 | `motor/encargos/resumen.py`, `reporte.py`, `entrega/avisos.py`, `entrega/ejecutar.py`, `cli.py`, `rutas.py`, `despliegue.py`, `instrumento.py`, `contencion.py` | `motor/encargos/revisor_deepseek.py` |
-| `motor/respuestas_merge.py`, solo para leer su tope de la tabla | |
+| `motor/respuestas_merge.py`, para leer su conducta de la tabla | |
 | `tools/plegado.py`, `tools/corpus_plegado.py`, `tools/asignar_propiedades_fila.py`, `tests/` | |
 | `AGENTS.md` y `CLAUDE.md`, solo las tablas generadas | |
 
@@ -504,6 +516,13 @@ Evidencia:
 - **6 horas para lo pasajero que se arregla solo:** `autoridad`, `proveedor`, `empuje_transitorio`
   y `github_pasajero`. David lo eligió el 2026-11-17 ("6 horas"). Un encargo que corre mientras
   él duerme no debe quedar detenido por una caída de GitHub o por una ventana de cuota.
+- **Tres topes que ya existían pasan a esa ventana de 6 horas**, con reintentos cada vez más
+  espaciados, y al final el encargo se detiene y avisa en vez de terminar incompleto:
+  - el merge que falla, que hoy son 5 intentos en 10 minutos;
+  - el relevo de modelos agotado, que hoy entrega lo que tenga;
+  - el repo que no queda listo, que hoy son 3 intentos en 15 minutos.
+
+  David los eligió el 2026-11-17.
 
 **Del revisor**, que David puede cambiar:
 - **El merge de David no tiene tope.** Es la única espera de una persona.
