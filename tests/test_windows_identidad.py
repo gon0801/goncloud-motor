@@ -87,6 +87,8 @@ class IdentidadGrupoTest(unittest.TestCase):
         for creado, esperado in (
             (inicio + timedelta(days=1), "ausente"),
             (inicio + timedelta(hours=4), "vivo"),
+            (fin + timedelta(seconds=1), "vivo"),
+            (fin + timedelta(seconds=3), "ausente"),
         ):
             with (
                 self.subTest(creado=creado),
@@ -152,6 +154,8 @@ class MatarSinTocarPidReutilizadoTest(unittest.TestCase):
         for creado, esperado in (
             (inicio + timedelta(days=1), False),
             (inicio + timedelta(hours=4), True),
+            (fin + timedelta(seconds=1), True),
+            (fin + timedelta(seconds=3), False),
         ):
             with (
                 self.subTest(creado=creado),

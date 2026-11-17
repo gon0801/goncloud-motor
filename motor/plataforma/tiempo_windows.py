@@ -38,3 +38,9 @@ def fin_filetime(fin: str) -> int | None:
     delta = fecha.astimezone(timezone.utc) - datetime(1601, 1, 1, tzinfo=timezone.utc)
     return ((delta.days * 86400 + delta.seconds) * 10_000_000
             + delta.microseconds * 10)
+
+
+def fin_apagado_filetime(fin: str) -> int | None:
+    limite = fin_filetime(fin)
+    # El cierre de la sesión espera dos segundos por hijos nacidos al apagarla.
+    return limite + 20_000_000 if limite is not None else None

@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from motor import plataforma
@@ -233,6 +234,8 @@ def cerrar(directorio: Path, proc: dict | None, fin: str = "") -> str:
 
     if proc and proc.get("host") and proc["host"] != socket.gethostname():
         return "incierto"
+    if fin and proc and plataforma.estado_proc(proc) == "vivo":
+        fin = datetime.now(timezone.utc).isoformat()
     comprobador = comprobador_actual(directorio)
     if comprobador:
         cerrar(comprobador[0], comprobador[1], fin)

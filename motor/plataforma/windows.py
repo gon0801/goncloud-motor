@@ -23,7 +23,7 @@ from pathlib import Path
 from .arbol import candidatos_por_ppid as _candidatos_por_ppid
 from .arbol import descendientes_validos
 from .rutas_wsl import argv_a_wsl
-from .tiempo_windows import fin_filetime, hora_inicio
+from .tiempo_windows import fin_apagado_filetime, hora_inicio
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -887,7 +887,7 @@ def presencia_grupo(pid: int, inicio: str, job: str = "", *, fin: str = "") -> s
         if pids is None:
             return "incierto"
         return "vivo" if pids else "ausente"
-    limite = fin_filetime(fin) if fin else None
+    limite = fin_apagado_filetime(fin) if fin else None
     if fin and (limite is None or not inicio.isdigit() or limite < int(inicio)):
         return "incierto"
     hijos = _descendientes(pid, inicio, limite)
@@ -935,7 +935,7 @@ def cerrar_huerfanos(pid: int, inicio: str, job: str = "", *, fin: str = "") -> 
         return
     if visto == "incierto":
         return
-    limite = fin_filetime(fin) if fin else None
+    limite = fin_apagado_filetime(fin) if fin else None
     if fin and (limite is None or not inicio.isdigit() or limite < int(inicio)):
         return
     _matar_arbol_confirmado(pid, inicio, terminar_raiz=False, fin=limite)
