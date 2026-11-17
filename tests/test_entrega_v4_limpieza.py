@@ -108,6 +108,64 @@ class LimpiezaPorHechos(unittest.TestCase):
                           in enc.limpieza}["pr"], "borrado")
         self.assertTrue(enc.limpio)
 
+    def test_cerrado_limpio_no_repliega_historia_en_otra_pasada(self) -> None:
+        import motor.encargos.entrega.limpieza as limpieza
+
+        self._final(con_pr=True)
+        self.assertTrue(self._limpiar().limpio)
+        self._limpiar(1)
+        eventos = self.reg.eventos("x")
+        with mock.patch.object(limpieza, "reducir", wraps=limpieza.reducir) as reducir:
+            ciclo.barrer(self.reg, hora(2), 120, None, gh=self.gh)
+        self.assertEqual(reducir.call_count, 0)
+        self.assertEqual(self.reg.eventos("x"), eventos)
+
+    def _probar_pr_reemplazado(self, apilado: bool) -> None:
+        import motor.encargos.entrega.limpieza as limpieza
+
+        antiguo = self._final(con_pr=True, cancelar=False)
+        self.gh.cerrar_pr(self.repo, antiguo)
+        self._limpiar()
+        git("push", "-q", self.repo, "HEAD:refs/heads/encargo/x", cwd=self.trabajo)
+        nuevo = self.gh.abrir_pr(self.repo, "encargo/x", "main", "nuevo", "cuerpo").numero
+        self.gh.cerrar_pr(self.repo, nuevo)
+        self.reg.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "F", "paso": "pr_listo", "numero": nuevo,
+            "sha": "nuevo", "hora": hora(1),
+        }}, "pr-reemplazado:x")
+        if apilado:
+            self.gh.abrir_pr(self.repo, "feat", "encargo/x", "apilado", "cuerpo")
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "fase cerrada", "hora": hora(2),
+        }}, "cierre-reemplazado:x")
+        enc = self._limpiar(2)
+        self.assertEqual(enc.fases[0].pr_numero, nuevo)
+        self.assertTrue(enc.limpio)
+        self.assertEqual({clave for tipo, clave, resultado, _, _ in enc.limpieza
+                          if tipo == "pr" and resultado == "borrado"},
+                         {str(antiguo), str(nuevo)})
+        self.assertEqual(self.gh.rama_existe(self.repo, "encargo/x"), apilado)
+
+        self._limpiar(3)
+        eventos = self.reg.eventos("x")
+        with (mock.patch.object(self.gh, "ver", wraps=self.gh.ver) as ver,
+              mock.patch.object(self.gh, "rama_existe", wraps=self.gh.rama_existe) as rama,
+              mock.patch.object(self.gh, "prs_con_base", wraps=self.gh.prs_con_base) as prs,
+              mock.patch.object(limpieza, "reducir", wraps=limpieza.reducir) as reducir,
+              mock.patch.object(limpieza, "candidatos", wraps=limpieza.candidatos) as candidatos):
+            enc = self._limpiar(4)
+        self.assertTrue(enc.limpio)
+        self.assertEqual((ver.call_count, rama.call_count, prs.call_count), (0, 0, 0))
+        self.assertEqual(reducir.call_count, 0)
+        candidatos.assert_not_called()
+        self.assertEqual(self.reg.eventos("x"), eventos)
+
+    def test_pr_reemplazado_no_bloquea_limpio(self) -> None:
+        self._probar_pr_reemplazado(apilado=False)
+
+    def test_pr_reemplazado_con_apilado_no_gasta_cuota(self) -> None:
+        self._probar_pr_reemplazado(apilado=True)
+
     def test_una_rama_compartida_se_conserva_aunque_el_pr_propio_cierre(self) -> None:
         numero = self._final(con_pr=True)
         self.gh.abrir_pr(self.repo, "feat", "encargo/x", "apilado", "cuerpo")

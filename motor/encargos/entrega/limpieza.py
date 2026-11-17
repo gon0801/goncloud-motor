@@ -38,6 +38,9 @@ _SONDEOS_COMPARTIDOS: weakref.WeakKeyDictionary[Registro, dict[tuple[str, str], 
 _REVALIDACIONES: weakref.WeakKeyDictionary[
     Registro, dict[tuple[str, int, str, str], Revalidacion]
 ] = weakref.WeakKeyDictionary()
+_BORRADOS_CIERRE: weakref.WeakKeyDictionary[
+    Registro, dict[str, BorradosCierre]
+] = weakref.WeakKeyDictionary()
 _CUOTAS_GH: weakref.WeakKeyDictionary[Registro, tuple[float, int]] = weakref.WeakKeyDictionary()
 T = TypeVar("T")
 
@@ -154,6 +157,13 @@ class Recurso:
 class Revalidacion:
     fecha: datetime
     resultado: Literal["conservado", "pendiente"]
+
+
+@dataclass(frozen=True)
+class BorradosCierre:
+    ultimo_evento: int
+    cierre: int
+    anteriores: frozenset[tuple[str, str]]
 
 
 def _fecha(hora: str) -> datetime | None:
@@ -372,11 +382,20 @@ def _ultimo(enc: Encargo, recurso: Recurso) -> tuple[str, int, str]:
 def _borrados_anteriores_al_cierre(
     registro: Registro, enc: Encargo,
 ) -> tuple[int, set[tuple[str, str]]]:
-    if enc.estado not in ("terminado", "cancelado") or not any(
-        tipo in ("rama", "pr") and resultado == "borrado"
-        for tipo, _, resultado, _, _ in enc.limpieza
+    if enc.estado not in ("terminado", "cancelado"):
+        return 0, set()
+    actuales = {("pr", str(f.pr_numero)) for f in enc.fases if f.pr_numero}
+    actuales.update((rama.tipo, rama.clave) for rama in _ramas(enc))
+    if not any(
+        (tipo, clave) in actuales and resultado == "borrado"
+        for tipo, clave, resultado, _, _ in enc.limpieza
     ):
         return 0, set()
+    ultimo_evento = registro.ultimo_evento(enc.id)
+    cache = _BORRADOS_CIERRE.setdefault(registro, {})
+    previo = cache.get(enc.id)
+    if previo is not None and previo.ultimo_evento == ultimo_evento:
+        return previo.cierre, set(previo.anteriores & actuales)
     estado = None
     cierre = 0
     borrados: dict[tuple[str, str], int] = {}
@@ -395,7 +414,11 @@ def _borrados_anteriores_al_cierre(
                     borrados[recurso] = evento["id"]
                 else:
                     borrados.pop(recurso, None)
-    return cierre, {recurso for recurso, evento in borrados.items() if evento < cierre}
+    anteriores = frozenset(
+        recurso for recurso, evento in borrados.items() if evento < cierre
+    )
+    cache[enc.id] = BorradosCierre(ultimo_evento, cierre, anteriores)
+    return cierre, set(anteriores & actuales)
 
 
 def _puede_intentar(enc: Encargo, recurso: Recurso, hora: str) -> bool:
