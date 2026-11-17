@@ -464,6 +464,11 @@ def _rama(enc: Encargo, gh: GitHubPort | None,
 
     if gh is None or not enc.entrega.repo:
         return "pendiente"
+    if enc.estado not in ("terminado", "cancelado") and not any(
+        fase.pr_numero and _rama_de_fase(enc, fase) == recurso.clave
+        for fase in enc.fases
+    ):
+        return "pendiente"
     if any(
         fase.pr_numero and _ultimo(enc, Recurso("pr", str(fase.pr_numero)))[0] == "agotado"
         for fase in enc.fases
