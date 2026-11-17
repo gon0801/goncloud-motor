@@ -265,19 +265,46 @@ def informe(home: Path, manifiesto: Path) -> list[str]:
     for nombre, director in DIRECTORES.items():
         if nombre not in claves:
             continue
+        etiqueta = nombre
         try:
-            puestos, herencia = leer_tabla(manifiesto)
-            if nombre == "claw":
-                herencia = {**herencia, **_filas_de_claw(manifiesto.parent)}
-            # El bot que lleva el nombre de su app (MausBot) es su director: la fila de claw.
-            if "claw" in herencia and nombre not in herencia:
-                herencia = {**herencia, nombre: herencia["claw"]}
+            propia = _tabla_propia(home, nombre)
+            if propia is not None:
+                etiqueta = nombre + " (tabla propia de esta máquina)"
+                puestos, herencia = propia
+            else:
+                puestos, herencia = leer_tabla(manifiesto)
+                if nombre == "claw":
+                    herencia = {**herencia, **_filas_de_claw(manifiesto.parent)}
+                # El bot que lleva el nombre de su app (MausBot) es su director: la fila de claw.
+                if "claw" in herencia and nombre not in herencia:
+                    herencia = {**herencia, nombre: herencia["claw"]}
             texto = comparar(director, director.lee(home), puestos, herencia)
         except Exception as exc:
             causa = str(exc) if isinstance(exc, Ilegible) else type(exc).__name__
             texto = "no pude leer (%s)" % causa
-        lineas.append(nombre + ": " + texto)
+            etiqueta = nombre
+        lineas.append(etiqueta + ": " + texto)
     return lineas
+
+
+def _tabla_propia(home: Path, director: str) -> Optional[tuple[dict[str, Cadena], dict[str, str]]]:
+    # David puede dejar a un director con sus propios modelos: la tabla compartida de la flota
+    # no cambia y esta máquina compara ese director contra lo que fijó aquí, fuera del repo.
+    ruta = home / ".motor-encargos" / "modelos-propios.json"
+    if not ruta.exists():
+        return None
+    doc = _leer_json(ruta, "modelos-propios.json")
+    agentes = doc.get(director) if isinstance(doc, dict) else None
+    if agentes is None:
+        return None
+    if not isinstance(agentes, dict):
+        raise Ilegible("modelos-propios.json ilegible")
+    puestos: dict[str, Cadena] = {}
+    for agente, paso in agentes.items():
+        if not (isinstance(paso, list) and len(paso) == 2 and all(isinstance(x, str) for x in paso)):
+            raise Ilegible("modelos-propios.json ilegible")
+        puestos[str(agente).lower()] = ((paso[0], paso[1]),)
+    return puestos, {clave: clave for clave in puestos}
 
 
 def imprimir(lineas: list[str], salida) -> None:

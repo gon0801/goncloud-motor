@@ -130,6 +130,11 @@ ALFA_HERMES = [
 FUENTE = Path(__file__).resolve().parent.parent / "ops" / "modelos_por_agente.py"
 
 
+CADENA_ALFA = [
+    "anthropic/claude-opus-5-5", "kimi/k3.1-pro", "xai/grok-4.7", "opencode-go/deepseek-v4.1-flash",
+]
+
+
 class ModelosPorAgente(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="modelos-por-agente-")
@@ -229,6 +234,41 @@ class ModelosPorAgente(unittest.TestCase):
                     "openbot: 0 de 1 agentes como la tabla; difieren: beta (%s high; tabla"
                     " deepseek-v4.1-flash high)" % visto,
                 ])
+
+    def test_una_tabla_propia_de_la_maquina_manda_sobre_la_compartida_solo_en_su_director(self):
+        home = _maquina(self.base, "claw", "openbot")
+        _claw(home, {"alfa": CADENA_ALFA})
+        _openbot(home, [
+            ("Implementer", "claude-sonnet-5-5", "high"),
+            ("beta", "grok-4.7", "high"),
+            ("Nuevo", "grok-4.7", "high"),
+        ])
+        (home / ".motor-encargos" / "modelos-propios.json").write_text(json.dumps({
+            "openbot": {
+                "implementer": ["anthropic/claude-sonnet-5-5", "high"],
+                "beta": ["opencode-go/deepseek-v4.1-flash", "high"],
+            },
+        }), encoding="utf-8")
+
+        self.assertEqual(_informe(home), [
+            "claw: 1 de 1 agentes como la tabla",
+            "openbot (tabla propia de esta máquina): 1 de 3 agentes como la tabla;"
+            " difieren: beta (grok-4.7 high; tabla deepseek-v4.1-flash high);"
+            " sin fila en la tabla: Nuevo",
+        ])
+
+    def test_una_tabla_propia_ilegible_lo_dice_sin_tumbar_a_los_demas(self):
+        home = _maquina(self.base, "claw", "openbot")
+        _claw(home, {"alfa": CADENA_ALFA})
+        _openbot(home, [("alfa", "claude-opus-5-5", "high")])
+        (home / ".motor-encargos" / "modelos-propios.json").write_text(
+            json.dumps({"openbot": {"alfa": "claude-opus-5-5"}}), encoding="utf-8",
+        )
+
+        self.assertEqual(_informe(home), [
+            "claw: 1 de 1 agentes como la tabla",
+            "openbot: no pude leer (modelos-propios.json ilegible)",
+        ])
 
     def test_un_agente_sin_fila_se_nombra_aparte_y_el_nombre_va_en_minusculas(self):
         home = _maquina(self.base, "openbot")
