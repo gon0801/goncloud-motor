@@ -284,6 +284,58 @@ class LimpiezaPorHechos(unittest.TestCase):
         with mock.patch.object(self.gh, "ver", return_value=abierto) as ver:
             self._limpiar(11)
         self.assertEqual(ver.call_count, 1)
+        with mock.patch.object(self.gh, "ver", side_effect=AssertionError("vencido")) as ver:
+            enc = self._limpiar(8 * 24 * 60)
+        self.assertEqual(ver.call_count, 0)
+        self.assertFalse(enc.limpio)
+
+    def test_rama_reaparecida_pendiente_no_repite_consultas(self) -> None:
+        from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
+
+        def barrer(minutos: int):
+            return barrer_limpieza(
+                self.reg, self.reg.fold("x"), self.gh, hora(minutos),
+                PresupuestoLimpieza(self.reg, minutos * 60), minutos * 60,
+            )
+
+        numero = self._final(con_pr=True, cancelar=False)
+        self.gh.cerrar_pr(self.repo, numero)
+        self._limpiar()
+        git("push", "-q", self.repo, "HEAD:refs/heads/encargo/x", cwd=self.trabajo)
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "entrega parcial", "hora": hora(1),
+        }}, "cierre-rama-pendiente:x")
+        with mock.patch.object(self.gh, "borrar_rama", return_value=None):
+            enc = barrer(1)
+        self.assertFalse(enc.limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
+
+        eventos = self.reg.eventos("x")
+        with (mock.patch.object(self.gh, "ver", wraps=self.gh.ver) as ver,
+              mock.patch.object(self.gh, "rama_existe", wraps=self.gh.rama_existe) as rama,
+              mock.patch.object(self.gh, "prs_con_base", wraps=self.gh.prs_con_base) as prs):
+            barrer(2)
+        self.assertEqual((ver.call_count, rama.call_count, prs.call_count), (0, 0, 0))
+        self.assertEqual(self.reg.eventos("x"), eventos)
+        enc = barrer(11)
+        self.assertTrue(enc.limpio)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+
+    def test_revalidacion_sin_sondeo_no_sale_de_ventana_de_siete_dias(self) -> None:
+        numero = self._final(con_pr=True, cancelar=False)
+        self.gh.cerrar_pr(self.repo, numero)
+        self._limpiar()
+        git("push", "-q", self.repo, "HEAD:refs/heads/encargo/x", cwd=self.trabajo)
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "entrega parcial", "hora": hora(1),
+        }}, "cierre-fuera-de-ventana:x")
+        with (mock.patch.object(self.gh, "ver", wraps=self.gh.ver) as ver,
+              mock.patch.object(self.gh, "rama_existe", wraps=self.gh.rama_existe) as rama,
+              mock.patch.object(self.gh, "prs_con_base", wraps=self.gh.prs_con_base) as prs):
+            enc = self._limpiar(8 * 24 * 60)
+        self.assertEqual((ver.call_count, rama.call_count, prs.call_count), (0, 0, 0))
+        self.assertFalse(enc.limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
 
     def test_un_pr_ya_cerrado_se_observa_sin_cerrarlo_de_nuevo(self) -> None:
         numero = self._final(con_pr=True)
