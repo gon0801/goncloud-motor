@@ -15,6 +15,7 @@ from motor import plataforma
 
 from .. import despliegue, politica
 from ..copiar import borrar_arbol
+from ..dominio import _fallo_transitorio
 from ..frontera import leer_parada_local
 from motor.io import leer_json
 from .observacion import anotar_pr
@@ -48,7 +49,8 @@ def _transitorio_gh(exc: BaseException) -> bool:
     if not isinstance(exc, RuntimeError):
         return False
     texto = str(exc).lower()
-    return ("rate limit" in texto or "too many requests" in texto
+    return (_fallo_transitorio(texto) or "rate limit" in texto
+            or "too many requests" in texto
             or "abuse detection" in texto or "http 429" in texto
             or re.search(r"\b(?:http|status|error)\s*5\d\d\b", texto) is not None)
 
@@ -392,14 +394,21 @@ def reintentar_agotados(registro: Registro, ident: str, clave: str, hora: str) -
         (tipo, recurso) for tipo, recurso, resultado, _, _ in enc.limpieza
         if resultado == "agotado"
     )
-    registro.append_many(ident, tuple(
+    eventos = tuple(
         Evento("limpieza", {
             "recurso": tipo, "clave": recurso, "resultado": "pendiente",
             "intento": 0, "hora": hora,
         }, f"limpieza-reintentar:{ident}:{clave}:{tipo}:{recurso}")
         for tipo, recurso in agotados
-    ))
-    return {"encargo": ident, "reiniciados": len(agotados)}
+    )
+    if any(registro.por_ukey(evento.ukey) is not None for evento in eventos):
+        return {"encargo": ident, "rechazada": "la clave de reintento ya se usó"}
+    resultados = registro.append_many(ident, eventos)
+    nuevos = sum(resultado == "nuevo" for resultado in resultados)
+    if nuevos != len(eventos):
+        return {"encargo": ident, "reiniciados": nuevos,
+                "rechazada": "la clave de reintento ya se usó"}
+    return {"encargo": ident, "reiniciados": nuevos}
 
 
 def _pr(registro: Registro, enc: Encargo, gh: GitHubPort | None,
@@ -655,6 +664,6 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
         and _recibos_presentes(registro, enc)
         and all(pr.pr.estado not in ("abierto", "borrador") for pr in enc.prs)):
         registro.anotar(enc.id, {"kind": "limpio", "data": {"hora": hora}},
-                       f"limpio:{enc.id}:{enc.hora_final}")
+                       f"limpio:{enc.id}:{enc.hora_final}:{registro.ultimo_evento(enc.id)}")
         enc = registro.fold(enc.id) or enc
     return enc

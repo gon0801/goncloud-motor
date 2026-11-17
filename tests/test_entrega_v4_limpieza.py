@@ -759,6 +759,7 @@ class LimpiezaPorHechos(unittest.TestCase):
             RuntimeError("API rate limit already exceeded"),
             RuntimeError("secondary rate limit: token=secreto"),
             RuntimeError("HTTP 502 Bad Gateway"),
+            RuntimeError("gh api: could not resolve host"),
             subprocess.TimeoutExpired("gh", 30),
         )
         for exc in errores:
@@ -852,6 +853,46 @@ class LimpiezaPorHechos(unittest.TestCase):
         enc = self._limpiar(1)
         self.assertTrue(enc.limpio)
         self.assertFalse(runtime.exists())
+
+    def test_reintentar_tras_un_limpio_previo_vuelve_a_acreditar_limpio(self) -> None:
+        from ops.limpieza_reintentar import main
+
+        self._final()
+        self.assertTrue(self._limpiar().limpio)
+        runtime = self.reg.base / "runtime" / "x"
+        runtime.mkdir(parents=True)
+        with mock.patch("motor.encargos.entrega.limpieza.borrar_arbol",
+                        side_effect=PermissionError("ocupado")):
+            for minuto in (1, 11, 21):
+                self._limpiar(minuto)
+        self.assertEqual(next(r for tipo, _, r, _, _ in self.reg.fold("x").limpieza
+                              if tipo == "runtime"), "agotado")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["x", "--base", str(self.reg.base), "--clave", "rescate"]), 0)
+        enc = self._limpiar(22)
+        self.assertFalse(runtime.exists())
+        self.assertTrue(enc.limpio)
+
+    def test_clave_de_reintento_usada_no_miente_tras_nuevo_agotamiento(self) -> None:
+        from ops.limpieza_reintentar import main
+
+        self._final()
+        datos = {"recurso": "runtime", "clave": "x", "resultado": "agotado",
+                 "intento": 3, "hora": hora()}
+        self.reg.anotar("x", {"kind": "limpieza", "data": datos}, "agotado:primero")
+        argv = ["x", "--base", str(self.reg.base), "--clave", "rescate"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(argv), 0)
+        self.reg.anotar("x", {"kind": "limpieza", "data": {
+            **datos, "hora": hora(10),
+        }}, "agotado:segundo")
+        anterior = self.reg.ultimo_evento("x")
+        with contextlib.redirect_stdout(io.StringIO()) as salida:
+            self.assertEqual(main(argv), 2)
+        self.assertIn("rechazada", salida.getvalue())
+        self.assertEqual(self.reg.ultimo_evento("x"), anterior)
+        self.assertEqual(next(r for tipo, _, r, _, _ in self.reg.fold("x").limpieza
+                              if tipo == "runtime"), "agotado")
 
     def test_las_carpetas_vencen_a_los_siete_dias_y_no_reaparecen(self) -> None:
         self._final()
