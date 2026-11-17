@@ -559,6 +559,7 @@ def _observacion_en(registro, enc, directorio: Path) -> str:
             return "ausente"
         presencia = plataforma.presencia_grupo(
             int(comando["pid"]), comando["inicio"], comando.get("job", ""),
+            fin=enc.hora_final,
         )
         if presencia == "vivo" and not _autorizado_ahora(registro, enc.id, not autoridad_ausente(registro.base)):
             plataforma.matar_grupo_pid(int(comando["pid"]), comando["inicio"])

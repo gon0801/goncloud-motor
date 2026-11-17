@@ -20,8 +20,10 @@ import time
 import uuid
 from pathlib import Path
 
+from .arbol import candidatos_por_ppid as _candidatos_por_ppid
 from .arbol import descendientes_validos
 from .rutas_wsl import argv_a_wsl
+from .tiempo_windows import fin_filetime, hora_inicio
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -521,29 +523,6 @@ def sincroniza_directorio(path) -> None:  # pragma: no cover
     raise OSError("no pude abrir el directorio para sincronizarlo")
 
 
-def hora_inicio(pid: int) -> str:  # pragma: no cover
-    """Hora de creación del proceso (FILETIME como texto, "" si no existe). Distingue un pid reusado."""
-    import ctypes
-    from ctypes import wintypes
-
-    k = ctypes.WinDLL("kernel32", use_last_error=True)
-    k.OpenProcess.restype = wintypes.HANDLE
-    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    k.GetProcessTimes.argtypes = [wintypes.HANDLE] + [
-        ctypes.POINTER(wintypes.FILETIME)
-    ] * 4
-    k.CloseHandle.argtypes = [wintypes.HANDLE]
-    h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not h:
-        return ""
-    ft = [wintypes.FILETIME() for _ in range(4)]
-    ok = k.GetProcessTimes(h, *[ctypes.byref(x) for x in ft])
-    k.CloseHandle(h)
-    if not ok:
-        return ""
-    return str((ft[0].dwHighDateTime << 32) | ft[0].dwLowDateTime)
-
-
 def _consulta_pid(pid: int) -> str:  # pragma: no cover
     """`vivo`, `muerto` o `incierto`. Un acceso denegado no es una muerte."""
     import ctypes
@@ -778,24 +757,6 @@ def _padres_procesos() -> dict[int, int] | None:  # pragma: no cover
     return padres or None
 
 
-def _candidatos_por_ppid(padres: dict[int, int], raiz: int) -> list[int]:
-    hijos = []
-    for candidato, padre in padres.items():
-        visto = {candidato}
-        actual = padre
-        for _ in range(64):
-            if actual == raiz:
-                hijos.append(candidato)
-                break
-            if actual in visto or actual == 0:
-                break
-            visto.add(actual)
-            if actual not in padres:
-                break
-            actual = padres[actual]
-    return hijos
-
-
 def _hora_creacion(pid: int) -> int | None:
     texto = hora_inicio(pid)
     return int(texto) if texto.isdigit() else None
@@ -808,7 +769,7 @@ def _hora_raiz(pid: int, inicio: str) -> int | None:
     return _hora_creacion(pid)
 
 
-def _descendientes(pid: int, inicio: str = "") -> list[int] | None:  # pragma: no cover
+def _descendientes(pid: int, inicio: str = "", fin: int | None = None) -> list[int] | None:  # pragma: no cover
     padres = _padres_procesos()
     if not padres:
         return None
@@ -819,7 +780,7 @@ def _descendientes(pid: int, inicio: str = "") -> list[int] | None:  # pragma: n
     horas = {c: _hora_creacion(c) for c in candidatos}
     snapshot = {c: (padres[c], horas[c]) for c in candidatos}
     snapshot[pid] = (padres.get(pid, 0), raiz_creada)
-    validos = descendientes_validos(snapshot, pid)
+    validos = descendientes_validos(snapshot, pid, fin)
     if not validos and any(hora is None for hora in horas.values()):
         # Hay candidatos que no se pueden datar: no es ausencia, es incertidumbre.
         return None
@@ -845,7 +806,7 @@ def _matar_pid_confirmado(pid: int, esperado: int | None) -> bool:  # pragma: no
 
 
 def _matar_descendientes_confirmados(  # pragma: no cover
-    pid: int, raiz_creada: int
+    pid: int, raiz_creada: int, fin: int | None = None,
 ) -> bool:
     """Una pasada: enumera el árbol, filtra por la regla pura y mata lo confirmado."""
     padres = _padres_procesos()
@@ -857,14 +818,15 @@ def _matar_descendientes_confirmados(  # pragma: no cover
     horas = {c: _hora_creacion(c) for c in candidatos}
     snapshot = {c: (padres[c], horas[c]) for c in candidatos}
     snapshot[pid] = (padres.get(pid, 0), raiz_creada)
-    validos = descendientes_validos(snapshot, pid)
+    validos = descendientes_validos(snapshot, pid, fin)
     for hijo in validos:
         _matar_pid_confirmado(hijo, horas[hijo])
     return bool(validos)
 
 
 def _matar_arbol_confirmado(  # pragma: no cover
-    pid: int, inicio: str = "", *, terminar_raiz: bool = True, intentos: int = 4
+    pid: int, inicio: str = "", *, terminar_raiz: bool = True, intentos: int = 4,
+    fin: int | None = None,
 ) -> None:
     """Enumera y mata en varias pasadas para no dejar hijos nacidos durante el cierre.
 
@@ -877,19 +839,19 @@ def _matar_arbol_confirmado(  # pragma: no cover
         # La raíz ya no es la que se quería cerrar: no hay cadena que confirmar.
         return
     for _ in range(intentos):
-        if not _matar_descendientes_confirmados(pid, raiz_creada):
+        if not _matar_descendientes_confirmados(pid, raiz_creada, fin):
             break
         time.sleep(0.05)
     if not terminar_raiz:
         return
     _matar_pid_confirmado(pid, raiz_creada)
     for _ in range(intentos):
-        if not _matar_descendientes_confirmados(pid, raiz_creada):
+        if not _matar_descendientes_confirmados(pid, raiz_creada, fin):
             break
         time.sleep(0.05)
 
 
-def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # pragma: no cover
+def presencia_grupo(pid: int, inicio: str, job: str = "", *, fin: str = "") -> str:  # pragma: no cover
     """`vivo`, `ausente` o `incierto`. Un error al mirar el Job o el árbol no es ausencia."""
     if not inicio or pid <= 0:
         return "incierto"
@@ -925,7 +887,10 @@ def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # pragma: no 
         if pids is None:
             return "incierto"
         return "vivo" if pids else "ausente"
-    hijos = _descendientes(pid, inicio)
+    limite = fin_filetime(fin) if fin else None
+    if fin and (limite is None or not inicio.isdigit() or limite < int(inicio)):
+        return "incierto"
+    hijos = _descendientes(pid, inicio, limite)
     if hijos is None:
         return "incierto"
     if reutilizado:
@@ -943,7 +908,7 @@ def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # pragma: no 
     return "vivo" if hijos else "ausente"
 
 
-def cerrar_huerfanos(pid: int, inicio: str, job: str = "") -> None:  # pragma: no cover
+def cerrar_huerfanos(pid: int, inicio: str, job: str = "", *, fin: str = "") -> None:  # pragma: no cover
     """Termina descendientes cuando el líder ya no es el proceso lanzado. No mata a ciegas."""
     if not inicio or pid <= 1:
         return
@@ -970,7 +935,10 @@ def cerrar_huerfanos(pid: int, inicio: str, job: str = "") -> None:  # pragma: n
         return
     if visto == "incierto":
         return
-    _matar_arbol_confirmado(pid, inicio, terminar_raiz=False)
+    limite = fin_filetime(fin) if fin else None
+    if fin and (limite is None or not inicio.isdigit() or limite < int(inicio)):
+        return
+    _matar_arbol_confirmado(pid, inicio, terminar_raiz=False, fin=limite)
 
 
 def matar_grupo_pid(pid: int, inicio: str = "") -> None:  # pragma: no cover

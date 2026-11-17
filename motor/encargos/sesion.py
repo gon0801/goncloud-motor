@@ -16,17 +16,19 @@ from motor.encargos.dominio import fuentes_autorizadas
 
 
 class Marca:
-    def __init__(self, directorio: Path, proc: dict | None):
+    def __init__(self, directorio: Path, proc: dict | None, fin: str = ""):
         self.dir = str(directorio)
         self.proc = proc or {}
+        self.fin = fin
 
 
-def observar(directorio: Path, proc: dict | None, *, escribir: bool = True) -> str:
+def observar(directorio: Path, proc: dict | None, *, escribir: bool = True,
+            fin: str = "") -> str:
     """Con `escribir=False` no toma el turno ni guarda el proceso del comprobador que
     encuentre: es para quien solo mira y no lanza después."""
     comprobador = comprobador_actual(directorio, escribir=escribir)
     if comprobador:
-        estado = observar(comprobador[0], comprobador[1], escribir=escribir)
+        estado = observar(comprobador[0], comprobador[1], escribir=escribir, fin=fin)
         if estado != "ausente":
             return estado
     if not proc:
@@ -35,7 +37,7 @@ def observar(directorio: Path, proc: dict | None, *, escribir: bool = True) -> s
         return "incierto"
     from motor.effects import observar_arbol
 
-    estado = observar_arbol(Marca(directorio, proc))
+    estado = observar_arbol(Marca(directorio, proc, fin))
     if estado != "ausente":
         return estado
     try:
@@ -213,7 +215,7 @@ def lanzar_administrado(directorio: Path, token: str, entorno: dict[str, str | N
     return proc
 
 
-def _cerrar_identidad(ident: dict) -> None:
+def _cerrar_identidad(ident: dict, fin: str = "") -> None:
     if ident.get("host") and ident["host"] != socket.gethostname():
         return
     if not ident.get("pid") or not ident.get("inicio"):
@@ -222,10 +224,10 @@ def _cerrar_identidad(ident: dict) -> None:
     inicio = str(ident.get("inicio") or "")
     job = str(ident.get("job") or "")
     plataforma.matar_proc(pid, inicio)
-    plataforma.cerrar_huerfanos(pid, inicio, job)
+    plataforma.cerrar_huerfanos(pid, inicio, job, fin=fin)
 
 
-def cerrar(directorio: Path, proc: dict | None) -> str:
+def cerrar(directorio: Path, proc: dict | None, fin: str = "") -> str:
     """Cierra al padre y al grupo aunque el padre ya no esté en la lista de vivos."""
     from motor.effects import _senales, observar_arbol
 
@@ -233,7 +235,7 @@ def cerrar(directorio: Path, proc: dict | None) -> str:
         return "incierto"
     comprobador = comprobador_actual(directorio)
     if comprobador:
-        cerrar(comprobador[0], comprobador[1])
+        cerrar(comprobador[0], comprobador[1], fin)
     if (
         proc
         and (not proc.get("host") or proc["host"] == socket.gethostname())
@@ -264,24 +266,25 @@ def cerrar(directorio: Path, proc: dict | None) -> str:
                 except ProcessLookupError:
                     pass
     if proc:
-        _cerrar_identidad(proc)
-    att = Marca(directorio, proc)
+        _cerrar_identidad(proc, fin)
+    att = Marca(directorio, proc, fin)
     for ident in _senales(att):
         if proc and int(ident.get("pid") or 0) == int(proc.get("pid") or 0):
             continue
-        _cerrar_identidad(ident)
-    fin = time.time() + 2
+        _cerrar_identidad(ident, fin)
+    limite = time.time() + 2
     visto = observar_arbol(att)
-    while visto == "vivo" and time.time() < fin:
+    while visto == "vivo" and time.time() < limite:
         time.sleep(0.05)
         if proc:
             plataforma.cerrar_huerfanos(
                 int(proc["pid"]),
                 str(proc.get("inicio") or ""),
                 str(proc.get("job") or ""),
+                fin=fin,
             )
         visto = observar_arbol(att)
-    return observar(directorio, proc)
+    return observar(directorio, proc, fin=fin)
 
 
 def crecer_log(directorio: Path, texto: str) -> None:

@@ -142,6 +142,31 @@ class HoraIlegibleNoEsAusenciaTest(unittest.TestCase):
 class MatarSinTocarPidReutilizadoTest(unittest.TestCase):
     """F2: reenumerar y volver a datar antes de matar, sin /T."""
 
+    def test_cerrar_huerfanos_no_mata_ppid_reusado_tras_el_cierre(self):
+        inicio = datetime(2026, 11, 16, tzinfo=timezone.utc)
+        fin = inicio + timedelta(hours=8)
+
+        def filetime(hora):
+            return str(int((hora.timestamp() + 11_644_473_600) * 10_000_000))
+
+        for creado, esperado in (
+            (inicio + timedelta(days=1), False),
+            (inicio + timedelta(hours=4), True),
+        ):
+            with (
+                self.subTest(creado=creado),
+                patch.dict(windows._jobs, {}, clear=True),
+                patch.object(windows, "_consulta_pid", return_value="muerto"),
+                patch.object(windows, "_abrir_job", return_value=(None, "ausente")),
+                patch.object(windows, "_padres_procesos", return_value={20: 18108}),
+                patch.object(windows, "hora_inicio",
+                             side_effect=lambda pid, creado=creado: filetime(creado) if pid == 20 else ""),
+                patch.object(windows, "_matar_pid_confirmado") as matar,
+                patch.object(windows.time, "sleep"),
+            ):
+                windows.cerrar_huerfanos(18108, filetime(inicio), fin=fin.isoformat())
+                self.assertEqual(bool(matar.call_args_list), esperado)
+
     def test_reenumera_y_alcanza_al_hijo_nacido_durante_el_cierre(self):
         pasadas = 0
 

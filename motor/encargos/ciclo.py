@@ -1291,7 +1291,7 @@ def _leer_proc(directorio: Path) -> dict | None:
 def _cerrar_procesos_del_encargo(registro: Registro, enc: Encargo) -> int:
     """Cierra lo que siga vivo de un encargo cerrado: sus herramientas del
     buzón y los procesos de cada intento, aunque el padre ya no esté."""
-    raiz = Path(registro.base) / "ejecucion" / enc.id
+    raiz = registro.base / "ejecucion" / enc.id
     cerrados = 0
     try:
         cerrados += necesidades.cerrar_herramientas_del_encargo(raiz)
@@ -1302,7 +1302,7 @@ def _cerrar_procesos_del_encargo(registro: Registro, enc: Encargo) -> int:
         proc = _leer_proc(carpeta)
         if proc:
             candidatos.append((carpeta, proc))
-    if enc.proc is not None:
+    if enc.proc:
         candidatos.append((raiz, enc.proc.como_dict()))
     vistos: set[tuple] = set()
     for carpeta, proc in candidatos:
@@ -1311,7 +1311,7 @@ def _cerrar_procesos_del_encargo(registro: Registro, enc: Encargo) -> int:
             continue
         vistos.add(ident)
         try:
-            cerrar(carpeta, proc)
+            cerrar(carpeta, proc, enc.hora_final)
             cerrados += 1
         except (OSError, ValueError):
             pass

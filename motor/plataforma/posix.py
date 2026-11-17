@@ -222,7 +222,7 @@ def _miembros_grupo(pgid: int) -> list[int] | None:
     return miembros
 
 
-def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # noqa: ARG001
+def presencia_grupo(pid: int, inicio: str, job: str = "", *, fin: str = "") -> str:  # noqa: ARG001
     """`vivo` si queda alguien del grupo, `ausente` si no, `incierto` si no se puede mirar.
 
     Un líder muerto no es ausencia. El pid reusado no cuenta como descendiente.
@@ -261,7 +261,7 @@ def matar_grupo_pid(pid: int, inicio: str = "") -> None:
             return
 
 
-def cerrar_huerfanos(pid: int, inicio: str, job: str = "") -> None:  # noqa: ARG001
+def cerrar_huerfanos(pid: int, inicio: str, job: str = "", *, fin: str = "") -> None:  # noqa: ARG001
     """KILL del grupo cuando el líder ya no es el proceso lanzado. No toca un pid reusado."""
     if not inicio or pid <= 1:
         return
