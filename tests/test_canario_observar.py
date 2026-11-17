@@ -108,6 +108,15 @@ class TurnoCerradoConPpidReusado(unittest.TestCase):
                 json.dumps({"pid": 18108, "inicio": "133100000000000000"}),
                 encoding="utf-8",
             )
+            despliegue = base / "despliegues" / ("a" * 64)
+            despliegue.mkdir(parents=True)
+            (despliegue / "pedido.json").write_text(
+                json.dumps({"identidad": {"encargo": "x"}}), encoding="utf-8",
+            )
+            (despliegue / "proceso.json").write_text(
+                json.dumps({"pid": 18109, "inicio": "133100000000000000"}),
+                encoding="utf-8",
+            )
 
             for creado, esperado in (
                 (cierre + timedelta(days=1), False),
@@ -120,9 +129,13 @@ class TurnoCerradoConPpidReusado(unittest.TestCase):
                 with (self.subTest(creado=creado),
                       mock.patch.object(plataforma, "estado_proc", return_value="muerto"),
                       mock.patch.object(plataforma, "presencia_grupo", side_effect=presencia)):
-                    turnos = [resto.queda for resto in canario.procesos(base, "x")
-                              if "turnos" in resto.nombre]
-                    self.assertEqual(turnos, [esperado])
+                    procesos = {r.nombre: r.queda for r in canario.procesos(base, "x")}
+                    self.assertEqual(procesos["algún proceso de sus 0 turnos"], esperado)
+                    self.assertEqual(procesos["algún trabajador de despliegue"], esperado)
+                    obs = observar(base, "x", mock.Mock(), hora=cierre.isoformat())
+                    restos = {r.nombre: r.queda for r in obs.restos}
+                    self.assertEqual(restos["algún proceso de sus 0 turnos"], esperado)
+                    self.assertEqual(restos["algún trabajador de despliegue"], esperado)
 
 
 @unittest.skipIf(os.name == "nt", "el grupo de procesos sin lanzador es de POSIX")
