@@ -21,6 +21,7 @@ from motor.github import Conflicto, MergeRechazado, PoliticaBloquea
 from motor.respuestas_merge import motivo_del_merge, tras_el_rechazo
 
 from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
+from .carpetas import _directorio, _directorio_lectura, _espacio, _espacio_lectura
 from .entrega.observacion import anotar_integrado, anotar_pr, preparar_pr, siguiente_fase
 from .entrega.ejecutar import (
     anotar_pendiente, base_objetivo_del_pr as _base_objetivo_del_pr,
@@ -910,23 +911,6 @@ def firma_espacio(path: Path) -> str:
     return firma_producto(path)
 
 
-def _directorio(base: Path, encargo_id: str) -> Path:
-    raiz = base / "ejecucion" / encargo_id
-    raiz.mkdir(parents=True, exist_ok=True)
-    actual = raiz / "actual"
-    if actual.is_file():
-        nombre = leer_texto(actual).strip()
-        if nombre.startswith("intento-") and "/" not in nombre and "\\" not in nombre:
-            return raiz / nombre
-    return raiz
-
-
-def _espacio(base: Path, encargo_id: str) -> Path:
-    path = base / "espacio" / encargo_id
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def _ya_incorporado(enc: Encargo | None) -> bool:
     return enc is not None and enc.generacion in enc.incorporado
 
@@ -1574,7 +1558,7 @@ def barrer(
     informes = []
     presupuesto = [CERRADOS_POR_PASADA]
     presupuesto_pr = CERRADOS_POR_PASADA
-    presupuesto_limpieza = PresupuestoLimpieza(registro)
+    presupuesto_limpieza = PresupuestoLimpieza(registro, epoch)
     for encargo_id in ids_por_sondeo(registro):
         try:
             previo = plegar_aislado(registro, encargo_id)
@@ -6113,7 +6097,7 @@ def _revisar_deepseek_del_cerrado(
     edad = max(0.0, epoch - cierre) if cierre else 0.0
     if edad >= CERRADOS_VENTANA_S:
         return enc
-    espacio = _espacio(registro.base, enc.id)
+    espacio = _espacio_lectura(registro.base, enc.id)
     if presupuesto is None:
         presupuesto = [CERRADOS_POR_PASADA]
     # El cursor de lecturas empieza en lo que dice el registro (encargos
@@ -7238,7 +7222,7 @@ def _revisar_ci_del_pr(
         f"{str(c.get('nombre') or 'job')} ({str(c.get('conclusion') or '')})"
         for c in caidas
     ]
-    espacio = _espacio(registro.base, enc.id)
+    espacio = _espacio_lectura(registro.base, enc.id)
     detalles: dict[str, str] = {}
     texto = _logs_de_fallidos(
         gh, enc.entrega.repo, veredicto_ci, espacio, corridas=caidas,
@@ -10338,7 +10322,7 @@ def _mirar_autoridad(registro: Registro, enc: Encargo, hora: str) -> Encargo:
             return registro.fold(enc.id) or enc
         return enc
     if enc.proc is None and not enc.reserva and enc.conductor:
-        directorio = _directorio(registro.base, enc.id)
+        directorio = _directorio_lectura(registro.base, enc.id)
         if observar(directorio, _leer_proc(directorio)) == "ausente":
             _soltar_conductor(registro, enc, hora)
     if not enc.autoridad:

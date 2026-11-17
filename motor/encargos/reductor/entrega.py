@@ -151,8 +151,12 @@ def _leer_limpieza(d: dict) -> tuple[str, str, str, int, str] | None:
     recurso, clave, resultado = d.get("recurso"), _texto(d, "clave"), d.get("resultado")
     intento, hora = d.get("intento"), _texto(d, "hora")
     if (not isinstance(recurso, str) or recurso not in RECURSOS or clave is None
-        or resultado not in ("borrado", "fallo", "agotado")
-        or not _numero(intento) or hora is None):
+        or resultado not in ("borrado", "fallo", "agotado", "pendiente")
+        or (not _numero(intento) and not (resultado == "pendiente"
+                                          and type(intento) is int and intento == 0))
+        or hora is None):
+        return None
+    if resultado == "pendiente" and intento != 0:
         return None
     return recurso, clave, resultado, intento, hora
 
@@ -160,15 +164,27 @@ def _leer_limpieza(d: dict) -> tuple[str, str, str, int, str] | None:
 def validar_limpieza(e: Encargo, d: dict) -> None:
     if not isinstance(d, dict) or _leer_limpieza(d) is None:
         _rechazar("limpieza ilegible")
+    if d["resultado"] == "pendiente" and not any(
+        tipo == d["recurso"] and clave == d["clave"] and resultado == "agotado"
+        for tipo, clave, resultado, _, _ in e.limpieza
+    ):
+        _rechazar("solo un recurso agotado se puede reintentar")
+    if "error_clase" in d or "error_mensaje" in d:
+        clase, mensaje = d.get("error_clase"), d.get("error_mensaje")
+        if (not isinstance(clase, str) or not clase.isidentifier() or len(clase) > 64
+            or not isinstance(mensaje, str) or not mensaje.strip()
+            or len(mensaje) > 128 or "\n" in mensaje):
+            _rechazar("causa de limpieza ilegible")
 
 
 def limpieza(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     datos = _leer_limpieza(d) if isinstance(d, dict) else None
     if datos is None:
         return e
-    return replace(
+    resultado = replace(
         e, limpieza=tuple(x for x in e.limpieza if x[:2] != datos[:2]) + (datos,),
     )
+    return replace(resultado, limpio="") if datos[2] == "pendiente" else resultado
 
 
 def validar_limpio(e: Encargo, d: dict) -> None:

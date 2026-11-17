@@ -7,7 +7,7 @@ falla si los dos archivos difieren.
 
 | Regla | Valor | Decisión de David | Qué la hace cumplir |
 | --- | --- | --- | --- |
-| La limpieza se reintenta desde el registro, sin borrar de golpe. | 3 intentos; 10 min; 20 borrados por pasada | David, 16-nov | el tercer fallo agota el recurso; cada reintento espera 10 min y una pasada borra a lo sumo 20 recursos |
+| La limpieza se reintenta desde el registro, sin borrar de golpe. | 3 intentos; 10 min; 20 borrados por pasada; 20 consultas GitHub por 120 s | David, 16-nov | el tercer fallo agota el recurso; cada reintento espera 10 min y una pasada borra a lo sumo 20 recursos; las consultas a GitHub comparten un presupuesto de 20 por 120 s |
 | DeepSeek: 30 minutos y se sigue con omisión explícita. | 30 min | David, 6-nov | a los 29 min espera; a los 31 min omite con la causa escrita |
 | Sin el revisor de DeepSeek en el SHA ni en la base del PR no se espera su revisión. | 0 min | David, 2026-11-13 | sin un workflow de ai-review omite enseguida con la causa escrita; lo que no se pudo leer espera el tope |
 | Un encargo cerrado se sondea 7 días desde el cierre, con 5 consultas por pasada. | 7 días; 5 por pasada | David, 6-nov | a los 6 días sondea; a los 8 no; 5 consultas entran y la 6.ª queda para la pasada siguiente |

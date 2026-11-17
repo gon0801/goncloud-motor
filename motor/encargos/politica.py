@@ -52,6 +52,8 @@ class LimitesLimpieza:
     intentos: int = 3
     reintento_s: int = 10 * 60
     por_pasada: int = LIMPIEZA_POR_PASADA
+    consultas_gh: int = 20
+    ventana_gh_s: int = 120
 
 
 LIMPIEZA = LimitesLimpieza()
@@ -88,10 +90,12 @@ FILAS: tuple[Fila, ...] = (
         id="limpieza",
         regla="La limpieza se reintenta desde el registro, sin borrar de golpe.",
         valor=f"{LIMPIEZA.intentos} intentos; {LIMPIEZA.reintento_s // 60} min; "
-              f"{LIMPIEZA.por_pasada} borrados por pasada",
+              f"{LIMPIEZA.por_pasada} borrados por pasada; "
+              f"{LIMPIEZA.consultas_gh} consultas GitHub por {LIMPIEZA.ventana_gh_s} s",
         decision="David, 16-nov",
         comportamiento="el tercer fallo agota el recurso; cada reintento espera 10 min y "
-                      "una pasada borra a lo sumo 20 recursos",
+                      "una pasada borra a lo sumo 20 recursos; las consultas a GitHub "
+                      "comparten un presupuesto de 20 por 120 s",
     ),
     Fila(
         id="deepseek_tope",

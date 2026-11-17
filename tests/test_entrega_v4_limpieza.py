@@ -6,9 +6,11 @@ import tempfile
 import unittest
 import json
 import hashlib
+import io
 import os
 import subprocess
 import sys
+import contextlib
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -679,7 +681,7 @@ class LimpiezaPorHechos(unittest.TestCase):
         runtime.mkdir(parents=True)
         (runtime / "token").write_text("prueba", encoding="utf-8")
         with mock.patch("motor.encargos.entrega.limpieza.borrar_arbol",
-                        side_effect=PermissionError("ocupado")) as borrar:
+                        side_effect=PermissionError("token=secreto /Users/alguien")) as borrar:
             self._limpiar()
             self._limpiar(9)
             self.assertEqual(borrar.call_count, 1)
@@ -696,6 +698,79 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertEqual(next((x[2:4] for x in enc.limpieza if x[0] == "runtime")),
                          ("agotado", 3))
         self.assertFalse(enc.limpio)
+        fallos = [ev["data"] for ev in otra.eventos("x") if ev["kind"] == "limpieza"
+                  and ev["data"]["recurso"] == "runtime"]
+        self.assertEqual(len(fallos), 3)
+        for fallo in fallos:
+            self.assertEqual(fallo["error_clase"], "PermissionError")
+            self.assertIn("permiso", fallo["error_mensaje"])
+            self.assertNotIn("secreto", json.dumps(fallo))
+            self.assertNotIn("/Users/", json.dumps(fallo))
+
+    def test_cerrado_sin_cambios_no_recrea_carpetas_ni_escribe_en_segunda_pasada(self) -> None:
+        numero = self._final(con_pr=True, cancelar=False)
+        self.reg.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "F", "paso": "pr_con_pendientes", "numero": numero,
+            "sha": "h", "hora": hora(),
+        }}, "nivel:x")
+        self.reg.anotar("x", {"kind": "comprobacion", "data": {
+            "fase": "F", "clase": "cierre_comprobado",
+            "evidencia": "listo para el merge", "hora": hora(),
+        }}, "cierre:x")
+        self.assertEqual(self.reg.fold("x").estado, "terminado")
+        vencido = 60 * 24 * 8
+        for recurso, resultado, intento in (
+            ("runtime", "agotado", 3), ("espacio", "borrado", 1),
+            ("ejecucion", "fallo", 1),
+        ):
+            self.reg.anotar("x", {"kind": "limpieza", "data": {
+                "recurso": recurso, "clave": "x", "resultado": resultado,
+                "intento": intento, "hora": hora(vencido),
+            }}, f"semilla:{recurso}")
+        with mock.patch.object(politica, "ENTREGA_V4", True):
+            ciclo.barrer(self.reg, hora(vencido + 1), 0, None, gh=self.gh)
+            antes = self.reg.ultimo_evento("x")
+            ciclo.barrer(self.reg, hora(vencido + 2), 1, None, gh=self.gh)
+        nuevos = [ev for ev in self.reg.eventos("x") if ev["id"] > antes]
+        self.assertEqual([ev for ev in nuevos if ev["kind"] == "limpieza"], [], nuevos)
+        self.assertFalse((self.reg.base / "espacio" / "x").exists())
+
+    def test_agotado_borrado_y_fallo_reciente_no_escriben_en_segunda_pasada(self) -> None:  # no-roja-en-base: el cancelado sin PR ya era estable; el PR cerrado que recreaba espacio se prueba arriba
+        self._final()
+        for recurso, resultado, intento in (
+            ("runtime", "agotado", 3), ("ejecucion", "borrado", 1),
+            ("espacio", "fallo", 1),
+        ):
+            self.reg.anotar("x", {"kind": "limpieza", "data": {
+                "recurso": recurso, "clave": "x", "resultado": resultado,
+                "intento": intento, "hora": hora(60 * 24 * 8),
+            }}, f"semilla:{recurso}")
+        with mock.patch.object(politica, "ENTREGA_V4", True):
+            ciclo.barrer(self.reg, hora(60 * 24 * 8 + 1), 0, None, gh=self.gh)
+            antes = self.reg.ultimo_evento("x")
+            ciclo.barrer(self.reg, hora(60 * 24 * 8 + 2), 1, None, gh=self.gh)
+        self.assertEqual(self.reg.ultimo_evento("x"), antes)
+
+    def test_freno_de_github_no_gasta_intentos_ni_reintenta_esa_pasada(self) -> None:
+        from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
+
+        self._final(con_pr=True)
+        errores = (
+            RuntimeError("API rate limit already exceeded"),
+            RuntimeError("secondary rate limit: token=secreto"),
+            RuntimeError("HTTP 502 Bad Gateway"),
+            subprocess.TimeoutExpired("gh", 30),
+        )
+        for exc in errores:
+            with self.subTest(error=type(exc).__name__, mensaje=str(exc)), mock.patch.object(
+                self.gh, "ver", side_effect=exc,
+            ) as ver:
+                enc = barrer_limpieza(self.reg, self.reg.fold("x"), self.gh,
+                                      hora(), PresupuestoLimpieza(self.reg), 0)
+                self.assertEqual(ver.call_count, 1)
+                self.assertFalse(enc.limpio)
+        self.assertFalse([ev for ev in self.reg.eventos("x") if ev["kind"] == "limpieza"
+                          and ev["data"]["recurso"] in ("pr", "rama")])
 
     def test_reintento_que_borra_recupera_limpio(self) -> None:  # no-roja-en-base: cubre la recuperación verificable tras un fallo de limpieza bajo V4
         self._final()
@@ -714,23 +789,69 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertTrue(enc.limpio)
         self.assertEqual(next(x[2] for x in enc.limpieza if x[0] == "runtime"), "borrado")
 
-    def test_timeout_de_github_se_reintenta_desde_el_registro(self) -> None:
+    def test_timeout_de_github_no_gasta_intentos_y_se_reintenta_tras_el_freno(self) -> None:
+        from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
+
         self._final(con_pr=True)
         with mock.patch.object(self.gh, "ver",
                                side_effect=subprocess.TimeoutExpired("gh", 30)) as ver:
-            self._limpiar()
+            for minuto in (0, 1, 2):
+                barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(minuto),
+                                 PresupuestoLimpieza(self.reg, minuto * 60), minuto * 60)
             self.assertEqual(ver.call_count, 2)
-            self._limpiar(9)
-            self.assertEqual(ver.call_count, 2)
-            self._limpiar(10)
-            self._limpiar(20)
         enc = self.reg.fold("x")
-        self.assertEqual(ver.call_count, 6)
-        self.assertEqual(next(
-            (resultado, intento) for recurso, _, resultado, intento, _
-            in enc.limpieza if recurso == "pr"
-        ), ("agotado", 3))
         self.assertFalse(enc.limpio)
+        self.assertFalse([ev for ev in self.reg.eventos("x") if ev["kind"] == "limpieza"
+                          and ev["data"]["recurso"] == "pr"])
+        barrer_limpieza(self.reg, enc, self.gh, hora(4),
+                        PresupuestoLimpieza(self.reg, 240), 240)
+        self.assertEqual(self.reg.fold("x").prs[0].pr.estado, "cerrado")
+
+    def test_presupuesto_github_cuenta_consultas_y_se_conserva_entre_pasadas(self) -> None:
+        from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
+
+        self._final(con_pr=True)
+        with mock.patch.object(politica, "LIMPIEZA", replace(
+            politica.LIMPIEZA, consultas_gh=2,
+        )):
+            primero = PresupuestoLimpieza(self.reg, 0)
+            barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(), primero, 0)
+            self.assertEqual(primero.consultas, 0)
+            despues = self.reg.ultimo_evento("x")
+            segundo = PresupuestoLimpieza(self.reg, 1)
+            barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(1), segundo, 1)
+            self.assertEqual(segundo.consultas, 0)
+            self.assertEqual(self.reg.ultimo_evento("x"), despues)
+            tercero = PresupuestoLimpieza(self.reg, 120)
+            barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(2), tercero, 120)
+            self.assertEqual(tercero.consultas, 0)
+
+    def test_reintentar_agotados_es_una_orden_explicita_y_no_un_borrado_fingido(self) -> None:
+        from ops.limpieza_reintentar import main
+
+        self._final()
+        runtime = self.reg.base / "runtime" / "x"
+        runtime.mkdir(parents=True)
+        (runtime / "resto").write_text("dato", encoding="utf-8")
+        for tipo, clave in (("runtime", "x"), ("rama", "encargo/x")):
+            self.reg.anotar("x", {"kind": "limpieza", "data": {
+                "recurso": tipo, "clave": clave, "resultado": "agotado",
+                "intento": 3, "hora": hora(),
+            }}, f"agotado:{tipo}")
+        argv = ["x", "--base", str(self.reg.base), "--clave", "vez-1"]
+        with contextlib.redirect_stdout(io.StringIO()) as salida:
+            self.assertEqual(main(argv), 0)
+            mitad = self.reg.ultimo_evento("x")
+            self.assertEqual(main(argv), 0)
+        self.assertEqual(self.reg.ultimo_evento("x"), mitad)
+        self.assertEqual({(tipo, resultado, intento) for tipo, _, resultado, intento, _
+                          in self.reg.fold("x").limpieza},
+                         {("runtime", "pendiente", 0), ("rama", "pendiente", 0)})
+        self.assertIn("reiniciados", salida.getvalue())
+        self.assertFalse(self.reg.fold("x").limpio)
+        enc = self._limpiar(1)
+        self.assertTrue(enc.limpio)
+        self.assertFalse(runtime.exists())
 
     def test_las_carpetas_vencen_a_los_siete_dias_y_no_reaparecen(self) -> None:
         self._final()

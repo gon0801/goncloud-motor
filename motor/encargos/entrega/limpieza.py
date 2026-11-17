@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import re
 import subprocess
 import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal, TypeVar
 
 from motor import plataforma
 
@@ -33,6 +34,23 @@ _MAX_INTENTOS_LIMPIEZA_LEGADA = 2
 _SONDEOS_COMPARTIDOS: weakref.WeakKeyDictionary[Registro, dict[tuple[str, str], datetime]] = (
     weakref.WeakKeyDictionary()
 )
+_CUOTAS_GH: weakref.WeakKeyDictionary[Registro, tuple[float, int]] = weakref.WeakKeyDictionary()
+T = TypeVar("T")
+
+
+class ConsultaPospuesta(Exception):
+    """No se pudo consultar GitHub en esta ventana; no se gastan intentos."""
+
+
+def _transitorio_gh(exc: BaseException) -> bool:
+    if isinstance(exc, (subprocess.TimeoutExpired, TimeoutError)):
+        return True
+    if not isinstance(exc, RuntimeError):
+        return False
+    texto = str(exc).lower()
+    return ("rate limit" in texto or "too many requests" in texto
+            or "abuse detection" in texto or "http 429" in texto
+            or re.search(r"\b(?:http|status|error)\s*5\d\d\b", texto) is not None)
 
 
 def fallos_legados(registro: Registro, encargo_id: str) -> tuple[int, str]:
@@ -205,15 +223,55 @@ def _indice_despliegues(registro: Registro) -> dict[str, tuple[str, ...]]:
 
 
 class PresupuestoLimpieza(list[int]):
-    def __init__(self, registro: Registro) -> None:
+    def __init__(self, registro: Registro, epoch: float | None = None) -> None:
         super().__init__([politica.LIMPIEZA.por_pasada])
         self.registro = registro
+        self.epoch = epoch
+        self.consultas = politica.LIMPIEZA.consultas_gh
+        if epoch is not None and (anterior := _CUOTAS_GH.get(registro)) is not None:
+            inicio, restantes = anterior
+            if 0 <= epoch - inicio < politica.LIMPIEZA.ventana_gh_s:
+                self.consultas = restantes
+            else:
+                _CUOTAS_GH[registro] = (epoch, self.consultas)
+        elif epoch is not None:
+            _CUOTAS_GH[registro] = (epoch, self.consultas)
+        self.bloqueada = False
         self._indice: dict[str, tuple[str, ...]] | None = None
+
+    def consultar(self, funcion: Callable[..., T], *args) -> T:
+        if self.bloqueada or self.consultas <= 0:
+            raise ConsultaPospuesta()
+        self.consultas -= 1
+        if self.epoch is not None:
+            inicio, _ = _CUOTAS_GH[self.registro]
+            _CUOTAS_GH[self.registro] = (inicio, self.consultas)
+        try:
+            return funcion(*args)
+        except (RuntimeError, subprocess.TimeoutExpired, TimeoutError) as exc:
+            if not _transitorio_gh(exc):
+                raise
+            self.bloqueada = True
+            if self.epoch is not None:
+                inicio, _ = _CUOTAS_GH[self.registro]
+                _CUOTAS_GH[self.registro] = (inicio, 0)
+            raise ConsultaPospuesta() from exc
 
     def despliegues(self, encargo: str) -> tuple[str, ...]:
         if self._indice is None:
             self._indice = _indice_despliegues(self.registro)
         return self._indice.get(encargo, ())
+
+
+def _consulta_gh(presupuesto: list[int], funcion: Callable[..., T], *args) -> T:
+    if isinstance(presupuesto, PresupuestoLimpieza):
+        return presupuesto.consultar(funcion, *args)
+    try:
+        return funcion(*args)
+    except (RuntimeError, subprocess.TimeoutExpired, TimeoutError) as exc:
+        if _transitorio_gh(exc):
+            raise ConsultaPospuesta() from exc
+        raise
 
 
 def _credenciales(registro: Registro, enc: Encargo) -> tuple[Recurso, ...]:
@@ -293,19 +351,55 @@ def _puede_intentar(enc: Encargo, recurso: Recurso, hora: str) -> bool:
 
 
 def _anotar(registro: Registro, enc: Encargo, recurso: Recurso,
-           resultado: str, hora: str) -> Encargo:
+           resultado: str, hora: str, error: Exception | None = None) -> Encargo:
     anterior, intento, _ = _ultimo(enc, recurso)
     siguiente = intento + 1 if anterior != "borrado" else 1
     if resultado == "fallo" and siguiente >= politica.LIMPIEZA.intentos:
         resultado = "agotado"
+    datos = {
+        "recurso": recurso.tipo, "clave": recurso.clave, "resultado": resultado,
+        "intento": siguiente, "hora": hora,
+    }
+    if error is not None:
+        if isinstance(error, PermissionError):
+            mensaje = "permiso denegado"
+        elif isinstance(error, OSError):
+            mensaje = {
+                errno.ENOENT: "archivo ausente", errno.ENOSPC: "sin espacio en disco",
+                errno.EBUSY: "recurso ocupado",
+            }.get(error.errno or -1, "error de disco")
+        elif isinstance(error, ValueError):
+            mensaje = "metadatos de limpieza no verificables"
+        else:
+            mensaje = "operación de limpieza rechazada"
+        datos.update(error_clase=type(error).__name__,
+                     error_mensaje=f"{recurso.tipo}: {mensaje}")
     registro.anotar(
-        enc.id, {"kind": "limpieza", "data": {
-            "recurso": recurso.tipo, "clave": recurso.clave, "resultado": resultado,
-            "intento": siguiente, "hora": hora,
-        }},
+        enc.id, {"kind": "limpieza", "data": datos},
         f"limpieza:{enc.id}:{recurso.tipo}:{recurso.clave}:{siguiente}:{hora}",
     )
     return registro.fold(enc.id) or enc
+
+
+def reintentar_agotados(registro: Registro, ident: str, clave: str, hora: str) -> dict:
+    """Rearma solo los recursos agotados; no acredita un borrado que no comprobó."""
+    from ..registro import Evento
+
+    enc = registro.fold(ident)
+    if enc is None or enc.estado not in ("terminado", "cancelado"):
+        return {"encargo": ident, "rechazada": "el encargo no está cerrado"}
+    agotados = sorted(
+        (tipo, recurso) for tipo, recurso, resultado, _, _ in enc.limpieza
+        if resultado == "agotado"
+    )
+    registro.append_many(ident, tuple(
+        Evento("limpieza", {
+            "recurso": tipo, "clave": recurso, "resultado": "pendiente",
+            "intento": 0, "hora": hora,
+        }, f"limpieza-reintentar:{ident}:{clave}:{tipo}:{recurso}")
+        for tipo, recurso in agotados
+    ))
+    return {"encargo": ident, "reiniciados": len(agotados)}
 
 
 def _pr(registro: Registro, enc: Encargo, gh: GitHubPort | None,
@@ -319,7 +413,7 @@ def _pr(registro: Registro, enc: Encargo, gh: GitHubPort | None,
     if epoch is not None and not sondeo_pendiente(registro, enc, recurso.fase, epoch):
         observado = next((p.pr for p in enc.prs if p.fase == recurso.fase), None)
         return enc, observado is not None and observado.estado in ("cerrado", "mergeado")
-    vista = gh.ver(enc.entrega.repo, numero)
+    vista = _consulta_gh(presupuesto, gh.ver, enc.entrega.repo, numero)
     if epoch is not None:
         recordar_sondeo(registro, enc, recurso.fase, epoch)
     if vista.estado == "abierto":
@@ -327,7 +421,7 @@ def _pr(registro: Registro, enc: Encargo, gh: GitHubPort | None,
             return enc, False
         if not presupuesto[0]:
             return enc, False
-        vista = gh.cerrar_pr(enc.entrega.repo, numero)
+        vista = _consulta_gh(presupuesto, gh.cerrar_pr, enc.entrega.repo, numero)
         presupuesto[0] -= 1
     enc = anotar_pr(registro, enc, recurso.fase, vista, hora)
     return enc, vista.estado in ("cerrado", "mergeado")
@@ -345,22 +439,24 @@ def _rama(enc: Encargo, gh: GitHubPort | None,
         return "pendiente"
     propios = tuple(
         vista for fase in enc.fases if fase.pr_numero
-        for vista in (gh.ver(enc.entrega.repo, fase.pr_numero),)
+        for vista in (_consulta_gh(presupuesto, gh.ver, enc.entrega.repo, fase.pr_numero),)
         if vista.rama == recurso.clave
     )
     if any(vista.estado == "abierto" for vista in propios):
         return "pendiente"
-    if not gh.rama_existe(enc.entrega.repo, recurso.clave):
+    if not _consulta_gh(presupuesto, gh.rama_existe, enc.entrega.repo, recurso.clave):
         return "borrado"
-    if gh.prs_con_base(enc.entrega.repo, recurso.clave):
+    if _consulta_gh(presupuesto, gh.prs_con_base, enc.entrega.repo, recurso.clave):
         return "conservado"
     if enc.estado != "cancelado" and not propios:
         return "conservado"
     if not presupuesto[0]:
         return "pendiente"
-    gh.borrar_rama(enc.entrega.repo, recurso.clave)
+    _consulta_gh(presupuesto, gh.borrar_rama, enc.entrega.repo, recurso.clave)
     presupuesto[0] -= 1
-    return "borrado" if not gh.rama_existe(enc.entrega.repo, recurso.clave) else "pendiente"
+    return ("borrado" if not _consulta_gh(
+        presupuesto, gh.rama_existe, enc.entrega.repo, recurso.clave,
+    ) else "pendiente")
 def _despliegue(registro: Registro, enc: Encargo,
                 ruta: Path, presupuesto: list[int]) -> bool:
     if ruta.is_symlink():
@@ -425,7 +521,9 @@ def _disco(registro: Registro, enc: Encargo, recurso: Recurso,
         and (not _vence(enc, hora) or _sondeo_vigente(enc, hora))):
         return "conservado"
     if recurso.tipo == "espacio" and enc.entrega.repo and any(
-        gh is None or gh.ver(enc.entrega.repo, fase.pr_numero).estado == "abierto"
+        gh is None or _consulta_gh(
+            presupuesto, gh.ver, enc.entrega.repo, fase.pr_numero,
+        ).estado == "abierto"
         for fase in enc.fases if fase.pr_numero
     ):
         return "conservado"
@@ -538,8 +636,11 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
             enc, estado = _limpiar_recurso(
                 registro, enc, gh, recurso, hora, presupuesto, epoch,
             )
-        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
-            enc = _anotar(registro, enc, recurso, "fallo", hora)
+        except ConsultaPospuesta:
+            faltan = True
+            continue
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            enc = _anotar(registro, enc, recurso, "fallo", hora, exc)
             faltan = True
             continue
         if recurso.tipo == "rama" and estado == "conservado" and (ahora := _fecha(hora)):
