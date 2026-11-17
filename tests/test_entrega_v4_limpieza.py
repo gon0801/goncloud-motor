@@ -867,6 +867,21 @@ class LimpiezaPorHechos(unittest.TestCase):
                                 PresupuestoLimpieza(self.reg, minuto * 60), minuto * 60)
             self.assertEqual((ver.call_count, rama.call_count), (0, 0))
 
+    def test_pr_agotado_no_permite_borrar_su_rama_sin_comprobar_el_cierre(self) -> None:
+        from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
+
+        numero = self._final(con_pr=True)
+        self.reg.anotar("x", {"kind": "limpieza", "data": {
+            "recurso": "pr", "clave": str(numero), "resultado": "agotado",
+            "intento": 3, "hora": hora(),
+        }}, "agotado:pr")
+        with mock.patch.object(self.gh, "borrar_rama",
+                               wraps=self.gh.borrar_rama) as borrar:
+            barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(),
+                            PresupuestoLimpieza(self.reg, 0), 0)
+            borrar.assert_not_called()
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
+
     def test_cuatro_fases_canceladas_convergen_sin_releer_prs(self) -> None:
         from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
 
