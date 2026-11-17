@@ -157,13 +157,13 @@ lee_estado_encargos() { # <maquina> -> sha de pasada, completa, recibo
 mover_arbol() { # <maquina> <ruta> <sha>
   local m=$1 ruta=$2 sha=$3
   if [ "$m" = pc ]; then
-    ssh_a "$(host_de pc)" "git -C \"$ruta\" fetch -q origin" || return 1
+    ssh_a "$(host_de pc)" "git -C \"$ruta\" fetch -q --prune origin" || return 1
     ssh_a "$(host_de pc)" "git -C \"$ruta\" checkout -q --detach $sha" || return 1
     ssh_a "$(host_de pc)" "git -C \"$ruta\" cat-file -e $sha" || return 1
   else
     en_posix "$m" "$m" "$ruta" "$sha" <<'REMOTO'
 set -euo pipefail
-git -C "$2" fetch -q origin
+git -C "$2" fetch -q --prune origin
 git -C "$2" checkout -q --detach "$3"
 git -C "$2" cat-file -e "$3"
 REMOTO
