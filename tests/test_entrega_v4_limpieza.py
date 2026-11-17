@@ -231,6 +231,56 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertTrue(enc.limpio)
         self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
 
+    def test_rama_reaparecida_con_pr_dependiente_respeta_cadencia(self) -> None:
+        numero = self._final(con_pr=True, cancelar=False)
+        self.gh.cerrar_pr(self.repo, numero)
+        self._limpiar()
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+
+        git("push", "-q", self.repo, "HEAD:refs/heads/encargo/x", cwd=self.trabajo)
+        dependiente = self.gh.abrir_pr(
+            self.repo, "feat", "encargo/x", "apilado", "cuerpo",
+        ).numero
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "entrega parcial", "hora": hora(1),
+        }}, "cierre-dependiente:x")
+        enc = self._limpiar(1)
+        self.assertTrue(enc.limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
+
+        with (mock.patch.object(self.gh, "ver", wraps=self.gh.ver) as ver,
+              mock.patch.object(self.gh, "rama_existe", wraps=self.gh.rama_existe) as rama,
+              mock.patch.object(self.gh, "prs_con_base", wraps=self.gh.prs_con_base) as prs):
+            self._limpiar(2)
+        self.assertEqual((ver.call_count, rama.call_count, prs.call_count), (0, 0, 0))
+
+        self.gh.cerrar_pr(self.repo, dependiente)
+        self._limpiar(11)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+
+    def test_pr_reabierto_tras_borrado_no_gasta_cuota_en_cada_pasada(self) -> None:
+        numero = self._final(con_pr=True, cancelar=False)
+        self.gh.cerrar_pr(self.repo, numero)
+        self._limpiar()
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "entrega parcial", "hora": hora(1),
+        }}, "cierre-pr-reabierto:x")
+        abierto = replace(self.gh.ver(self.repo, numero), estado="abierto")
+        with mock.patch.object(self.gh, "ver", return_value=abierto) as ver:
+            enc = self._limpiar(1)
+        self.assertEqual(ver.call_count, 1)
+        self.assertFalse(enc.limpio)
+
+        eventos = self.reg.eventos("x")
+        with mock.patch.object(self.gh, "ver", side_effect=AssertionError("cadencia")) as ver:
+            enc = self._limpiar(2)
+        self.assertEqual(ver.call_count, 0)
+        self.assertFalse(enc.limpio)
+        self.assertEqual(self.reg.eventos("x"), eventos)
+        with mock.patch.object(self.gh, "ver", return_value=abierto) as ver:
+            self._limpiar(11)
+        self.assertEqual(ver.call_count, 1)
+
     def test_un_pr_ya_cerrado_se_observa_sin_cerrarlo_de_nuevo(self) -> None:
         numero = self._final(con_pr=True)
         self.gh.cerrar_pr(self.repo, numero)
