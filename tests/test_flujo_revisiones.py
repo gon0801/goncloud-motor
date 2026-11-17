@@ -1651,6 +1651,8 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
                 cerrado = _intentar_cierre(r.reg, e, r.espacio, r.d, ahora_iso())
             self.assertEqual(cerrado.estado, "terminado")
             self.assertIn("el dato debe ser 43", cerrado.evidencia[-1])
+            r.reg.anotar(r.enc, {"kind": "limpio", "data": {"hora": ahora_iso()}},
+                        f"limpio:{r.enc}")
             directores.drenar(r.reg)
             cuerpos = [
                 p.read_text(encoding="utf-8")
@@ -1723,6 +1725,8 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
                 e = r.incorporar()
             self.assertEqual(e.estado, "terminado")
             self.assertIn("el dato debe ser 43", e.evidencia[-1])
+            r.reg.anotar(r.enc, {"kind": "limpio", "data": {"hora": ahora_iso()}},
+                        f"limpio:{r.enc}")
             directores.drenar(r.reg)
             cuerpos = [
                 p.read_text(encoding="utf-8")
@@ -1869,6 +1873,8 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
                 e = r.incorporar()
             self.assertEqual(e.estado, "terminado")
             self.assertIn("el dato debe ser 43", e.evidencia[-1])
+            r.reg.anotar(r.enc, {"kind": "limpio", "data": {"hora": ahora_iso()}},
+                        f"limpio:{r.enc}")
             directores.drenar(r.reg)
             cuerpos = [
                 p.read_text(encoding="utf-8")

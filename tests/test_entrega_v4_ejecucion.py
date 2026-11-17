@@ -294,18 +294,25 @@ class EntregaSegunPR(unittest.TestCase):
         self.assertIsNone(enc.revision_vigente)
 
     def test_barrer_no_consulta_un_pr_abierto_cada_segundo(self) -> None:
-        registro, gh = self._registro()
-        consultas: list[int] = []
+        def comprobar() -> None:
+            registro, gh = self._registro()
+            consultas: list[int] = []
 
-        def ver(_repo: str, numero: int) -> PrView:
-            consultas.append(numero)
-            return PrView(numero, "encargo/x", "main", False, "h", "abierto", "")
+            def ver(_repo: str, numero: int) -> PrView:
+                consultas.append(numero)
+                return PrView(numero, "encargo/x", "main", False, "h", "abierto", "")
 
-        gh.responde_ver = ver
-        for segundo in (0, 1, 119, 120):
-            ciclo.barrer(registro, "2026-11-16T12:00:00+00:00",
-                         float(segundo), None, gh=gh)
-        self.assertEqual(consultas, [7, 7])
+            gh.responde_ver = ver
+            for segundo in (0, 1, 119, 120):
+                ciclo.barrer(registro, "2026-11-16T12:00:00+00:00",
+                             float(segundo), None, gh=gh)
+            self.assertEqual(consultas, [7, 7])
+
+        for activa in (False, True):
+            with self.subTest(entrega_v4=activa), mock.patch.object(
+                politica, "ENTREGA_V4", activa,
+            ):
+                comprobar()
 
     def test_merge_david_no_cierra_con_pedido_de_efecto_sin_recibo(self) -> None:
         registro, gh = self._registro()

@@ -456,10 +456,10 @@ class Limpio(unittest.TestCase):
         self.assertIn("despliegues/<clave>", fila.observado)
 
     def test_lo_que_queda_de_un_despliegue_no_esta_limpio(self):
-        restos = (*RESTOS_LIMPIOS, Resto("despliegue", "despliegues/k (pedido.json)", True))
+        restos = (*RESTOS_LIMPIOS, Resto("despliegue", "despliegues/k (trabajador.log)", True))
         fila = _fila(_obs(restos=restos), "limpio")
         self.assertEqual(fila.resultado, "falla")
-        self.assertIn("despliegues/k (pedido.json)", fila.observado)
+        self.assertIn("despliegues/k (trabajador.log)", fila.observado)
 
     def test_la_copia_vence_justo_a_los_siete_dias(self):
         antes = _fila(_obs(hora="2026-01-17T10:19:59Z"), "limpio")
@@ -894,7 +894,7 @@ class LoEsperado(unittest.TestCase):
     def test_el_esperado_del_repo_nombra_cada_fila(self):
         esperado = leer_esperado(ESPERADO, windows=False)
         self.assertEqual(set(esperado.filas), set(get_args(NombreFila)))
-        self.assertEqual(esperado.filas["limpio"], "falla")
+        self.assertEqual(esperado.filas["limpio"], "pasa")
         self.assertEqual(esperado.filas["se detiene"], "pasa")
         en_windows = leer_esperado(ESPERADO, windows=True)
         for nombre in ("no pierde", "no repite"):
@@ -938,6 +938,8 @@ class LoEsperado(unittest.TestCase):
         ruta = tmp / "esperado.json"
         for cambio in ("sin la razón", "razón vacía", "razón de una fila que no falla"):
             datos = json.loads(ESPERADO.read_text(encoding="utf-8"))
+            datos["filas"]["limpio"] = "falla"
+            datos["razones"]["limpio"] = "restos de prueba"
             if cambio == "sin la razón":
                 del datos["razones"]["limpio"]
             elif cambio == "razón vacía":
@@ -1245,14 +1247,18 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         espacio = f"espacio/{banco.ident}"
         self.assertEqual(restos[espacio].queda, (banco.base / espacio).exists())
         self.assertFalse(any(r.queda for r in obs.restos if r.tipo == "proceso"))
+        self.assertFalse(any(r.queda for r in obs.restos if r.tipo == "despliegue"))
 
-        esperado = _esperado(limpio="falla")
+        esperado = _esperado(limpio="pasa")
         self.assertEqual(_fila(obs, "entregado", esperado).resultado, "pasa")
         self.assertEqual(_fila(obs, "legible", esperado).resultado, "pasa")
-        self.assertEqual(_fila(obs, "limpio", esperado).resultado, "falla")
+        fila_limpia = _fila(obs, "limpio", esperado)
+        self.assertEqual(fila_limpia.resultado, "no medido", fila_limpia.observado)
+        self.assertIn("referencia origin/", fila_limpia.observado)
 
         # Lo que el canario borra o deja vivo, la observación lo ve al volver a mirar.
-        _git(self.tmp / "repo.git", "branch", "-D", rama)
+        if _git(self.tmp / "repo.git", "branch", "--list", rama):
+            _git(self.tmp / "repo.git", "branch", "-D", rama)
         shutil.rmtree(banco.base / espacio)
         trabajador = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60)"], env=git_env_limpio()

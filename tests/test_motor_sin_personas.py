@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from motor import plataforma
-from motor.encargos import ciclo
+from motor.encargos import ciclo, politica
 from motor.encargos import cli as motor_cli
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso, barrer, _cuerpo_pr
@@ -677,6 +677,7 @@ class PreguntaSinRespuestaNoDetieneElMotor(unittest.TestCase):
 
 
 class AlCerrarLimpiaSuDisco(unittest.TestCase):
+    @mock.patch.object(politica, "ENTREGA_V4", False)
     def test_el_cierre_borra_runtime_y_los_intentos_de_ejecucion(self):
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")
@@ -703,6 +704,7 @@ class AlCerrarLimpiaSuDisco(unittest.TestCase):
             self.assertFalse(ejecucion.exists())
             self.assertEqual(reg.fold(encargo).estado, "terminado")
 
+    @mock.patch.object(politica, "ENTREGA_V4", False)
     def test_un_cancelado_tambien_limpia_runtime_y_ejecucion(self):
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")

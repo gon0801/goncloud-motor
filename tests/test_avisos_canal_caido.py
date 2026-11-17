@@ -173,9 +173,11 @@ class CanalCaido(unittest.TestCase):
         self.assertEqual(len(primeros), 2)
         self.b.terminar(ident)
         self.b.levantar()
+        self.b.reg.anotar(ident, {"kind": "limpio", "data": {"hora": HORA}},
+                         f"limpio:{ident}")
         avisos = directores.drenar(self.b.reg, ahora=T0 + 10_000)["avisos"]
         self.assertEqual([a.get("tipo") for a in avisos], ["cierre-v4"])
-        self.assertEqual(avisos[0]["palabra"], "falta limpiar")
+        self.assertEqual(avisos[0]["palabra"], "respondido")
         self.assertTrue(avisos[0]["entregado"])
         self.assertEqual(len(self.b.llamadas()), 2, "un intento fallido de avance y el cierre")
         descartados = [
@@ -194,6 +196,8 @@ class CanalCaido(unittest.TestCase):
     def test_un_encargo_terminado_no_genera_avances_nuevos(self):
         ident = self.b.encargo("uno", avances=1)
         self.b.terminar(ident)
+        self.b.reg.anotar(ident, {"kind": "limpio", "data": {"hora": HORA}},
+                         f"limpio:{ident}")
         self.b.levantar()
         directores.drenar(self.b.reg, ahora=T0)
         self.assertEqual(len(self.b.llamadas()), 1, "solo el cierre")

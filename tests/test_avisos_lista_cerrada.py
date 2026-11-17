@@ -378,6 +378,8 @@ class ListaCerrada(Banco):
     def test_el_cierre_incierto_de_la_misma_pasada_no_bloquea_el_sondeo(self):
         ident = self.encargo(via="directa")
         self.terminar(ident)
+        self.reg.anotar(ident, {"kind": "limpio", "data": {"hora": HORA}},
+                       f"limpio:{ident}")
         self.sin_recibo()
         self.caido()
 

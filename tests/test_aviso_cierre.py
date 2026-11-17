@@ -9,7 +9,9 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
+from motor.encargos import politica
 from motor.encargos.registro import Registro
 from motor.integraciones import directores
 
@@ -185,6 +187,7 @@ class Base(unittest.TestCase):
         return ident
 
 
+@mock.patch.object(politica, "ENTREGA_V4", False)
 class ElCierreEnLlano(Base):
     def test_el_cierre_de_un_encargo_con_pr_es_llano_corto_y_trae_el_numero(self):
         ident = self.encargo_terminado(
@@ -607,9 +610,12 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
             "# Cancelado después del despliegue\n\ntexto", "despliegue-uno"
         )
         self.b.cancelar(ident)
+        self.assertEqual(directores.drenar(self.b.reg, ahora=T0 + 60)["avisos"], [])
+        self.b.reg.anotar(ident, {"kind": "limpio", "data": {"hora": HORA}},
+                         f"limpio:{ident}")
         avisos = directores.drenar(self.b.reg, ahora=T0 + 60)["avisos"]
         self.assertEqual([a["encargo"] for a in avisos if a["entregado"]], [ident])
-        self.assertIn("Falta limpiar", self.b.cuerpos()[0]["cuerpo"])
+        self.assertIn("Cancelado", self.b.cuerpos()[0]["cuerpo"])
         directores.drenar(self.b.reg, ahora=T0 + 120)
         self.assertEqual(len(self.b.cuerpos()), 1, "y el cierre no se repite")
 

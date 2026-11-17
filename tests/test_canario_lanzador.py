@@ -232,6 +232,12 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertTrue(self.hijo, "el supervisor falso no llegó a dejar su hijo")
         self.assertFalse(plataforma.pid_vivo(self.hijo), "el hijo del supervisor sigue vivo")
 
+    def restos_para_reintento(self, ident: str) -> None:
+        self.assertEqual(_git(self.repo, "branch", "--list", f"encargo/{ident}"), "")
+        _git(self.repo, "branch", f"encargo/{ident}", "main")
+        for tipo in ("espacio", "ejecucion"):
+            (self.base / tipo / ident).mkdir(parents=True, exist_ok=True)
+
     def estados(self) -> list[str]:
         """El estado de cada encargo de la base del canario, según el registro."""
         reg = Registro(self.base)
@@ -291,7 +297,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(
             {b["resto"]: b["resultado"] for b in informe["limpieza"] if ident in b["resto"]},
             {
-                f"la rama remota encargo/{ident}": "borrado",
+                f"la rama remota encargo/{ident}": "no estaba",
                 f"espacio/{ident}": "borrado",
                 f"ejecucion/{ident}": "borrado",
                 f"trabajos/{ident}.json de la flota": "borrado",
@@ -327,7 +333,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(
             {b["resto"]: b["resultado"] for b in informe["limpieza"] if ident in b["resto"]},
             {
-                f"la rama remota encargo/{ident}": "borrado",
+                f"la rama remota encargo/{ident}": "no estaba",
                 f"espacio/{ident}": "borrado",
                 f"ejecucion/{ident}": "borrado",
                 f"canario-escenarios/{ident}.json": "borrado",
@@ -362,7 +368,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(
             {b["resto"]: b["resultado"] for b in informe["limpieza"] if ident in b["resto"]},
             {
-                f"la rama remota encargo/{ident}": "borrado",
+                f"la rama remota encargo/{ident}": "no estaba",
                 f"espacio/{ident}": "borrado",
                 f"ejecucion/{ident}": "borrado",
                 f"canario-escenarios/{ident}.json": "borrado",
@@ -548,20 +554,30 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertNotIn("falló", {b["resultado"] for b in salida["limpieza"]})
 
     def test_un_remoto_que_no_se_puede_resolver_no_tumba_la_limpieza(self):
+        codigo, informe = self.correr()
+        self.assertEqual(codigo, 0, informe["tabla"])
+        ident = informe["encargo"]
+        self.restos_para_reintento(ident)
         ciclo = ValueError("los remotos locales del repositorio forman un ciclo")
         with mock.patch.object(canario_lanzador, "resolver_repositorio", side_effect=ciclo):
-            codigo, informe = self.correr()
+            borrados = canario_lanzador.limpiar(self.pedido(), ident)
 
-        ident = informe["encargo"]
-        limpieza = {b["resto"]: b for b in informe["limpieza"]}
+        limpieza = {b.resto: b for b in borrados}
         rama = limpieza[f"la rama remota encargo/{ident}"]
-        self.assertEqual(rama["resultado"], "falló")
-        self.assertIn("ValueError", rama["causa"])
-        for resto in (f"espacio/{ident}", f"ejecucion/{ident}", f"trabajos/{ident}.json de la flota"):
-            self.assertEqual(limpieza[resto]["resultado"], "borrado", resto)
-        self.assertEqual(codigo, 1)
+        self.assertEqual(rama.resultado, "falló")
+        self.assertIn("ValueError", rama.causa)
+        for resto in (f"espacio/{ident}", f"ejecucion/{ident}"):
+            self.assertEqual(limpieza[resto].resultado, "borrado", resto)
+        self.assertEqual(limpieza[f"trabajos/{ident}.json de la flota"].resultado,
+                         "no estaba")
+        self.assertFalse((self.base / "espacio" / ident).exists())
+        self.assertFalse((self.base / "ejecucion" / ident).exists())
 
     def test_un_push_que_no_responde_no_tumba_la_limpieza(self):
+        codigo, informe = self.correr()
+        self.assertEqual(codigo, 0, informe["tabla"])
+        ident = informe["encargo"]
+        self.restos_para_reintento(ident)
         run = subprocess.run
 
         def sin_respuesta(argv, *a, **k):
@@ -570,15 +586,14 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
             return run(argv, *a, **k)
 
         with mock.patch.object(subprocess, "run", sin_respuesta):
-            codigo, informe = self.correr()
+            borrados = canario_lanzador.limpiar(self.pedido(), ident)
 
-        ident = informe["encargo"]
-        limpieza = {b["resto"]: b for b in informe["limpieza"]}
+        limpieza = {b.resto: b for b in borrados}
         rama = limpieza[f"la rama remota encargo/{ident}"]
-        self.assertEqual(rama["resultado"], "falló")
-        self.assertIn("TimeoutExpired", rama["causa"])
-        self.assertEqual(limpieza[f"espacio/{ident}"]["resultado"], "borrado")
-        self.assertEqual(codigo, 1)
+        self.assertEqual(rama.resultado, "falló")
+        self.assertIn("TimeoutExpired", rama.causa)
+        self.assertEqual(limpieza[f"espacio/{ident}"].resultado, "borrado")
+        self.assertEqual(limpieza[f"ejecucion/{ident}"].resultado, "borrado")
 
     def test_las_rutas_relativas_se_leen_desde_donde_se_corre_la_orden(self):
         aparte = self.tmp / f"canario-relativa-{os.getpid()}-{time.monotonic_ns()}"
@@ -706,7 +721,14 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         ident = informe["encargo"]
         self.assertEqual((informe["corrida"], informe["fin"]), ("prueba", "terminado"), informe)
         self.assertEqual((codigo, informe["codigo"]), (0, 0), informe["tabla"])
-        self.assertEqual({b["resultado"] for b in informe["limpieza"]}, {"borrado"}, informe["limpieza"])
+        self.assertEqual(
+            {b["resultado"] for b in informe["limpieza"] if b["resto"].startswith("la rama remota")},
+            {"no estaba"}, informe["limpieza"],
+        )
+        self.assertEqual(
+            {b["resultado"] for b in informe["limpieza"] if not b["resto"].startswith("la rama remota")},
+            {"borrado"}, informe["limpieza"],
+        )
         self.assertEqual(_git(self.repo, "branch", "--list", f"encargo/{ident}"), "")
         self.assertFalse((self.base / "espacio" / ident).exists())
         self.queda_cerrado()
@@ -736,7 +758,8 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertEqual(vieja["fin"], "terminado", self.avances)
         for resto in restos:
             self.assertTrue(os.path.lexists(resto), f"la corrida vieja no dejó {resto}")
-        self.assertIn(viejo, _git(self.repo, "branch", "--list", f"encargo/{viejo}"))
+        self.assertEqual(_git(self.repo, "branch", "--list", f"encargo/{viejo}"), "")
+        _git(self.repo, "branch", f"encargo/{viejo}", "main")
 
         codigo, nueva = self.correr("--corrida", "nueva")
 

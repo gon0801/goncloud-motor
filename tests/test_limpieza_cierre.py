@@ -17,8 +17,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos import ciclo
+from motor.encargos import ciclo, politica
 from motor.encargos.ciclo import ahora_iso, barrer, ordenar, recibir
+from motor.encargos.entrega.limpieza import fallos_legados
 from motor.encargos.registro import Registro
 
 
@@ -42,6 +43,7 @@ def unlink_de_windows():
         yield
 
 
+@mock.patch.object(politica, "ENTREGA_V4", False)
 class LimpiezaAlCerrar(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -178,7 +180,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
             # El reintento logró limpiar: sin nota nueva y sin marca que
             # siga intentando en los barridos siguientes.
             self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
-            self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 0)
+            self.assertEqual(fallos_legados(self.reg, encargo)[0], 0)
             # El barrido siguiente no agrega nada: sin fallo, sin nota.
             antes = self.reg.eventos(encargo)
             barrer(self.reg, ahora_iso(), time.time(), None)
@@ -210,10 +212,10 @@ class LimpiezaAlCerrar(unittest.TestCase):
         error = PermissionError(13, "Permission denied", "abierto.db")
         with mock.patch.object(ciclo, "borrar_arbol", side_effect=error):
             barrer(self.reg, ahora_iso(), time.time(), None)
-        self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 1)
+        self.assertEqual(fallos_legados(self.reg, encargo)[0], 1)
 
         barrer(self.reg, ahora_iso(), time.time(), None)
-        self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 0)
+        self.assertEqual(fallos_legados(self.reg, encargo)[0], 0)
         restauracion = self.reg.db.execute(
             "SELECT id FROM events WHERE encargo = ? "
             "AND ukey LIKE 'limpieza-restaurada:%' ORDER BY id DESC LIMIT 1",
@@ -237,7 +239,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
             f"limpieza-fallida:{encargo}:{restauracion[0]}:1",
             f"limpieza-fallida:{encargo}:{restauracion[0]}:2",
         ])
-        self.assertEqual(ciclo.fallos_legados(self.reg, encargo),
+        self.assertEqual(fallos_legados(self.reg, encargo),
                          (2, str(restauracion[0])))
 
 

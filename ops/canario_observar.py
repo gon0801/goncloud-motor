@@ -357,12 +357,16 @@ def _despliegues(base: Path, encargo: str) -> tuple[Resto, ...]:
         if not _es_del_encargo(clave, encargo):
             continue
         try:
-            demas = sorted(x.name for x in clave.iterdir() if x.name != "recibo.json")
+            demas = sorted(x.name for x in clave.iterdir()
+                           if x.name not in ("recibo.json", "pedido.json"))
         except OSError:
             restos.append(Resto("despliegue", f"despliegues/{clave.name[:12]}", None))
         else:
+            nombre = f"despliegues/{clave.name[:12]}"
+            if demas:
+                nombre += f" ({', '.join(demas)})"
             restos.append(Resto(
-                "despliegue", f"despliegues/{clave.name[:12]} ({', '.join(demas)})", bool(demas),
+                "despliegue", nombre, bool(demas),
             ))
         for nombre in ("proceso.json", "comando.json"):
             ident = _json_o_vacio(clave / nombre)

@@ -45,6 +45,11 @@ def sondeo_pendiente(registro: Registro, enc: Encargo, fase: str, epoch: float) 
     return previo is None or not 0 <= epoch - previo < 120
 
 
+def recordar_sondeo(registro: Registro, enc: Encargo, fase: str, epoch: float) -> None:
+    actual = next(f for f in enc.fases if f.id == fase)
+    _SONDEOS.setdefault(registro, {})[(enc.id, fase, actual.pr_numero, enc.generacion)] = epoch
+
+
 def _efectos_pendientes(registro: Registro, enc: Encargo) -> bool:
     from ..ciclo import _espacio, _pedidos_efecto
     from ..cierre import _recibos
@@ -231,10 +236,9 @@ def conducir_pr(registro: Registro, enc: Encargo, gh: GitHubPort,
     if epoch is not None:
         if not sondeo_pendiente(registro, enc, ident, epoch):
             return enc, False
-        sondeos = _SONDEOS.setdefault(registro, {})
-        sondeos[(enc.id, ident, actual.pr_numero, enc.generacion)] = epoch
+        recordar_sondeo(registro, enc, ident, epoch)
         if fase:
-            sondeos[(enc.id, "", 0, 0)] = epoch
+            _SONDEOS[registro][(enc.id, "", 0, 0)] = epoch
     try:
         vista = gh.ver(enc.entrega.repo, actual.pr_numero)
     except Exception:
