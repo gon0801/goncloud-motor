@@ -656,8 +656,6 @@ def _recibos_presentes(registro: Registro, enc: Encargo) -> bool:
 
 
 def _restos_tras_limpio(registro: Registro, enc: Encargo, hora: str) -> bool:
-    from ..ciclo import _rama_de_fase
-
     base = Path(registro.base)
     if any(pr.pr.estado in ("abierto", "borrador") for pr in enc.prs):
         return True
@@ -671,8 +669,6 @@ def _restos_tras_limpio(registro: Registro, enc: Encargo, hora: str) -> bool:
              or ahora < ultimo
              or (ahora - ultimo).total_seconds() >= politica.LIMPIEZA.reintento_s)
         for rama in _ramas(enc)
-        if enc.estado == "cancelado"
-        or any(f.pr_numero and _rama_de_fase(enc, f) == rama.clave for f in enc.fases)
     ):
         return True
     rutas = (
