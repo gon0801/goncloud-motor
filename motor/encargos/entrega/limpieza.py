@@ -360,12 +360,14 @@ def _ultimo(enc: Encargo, recurso: Recurso) -> tuple[str, int, str]:
     )
 
 
-def _borrados_anteriores_al_cierre(registro: Registro, enc: Encargo) -> set[tuple[str, str]]:
+def _borrados_anteriores_al_cierre(
+    registro: Registro, enc: Encargo,
+) -> tuple[int, set[tuple[str, str]]]:
     if enc.estado not in ("terminado", "cancelado") or not any(
         tipo in ("rama", "pr") and resultado == "borrado"
         for tipo, _, resultado, _, _ in enc.limpieza
     ):
-        return set()
+        return 0, set()
     estado = None
     cierre = 0
     borrados: dict[tuple[str, str], int] = {}
@@ -384,7 +386,7 @@ def _borrados_anteriores_al_cierre(registro: Registro, enc: Encargo) -> set[tupl
                     borrados[recurso] = evento["id"]
                 else:
                     borrados.pop(recurso, None)
-    return {recurso for recurso, evento in borrados.items() if evento < cierre}
+    return cierre, {recurso for recurso, evento in borrados.items() if evento < cierre}
 
 
 def _puede_intentar(enc: Encargo, recurso: Recurso, hora: str) -> bool:
@@ -689,8 +691,21 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
         _cerrar_procesos_del_encargo(registro, enc)
     if leer_parada_local(registro.base) is not None:
         return enc
-    anteriores = _borrados_anteriores_al_cierre(registro, enc)
-    if (enc.estado in ("terminado", "cancelado") and enc.limpio and not anteriores
+    cierre, anteriores = _borrados_anteriores_al_cierre(registro, enc)
+    marcas = {
+        (tipo, clave): (enc.id, f"cierre:{cierre}:{tipo}:{clave}")
+        for tipo, clave in anteriores
+    }
+    sondeos = _SONDEOS_COMPARTIDOS.setdefault(registro, {})
+    ahora = _fecha(hora)
+    debidos = {
+        recurso for recurso, marca in marcas.items()
+        if (ultimo := sondeos.get(marca)) is None or ahora is None or ahora < ultimo
+        or (not _vence(enc, hora)
+            and (ahora - ultimo).total_seconds() >= politica.LIMPIEZA.reintento_s)
+    }
+    if (enc.estado in ("terminado", "cancelado") and enc.limpio and not debidos
+        and not any(tipo == "pr" for tipo, _ in anteriores)
         and not _restos_tras_limpio(registro, enc, hora)):
         return enc
     if enc.reserva:
@@ -707,6 +722,10 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
         resultado, _, _ = _ultimo(enc, recurso)
         comprobar = (recurso.tipo, recurso.clave) in anteriores
         if resultado == "borrado" and recurso.tipo in ("rama", "pr") and not comprobar:
+            continue
+        if comprobar and (recurso.tipo, recurso.clave) not in debidos:
+            if recurso.tipo == "pr":
+                faltan = True
             continue
         if not _puede_intentar(enc, recurso, hora):
             faltan = True
@@ -725,7 +744,12 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
             faltan = True
             continue
         if recurso.tipo == "rama" and estado == "conservado" and (ahora := _fecha(hora)):
-            _SONDEOS_COMPARTIDOS.setdefault(registro, {})[(enc.id, recurso.clave)] = ahora
+            sondeos[(enc.id, recurso.clave)] = ahora
+            if comprobar:
+                sondeos[marcas[(recurso.tipo, recurso.clave)]] = ahora
+        if (recurso.tipo == "pr" and estado == "pendiente" and comprobar
+            and gh is not None and enc.entrega.repo and (ahora := _fecha(hora))):
+            sondeos[marcas[(recurso.tipo, recurso.clave)]] = ahora
         if estado == "pendiente":
             faltan = True
         elif estado == "borrado" and (
