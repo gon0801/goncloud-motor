@@ -209,15 +209,16 @@ El registro guarda el estado observado del PR. Ninguna celda queda sin tratar.
 | Abierto | Lo revisa y reporta "listo para tu merge". Lo sigue observando | Lo revisa y lo mergea |
 | Mergeado en la base pedida | Anota que lo integró David, limpia y reporta "integrado" | Anota integrado y despliega si se pidió |
 | Mergeado en otra base | Se detiene y dice cuál base. Con `continuar`, David acepta esa base y la fase sigue como si se hubiera mergeado en la pedida. Un encargo ya terminado no se detiene: se anota y el reporte dice la base | Igual |
-| Cerrado sin merge | La fase queda cancelada por David y su rama se borra. Las fases que dependen de ella se cancelan también y sus PR se cierran. El encargo sigue con las demás | Igual |
+| Cerrado sin merge | La fase queda cancelada por David y su rama se borra. Las fases que dependen de ella y no están preparadas se cancelan también, y la limpieza cierra sus PR. El encargo sigue con las demás | Igual |
 
 El merge de David manda. Si David mergea el PR de una fase antes de que la
 revisión termine, la fase queda cumplida. Si quedan efectos externos sin
 asentar, el motor espera a que se asienten antes de cerrar.
 
-Sobre un encargo cancelado solo se acepta la orden `reabrir`. Un segundo
-`cancelar` se rechaza y dice que el encargo ya está cancelado. Las órdenes que
-ya están en el registro se pliegan como cuando se escribieron.
+Una cancelación es definitiva: un encargo cancelado no acepta órdenes nuevas.
+Un segundo `cancelar` se rechaza y dice que el encargo ya está cancelado; solo
+la misma orden reenviada con su misma clave devuelve el recibo anterior. Las
+órdenes que ya están en el registro se pliegan como cuando se escribieron.
 
 ### Limpieza: qué crea el motor y cuándo lo borra
 
