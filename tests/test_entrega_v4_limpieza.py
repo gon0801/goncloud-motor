@@ -20,7 +20,7 @@ from motor import plataforma
 from motor.encargos import ciclo, politica
 from motor.encargos import despliegue
 from motor.encargos.registro import Evento, Registro
-from motor.github import FakeGitHub
+from motor.github import FakeGitHub, PrView
 from motor.workspace import git
 from tests.test_github_contrato import _bare_con_rama
 
@@ -265,7 +265,11 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
             "evidencia": "entrega parcial", "hora": hora(1),
         }}, "cierre-pr-reabierto:x")
-        abierto = replace(self.gh.ver(self.repo, numero), estado="abierto")
+        visto = self.gh.ver(self.repo, numero)
+        abierto = PrView(
+            visto.numero, visto.rama, visto.base, visto.borrador,
+            visto.head, "abierto", visto.merge_commit, visto.cuerpo,
+        )
         with mock.patch.object(self.gh, "ver", return_value=abierto) as ver:
             enc = self._limpiar(1)
         self.assertEqual(ver.call_count, 1)
