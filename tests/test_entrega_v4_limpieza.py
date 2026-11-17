@@ -151,6 +151,32 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
         self.assertNotIn("rama", {r for r, _, _, _, _ in enc.limpieza})
 
+    def test_no_acredita_rama_ausente_antes_del_push_y_la_borra_al_cancelar(self) -> None:
+        from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
+
+        self._final(cancelar=False)
+        git("push", "-q", self.repo, ":refs/heads/encargo/x", cwd=self.trabajo)
+        enc = barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(),
+                              PresupuestoLimpieza(self.reg, 0), 0)
+        self.assertNotIn("rama", {r for r, _, _, _, _ in enc.limpieza})
+
+        git("push", "-q", self.repo, "HEAD:refs/heads/encargo/x", cwd=self.trabajo)
+        numero = self.gh.abrir_pr(self.repo, "encargo/x", "main", "fase", "cuerpo").numero
+        self.reg.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "F", "paso": "pr_listo", "numero": numero,
+            "sha": "h", "hora": hora(),
+        }}, "pr:x")
+        self.reg.anotar("x", {"kind": "orden", "data": {
+            "accion": "cancelar", "hora": hora(),
+        }}, "cancelar:x")
+        self.reg.anotar("x", {"kind": "arbol", "data": {
+            "observacion": "ausente", "hora": hora(),
+        }}, "arbol:x")
+        enc = barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(1),
+                              PresupuestoLimpieza(self.reg, 61), 61)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+        self.assertTrue(enc.limpio)
+
     def test_un_pr_ya_cerrado_se_observa_sin_cerrarlo_de_nuevo(self) -> None:
         numero = self._final(con_pr=True)
         self.gh.cerrar_pr(self.repo, numero)
