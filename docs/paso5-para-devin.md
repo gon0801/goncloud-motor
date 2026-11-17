@@ -46,8 +46,8 @@ Cambia la conducta en tres puntos, y solo con el interruptor encendido (regla 4)
 - volver a mirar una espera por hecho y releer DeepSeek ya no escriben eventos.
 
 No cambian:
-- el valor y la acción de los topes que ya existen (decisión 5 de David), salvo tres que David cambió el
-  2026-11-17: `tropiezo_merge`, `repo` y el relevo agotado de `proveedor`;
+- el valor y la acción de los topes que ya existen (decisión 5 de David), salvo dos que David cambió el
+  2026-11-17: `tropiezo_merge` y `repo`;
 - el plegado de las claves que ya existen en un registro guardado;
 - que plegar nunca falla.
 
@@ -208,10 +208,13 @@ ESPERAS_V5 = False
 KINDS_DE_AVANCE: frozenset[str]
 ```
 
-`politica.FILAS` gana tres filas:
+`politica.FILAS` gana dos filas, porque las dos son decisiones de David:
 - `tope_esperas`, con la decisión "David, 12-nov (decisión 5)";
-- `tope_esperas_pasajeras`, con la decisión "David, 17-nov";
-- `falta_de_avance`, con la decisión "revisor, 17-nov; David puede cambiarla".
+- `tope_esperas_pasajeras`, con la decisión "David, 17-nov".
+
+`FALTA_DE_AVANCE_MIN` y `TURNOS_SIN_AVANCE` van en `politica.py` sin fila en `FILAS`, con un
+comentario que dice "propuesta del revisor, 2026-11-17". Cuando David los confirme, el revisor
+agrega su fila.
 
 La tabla de clases no va a `AGENTS.md`: vive en `tabla_esperas.py`.
 
@@ -268,6 +271,8 @@ Cómo se lee la tabla:
 - "Por hecho" quiere decir que la cierra un dato externo que el motor lee.
 - "Por hora" quiere decir que la cierra el reloj, y lo que sigue es trabajo nuevo, como un
   relanzamiento, un reintento o `traer_main`.
+- Una clase con tope por intentos es siempre por hora: cada intento escribe su evento, y esa es la
+  cuenta. Si fuera por hecho, la 5.3 dejaría de escribir los intentos y el tope nunca llegaría.
 - Si la lectura de cierre falla y la fila no dice otra cosa, la espera cuenta como "todavía no", y
   el tope la acota.
 - Un tope en minutos cuenta desde `abierta`, salvo que la fila diga otra cosa.
@@ -285,7 +290,7 @@ Cómo se lee la tabla:
 | `checks_merge` | por hecho | checks requeridos en marcha al mergear | terminan: merge, o rojo devuelve | 120 s | 60 min | `detener` | cerca de 9251; la misma llamada sirve a `tropiezo_merge`, y la clase se elige por la rama |
 | `despliegue_en_curso` | por hecho | recibo `ejecutando` con trabajador vivo | recibo `aplicado` o `fallido` | 30 s | 60 min | `avisar`: el trabajador corta cada paso a los 900 s; matarlo a medias deja un despliegue a medias | cerca de 9651; recibo ilegible o trabajador muerto siguen en `incierto`, como hoy |
 | `despliegue_sin_receta` | por hecho | en la fase activa, `iniciar` devuelve `esperando` (sin receta, SHA o autorización) | aparece lo que faltaba | 300 s | 60 min | `detener` | cerca de 9651 |
-| `despliegue_sin_receta_otra_fase` | por hecho | lo mismo en una fase no activa | aparece lo que faltaba | 30 s | `TOPE_ESPERA` (5 intentos) | `impedimento` con `espera_agotada`, como hoy | cerca de 8406 |
+| `despliegue_sin_receta_otra_fase` | por hora | lo mismo en una fase no activa | aparece lo que faltaba | 30 s | `TOPE_ESPERA` (5 intentos) | `impedimento` con `espera_agotada`, como hoy | cerca de 8406 |
 | `autoridad` | por hecho | sin escrituras durante un despliegue, falta autoridad para conciliar, no concedió otro conductor, o `operar ver` no alcanzado (este último no escribe `espera`: su `abierta` sale del evento `autoridad`) | la autoridad vuelve | 30 s | 6 h | `detener` | cerca de 9371, 2952, 9991 y 10318 |
 | `observacion_comprobador` | por hecho | checks declarados sin observación de esta versión | llega la observación | 30 s | 60 min | `detener` | cerca de 7857 |
 | `efecto_incierto` | por hecho | `conciliando` por un efecto incierto, también el que llega por `motor efecto` | el efecto queda `aplicado` | 30 s | 60 min | `detener` | cerca de 2961; `cli.py` `efecto`, que hoy no se vuelve a mirar |
@@ -296,7 +301,7 @@ Cómo se lee la tabla:
 | `base_movida` | por hora | PR atrás o en conflicto | `traer_main` limpio; un conflicto devuelve | 120 s | 60 min | `detener` | cerca de 6913-6973. Cambia: un `estado_merge` ilegible ya no cuenta como sin conflicto, sino como "todavía no" |
 | `tropiezo_merge` | por hora | el merge falla con un pasajero de `respuestas_merge` | el merge sale | escalera (120, 300, 900, 1800) | 6 h | `detener`. Cambia (David, 17-nov): hoy son 5 seguidos a 120 s y termina con `pendientes` | cerca de 9216; `respuestas_merge.py` |
 | `destino_ocupado` | por hora | la receta sale con 75 | la receta sale bien | escalera `ESPERAS_OCUPADO_S` | `TOPE_OCUPADO` (6) | `pendientes` o impedimento de fase, como hoy | cerca de 9528 y 8339 |
-| `proveedor` | por hora | sin modelo libre, pausa de proveedor, cuenta no disponible, `fallo_runtime`, sin ruta de agentes, o relevo agotado | vence la pausa, o `proveedor_disponible` | `rutas` | 6 h | `detener`. Cambia (David, 17-nov): hoy el relevo agotado termina con `pendientes`; ahora espera como las demás causas | `cli.py` cerca de 450 y 517; `ciclo.py` cerca de 3311, 3326 y 10037 |
+| `proveedor` | por hora | sin modelo libre, pausa de proveedor, cuenta no disponible, `fallo_runtime` o sin ruta de agentes | vence la pausa, o `proveedor_disponible` | `rutas` | 6 h | `detener`. El relevo agotado no es esta espera (ver abajo) | `cli.py` cerca de 450; `ciclo.py` cerca de 3311, 3326 y 10037 |
 | `acceso_kimi` | por hora | el turno termina con `autenticacion_expirada` | un relanzamiento con el token renovado funciona | 0 s | 60 min | `detener` | cerca de 3259; hoy sin cuenta |
 | `sesion_local` | por hora | `fallo_runtime` local de la sesión | un relanzamiento funciona | escalera (0, 1800) | 60 min | `detener` | cerca de 1201 |
 | `repo` | por hora | `_asegurar_repo` da una causa | el repo queda listo | escalera (300, 900, 1800) | 6 h | `detener`. Cambia (David, 17-nov): hoy son 3 intentos a 300 s y termina con `pendientes` e impedimento | cerca de 4338 |
@@ -315,6 +320,9 @@ Cómo se lee la tabla:
   - No tiene tope y no se detiene. Sigue como hoy.
 - **El repo sin workflow de revisor** (`ESPERA_SIN_REVISOR_MIN = 0`). No es una espera: omite
   enseguida.
+- **El relevo agotado** (`marcar_relevo_agotado`). Todos los modelos autorizados del rol ya
+  corrieron en la fase, y esperar no trae otro. No es una espera: sigue entregando con
+  `pendientes`, como hoy.
 - **Las observaciones de un encargo cerrado.** DeepSeek de cerrados, CI tras `terminado` y la
   limpieza ya tienen su ventana o su tope, y no detienen nada.
 - **El turno vivo, `colgada` y `quietud`.** No son esperas: los cubre "Falta de avance".
@@ -372,8 +380,13 @@ El turno vivo se cierra por el camino de `deteniendo`, y el encargo queda `deten
 
 Aplica con el interruptor encendido. Entra en la 5.2, y el aviso de falta de avance en la 5.4.
 
-- **Aviso de detención.** `_detencion_nueva` también avisa por `tope_espera` y `falta_de_avance`,
-  una vez por evento. La causa sale de `reporte._detencion`:
+- **Aviso de detención.** `_detencion_nueva` también avisa por `tope_espera` de una fila
+  `detener` y por `falta_de_avance`, una vez por evento. La causa sale de `reporte._detencion`.
+- **Aviso de tope sin detención.** `_detencion_nueva` exige `detenido`, y una fila `avisar` no
+  cambia el estado. Por eso ese aviso sale por un camino propio en `entrega/avisos.py`: se dispara
+  por el evento `tope_espera`, con id `tope:{id del evento}`, sin mirar el estado, igual que hoy
+  salen los avisos de "trabado" de un impedimento.
+- **Los textos:**
   - tope con `detener`: "la espera «{legible}» llegó a su tope ({tope}), abierta a las {hh:mm}; se
     reanuda con continuar";
   - tope con `avisar`: "la espera «{legible}» pasó su tope ({tope}) y sigo esperando: {qué falta}";
@@ -439,9 +452,8 @@ Evidencia, con el interruptor encendido, una prueba por fila:
 - en las filas `avisar` sale un solo aviso y la espera sigue.
 
 Evidencia, además:
-- en `tropiezo_merge`, `repo` y el relevo agotado de `proveedor`: encendido, los reintentos siguen
-  la escalera hasta las 6 h y luego el encargo se detiene; apagado, hacen lo de hoy (5 intentos,
-  3 intentos y `pendientes`);
+- en `tropiezo_merge` y `repo`: encendido, los reintentos siguen la escalera hasta las 6 h y luego
+  el encargo se detiene; apagado, hacen lo de hoy (5 y 3 intentos, y `pendientes`);
 - una prueba de `deteniendo` con un proceso que no muere;
 - con el interruptor apagado, una prueba de que nada de esto pasa.
 
@@ -512,17 +524,22 @@ Evidencia:
 **De David.**
 - **60 minutos por omisión** para las esperas que hoy no tienen tope. Al llegar, el encargo se
   detiene y avisa. Es la decisión 5 (2026-11-12). Los topes que ya tienen valor conservan su
-  valor y su acción.
+  valor y su acción, salvo los dos que cambian abajo.
 - **6 horas para lo pasajero que se arregla solo:** `autoridad`, `proveedor`, `empuje_transitorio`
   y `github_pasajero`. David lo eligió el 2026-11-17 ("6 horas"). Un encargo que corre mientras
   él duerme no debe quedar detenido por una caída de GitHub o por una ventana de cuota.
-- **Tres topes que ya existían pasan a esa ventana de 6 horas**, con reintentos cada vez más
+- **Dos topes que ya existían pasan a esa ventana de 6 horas**, con reintentos cada vez más
   espaciados, y al final el encargo se detiene y avisa en vez de terminar incompleto:
   - el merge que falla, que hoy son 5 intentos en 10 minutos;
-  - el relevo de modelos agotado, que hoy entrega lo que tenga;
   - el repo que no queda listo, que hoy son 3 intentos en 15 minutos.
 
   David los eligió el 2026-11-17.
+- **El relevo agotado queda como hoy.** David también lo eligió, porque el revisor se lo explicó
+  como "se acaba la cuota". No lo es:
+  - el relevo se agota cuando todos los modelos autorizados del rol ya corrieron en la fase
+    (`cli.py` cerca de 517, `marcar_relevo_agotado`);
+  - esperar no trae un modelo nuevo, así que sigue entregando con `pendientes`;
+  - la cuota que se acaba es la clase `proveedor`, que ya tiene 6 h.
 
 **Del revisor**, que David puede cambiar:
 - **El merge de David no tiene tope.** Es la única espera de una persona.
