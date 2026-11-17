@@ -678,7 +678,7 @@ class PreguntaSinRespuestaNoDetieneElMotor(unittest.TestCase):
 
 class AlCerrarLimpiaSuDisco(unittest.TestCase):
     @mock.patch.object(politica, "ENTREGA_V4", False)
-    def test_el_cierre_borra_runtime_y_los_intentos_de_ejecucion(self):
+    def test_el_cierre_borra_runtime_y_los_intentos_de_ejecucion(self):  # no-roja-en-base: el borrado inmediato legado permanece apagado; V4 difiere ejecucion
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")
             self.addCleanup(reg.close)
@@ -705,7 +705,7 @@ class AlCerrarLimpiaSuDisco(unittest.TestCase):
             self.assertEqual(reg.fold(encargo).estado, "terminado")
 
     @mock.patch.object(politica, "ENTREGA_V4", False)
-    def test_un_cancelado_tambien_limpia_runtime_y_ejecucion(self):
+    def test_un_cancelado_tambien_limpia_runtime_y_ejecucion(self):  # no-roja-en-base: el borrado inmediato legado permanece apagado; V4 conserva ejecucion durante su plazo
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")
             self.addCleanup(reg.close)

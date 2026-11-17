@@ -243,17 +243,22 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         self.assertIsNone(_restos(obs, "proceso")["algún trabajador de despliegue"])
         self.assertNotEqual(_limpio(obs), "pasa")
 
-    def test_lo_que_queda_junto_al_recibo_es_un_resto(self):
+    def test_lo_que_queda_junto_al_recibo_es_un_resto(self):  # no-roja-en-base: el canario ahora conserva también pedido.json; un trabajador.log sigue siendo resto
         clave = self.clave()
         obs = self.mirar()
         restos = _restos(obs, "despliegue")
         nombre = next(n for n in restos if n.startswith(f"despliegues/{clave.name[:12]}"))
+        self.assertIs(restos[nombre], False)
+        (clave / "trabajador.log").write_text("resto", encoding="utf-8")
+        obs = self.mirar()
+        restos = _restos(obs, "despliegue")
+        nombre = next(n for n in restos if n.startswith(f"despliegues/{clave.name[:12]}"))
         self.assertIs(restos[nombre], True)
-        self.assertIn("pedido.json", nombre)
+        self.assertIn("trabajador.log", nombre)
         self.assertEqual(_limpio(obs), "falla")
 
         for hijo in clave.iterdir():
-            if hijo.name != "recibo.json":
+            if hijo.name not in ("recibo.json", "pedido.json"):
                 hijo.unlink()
         for puntero in (self.banco.base / "despliegues").glob("*.actual"):
             puntero.unlink()

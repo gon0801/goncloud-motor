@@ -114,7 +114,7 @@ class AvisosPorPalabra(unittest.TestCase):
         self.assertIn("pendientes sin resolver", cierres[0])
         self.assertNotIn("trabajo siga", cierres[0])
 
-    def test_el_cierre_apagado_y_el_cambio_de_palabra_se_envian_una_vez(self) -> None:
+    def test_el_cierre_apagado_y_el_cambio_de_palabra_se_envian_una_vez(self) -> None:  # no-roja-en-base: el cierre inicial se prueba apagado y el cambio tras limpio encendido
         ident = self._terminar()
         with mock.patch.object(politica, "ENTREGA_V4", False):
             primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
@@ -246,7 +246,7 @@ class AvisosPorPalabra(unittest.TestCase):
         directores.drenar(self.banco.reg, ahora=T0 + 3)
         self.assertEqual(len(self.banco.cuerpos()), 1)
 
-    def test_cambio_local_pendiente_no_se_descarta_al_configurar_transporte(self) -> None:
+    def test_cambio_local_pendiente_no_se_descarta_al_configurar_transporte(self) -> None:  # no-roja-en-base: el primer cierre es legado; el cambio de palabra se comprueba con V4
         ident = self._terminar()
         with mock.patch.object(politica, "ENTREGA_V4", False):
             self.assertEqual(len(directores.drenar(self.banco.reg, ahora=T0)["avisos"]), 1)
@@ -267,7 +267,7 @@ class AvisosPorPalabra(unittest.TestCase):
         directores.drenar(self.banco.reg, ahora=T0 + 4)
         self.assertEqual(len(self.banco.cuerpos()), 2)
 
-    def test_cierre_local_se_actualiza_si_limpieza_termina_antes_del_envio(self) -> None:
+    def test_cierre_local_se_actualiza_si_limpieza_termina_antes_del_envio(self) -> None:  # no-roja-en-base: el primer cierre es legado; V4 prueba por separado el cierre local ya limpio
         ident = self._terminar()
         config = self.banco.base / "canal.json"
         configurado = config.read_text(encoding="utf-8")

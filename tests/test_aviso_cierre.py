@@ -187,9 +187,9 @@ class Base(unittest.TestCase):
         return ident
 
 
-@mock.patch.object(politica, "ENTREGA_V4", False)
 class ElCierreEnLlano(Base):
-    def test_el_cierre_de_un_encargo_con_pr_es_llano_corto_y_trae_el_numero(self):
+    @mock.patch.object(politica, "ENTREGA_V4", False)
+    def test_el_cierre_de_un_encargo_con_pr_es_llano_corto_y_trae_el_numero(self):  # no-roja-en-base: caracteriza el aviso inmediato legado, que se conserva apagado
         ident = self.encargo_terminado(
             "avisos-caidos",
             [{"paso": "pr_listo", "numero": 160}, {"paso": "deepseek_leido"}],
@@ -207,7 +207,8 @@ class ElCierreEnLlano(Base):
         self.assertIsNone(re.search(r"\b[0-9a-f]{7,64}\b", cuerpo), "sin SHAs")
         self.assertNotIn("#160", cuerpo, "sin PR observado no se afirma que sigue abierto")
 
-    def test_integrado_y_desplegado_se_dicen_en_una_linea(self):
+    @mock.patch.object(politica, "ENTREGA_V4", False)
+    def test_integrado_y_desplegado_se_dicen_en_una_linea(self):  # no-roja-en-base: caracteriza el aviso inmediato legado, que se conserva apagado
         uno = self.encargo_terminado(
             "fase-a",
             [
@@ -393,7 +394,8 @@ class ElCierreEnLlano(Base):
         self.assertIn("y quedó en integrado:", cuerpo)
         self.assertIn("le falta ssh-goncloud", cuerpo)
 
-    def test_un_encargo_cancelado_lo_dice_en_una_frase_simple(self):
+    @mock.patch.object(politica, "ENTREGA_V4", False)
+    def test_un_encargo_cancelado_lo_dice_en_una_frase_simple(self):  # no-roja-en-base: caracteriza el aviso inmediato legado, que se conserva apagado
         ident = self.b.encargo(
             "# Un pedido que no pudo terminar\n\nAlgo que se cancela.",
             "cancelado-uno",
@@ -408,7 +410,8 @@ class ElCierreEnLlano(Base):
         for prohibido in PROHIBIDOS:
             self.assertNotIn(prohibido, cuerpo)
 
-    def test_sin_pr_ni_nivel_el_cierre_usa_la_clave_como_titulo(self):
+    @mock.patch.object(politica, "ENTREGA_V4", False)
+    def test_sin_pr_ni_nivel_el_cierre_usa_la_clave_como_titulo(self):  # no-roja-en-base: caracteriza el aviso inmediato legado, que se conserva apagado
         ident = self.b.encargo("un pedido sin encabezados", "pedido-desnudo")
         self.b.terminar(ident)
         avisos = directores.drenar(self.b.reg, ahora=T0)["avisos"]
@@ -417,7 +420,8 @@ class ElCierreEnLlano(Base):
                       self.b.cuerpos()[0]["cuerpo"])
         self.assertIn("Falta limpiar", self.b.cuerpos()[0]["cuerpo"])
 
-    def test_el_cierre_de_la_via_directa_vuelve_a_llevar_el_resultado(self):
+    @mock.patch.object(politica, "ENTREGA_V4", False)
+    def test_el_cierre_de_la_via_directa_vuelve_a_llevar_el_resultado(self):  # no-roja-en-base: caracteriza el aviso inmediato legado, que se conserva apagado
         ident = self.b.encargo("# Crea dato.txt con 42\n\ntexto", "directa-uno")
         resultado = "leí dato.txt: 42"
         huella = hashlib.sha256(resultado.encode()).hexdigest()
@@ -447,7 +451,8 @@ class ElCierreEnLlano(Base):
         self.assertIn("Falta limpiar", cuerpos[salida[otro]["id"]])
         self.assertNotIn(resultado, cuerpos[salida[otro]["id"]])
 
-    def test_el_cierre_lleva_las_correcciones_que_ningun_intento_recibio(self):
+    @mock.patch.object(politica, "ENTREGA_V4", False)
+    def test_el_cierre_lleva_las_correcciones_que_ningun_intento_recibio(self):  # no-roja-en-base: caracteriza el aviso inmediato legado; V4 también conserva las correcciones tras limpio
         ident = self.encargo_terminado(
             "con-correccion",
             [{"paso": "pr_listo", "numero": 5}, {"paso": "deepseek_leido"}],
@@ -468,7 +473,8 @@ class ElCierreEnLlano(Base):
                       self.b.cuerpos()[0]["cuerpo"])
         self.assertTrue(self.b.cuerpos()[0]["cuerpo"].endswith("listo"))
 
-    def test_la_nota_legada_sin_tildes_tambien_llega_en_el_cierre(self):
+    @mock.patch.object(politica, "ENTREGA_V4", False)
+    def test_la_nota_legada_sin_tildes_tambien_llega_en_el_cierre(self):  # no-roja-en-base: caracteriza el aviso inmediato legado, que se conserva apagado
         ident = self.b.encargo(
             "# Un cierre legado\n\npedido", "legado-uno"
         )

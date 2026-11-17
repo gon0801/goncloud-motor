@@ -375,7 +375,7 @@ class ListaCerrada(Banco):
             ["hermes"],
         )
 
-    def test_el_cierre_incierto_de_la_misma_pasada_no_bloquea_el_sondeo(self):
+    def test_el_cierre_incierto_de_la_misma_pasada_no_bloquea_el_sondeo(self):  # no-roja-en-base: un cierre incierto tampoco bloqueaba al sondeo anterior; V4 espera limpio
         ident = self.encargo(via="directa")
         self.terminar(ident)
         self.reg.anotar(ident, {"kind": "limpio", "data": {"hora": HORA}},

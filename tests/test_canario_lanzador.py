@@ -553,7 +553,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.queda_cerrado()
         self.assertNotIn("falló", {b["resultado"] for b in salida["limpieza"]})
 
-    def test_un_remoto_que_no_se_puede_resolver_no_tumba_la_limpieza(self):
+    def test_un_remoto_que_no_se_puede_resolver_no_tumba_la_limpieza(self):  # no-roja-en-base: el fallo del lanzador ya se aislaba; V4 borra la rama antes y el test crea un resto para probarlo
         codigo, informe = self.correr()
         self.assertEqual(codigo, 0, informe["tabla"])
         ident = informe["encargo"]
@@ -573,7 +573,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         self.assertFalse((self.base / "espacio" / ident).exists())
         self.assertFalse((self.base / "ejecucion" / ident).exists())
 
-    def test_un_push_que_no_responde_no_tumba_la_limpieza(self):
+    def test_un_push_que_no_responde_no_tumba_la_limpieza(self):  # no-roja-en-base: el fallo del lanzador ya se aislaba; V4 borra la rama antes y el test crea un resto para probarlo
         codigo, informe = self.correr()
         self.assertEqual(codigo, 0, informe["tabla"])
         ident = informe["encargo"]

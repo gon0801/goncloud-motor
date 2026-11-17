@@ -455,7 +455,7 @@ class Limpio(unittest.TestCase):
         self.assertEqual(fila.resultado, "no medido")
         self.assertIn("despliegues/<clave>", fila.observado)
 
-    def test_lo_que_queda_de_un_despliegue_no_esta_limpio(self):
+    def test_lo_que_queda_de_un_despliegue_no_esta_limpio(self):  # no-roja-en-base: un trabajador.log ya era resto; pedido.json se conserva en V4
         restos = (*RESTOS_LIMPIOS, Resto("despliegue", "despliegues/k (trabajador.log)", True))
         fila = _fila(_obs(restos=restos), "limpio")
         self.assertEqual(fila.resultado, "falla")
@@ -932,7 +932,7 @@ class LoEsperado(unittest.TestCase):
                 leer_esperado(ruta)
             self.assertIn("sin_medir_en_windows", str(caso.exception))
 
-    def test_una_falla_conocida_sin_su_razon_se_rechaza(self):
+    def test_una_falla_conocida_sin_su_razon_se_rechaza(self):  # no-roja-en-base: el validador de razones no cambia; la fila limpio ahora espera pasa
         tmp = Path(tempfile.mkdtemp(prefix="esperado-"))
         self.addCleanup(shutil.rmtree, tmp, True)
         ruta = tmp / "esperado.json"

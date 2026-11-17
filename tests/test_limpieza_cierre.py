@@ -65,7 +65,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
         )
         self.assertEqual(enc.estado, "terminado")
 
-    def test_un_runtime_con_archivos_de_solo_lectura_se_borra_completo(self):
+    def test_un_runtime_con_archivos_de_solo_lectura_se_borra_completo(self):  # no-roja-en-base: la limpieza inmediata legada permanece con el interruptor apagado
         encargo = recibir(self.reg, "x", "solo-lectura", ahora_iso())["encargo"]
         runtime = self.reg.base / "runtime" / encargo / "intento-1"
         ejecucion = self.reg.base / "ejecucion" / encargo / "intento-1"
@@ -118,7 +118,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
             and "limpieza(" in evento["data"].get("nota", "")
         ]
 
-    def test_un_archivo_imposible_de_borrar_se_anota_una_sola_vez(self):
+    def test_un_archivo_imposible_de_borrar_se_anota_una_sola_vez(self):  # no-roja-en-base: la anotacion de fallos legada permanece al apagar V4
         encargo = self._cancelar_con_archivo_abierto()
         error = PermissionError(13, "Permission denied", "abierto.db")
 
@@ -146,7 +146,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
             self.assertEqual(borrar.call_count, 4, "la limpieza se reintentó en bucle")
             self.assertEqual(self.reg.eventos(encargo), antes)
 
-    def test_el_fallo_al_enumerar_los_intentos_tambien_se_anota(self):
+    def test_el_fallo_al_enumerar_los_intentos_tambien_se_anota(self):  # no-roja-en-base: la ruta legada enumera intentos; V4 conserva ejecucion siete dias
         encargo = self._cancelar_con_archivo_abierto()
         # `ejecucion/<id>` como archivo: iterdir() falla con NotADirectoryError.
         ejecucion = self.reg.base / "ejecucion" / encargo
@@ -158,7 +158,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
         self.assertEqual(len(notas), 1)
         self.assertIn("NotADirectoryError", notas[0]["data"]["nota"])
 
-    def test_el_reintento_que_si_borra_quita_la_marca_del_encargo(self):
+    def test_el_reintento_que_si_borra_quita_la_marca_del_encargo(self):  # no-roja-en-base: el reintento legado se conserva; V4 registra su propio reintento
         encargo = self._cancelar_con_archivo_abierto()
         error = PermissionError(13, "Permission denied", "abierto.db")
         efectos = [error, error, None, None]
@@ -186,7 +186,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
             barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(self.reg.eventos(encargo), antes)
 
-    def test_un_arranque_nuevo_recupera_del_registro_el_intento_pendiente(self):
+    def test_un_arranque_nuevo_recupera_del_registro_el_intento_pendiente(self):  # no-roja-en-base: el reinicio legado se conserva; V4 pliega sus intentos nuevos
         encargo = self._cancelar_con_archivo_abierto()
         self.assertFalse(hasattr(ciclo, "_LIMPIEZA_FALLIDA"))
         error = PermissionError(13, "Permission denied", "abierto.db")

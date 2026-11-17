@@ -1618,7 +1618,7 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self._barrer(r, self._lanzador(prompts))
             self.assertIn("el dato debe ser 43", prompts[0][1])
 
-    def test_la_carrera_con_el_cierre_tambien_se_rechaza_si_ningun_intento_puede_recibirla(self):
+    def test_la_carrera_con_el_cierre_tambien_se_rechaza_si_ningun_intento_puede_recibirla(self):  # no-roja-en-base: la correccion se conserva igual; se espera el aviso V4 tras limpio
         from motor.encargos import cierre as modulo_cierre
         from motor.encargos.ciclo import _intentar_cierre
         from motor.integraciones import directores
@@ -1711,7 +1711,7 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertTrue(_devolver_correcciones(r.reg, e, ahora_iso()))
             self.assertIn("incorporar las correcciones", r.fold().siguiente)
 
-    def test_la_correccion_sin_intento_llega_al_propietario_en_el_aviso_de_cierre(self):
+    def test_la_correccion_sin_intento_llega_al_propietario_en_el_aviso_de_cierre(self):  # no-roja-en-base: el texto ya se conservaba; se espera el aviso V4 tras limpio
         from motor.integraciones import directores
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1844,7 +1844,7 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertEqual(e.estado, "terminado")
             self.assertIn("el dato debe ser 43", e.evidencia[-1])
 
-    def test_la_nota_sin_intento_con_el_prefijo_anterior_llega_al_aviso_de_cierre(self):
+    def test_la_nota_sin_intento_con_el_prefijo_anterior_llega_al_aviso_de_cierre(self):  # no-roja-en-base: la nota legada ya se conservaba; se espera el aviso V4 tras limpio
         from motor.integraciones import directores
 
         with tempfile.TemporaryDirectory() as tmp:

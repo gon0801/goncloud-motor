@@ -167,7 +167,7 @@ class CanalCaido(unittest.TestCase):
         directores.drenar(self.b.reg, ahora=T0 + 10_000)
         self.assertEqual(len(self.b.llamadas()), 2)
 
-    def test_un_encargo_terminado_no_reenvia_avisos_de_avance(self):
+    def test_un_encargo_terminado_no_reenvia_avisos_de_avance(self):  # no-roja-en-base: el avance ya se descartaba; se espera el cierre V4 tras limpio
         ident = self.b.encargo("uno", avances=2)
         primeros = directores.drenar(self.b.reg, ahora=T0)["avisos"]
         self.assertEqual(len(primeros), 2)
@@ -193,7 +193,7 @@ class CanalCaido(unittest.TestCase):
         directores.drenar(self.b.reg, ahora=T0 + 20_000)
         self.assertEqual(len(self.b.llamadas()), 2)
 
-    def test_un_encargo_terminado_no_genera_avances_nuevos(self):
+    def test_un_encargo_terminado_no_genera_avances_nuevos(self):  # no-roja-en-base: el avance ya se omitía; se espera el cierre V4 tras limpio
         ident = self.b.encargo("uno", avances=1)
         self.b.terminar(ident)
         self.b.reg.anotar(ident, {"kind": "limpio", "data": {"hora": HORA}},
