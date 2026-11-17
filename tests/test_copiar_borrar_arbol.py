@@ -10,7 +10,7 @@ from motor.encargos.copiar import _reintentar_sin_solo_lectura, borrar_arbol
 
 
 class BorrarArbolIlegibleTest(unittest.TestCase):
-    def test_archivo_de_solo_lectura_con_1920_no_se_confunde_con_directorio(self):  # no-roja-en-base: la ruta generica ya borra este archivo; la ruta WinError 1920 no debe perderlo
+    def test_archivo_de_solo_lectura_con_1920_no_se_confunde_con_directorio(self):  # no-roja-en-base: main 7c07792 borra el archivo mediante la ruta generica con chmod
         with tempfile.TemporaryDirectory() as temporal:
             archivo = Path(temporal) / "archivo"
             archivo.write_text("borrar")
@@ -27,6 +27,15 @@ class BorrarArbolIlegibleTest(unittest.TestCase):
             with mock.patch.object(Path, "unlink", autospec=True, side_effect=unlink):
                 _reintentar_sin_solo_lectura(os.unlink, archivo, error)
             self.assertFalse(archivo.exists())
+
+            bloqueado = Path(temporal) / "bloqueado"
+            bloqueado.write_text("sin permisos")
+            bloqueo = PermissionError(13, "acceso denegado")
+            with (mock.patch.object(Path, "unlink", side_effect=bloqueo),
+                  mock.patch.object(os, "unlink", side_effect=bloqueo)):
+                with self.assertRaises(PermissionError):
+                    _reintentar_sin_solo_lectura(os.unlink, bloqueado, error)
+            self.assertTrue(bloqueado.exists())
 
     def test_entrada_inaccesible_se_quita_y_sigue_el_resto(self):
         with tempfile.TemporaryDirectory() as temporal:

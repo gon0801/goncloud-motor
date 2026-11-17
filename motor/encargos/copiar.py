@@ -45,8 +45,11 @@ def _reintentar_sin_solo_lectura(funcion, ruta, excinfo) -> None:
             _escribible(ruta)
             try:
                 ruta.unlink()
-            except PermissionError:
-                ruta.rmdir()
+            except PermissionError as bloqueo:
+                try:
+                    ruta.rmdir()
+                except NotADirectoryError:
+                    raise bloqueo from None
         except IsADirectoryError:
             ruta.rmdir()
         except FileNotFoundError:
