@@ -15,7 +15,7 @@ from motor import plataforma
 
 from .. import despliegue, politica
 from ..copiar import borrar_arbol
-from ..dominio import _fallo_transitorio
+from ..dominio import _fallo_transitorio, reducir
 from ..frontera import leer_parada_local
 from motor.io import leer_json
 from .observacion import anotar_pr
@@ -360,6 +360,33 @@ def _ultimo(enc: Encargo, recurso: Recurso) -> tuple[str, int, str]:
     )
 
 
+def _borrados_anteriores_al_cierre(registro: Registro, enc: Encargo) -> set[tuple[str, str]]:
+    if enc.estado not in ("terminado", "cancelado") or not any(
+        tipo in ("rama", "pr") and resultado == "borrado"
+        for tipo, _, resultado, _, _ in enc.limpieza
+    ):
+        return set()
+    estado = None
+    cierre = 0
+    borrados: dict[tuple[str, str], int] = {}
+    for evento in registro.eventos(enc.id):
+        anterior = estado.estado if estado is not None else ""
+        estado = reducir(estado, evento, nuevo=False)
+        if estado is not None and estado.estado in ("terminado", "cancelado") and anterior not in (
+            "terminado", "cancelado"
+        ):
+            cierre = evento["id"]
+        if evento["kind"] == "limpieza":
+            datos = evento["data"]
+            recurso = (datos.get("recurso"), datos.get("clave"))
+            if recurso[0] in ("rama", "pr"):
+                if datos.get("resultado") == "borrado":
+                    borrados[recurso] = evento["id"]
+                else:
+                    borrados.pop(recurso, None)
+    return {recurso for recurso, evento in borrados.items() if evento < cierre}
+
+
 def _puede_intentar(enc: Encargo, recurso: Recurso, hora: str) -> bool:
     resultado, intento, anterior = _ultimo(enc, recurso)
     if resultado == "agotado":
@@ -396,9 +423,12 @@ def _anotar(registro: Registro, enc: Encargo, recurso: Recurso,
             mensaje = "operación de limpieza rechazada"
         datos.update(error_clase=type(error).__name__,
                      error_mensaje=f"{recurso.tipo}: {mensaje}")
+    clave_evento = f"limpieza:{enc.id}:{recurso.tipo}:{recurso.clave}:{siguiente}:{hora}"
+    if anterior == "borrado" and recurso.tipo in ("rama", "pr"):
+        clave_evento += f":{registro.ultimo_evento(enc.id)}"
     registro.anotar(
         enc.id, {"kind": "limpieza", "data": datos},
-        f"limpieza:{enc.id}:{recurso.tipo}:{recurso.clave}:{siguiente}:{hora}",
+        clave_evento,
     )
     return registro.fold(enc.id) or enc
 
@@ -659,7 +689,8 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
         _cerrar_procesos_del_encargo(registro, enc)
     if leer_parada_local(registro.base) is not None:
         return enc
-    if (enc.estado in ("terminado", "cancelado") and enc.limpio
+    anteriores = _borrados_anteriores_al_cierre(registro, enc)
+    if (enc.estado in ("terminado", "cancelado") and enc.limpio and not anteriores
         and not _restos_tras_limpio(registro, enc, hora)):
         return enc
     if enc.reserva:
@@ -674,7 +705,8 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
     faltan = False
     for recurso in recursos:
         resultado, _, _ = _ultimo(enc, recurso)
-        if resultado == "borrado" and recurso.tipo in ("rama", "pr"):
+        comprobar = (recurso.tipo, recurso.clave) in anteriores
+        if resultado == "borrado" and recurso.tipo in ("rama", "pr") and not comprobar:
             continue
         if not _puede_intentar(enc, recurso, hora):
             faltan = True
@@ -682,7 +714,8 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
         restantes = presupuesto[0]
         try:
             enc, estado = _limpiar_recurso(
-                registro, enc, gh, recurso, hora, presupuesto, epoch,
+                registro, enc, gh, recurso, hora, presupuesto,
+                None if comprobar and recurso.tipo == "pr" else epoch,
             )
         except ConsultaPospuesta:
             faltan = True
@@ -696,7 +729,7 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
         if estado == "pendiente":
             faltan = True
         elif estado == "borrado" and (
-            resultado != "borrado" or presupuesto[0] < restantes
+            comprobar or resultado != "borrado" or presupuesto[0] < restantes
         ):
             enc = _anotar(registro, enc, recurso, "borrado", hora)
     if (enc.estado in ("terminado", "cancelado") and not faltan and not enc.limpio
