@@ -35,6 +35,9 @@ _MAX_INTENTOS_LIMPIEZA_LEGADA = 2
 _SONDEOS_COMPARTIDOS: weakref.WeakKeyDictionary[Registro, dict[tuple[str, str], datetime]] = (
     weakref.WeakKeyDictionary()
 )
+_REVALIDACIONES: weakref.WeakKeyDictionary[
+    Registro, dict[tuple[str, int, str, str], Revalidacion]
+] = weakref.WeakKeyDictionary()
 _CUOTAS_GH: weakref.WeakKeyDictionary[Registro, tuple[float, int]] = weakref.WeakKeyDictionary()
 T = TypeVar("T")
 
@@ -145,6 +148,12 @@ class Recurso:
     tipo: Tipo
     clave: str
     fase: str = ""
+
+
+@dataclass(frozen=True)
+class Revalidacion:
+    fecha: datetime
+    resultado: Literal["conservado", "pendiente"]
 
 
 def _fecha(hora: str) -> datetime | None:
@@ -693,19 +702,27 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
         return enc
     cierre, anteriores = _borrados_anteriores_al_cierre(registro, enc)
     marcas = {
-        (tipo, clave): (enc.id, f"cierre:{cierre}:{tipo}:{clave}")
+        (tipo, clave): (enc.id, cierre, tipo, clave)
         for tipo, clave in anteriores
     }
     sondeos = _SONDEOS_COMPARTIDOS.setdefault(registro, {})
+    revalidaciones = _REVALIDACIONES.setdefault(registro, {})
     ahora = _fecha(hora)
+    vencido = _vence(enc, hora)
     debidos = {
         recurso for recurso, marca in marcas.items()
-        if (ultimo := sondeos.get(marca)) is None or ahora is None or ahora < ultimo
-        or (not _vence(enc, hora)
-            and (ahora - ultimo).total_seconds() >= politica.LIMPIEZA.reintento_s)
+        if not vencido and (
+            (ultimo := revalidaciones.get(marca)) is None or ahora is None
+            or ahora < ultimo.fecha
+            or (ahora - ultimo.fecha).total_seconds() >= politica.LIMPIEZA.reintento_s
+        )
     }
     if (enc.estado in ("terminado", "cancelado") and enc.limpio and not debidos
-        and not any(tipo == "pr" for tipo, _ in anteriores)
+        and not any(
+            tipo == "pr" or (ultimo := revalidaciones.get(marcas[(tipo, clave)])) is None
+            or ultimo.resultado == "pendiente"
+            for tipo, clave in anteriores
+        )
         and not _restos_tras_limpio(registro, enc, hora)):
         return enc
     if enc.reserva:
@@ -724,13 +741,16 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
         if resultado == "borrado" and recurso.tipo in ("rama", "pr") and not comprobar:
             continue
         if comprobar and (recurso.tipo, recurso.clave) not in debidos:
-            if recurso.tipo == "pr":
+            ultimo = revalidaciones.get(marcas[(recurso.tipo, recurso.clave)])
+            if (recurso.tipo == "pr" or vencido or ultimo is None
+                or ultimo.resultado == "pendiente"):
                 faltan = True
             continue
         if not _puede_intentar(enc, recurso, hora):
             faltan = True
             continue
         restantes = presupuesto[0]
+        consultas = presupuesto.consultas if isinstance(presupuesto, PresupuestoLimpieza) else None
         try:
             enc, estado = _limpiar_recurso(
                 registro, enc, gh, recurso, hora, presupuesto,
@@ -743,13 +763,20 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
             enc = _anotar(registro, enc, recurso, "fallo", hora, exc)
             faltan = True
             continue
-        if recurso.tipo == "rama" and estado == "conservado" and (ahora := _fecha(hora)):
+        if recurso.tipo == "rama" and estado == "conservado" and ahora:
             sondeos[(enc.id, recurso.clave)] = ahora
-            if comprobar:
-                sondeos[marcas[(recurso.tipo, recurso.clave)]] = ahora
-        if (recurso.tipo == "pr" and estado == "pendiente" and comprobar
-            and gh is not None and enc.entrega.repo and (ahora := _fecha(hora))):
-            sondeos[marcas[(recurso.tipo, recurso.clave)]] = ahora
+        consulta_hecha = (
+            gh is not None and bool(enc.entrega.repo)
+            and (consultas is None or (
+                isinstance(presupuesto, PresupuestoLimpieza)
+                and presupuesto.consultas < consultas
+            ))
+        )
+        if (comprobar and ahora and (estado == "conservado"
+            or estado == "pendiente" and consulta_hecha)):
+            revalidaciones[marcas[(recurso.tipo, recurso.clave)]] = Revalidacion(ahora, estado)
+            if recurso.tipo == "rama":
+                sondeos[(enc.id, recurso.clave)] = ahora
         if estado == "pendiente":
             faltan = True
         elif estado == "borrado" and (
