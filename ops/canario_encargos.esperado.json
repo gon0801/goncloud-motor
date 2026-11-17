@@ -23,6 +23,7 @@
   "minutos": 45,
   "turnos_por_rol": 2,
   "rondas": 1,
-  "minutos_se_detiene": 15
+  "minutos_se_detiene": 15,
+  "minutos_limpio": 5
  }
 }

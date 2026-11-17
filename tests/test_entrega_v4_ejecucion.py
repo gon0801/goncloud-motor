@@ -363,6 +363,31 @@ class EntregaSegunPR(unittest.TestCase):
         self.assertEqual(registro.fold("x").prs[0].pr.estado, "mergeado")
         self.assertEqual(fase_final_por_sondear(registro.fold("x")), "")
 
+    def test_pr_cerrado_por_limpieza_aun_cancela_su_fase(self) -> None:
+        registro, gh = self._registro()
+        registro.anotar("x", {"kind": "entrega_externa", "data": {
+            "fase": "F", "paso": "pr_con_pendientes",
+            "numero": 7, "sha": "h", "hora": "t1",
+        }}, "nivel:x")
+        registro.anotar("x", {"kind": "comprobacion", "data": {
+            "fase": "F", "clase": "cierre_comprobado",
+            "evidencia": "entregado para el merge", "hora": "t1",
+        }}, "cierre:x")
+        self.assertEqual(registro.fold("x").estado, "terminado")
+        gh.responde_ver = lambda _, numero: PrView(
+            numero, "encargo/x", "main", False, "h", "cerrado", "",
+        )
+        with mock.patch.object(politica, "ENTREGA_V4", True):
+            with mock.patch.object(ciclo, "CERRADOS_POR_PASADA", 0):
+                ciclo.barrer(registro, "2026-11-16T12:00:00+00:00", 0, None, gh=gh)
+            enc = registro.fold("x")
+            self.assertEqual(enc.prs[0].pr.estado, "cerrado")
+            self.assertNotIn("F", enc.canceladas)
+            self.assertEqual(fase_final_por_sondear(enc), "F")
+            ciclo.barrer(registro, "2026-11-16T12:02:01+00:00", 121, None, gh=gh)
+        self.assertIn("F", registro.fold("x").canceladas)
+        self.assertEqual(fase_final_por_sondear(registro.fold("x")), "")
+
     def test_diez_terminados_respetan_cadencia_y_presupuesto(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

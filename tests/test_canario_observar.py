@@ -39,7 +39,8 @@ from tests.test_compuerta_e2e import (
     _trabajador_contenido,
 )
 
-TOPES = Topes(minutos_termina=90, minutos=45, turnos_por_rol=2, rondas=1, minutos_se_detiene=15)
+TOPES = Topes(minutos_termina=90, minutos=45, turnos_por_rol=2, rondas=1, minutos_se_detiene=15,
+              minutos_limpio=5)
 
 
 def _ahora() -> str:
@@ -301,7 +302,7 @@ class ObservarUnEncargoDelBanco(unittest.TestCase):
         argv = [self.banco.ident, "--base", str(self.banco.base), "--esperado", str(ruta)]
         topes = {
             "minutos_termina": 90, "minutos": 45, "turnos_por_rol": 2, "rondas": 1,
-            "minutos_se_detiene": 15,
+            "minutos_se_detiene": 15, "minutos_limpio": 5,
         }
 
         def esperado(filas: dict[str, str]) -> str:

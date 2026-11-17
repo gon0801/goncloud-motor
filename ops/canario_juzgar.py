@@ -54,6 +54,8 @@ class Topes:
     rondas: int
     minutos_se_detiene: int
     """Lo que puede tardar en pararse el encargo que falla a propósito."""
+    minutos_limpio: int
+    """Espera máxima después de cerrar para acreditar su limpieza."""
 
 
 @dataclass(frozen=True)
