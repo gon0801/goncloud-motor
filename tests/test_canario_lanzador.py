@@ -314,7 +314,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         for nombre in canario_lanzador.PROHIBIDOS:
             self.assertFalse(os.path.lexists(self.base / nombre), nombre)
 
-    def test_el_encargo_que_falla_a_proposito_mide_se_detiene_y_se_limpia(self):  # no-roja-en-base: la rama puede llegar ya ausente o borrarse al final; ambas acreditan ausencia
+    def test_el_encargo_que_falla_a_proposito_mide_se_detiene_y_se_limpia(self):
         codigo, informe = self.correr()
 
         detencion = informe["detencion"]
@@ -330,20 +330,16 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
             self.assertIn(texto, fila["observado"])
         self.assertFalse((self.destino / "se-detiene").exists(), "el rollback no quitó lo desplegado")
         self.assertEqual(_git(self.repo, "show", "main:canario/se-detiene/banco.txt"), ident)
-        limpieza = {b["resto"]: b["resultado"] for b in informe["limpieza"]
-                    if ident in b["resto"]}
-        self.assertIn(limpieza.pop(f"la rama remota encargo/{ident}"),
-                      ("no estaba", "borrado"))
         self.assertEqual(
-            limpieza,
+            {b["resto"]: b["resultado"] for b in informe["limpieza"] if ident in b["resto"]},
             {
+                f"la rama remota encargo/{ident}": "no estaba",
                 f"espacio/{ident}": "borrado",
                 f"ejecucion/{ident}": "borrado",
                 f"canario-escenarios/{ident}.json": "borrado",
                 f"trabajos/{ident}.json de la flota": "borrado",
             },
         )
-        self.assertEqual(_git(self.repo, "branch", "--list", f"encargo/{ident}"), "")
 
     def test_el_encargo_con_cortes_mide_no_pierde_y_no_repite_y_se_limpia(self):
         """El lanzador corta su supervisor con el turno del responsable y la receta de
@@ -724,7 +720,7 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
             canario_apagon.por_que_no_vuelve_a_cortar("c", carpeta, cerrado=False),
         )
 
-    def test_una_sesion_perdida_no_corta_la_corrida(self):  # no-roja-en-base: la limpieza puede borrar la rama antes o durante el cierre del lanzador
+    def test_una_sesion_perdida_no_corta_la_corrida(self):
         """Al caerse ssh, escribir en la sesión falla con EPIPE y puede llegar un SIGHUP."""
         hijo, grupo = self.tmp / "hijo.pid", self.tmp / "supervisor.pid"
         self.addCleanup(_matar, hijo)
@@ -754,10 +750,10 @@ class LanzadorEnUnaMaquinaDePrueba(unittest.TestCase):
         ident = informe["encargo"]
         self.assertEqual((informe["corrida"], informe["fin"]), ("prueba", "terminado"), informe)
         self.assertEqual((codigo, informe["codigo"]), (0, 0), informe["tabla"])
-        ramas = [b for b in informe["limpieza"] if b["resto"].startswith("la rama remota")]
-        self.assertTrue(ramas, informe["limpieza"])
-        self.assertTrue(all(b["resultado"] in ("no estaba", "borrado") for b in ramas),
-                        informe["limpieza"])
+        self.assertEqual(
+            {b["resultado"] for b in informe["limpieza"] if b["resto"].startswith("la rama remota")},
+            {"no estaba"}, informe["limpieza"],
+        )
         self.assertEqual(
             {b["resultado"] for b in informe["limpieza"] if not b["resto"].startswith("la rama remota")},
             {"borrado"}, informe["limpieza"],

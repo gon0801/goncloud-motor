@@ -177,6 +177,60 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
         self.assertTrue(enc.limpio)
 
+    def test_rama_borrada_en_entrega_parcial_se_recomprueba_tras_el_cierre(self) -> None:  # no-roja-en-base: la base ya reconsultaba ramas borradas
+        from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
+
+        numero = self._final(con_pr=True, cancelar=False)
+        self.gh.cerrar_pr(self.repo, numero)
+        barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(),
+                         PresupuestoLimpieza(self.reg, 0), 0)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+
+        git("push", "-q", self.repo, "HEAD:refs/heads/encargo/x", cwd=self.trabajo)
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "entrega parcial", "hora": hora(),
+        }}, "cierre-parcial:x")
+        with mock.patch.object(self.gh, "ver", wraps=self.gh.ver) as ver:
+            enc = barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(),
+                                  PresupuestoLimpieza(self.reg, 61), 61)
+        self.assertEqual(ver.call_count, 1)
+        self.assertTrue(enc.limpio)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+        self.assertEqual(sum(
+            evento["kind"] == "limpieza" and evento["data"]["recurso"] == "rama"
+            and evento["data"]["resultado"] == "borrado"
+            for evento in self.reg.eventos("x")
+        ), 2)
+        eventos = self.reg.eventos("x")
+        with (mock.patch.object(self.gh, "ver", wraps=self.gh.ver) as ver,
+              mock.patch.object(self.gh, "rama_existe", wraps=self.gh.rama_existe) as rama):
+            self._limpiar(1)
+        self.assertEqual((ver.call_count, rama.call_count), (0, 0))
+        self.assertEqual(self.reg.eventos("x"), eventos)
+
+    def test_rama_borrada_antes_de_reabrir_se_borra_tras_cancelar(self) -> None:  # no-roja-en-base: la base ya reconsultaba ramas borradas
+        numero = self._final(con_pr=True, cancelar=False)
+        self.gh.cerrar_pr(self.repo, numero)
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "cierre provisional", "hora": hora(1),
+        }}, "cierre-provisional:x")
+        self.assertTrue(self._limpiar(1).limpio)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+
+        salida = ciclo.ordenar(self.reg, "x", "reabrir", "reabrir:x", hora(2))
+        self.assertFalse(salida.get("rechazada"), salida)
+        git("push", "-q", self.repo, "HEAD:refs/heads/encargo/x", cwd=self.trabajo)
+        salida = ciclo.ordenar(self.reg, "x", "cancelar", "cancelar-reabierto:x", hora(3))
+        self.assertFalse(salida.get("rechazada"), salida)
+        self.reg.anotar("x", {"kind": "arbol", "data": {
+            "observacion": "ausente", "hora": hora(3),
+        }}, "arbol-reabierto:x")
+        self.assertEqual(self.reg.fold("x").estado, "cancelado")
+
+        enc = self._limpiar(4)
+        self.assertTrue(enc.limpio)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+
     def test_un_pr_ya_cerrado_se_observa_sin_cerrarlo_de_nuevo(self) -> None:
         numero = self._final(con_pr=True)
         self.gh.cerrar_pr(self.repo, numero)
