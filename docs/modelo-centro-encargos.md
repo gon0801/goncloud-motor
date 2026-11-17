@@ -173,7 +173,7 @@ El motor usa estas palabras y ninguna otra para decir cómo quedó un encargo.
 |---|---|
 | entregado | El nivel efectivo es `desplegado`. Todas las fases están mergeadas en la base pedida, cada una tiene el recibo del despliegue de su commit, y el encargo está `limpio` |
 | integrado | El nivel efectivo es `integrado`, o es `pr` y David ya mergeó. Todas las fases están mergeadas en la base pedida y el encargo está `limpio`. No hubo despliegue, y el reporte dice por qué |
-| listo para tu merge | El nivel efectivo es `pr`. El PR está abierto, listo, revisado y sin bloqueantes. Falta el merge de David |
+| listo para tu merge | El nivel efectivo es `pr`, el encargo terminó y el PR de alguna fase no cancelada sigue abierto o en borrador. Falta el merge de David. Si otras fases quedaron parciales, el reporte las nombra también |
 | respondido | El nivel efectivo es `terminado`. El resultado llegó al director, no hay PR, y el encargo está `limpio` |
 | sin cambios | El trabajo no produjo ningún cambio que entregar. No se abrió PR y el encargo está `limpio` |
 | entrega parcial | Alguna fase quedó bloqueada, sin trabajar o cancelada por David al cerrar su PR. El reporte nombra cada fase y su causa |
@@ -208,8 +208,16 @@ El registro guarda el estado observado del PR. Ninguna celda queda sin tratar.
 | Borrador | Lo marca listo | Lo marca listo |
 | Abierto | Lo revisa y reporta "listo para tu merge". Lo sigue observando | Lo revisa y lo mergea |
 | Mergeado en la base pedida | Anota que lo integró David, limpia y reporta "integrado" | Anota integrado y despliega si se pidió |
-| Mergeado en otra base | Se detiene y dice cuál base | Se detiene y dice cuál base |
-| Cerrado sin merge | La fase queda cancelada por David y su rama se borra. El encargo sigue con las demás fases | Igual |
+| Mergeado en otra base | Se detiene y dice cuál base. Con `continuar`, David acepta esa base y la fase sigue como si se hubiera mergeado en la pedida. Un encargo ya terminado no se detiene: se anota y el reporte dice la base | Igual |
+| Cerrado sin merge | La fase queda cancelada por David y su rama se borra. Las fases que dependen de ella se cancelan también y sus PR se cierran. El encargo sigue con las demás | Igual |
+
+El merge de David manda. Si David mergea el PR de una fase antes de que la
+revisión termine, la fase queda cumplida. Si quedan efectos externos sin
+asentar, el motor espera a que se asienten antes de cerrar.
+
+Sobre un encargo cancelado solo se acepta la orden `reabrir`. Un segundo
+`cancelar` se rechaza y dice que el encargo ya está cancelado. Las órdenes que
+ya están en el registro se pliegan como cuando se escribieron.
 
 ### Limpieza: qué crea el motor y cuándo lo borra
 
@@ -217,7 +225,10 @@ La limpieza es parte de la entrega. Cada recurso tiene una regla. Antes de
 anotar `limpio`, el motor comprueba que lo que se borra ya no existe y que solo
 queda lo que la regla conserva.
 
-| Lo que el motor crea | Hoy | Regla |
+El motor aplica esta tabla con `politica.ENTREGA_V4` encendido. La columna
+"Antes del paso 4" dice qué pasaba sin ella.
+
+| Lo que el motor crea | Antes del paso 4 | Regla |
 |---|---|---|
 | Rama remota `encargo/*` | Nunca se borra | Se borra al mergear o cerrar el PR, y al cancelar |
 | PR de un encargo cancelado | Queda abierto | Se cierra al cancelar |
@@ -229,6 +240,9 @@ queda lo que la regla conserva.
 
 Si un borrado falla, el motor lo reintenta con tope y reporta "falta limpiar".
 El contador de reintentos vive en el registro, no en la memoria del proceso.
+El tope es de 3 intentos, con 10 minutos entre uno y otro, y como mucho 20
+borrados por pasada. Junto al recibo de cada despliegue también se conserva
+`pedido.json`, que dice de qué encargo es la carpeta.
 
 ### Eventos
 
