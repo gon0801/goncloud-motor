@@ -37,6 +37,14 @@ def ids_por_sondeo(registro: Registro) -> list[str]:
     )
 
 
+def sondeo_pendiente(registro: Registro, enc: Encargo, fase: str, epoch: float) -> bool:
+    actual = next(f for f in enc.fases if f.id == fase)
+    previo = _SONDEOS.get(registro, {}).get(
+        (enc.id, fase, actual.pr_numero, enc.generacion),
+    )
+    return previo is None or not 0 <= epoch - previo < 120
+
+
 def _efectos_pendientes(registro: Registro, enc: Encargo) -> bool:
     from ..ciclo import _espacio, _pedidos_efecto
     from ..cierre import _recibos
@@ -221,12 +229,10 @@ def conducir_pr(registro: Registro, enc: Encargo, gh: GitHubPort,
     if actual is None or not actual.pr_numero:
         return enc, False
     if epoch is not None:
-        clave = (enc.id, ident, actual.pr_numero, enc.generacion)
-        sondeos = _SONDEOS.setdefault(registro, {})
-        previo = sondeos.get(clave)
-        if not fase and previo is not None and 0 <= epoch - previo < 120:
+        if not sondeo_pendiente(registro, enc, ident, epoch):
             return enc, False
-        sondeos[clave] = epoch
+        sondeos = _SONDEOS.setdefault(registro, {})
+        sondeos[(enc.id, ident, actual.pr_numero, enc.generacion)] = epoch
         if fase:
             sondeos[(enc.id, "", 0, 0)] = epoch
     try:
@@ -250,6 +256,15 @@ def fase_final_por_sondear(enc: Encargo) -> str:
         if observado is None or observado.pr.estado in ("abierto", "borrador"):
             return fase.id
     return ""
+
+
+def fase_final_pendiente(registro: Registro, enc: Encargo, epoch: float) -> str:
+    from .. import politica
+
+    if not politica.ENTREGA_V4:
+        return ""
+    fase = fase_final_por_sondear(enc)
+    return fase if fase and sondeo_pendiente(registro, enc, fase, epoch) else ""
 
 
 def conciliar_otra_vista(registro: Registro, enc: Encargo, gh: GitHubPort,

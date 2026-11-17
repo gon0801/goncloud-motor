@@ -356,13 +356,13 @@ class EntregaSegunPR(unittest.TestCase):
         self.assertEqual(registro.fold("x").prs[0].pr.estado, "mergeado")
         self.assertEqual(fase_final_por_sondear(registro.fold("x")), "")
 
-    def test_seis_terminados_rotan_las_cinco_consultas_por_pasada(self) -> None:
+    def test_diez_terminados_respetan_cadencia_y_presupuesto(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         registro = Registro(Path(tmp.name))
         self.addCleanup(registro.close)
         gh = FakeGitHub(Path(tmp.name) / "fake")
-        for numero in range(7, 13):
+        for numero in range(7, 17):
             ident = f"x{numero:02d}"
             registro.append_many(ident, (
                 Evento("entrega", {
@@ -399,12 +399,17 @@ class EntregaSegunPR(unittest.TestCase):
             ciclo, "_barrer_encargos",
             side_effect=lambda reg, ids, *_args, **_kw: [ciclo.vista(reg.fold(ids[0]))],
         ):
-            for segundo in range(3):
+            for segundo in range(120):
                 ciclo.barrer(registro, "2026-11-16T12:00:00+00:00",
                              float(segundo), None, gh=gh)
+            self.assertEqual(len(consultas), 10)
+            for segundo in (120, 121):
+                ciclo.barrer(registro, "2026-11-16T12:02:00+00:00",
+                             float(segundo), None, gh=gh)
         self.assertEqual(consultas[:5], [7, 8, 9, 10, 11])
-        self.assertEqual(consultas[5:10], [12, 7, 8, 9, 10])
-        self.assertEqual(consultas[10:15], [11, 7, 8, 9, 10])
+        self.assertEqual(consultas[5:10], [12, 13, 14, 15, 16])
+        self.assertEqual(consultas[10:15], [7, 8, 9, 10, 11])
+        self.assertEqual(consultas[15:20], [12, 13, 14, 15, 16])
 
     def test_pr_apilado_reapuntado_a_main_no_cambia_a_base_borrada(self) -> None:
         fases = [

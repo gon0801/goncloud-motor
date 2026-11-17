@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos.registro import ClaveOcupada, Evento, Registro
+from motor.encargos.registro import ClaveOcupada, Evento, EventoIlegal, Registro
 from tools.plegado import campos_de
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -252,23 +252,36 @@ class Comprobar(unittest.TestCase):
         violadas = [(v["invariante"], v["encargo"], v["evento"], v["tipo"]) for v in reg["violaciones"]]
         self.assertEqual(violadas, [("mismo_estado_con_otro_host", "sin_host", 2, "reserva")])
 
-    def test_un_cancelado_no_revive_por_una_orden_historica(self):
-        _armar(self.registro, {
-            "revive": [_ENTREGA, _CANCELAR, ("arbol", {"observacion": "ausente"}), _CANCELAR],
-            "queda": [_ENTREGA, _CANCELAR, *[("arbol", {"observacion": "ausente"})] * 2],
-        })
-        codigo, salida = _correr("comprobar", "--json", self.registro)
-        self.assertEqual(codigo, 1)
-        (reg,) = salida["registros"]
-        self.assertEqual(reg["pliegan"], 1)
+    def test_cancelar_repetido_con_la_misma_clave_no_revive(self):  # no-roja-en-base: caracteriza la deduplicación del Registro; el replay histórico se prueba en test_entrega_v4_reductor
+        registro = Registro(self.dir / "base")
+        self.registro = registro.base / "registro.sqlite"
+        for ident in ("revive", "queda"):
+            registro.append_many(ident, (
+                Evento("entrega", {**_ENTREGA[1], "id": ident}, f"entrega:{ident}"),
+                Evento("orden", _CANCELAR[1], f"cancelar:{ident}"),
+                Evento("arbol", {"observacion": "ausente", "hora": "t2"},
+                       f"arbol:{ident}"),
+            ))
+            self.assertEqual(registro.fold(ident).estado, "cancelado")
+        antes = registro.ultimo_evento("revive")
         self.assertEqual(
-            [(f["encargo"], f["evento"], f["tipo"], f["excepcion"])
-             for f in reg["fallos"]],
-            [("revive", 4, "orden", "HechoInaplicable")],
+            registro.anotar("revive", {"kind": "orden", "data": _CANCELAR[1]},
+                            "cancelar:revive"),
+            "igual",
         )
-        violadas = [(v["invariante"], v["encargo"], v["evento"]) for v in reg["violaciones"]
-                    if v["invariante"] == "cancelacion_definitiva"]
-        self.assertEqual(violadas, [])
+        self.assertEqual(registro.ultimo_evento("revive"), antes)
+        self.assertEqual(registro.fold("revive").estado, "cancelado")
+        with self.assertRaises(EventoIlegal):
+            registro.anotar("revive", {"kind": "orden", "data": _CANCELAR[1]},
+                            "cancelar:revive:otra-clave")
+        self.assertEqual(registro.ultimo_evento("revive"), antes)
+        self.assertEqual(registro.fold("revive").estado, "cancelado")
+        registro.close()
+        codigo, salida = _correr("comprobar", "--json", self.registro)
+        self.assertEqual(codigo, 0)
+        (reg,) = salida["registros"]
+        self.assertEqual((reg["pliegan"], reg["fallos"], reg["violaciones"]),
+                         (2, [], []))
 
     def test_un_completo_con_fase_pendiente_y_un_limpio_no_final_se_detectan(self):
         from types import SimpleNamespace

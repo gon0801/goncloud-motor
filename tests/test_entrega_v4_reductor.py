@@ -51,10 +51,17 @@ class ReductorEntregaV4(unittest.TestCase):
             with self.subTest(accion=accion):
                 with self.assertRaises(TransicionIlegal):
                     reducir(e, _hecho("orden", accion=accion, hora="t2"), nuevo=True)
-                self.assertEqual(
-                    reducir(e, _hecho("orden", accion=accion, hora="t2"), nuevo=False),
-                    e,
-                )
+        self.assertEqual(
+            reducir(e, _hecho("orden", accion="cancelar", hora="t2"), nuevo=False).estado,
+            "deteniendo",
+        )
+
+    def test_cancelar_historico_repetido_aplica_como_en_el_reductor_anterior(self) -> None:
+        e = reducir(_pedido(), _hecho("orden", accion="cancelar", hora="t1"), nuevo=True)
+        e = reducir(e, _hecho("arbol", observacion="ausente", hora="t2"), nuevo=True)
+        self.assertEqual(e.estado, "cancelado")
+        repetido = reducir(e, _hecho("orden", accion="cancelar", hora="t3"), nuevo=False)
+        self.assertEqual((repetido.estado, repetido.orden_parada), ("deteniendo", "cancelar"))
 
     def test_reactivar_fase_cancelada_no_cancela_todo_al_cerrar_la_otra(self) -> None:
         e = _fases_independientes()
