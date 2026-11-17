@@ -48,6 +48,7 @@ from .entrega.entrada import desde_cli
 from .frontera import DestinoEnsayo, despachar
 from .reporte import reporte
 from .registro import BaseProhibida, Registro, exigir_base
+from .respuestas_supervisor import atender_respuestas as _atender_respuestas_antes_del_barrido
 from .rutas import candidatas_de, elegir, proximo, solicitado_de
 from .seleccion import solicitar_modelos
 
@@ -569,36 +570,6 @@ def marcar_ruta(reg: Registro, ruta: tuple[str, ...], hora: str) -> None:
                     {"kind": "ruta_agentes", "data": {"agentes": list(ruta), "hora": hora}},
                     f"ruta:{ident}:{len(reg.eventos(ident))}",
                 )
-
-
-def _atender_respuestas_antes_del_barrido(reg: Registro, hora: str) -> None:
-    """Una respuesta registrada se ejecuta o se deniega antes de lanzar.
-
-    El barrido puede abrir el turno del revisor en la misma pasada; si la
-    respuesta se atendiera después, ese primer turno correría sin su resultado.
-    Un encargo que no pliega se aísla y no deja sin respuesta a los demás.
-    """
-    try:
-        from .ciclo import _directorio, _espacio
-        from .necesidades import continuar_respuestas
-    except Exception:
-        return
-    for ident in reg.ids():
-        try:
-            enc = plegar_aislado(reg, ident)
-            if enc is None:
-                continue
-            if any(s.estado == "respuesta" for s in enc.solicitudes):
-                continuar_respuestas(
-                    reg,
-                    enc,
-                    _espacio(reg.base, ident),
-                    _directorio(reg.base, ident),
-                    hora,
-                )
-        except Exception:
-            # El fallo de un encargo no deja sin respuesta a los demás.
-            continue
 
 
 def _marcar_pasada(base: Path, hora: str, informes: list[dict]) -> None:

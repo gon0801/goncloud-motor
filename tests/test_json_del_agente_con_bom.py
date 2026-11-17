@@ -101,13 +101,13 @@ class JsonDelAgenteConBom(unittest.TestCase):
         self.assertEqual(juicio, {"version": "v1", "veredicto": "aprobado"})
         self.assertEqual(observacion, {"version": "v1"})
 
-    def test_juicio_con_bom_al_soltar_el_conductor(self) -> None:  # no-roja-en-base: el doble gana los campos del estado; el comportamiento probado ya estaba en la base
+    def test_juicio_con_bom_al_soltar_el_conductor(self) -> None:  # no-roja-en-base: la ruta real sustituye al doble; la base ya lee el juicio con BOM
         # _soltar_conductor lee el juicio para saber si el revisor ya aprobo. Si aprobo,
         # primero pregunta a la autoridad si el encargo termino y no suelta al conductor
         # mientras siga corriendo. Con utf-8 el juicio con BOM fallaba en silencio y el
         # conductor se soltaba con una aprobacion en camino.
-        directorio = Path(self._tmp.name) / "intento"
-        directorio.mkdir()
+        directorio = Path(self._tmp.name) / "ejecucion" / "enc_prueba"
+        directorio.mkdir(parents=True)
         resultado = directorio / "resultado.json"
         _escribir_con_bom(resultado, {"version": "v1", "veredicto": "aprobado"})
         (directorio / "revision.json").write_text(
@@ -132,7 +132,7 @@ class JsonDelAgenteConBom(unittest.TestCase):
         registro = SimpleNamespace(base=Path(self._tmp.name))
         with mock.patch.object(transporte, "cargar", return_value={}), mock.patch.object(
             transporte, "operar", operar
-        ), mock.patch.object(ciclo, "_directorio", return_value=directorio), mock.patch.object(
+        ), mock.patch.object(
             ciclo, "_revision_aprobada_vigente", return_value=False
         ):
             soltado = ciclo._soltar_conductor(registro, enc, "2026-11-02T00:00:00Z")

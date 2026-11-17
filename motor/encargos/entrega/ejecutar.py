@@ -51,12 +51,13 @@ def recordar_sondeo(registro: Registro, enc: Encargo, fase: str, epoch: float) -
 
 
 def _efectos_pendientes(registro: Registro, enc: Encargo) -> bool:
-    from ..ciclo import _espacio, _pedidos_efecto
+    from ..carpetas import _espacio_lectura
+    from ..ciclo import _pedidos_efecto
     from ..cierre import _recibos
     from ..dominio import nivel_objetivo
 
     try:
-        pedidos = _pedidos_efecto(_espacio(registro.base, enc.id))
+        pedidos = _pedidos_efecto(_espacio_lectura(registro.base, enc.id))
         if nivel_objetivo(enc) == "desplegado":
             pedidos = [p for p in pedidos if p["operacion"] != "desplegar"]
         _recibos(pedidos, enc)

@@ -91,7 +91,7 @@ class DevolverNoDejaSinTurno(unittest.TestCase):
 
 
 class RespuestasDeTodosLosEncargos(unittest.TestCase):
-    def test_un_fallo_no_aborta_las_respuestas_de_los_demas(self):
+    def test_un_fallo_no_aborta_las_respuestas_de_los_demas(self):  # no-roja-en-base: el doble declara su estado activo; la base ya aísla las respuestas por encargo
         llamadas: list[str] = []
 
         def continuar(reg, enc, espacio, directorio, hora):
@@ -102,11 +102,11 @@ class RespuestasDeTodosLosEncargos(unittest.TestCase):
 
         encs = {
             "enc_1": SimpleNamespace(
-                clave="uno",
+                clave="uno", estado="recibido",
                 solicitudes=[SimpleNamespace(estado="respuesta")],
             ),
             "enc_2": SimpleNamespace(
-                clave="dos",
+                clave="dos", estado="recibido",
                 solicitudes=[SimpleNamespace(estado="respuesta")],
             ),
         }
