@@ -2,7 +2,7 @@
  "filas": {
   "termina": "pasa",
   "entregado": "pasa",
-  "limpio": "falla",
+  "limpio": "pasa",
   "no pierde": "pasa",
   "no repite": "pasa",
   "cuesta poco": "pasa",
@@ -10,9 +10,7 @@
   "versión": "pasa",
   "legible": "pasa"
  },
- "razones": {
-  "limpio": "el motor aún no aplica la tabla de limpieza del modelo: la rama remota y lo que queda junto al recibo del despliegue no se borran (paso 4 del orden de trabajo)"
- },
+ "razones": {},
  "sin_medir_en_windows": {
   "filas": [
    "no pierde",

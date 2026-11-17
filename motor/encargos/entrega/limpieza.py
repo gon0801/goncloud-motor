@@ -28,6 +28,7 @@ Tipo = Literal["pr", "rama", "despliegue", "runtime", "espacio",
 Cumplimiento = Literal["borrado", "conservado", "pendiente"]
 _CLAVE_DESPLIEGUE = re.compile(r"[0-9a-f]{64}")
 _CONSERVED = frozenset(("recibo.json", "pedido.json"))
+_MAX_INTENTOS_LIMPIEZA_LEGADA = 2
 # El sondeo solo dosifica lecturas: reiniciar adelanta una consulta, nunca acredita un borrado.
 _SONDEOS_COMPARTIDOS: weakref.WeakKeyDictionary[Registro, dict[tuple[str, str], datetime]] = (
     weakref.WeakKeyDictionary()
@@ -86,6 +87,33 @@ def limpiar_rutas_legadas(base: Path, encargo_id: str,
         quitar(intento)
     quitar(ejecucion / "actual")
     return borrado, fallos
+
+
+def limpiar_cerrado_legado(registro: Registro, enc: Encargo, hora: str,
+                          borrar: Callable[[Path], None],
+                          cerrar: Callable[[Registro, Encargo], int]) -> bool:
+    fallos_previos, ciclo = fallos_legados(registro, enc.id)
+    if fallos_previos >= _MAX_INTENTOS_LIMPIEZA_LEGADA:
+        return False
+    cerrar(registro, enc)
+    borrado, fallos = limpiar_rutas_legadas(Path(registro.base), enc.id, borrar)
+    if fallos:
+        ruta, exc = fallos[0]
+        nota = (
+            f"limpieza({ruta.name}): {type(exc).__name__}: {exc}; "
+            "no se reintenta en cada barrido"
+        )[:2000]
+        registro.anotar(
+            enc.id, {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
+            f"limpieza-fallida:{enc.id}:{ciclo + ':' if ciclo else ''}{fallos_previos + 1}",
+        )
+    elif fallos_previos:
+        registro.anotar(
+            enc.id, {"kind": "procedimiento",
+                     "data": {"nota": "limpieza restablecida", "hora": hora}},
+            f"limpieza-restaurada:{enc.id}:{registro.ultimo_evento(enc.id)}",
+        )
+    return borrado
 
 
 @dataclass(frozen=True)
@@ -281,11 +309,19 @@ def _anotar(registro: Registro, enc: Encargo, recurso: Recurso,
 
 
 def _pr(registro: Registro, enc: Encargo, gh: GitHubPort | None,
-        recurso: Recurso, hora: str, presupuesto: list[int]) -> tuple[Encargo, bool]:
+        recurso: Recurso, hora: str, presupuesto: list[int],
+        epoch: float | None = None) -> tuple[Encargo, bool]:
+    from .ejecutar import recordar_sondeo, sondeo_pendiente
+
     if gh is None or not enc.entrega.repo:
         return enc, False
     numero = int(recurso.clave)
+    if epoch is not None and not sondeo_pendiente(registro, enc, recurso.fase, epoch):
+        observado = next((p.pr for p in enc.prs if p.fase == recurso.fase), None)
+        return enc, observado is not None and observado.estado in ("cerrado", "mergeado")
     vista = gh.ver(enc.entrega.repo, numero)
+    if epoch is not None:
+        recordar_sondeo(registro, enc, recurso.fase, epoch)
     if vista.estado == "abierto":
         if enc.estado != "cancelado" and recurso.fase not in enc.canceladas:
             return enc, False
@@ -299,7 +335,13 @@ def _pr(registro: Registro, enc: Encargo, gh: GitHubPort | None,
 
 def _rama(enc: Encargo, gh: GitHubPort | None,
           recurso: Recurso, presupuesto: list[int]) -> Cumplimiento:
+    from ..ciclo import _rama_de_fase
+
     if gh is None or not enc.entrega.repo:
+        return "pendiente"
+    if any(p.fase == fase.id and p.pr.estado in ("abierto", "borrador")
+           and _rama_de_fase(enc, fase) == recurso.clave
+           for fase in enc.fases for p in enc.prs):
         return "pendiente"
     propios = tuple(
         vista for fase in enc.fases if fase.pr_numero
@@ -451,9 +493,10 @@ def _restos_tras_limpio(registro: Registro, enc: Encargo, hora: str) -> bool:
 
 def _limpiar_recurso(registro: Registro, enc: Encargo, gh: GitHubPort | None,
                      recurso: Recurso, hora: str,
-                     presupuesto: list[int]) -> tuple[Encargo, Cumplimiento]:
+                     presupuesto: list[int],
+                     epoch: float | None = None) -> tuple[Encargo, Cumplimiento]:
     if recurso.tipo == "pr":
-        enc, listo = _pr(registro, enc, gh, recurso, hora, presupuesto)
+        enc, listo = _pr(registro, enc, gh, recurso, hora, presupuesto, epoch)
         return enc, "borrado" if listo else "pendiente"
     if recurso.tipo == "rama":
         return enc, _rama(enc, gh, recurso, presupuesto)
@@ -464,7 +507,8 @@ def _limpiar_recurso(registro: Registro, enc: Encargo, gh: GitHubPort | None,
 
 
 def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
-                    hora: str, presupuesto: list[int]) -> Encargo:
+                    hora: str, presupuesto: list[int],
+                    epoch: float | None = None) -> Encargo:
     from ..ciclo import _cerrar_procesos_del_encargo
 
     if enc.estado in ("terminado", "cancelado"):
@@ -492,7 +536,7 @@ def barrer_limpieza(registro: Registro, enc: Encargo, gh: GitHubPort | None,
         restantes = presupuesto[0]
         try:
             enc, estado = _limpiar_recurso(
-                registro, enc, gh, recurso, hora, presupuesto,
+                registro, enc, gh, recurso, hora, presupuesto, epoch,
             )
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
             enc = _anotar(registro, enc, recurso, "fallo", hora)

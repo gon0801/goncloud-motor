@@ -27,7 +27,7 @@ from .entrega.ejecutar import (
     conciliar_otra_vista, conducir_pr, esperar_sin_gh, fase_final_pendiente, ids_por_sondeo,
 )
 from .entrega.limpieza import (
-    PresupuestoLimpieza, barrer_limpieza, fallos_legados, limpiar_rutas_legadas,
+    PresupuestoLimpieza, barrer_limpieza, limpiar_cerrado_legado,
 )
 from .comprobacion import (
     FalloInstrumento,
@@ -1334,60 +1334,18 @@ def _cerrar_procesos_del_encargo(registro: Registro, enc: Encargo) -> int:
     return cerrados
 
 
-_MAX_INTENTOS_LIMPIEZA = 2
-
-
-def _anotar_limpieza_fallida(
-    registro: Registro,
-    enc: Encargo,
-    ruta: Path,
-    exc: OSError,
-    hora: str,
-    intento: int = 1,
-    ciclo: str = "",
-) -> None:
-    nota = (
-        f"limpieza({ruta.name}): {type(exc).__name__}: {exc}; "
-        "no se reintenta en cada barrido"
-    )[:2000]
-    # La ukey lleva el intento: con la fija, el segundo fallo (otra ruta u otro
-    # mensaje) se descartaría en silencio por el dedup del registro.
-    registro.anotar(
-        enc.id,
-        {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
-        f"limpieza-fallida:{enc.id}:{ciclo + ':' if ciclo else ''}{intento}",
-    )
-
-
 def _limpiar_encargo_cerrado(
     registro: Registro, enc: Encargo, hora: str = ""
 ) -> bool:
-    """Un encargo terminado o cancelado ya no necesita su runtime ni los
-    intentos de ejecución. El historial vive en `registro.sqlite`; el espacio
-    del producto se conserva. Lo que no se pueda borrar queda anotado una sola
-    vez: se reintenta una vez más y después no se vuelve a intentar en cada
-    barrido."""
-    if politica.ENTREGA_V4 or enc.estado not in ("terminado", "cancelado"):
+    """Cierra los procesos al terminar; con V4, la limpieza del disco va en el barrido."""
+    if enc.estado not in ("terminado", "cancelado"):
         return False
-    fallos_previos, ciclo = fallos_legados(registro, enc.id)
-    if fallos_previos >= _MAX_INTENTOS_LIMPIEZA:
+    if politica.ENTREGA_V4:
+        _cerrar_procesos_del_encargo(registro, enc)
         return False
-    hora = hora or ahora_iso()
-    _cerrar_procesos_del_encargo(registro, enc)
-    base = Path(registro.base)
-    borrado, fallos = limpiar_rutas_legadas(base, enc.id, borrar_arbol)
-    if fallos:
-        ruta, exc = fallos[0]
-        _anotar_limpieza_fallida(
-            registro, enc, ruta, exc, hora, intento=fallos_previos + 1, ciclo=ciclo
-        )
-    elif fallos_previos:
-        registro.anotar(
-            enc.id, {"kind": "procedimiento",
-                     "data": {"nota": "limpieza restablecida", "hora": hora}},
-            f"limpieza-restaurada:{enc.id}:{registro.ultimo_evento(enc.id)}",
-        )
-    return borrado
+    return limpiar_cerrado_legado(
+        registro, enc, hora or ahora_iso(), borrar_arbol, _cerrar_procesos_del_encargo,
+    )
 
 
 def _aplicar(
@@ -1648,9 +1606,9 @@ def barrer(
                 )
             if politica.ENTREGA_V4:
                 enc = registro.fold(encargo_id)
-                if enc is not None:
+                if enc:
                     enc = barrer_limpieza(
-                        registro, enc, gh, hora, presupuesto_limpieza,
+                        registro, enc, gh, hora, presupuesto_limpieza, epoch,
                     )
                     informes[-1] = vista(enc)
             _RACHA_BARRIDO.pop(encargo_id, None)

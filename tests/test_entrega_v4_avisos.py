@@ -54,6 +54,23 @@ class AvisosPorPalabra(unittest.TestCase):
         self.assertEqual(avisos[0]["palabra"], "respondido")
         self.assertEqual(directores.drenar(self.banco.reg, ahora=T0 + 2)["avisos"], [])
 
+    def test_cierre_v4_limpio_espera_el_transporte_y_conserva_el_resultado(self) -> None:  # no-roja-en-base: comprueba el cierre ya limpio en un transporte que aún no está configurado
+        ident = self._terminar()
+        self._limpio(ident)
+        config = self.banco.base / "canal.json"
+        configurado = config.read_text(encoding="utf-8")
+        config.write_text(json.dumps({"tg": {}}), encoding="utf-8")
+        with mock.patch.object(politica, "ENTREGA_V4", True):
+            primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
+            self.assertEqual([(a["tipo"], a["estado"], a["palabra"]) for a in primero],
+                             [("cierre-v4", "local-pendiente", "respondido")])
+            config.write_text(configurado, encoding="utf-8")
+            segundo = directores.drenar(self.banco.reg, ahora=T0 + 1)["avisos"]
+            self.assertEqual(directores.drenar(self.banco.reg, ahora=T0 + 2)["avisos"], [])
+        self.assertEqual([a["id"] for a in segundo], [primero[0]["id"]])
+        self.assertTrue(segundo[0]["entregado"])
+        self.assertTrue(self.banco.cuerpos()[0]["cuerpo"].endswith("listo"))
+
     def test_cierre_v4_conserva_pendientes_herramienta_y_relevo(self) -> None:
         enc = replace(
             encargo(nivel="terminado"), pendientes_entrega=("Falta una consulta",),
@@ -70,6 +87,22 @@ class AvisosPorPalabra(unittest.TestCase):
         self.assertIn("herramienta no estaba disponible", cierres[0])
         self.assertIn("cambió de modelo", cierres[0])
 
+    def test_cierre_v4_conserva_correcciones_sin_intento(self) -> None:  # no-roja-en-base: fija el contenido tras limpio; la regresión era la prueba legada que esperaba el aviso antes de limpiar
+        ident = self.banco.encargo("# Corrección\n\nPedido", "correccion")
+        self.banco.reg.anotar(ident, {"kind": "procedimiento", "data": {
+            "nota": "correcciones que ningun intento pudo recibir: el dato debe ser 43",
+            "hora": HORA,
+        }}, f"correccion:{ident}")
+        self.banco.terminar(ident)
+        with mock.patch.object(politica, "ENTREGA_V4", True):
+            self.assertEqual(directores.drenar(self.banco.reg, ahora=T0)["avisos"], [])
+            self._limpio(ident)
+            avisos = directores.drenar(self.banco.reg, ahora=T0 + 1)["avisos"]
+        self.assertEqual([a["tipo"] for a in avisos], ["cierre-v4"])
+        cuerpo = self.banco.cuerpos()[0]["cuerpo"]
+        self.assertIn("ningun intento pudo recibir", cuerpo)
+        self.assertIn("el dato debe ser 43", cuerpo)
+
     def test_cierre_cancelado_no_promete_continuar_pendientes(self) -> None:
         enc = replace(encargo(situacion=Cancelado()), pendientes_entrega=("revisar",))
         vista = directores.VistaAvisos(self.banco.base)
@@ -81,9 +114,10 @@ class AvisosPorPalabra(unittest.TestCase):
         self.assertIn("pendientes sin resolver", cierres[0])
         self.assertNotIn("trabajo siga", cierres[0])
 
-    def test_el_cierre_apagado_y_el_cambio_de_palabra_se_envian_una_vez(self) -> None:
+    def test_el_cierre_apagado_y_el_cambio_de_palabra_se_envian_una_vez(self) -> None:  # no-roja-en-base: el cierre inicial se prueba apagado y el cambio tras limpio encendido
         ident = self._terminar()
-        primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
+        with mock.patch.object(politica, "ENTREGA_V4", False):
+            primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
         self.assertEqual(len(primero), 1)
         self.assertEqual(primero[0]["palabra"], "falta limpiar")
         with mock.patch.object(politica, "ENTREGA_V4", True):
@@ -197,7 +231,8 @@ class AvisosPorPalabra(unittest.TestCase):
         config = self.banco.base / "canal.json"
         configurado = config.read_text(encoding="utf-8")
         config.write_text(json.dumps({"tg": {}}), encoding="utf-8")
-        primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
+        with mock.patch.object(politica, "ENTREGA_V4", False):
+            primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
         self.assertEqual([a["estado"] for a in primero], ["local-pendiente"])
         aviso = primero[0]["id"]
         directores.drenar(self.banco.reg, ahora=T0 + 1)
@@ -211,9 +246,10 @@ class AvisosPorPalabra(unittest.TestCase):
         directores.drenar(self.banco.reg, ahora=T0 + 3)
         self.assertEqual(len(self.banco.cuerpos()), 1)
 
-    def test_cambio_local_pendiente_no_se_descarta_al_configurar_transporte(self) -> None:
+    def test_cambio_local_pendiente_no_se_descarta_al_configurar_transporte(self) -> None:  # no-roja-en-base: el primer cierre es legado; el cambio de palabra se comprueba con V4
         ident = self._terminar()
-        self.assertEqual(len(directores.drenar(self.banco.reg, ahora=T0)["avisos"]), 1)
+        with mock.patch.object(politica, "ENTREGA_V4", False):
+            self.assertEqual(len(directores.drenar(self.banco.reg, ahora=T0)["avisos"]), 1)
         config = self.banco.base / "canal.json"
         configurado = config.read_text(encoding="utf-8")
         config.write_text(json.dumps({"tg": {}}), encoding="utf-8")
@@ -231,12 +267,13 @@ class AvisosPorPalabra(unittest.TestCase):
         directores.drenar(self.banco.reg, ahora=T0 + 4)
         self.assertEqual(len(self.banco.cuerpos()), 2)
 
-    def test_cierre_local_se_actualiza_si_limpieza_termina_antes_del_envio(self) -> None:
+    def test_cierre_local_se_actualiza_si_limpieza_termina_antes_del_envio(self) -> None:  # no-roja-en-base: el primer cierre es legado; V4 prueba por separado el cierre local ya limpio
         ident = self._terminar()
         config = self.banco.base / "canal.json"
         configurado = config.read_text(encoding="utf-8")
         config.write_text(json.dumps({"tg": {}}), encoding="utf-8")
-        primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
+        with mock.patch.object(politica, "ENTREGA_V4", False):
+            primero = directores.drenar(self.banco.reg, ahora=T0)["avisos"]
         self.assertEqual(primero[0]["palabra"], "falta limpiar")
         aviso = primero[0]["id"]
         self._limpio(ident)

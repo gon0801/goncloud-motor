@@ -17,8 +17,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos import ciclo
+from motor.encargos import ciclo, politica
 from motor.encargos.ciclo import ahora_iso, barrer, ordenar, recibir
+from motor.encargos.entrega.limpieza import fallos_legados
 from motor.encargos.registro import Registro
 
 
@@ -42,6 +43,7 @@ def unlink_de_windows():
         yield
 
 
+@mock.patch.object(politica, "ENTREGA_V4", False)
 class LimpiezaAlCerrar(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -63,7 +65,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
         )
         self.assertEqual(enc.estado, "terminado")
 
-    def test_un_runtime_con_archivos_de_solo_lectura_se_borra_completo(self):
+    def test_un_runtime_con_archivos_de_solo_lectura_se_borra_completo(self):  # no-roja-en-base: la limpieza inmediata legada permanece con el interruptor apagado
         encargo = recibir(self.reg, "x", "solo-lectura", ahora_iso())["encargo"]
         runtime = self.reg.base / "runtime" / encargo / "intento-1"
         ejecucion = self.reg.base / "ejecucion" / encargo / "intento-1"
@@ -116,7 +118,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
             and "limpieza(" in evento["data"].get("nota", "")
         ]
 
-    def test_un_archivo_imposible_de_borrar_se_anota_una_sola_vez(self):
+    def test_un_archivo_imposible_de_borrar_se_anota_una_sola_vez(self):  # no-roja-en-base: la anotacion de fallos legada permanece al apagar V4
         encargo = self._cancelar_con_archivo_abierto()
         error = PermissionError(13, "Permission denied", "abierto.db")
 
@@ -144,7 +146,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
             self.assertEqual(borrar.call_count, 4, "la limpieza se reintentó en bucle")
             self.assertEqual(self.reg.eventos(encargo), antes)
 
-    def test_el_fallo_al_enumerar_los_intentos_tambien_se_anota(self):
+    def test_el_fallo_al_enumerar_los_intentos_tambien_se_anota(self):  # no-roja-en-base: la ruta legada enumera intentos; V4 conserva ejecucion siete dias
         encargo = self._cancelar_con_archivo_abierto()
         # `ejecucion/<id>` como archivo: iterdir() falla con NotADirectoryError.
         ejecucion = self.reg.base / "ejecucion" / encargo
@@ -156,7 +158,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
         self.assertEqual(len(notas), 1)
         self.assertIn("NotADirectoryError", notas[0]["data"]["nota"])
 
-    def test_el_reintento_que_si_borra_quita_la_marca_del_encargo(self):
+    def test_el_reintento_que_si_borra_quita_la_marca_del_encargo(self):  # no-roja-en-base: el reintento legado se conserva; V4 registra su propio reintento
         encargo = self._cancelar_con_archivo_abierto()
         error = PermissionError(13, "Permission denied", "abierto.db")
         efectos = [error, error, None, None]
@@ -178,13 +180,13 @@ class LimpiezaAlCerrar(unittest.TestCase):
             # El reintento logró limpiar: sin nota nueva y sin marca que
             # siga intentando en los barridos siguientes.
             self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
-            self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 0)
+            self.assertEqual(fallos_legados(self.reg, encargo)[0], 0)
             # El barrido siguiente no agrega nada: sin fallo, sin nota.
             antes = self.reg.eventos(encargo)
             barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(self.reg.eventos(encargo), antes)
 
-    def test_un_arranque_nuevo_recupera_del_registro_el_intento_pendiente(self):
+    def test_un_arranque_nuevo_recupera_del_registro_el_intento_pendiente(self):  # no-roja-en-base: el reinicio legado se conserva; V4 pliega sus intentos nuevos
         encargo = self._cancelar_con_archivo_abierto()
         self.assertFalse(hasattr(ciclo, "_LIMPIEZA_FALLIDA"))
         error = PermissionError(13, "Permission denied", "abierto.db")
@@ -210,10 +212,10 @@ class LimpiezaAlCerrar(unittest.TestCase):
         error = PermissionError(13, "Permission denied", "abierto.db")
         with mock.patch.object(ciclo, "borrar_arbol", side_effect=error):
             barrer(self.reg, ahora_iso(), time.time(), None)
-        self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 1)
+        self.assertEqual(fallos_legados(self.reg, encargo)[0], 1)
 
         barrer(self.reg, ahora_iso(), time.time(), None)
-        self.assertEqual(ciclo.fallos_legados(self.reg, encargo)[0], 0)
+        self.assertEqual(fallos_legados(self.reg, encargo)[0], 0)
         restauracion = self.reg.db.execute(
             "SELECT id FROM events WHERE encargo = ? "
             "AND ukey LIKE 'limpieza-restaurada:%' ORDER BY id DESC LIMIT 1",
@@ -237,7 +239,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
             f"limpieza-fallida:{encargo}:{restauracion[0]}:1",
             f"limpieza-fallida:{encargo}:{restauracion[0]}:2",
         ])
-        self.assertEqual(ciclo.fallos_legados(self.reg, encargo),
+        self.assertEqual(fallos_legados(self.reg, encargo),
                          (2, str(restauracion[0])))
 
 
