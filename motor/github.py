@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .repositorios import resolver_repositorio
-from .encargos.entrega.github_port import EntregaFake, EntregaGh
+from .encargos.entrega.github_port import CapacidadRemota, EntregaFake, EntregaGh
 from .respuestas_merge import (
     BaseMovida,
     Borrador,
@@ -331,23 +331,6 @@ def _causa_corta(e: BaseException) -> str:
     return " ".join(str(e).split())[:300]
 
 
-@dataclass(frozen=True)
-class CapacidadRemota:
-    """Lo que una mirada de solo lectura al remoto ya deja comprobado.
-
-    `integrar_bloqueado`: True solo con una regla fija y legible que impide
-    mergear (revisiones humanas requeridas o el actor sin permiso de push);
-    False cuando todas las fuentes consultadas salieron limpias; None cuando
-    algo quedó sin leer (red, 403 ambiguo, respuesta ilegible). None nunca
-    baja un nivel: produce espera o reintento en el flujo normal.
-    """
-
-    repo_ok: bool
-    base_ok: bool | None
-    integrar_bloqueado: bool | None
-    detalle: str = ""
-
-
 class GitHubPort(Protocol):
     def abrir_pr(
         self, repo: str, rama: str, base: str, titulo: str, cuerpo: str
@@ -373,6 +356,7 @@ class GitHubPort(Protocol):
     def cerrar_pr(self, repo: str, numero: int) -> PrView: ...
     def borrar_rama(self, repo: str, rama: str) -> None: ...
     def prs_con_base(self, repo: str, base: str) -> tuple[int, ...]: ...
+    def prs_con_head(self, repo: str, rama: str) -> tuple[int, ...]: ...
     def rama_existe(self, repo: str, rama: str) -> bool: ...
     def es_privado(self, repo: str) -> bool: ...
     def relanzar_corrida(self, repo: str, run_id: str) -> None: ...

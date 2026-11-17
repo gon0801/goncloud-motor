@@ -542,10 +542,6 @@ def _rama(enc: Encargo, gh: GitHubPort | None,
            and _rama_de_fase(enc, fase) == recurso.clave
            for fase in enc.fases for p in enc.prs):
         return "pendiente"
-    propias_borradas = {
-        _rama_de_fase(enc, fase) for fase in enc.fases if fase.pr_numero
-        and _ultimo(enc, Recurso("pr", str(fase.pr_numero)))[0] == "borrado"
-    }
     propios = tuple(
         vista for fase in enc.fases if fase.pr_numero
         and _ultimo(enc, Recurso("pr", str(fase.pr_numero)))[0] not in ("borrado", "agotado")
@@ -556,9 +552,8 @@ def _rama(enc: Encargo, gh: GitHubPort | None,
         return "pendiente"
     if not _consulta_gh(presupuesto, gh.rama_existe, enc.entrega.repo, recurso.clave):
         return "borrado"
-    if _consulta_gh(presupuesto, gh.prs_con_base, enc.entrega.repo, recurso.clave):
-        return "conservado"
-    if enc.estado != "cancelado" and not propios and recurso.clave not in propias_borradas:
+    if (_consulta_gh(presupuesto, gh.prs_con_base, enc.entrega.repo, recurso.clave)
+        or _consulta_gh(presupuesto, gh.prs_con_head, enc.entrega.repo, recurso.clave)):
         return "conservado"
     if not presupuesto[0]:
         return "pendiente"
