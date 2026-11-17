@@ -147,7 +147,7 @@ class FrenoSinReabrir(_Freno):
 
 
 class RevisorEsperaLaRespuesta(unittest.TestCase):
-    def test_la_respuesta_se_atiende_antes_de_barrer(self):
+    def test_la_respuesta_se_atiende_antes_de_barrer(self):  # no-roja-en-base: el doble declara su estado activo; la base ya atiende la respuesta antes del barrido
         orden: list[str] = []
 
         def continuar(*args, **kwargs):
@@ -162,6 +162,7 @@ class RevisorEsperaLaRespuesta(unittest.TestCase):
             base=Path("/tmp"),
             ids=lambda: ["enc_1"],
             fold=lambda ident: SimpleNamespace(
+                estado="recibido",
                 solicitudes=[SimpleNamespace(estado="respuesta")],
                 agentes=("claude",),
                 modelos_solicitados=(),

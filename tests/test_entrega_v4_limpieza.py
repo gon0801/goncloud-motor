@@ -751,6 +751,180 @@ class LimpiezaPorHechos(unittest.TestCase):
             ciclo.barrer(self.reg, hora(60 * 24 * 8 + 2), 1, None, gh=self.gh)
         self.assertEqual(self.reg.ultimo_evento("x"), antes)
 
+    def test_supervisor_no_recrea_carpetas_de_terminado_con_conductor(self) -> None:
+        from motor.encargos.cli import _paso_del_supervisor
+
+        self._final(cancelar=False)
+        self.reg.anotar("x", {"kind": "conductor", "data": {
+            "token": "conductor-1", "host": "prueba", "hora": hora(),
+        }}, "conductor:x")
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "cierre", "hora": hora(),
+        }}, "fin:x")
+        self.assertEqual(self.reg.fold("x").estado, "terminado")
+        vencido = 60 * 24 * 8
+        with (
+            mock.patch("motor.encargos.transporte.cargar", return_value={}),
+            mock.patch("motor.encargos.transporte.operar", return_value={
+                "alcanzada": True, "salida": {"estado": "recibido"},
+            }),
+            mock.patch("motor.integraciones.directores.conciliar_autoridad"),
+        ):
+            _paso_del_supervisor(self.reg, hora(vencido), None, False, 10**9,
+                                 self.gh, mock.Mock())
+            antes = self.reg.ultimo_evento("x")
+            _paso_del_supervisor(self.reg, hora(vencido + 1), None, False, 10**9,
+                                 self.gh, mock.Mock())
+        self.assertEqual(self.reg.ultimo_evento("x"), antes,
+                         [ev for ev in self.reg.eventos("x") if ev["id"] > antes])
+        for tipo in ("ejecucion", "espacio"):
+            self.assertFalse((self.reg.base / tipo / "x").exists())
+
+    def test_supervisor_no_recrea_carpetas_por_respuesta_de_cerrado(self) -> None:
+        from motor.encargos.cli import _paso_del_supervisor
+
+        self._final(cancelar=False)
+        self.reg.anotar("x", {"kind": "solicitud", "data": {
+            "id": "s-1", "fase": "F", "intento": "int-1",
+            "operacion": "remoto.leer", "recurso": "ci-github",
+            "estado": "pregunta", "pregunta": "¿leer?", "hora": hora(),
+        }}, "solicitud:x")
+        self.reg.anotar("x", {"kind": "respuesta", "data": {
+            "solicitud": "s-1", "texto": "sí", "hora": hora(),
+        }}, "respuesta:x")
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "cierre", "hora": hora(),
+        }}, "fin:x")
+        self.assertEqual(self.reg.fold("x").solicitudes[0].estado, "respuesta")
+        with (
+            mock.patch("motor.encargos.transporte.cargar", return_value=None),
+            mock.patch("motor.integraciones.directores.conciliar_autoridad"),
+        ):
+            _paso_del_supervisor(self.reg, hora(), None, False, 10**9,
+                                 self.gh, mock.Mock())
+            antes = self.reg.ultimo_evento("x")
+            _paso_del_supervisor(self.reg, hora(1), None, False, 10**9,
+                                 self.gh, mock.Mock())
+        self.assertEqual(self.reg.ultimo_evento("x"), antes)
+        for tipo in ("ejecucion", "espacio"):
+            self.assertFalse((self.reg.base / tipo / "x").exists())
+
+    def test_supervisor_lee_resultado_plegado_sin_crear_espacio(self) -> None:
+        from motor.encargos.cli import _paso_del_supervisor
+
+        self._final(cancelar=False)
+        self.reg.anotar("x", {"kind": "producto_listo", "data": {
+            "fase": "F", "version": "v2",
+            "manifiesto": [["saludo.txt", "aaa"]],
+            "sha_git": "", "hora": hora(),
+        }}, "producto:x")
+        self.reg.anotar("x", {"kind": "revision", "data": {
+            "fase": "F", "revision_id": "r1", "version": "v2",
+            "veredicto": "aprobado", "origen": "independiente",
+            "revisor": "revisor", "evidencia": "listo",
+            "hora": hora(),
+        }}, "revision:x")
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "cierre", "hora": hora(),
+        }}, "fin:x")
+        self.assertEqual(self.reg.fold("x").estado, "terminado")
+        with (
+            mock.patch("motor.encargos.transporte.cargar", return_value={}),
+            mock.patch("motor.encargos.transporte.operar", return_value={
+                "alcanzada": True, "salida": {"estado": "recibido"},
+            }) as operar,
+            mock.patch("motor.integraciones.directores.conciliar_autoridad"),
+        ):
+            _paso_del_supervisor(self.reg, hora(), None, False, 10**9,
+                                 self.gh, mock.Mock())
+            antes = self.reg.ultimo_evento("x")
+            _paso_del_supervisor(self.reg, hora(1), None, False, 10**9,
+                                 self.gh, mock.Mock())
+        self.assertTrue(any(call.args[1].get("op") == "resultado"
+                            for call in operar.call_args_list))
+        self.assertEqual(self.reg.ultimo_evento("x"), antes)
+        self.assertFalse((self.reg.base / "espacio" / "x").exists())
+        self.assertFalse((self.reg.base / "ejecucion" / "x").exists())
+
+    def test_recursos_github_terminales_no_consumen_consultas(self) -> None:
+        from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
+
+        numero = self._final(con_pr=True)
+        self.gh.cerrar_pr(self.repo, numero)
+        for tipo, clave, resultado, intento in (
+            ("pr", str(numero), "borrado", 1),
+            ("rama", "encargo/x", "borrado", 1),
+            ("runtime", "x", "agotado", 3),
+        ):
+            self.reg.anotar("x", {"kind": "limpieza", "data": {
+                "recurso": tipo, "clave": clave, "resultado": resultado,
+                "intento": intento, "hora": hora(),
+            }}, f"semilla:{tipo}")
+        with (mock.patch.object(self.gh, "ver", wraps=self.gh.ver) as ver,
+              mock.patch.object(self.gh, "rama_existe", wraps=self.gh.rama_existe) as rama):
+            for minuto in (0, 3):
+                barrer_limpieza(self.reg, self.reg.fold("x"), self.gh, hora(minuto),
+                                PresupuestoLimpieza(self.reg, minuto * 60), minuto * 60)
+            self.assertEqual((ver.call_count, rama.call_count), (0, 0))
+
+    def test_cuatro_fases_canceladas_convergen_sin_releer_prs(self) -> None:
+        from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
+
+        fases = ("F", "G", "H", "I")
+        self.reg.append_many("x", (
+            Evento("entrega", {
+                "id": "x", "clave": "k", "huella": "h", "texto": "pedido",
+                "entrega_nivel": "pr", "repo": self.repo,
+                "rama": "encargo/x", "base": "main", "hora": hora(),
+            }, "entrega:x"),
+            Evento("fases", {"fases": [{"id": f, "resultado": "r"} for f in fases],
+                             "hora": hora()}, "fases:x"),
+        ))
+        ramas = {"encargo/x"}
+        for fase in fases:
+            rama = f"encargo/x-{fase}"
+            git("push", "-q", self.repo, f"HEAD:refs/heads/{rama}", cwd=self.trabajo)
+            numero = self.gh.abrir_pr(self.repo, rama, "main", fase, "cuerpo").numero
+            self.gh.cerrar_pr(self.repo, numero)
+            self.reg.anotar("x", {"kind": "entrega_externa", "data": {
+                "fase": fase, "paso": "pr_listo", "numero": numero,
+                "sha": "h", "hora": hora(),
+            }}, f"pr:{fase}")
+            if fase != fases[-1]:
+                self.reg.anotar("x", {"kind": "entrega_externa", "data": {
+                    "fase": fase, "paso": "pr_con_pendientes", "numero": numero,
+                    "sha": "h", "hora": hora(),
+                }}, f"nivel:{fase}")
+                self.reg.anotar("x", {"kind": "comprobacion", "data": {
+                    "fase": fase, "clase": "cierre_comprobado",
+                    "evidencia": "cerrada", "hora": hora(),
+                }}, f"cierre:{fase}")
+            ramas.add(rama)
+        self.reg.anotar("x", {"kind": "orden", "data": {
+            "accion": "cancelar", "hora": hora(),
+        }}, "cancelar:x")
+        self.reg.anotar("x", {"kind": "arbol", "data": {
+            "observacion": "ausente", "hora": hora(),
+        }}, "arbol:x")
+        enc = self.reg.fold("x")
+        self.assertEqual(enc.estado, "cancelado")
+        self.assertEqual(len({f.pr_numero for f in enc.fases if f.pr_numero}), 4)
+        with mock.patch.object(self.gh, "ver", wraps=self.gh.ver) as ver:
+            for vuelta in range(6):
+                presupuesto = PresupuestoLimpieza(self.reg, vuelta * 130)
+                anterior = ver.call_count
+                anterior_evento = self.reg.ultimo_evento("x")
+                enc = barrer_limpieza(self.reg, self.reg.fold("x"), self.gh,
+                                      hora(vuelta * 130 // 60), presupuesto, vuelta * 130)
+                vistos = [x.args[1] for x in ver.call_args_list[anterior:]]
+                self.assertEqual(len(vistos), len(set(vistos)))
+                if vuelta >= 2:
+                    self.assertEqual(self.reg.ultimo_evento("x"), anterior_evento)
+                    self.assertEqual(presupuesto.consultas, politica.LIMPIEZA.consultas_gh)
+            self.assertLessEqual(ver.call_count, 4)
+        self.assertTrue(enc.limpio)
+        self.assertTrue(all(not self.gh.rama_existe(self.repo, rama) for rama in ramas))
+
     def test_freno_de_github_no_gasta_intentos_ni_reintenta_esa_pasada(self) -> None:
         from motor.encargos.entrega.limpieza import PresupuestoLimpieza, barrer_limpieza
 
@@ -760,6 +934,11 @@ class LimpiezaPorHechos(unittest.TestCase):
             RuntimeError("secondary rate limit: token=secreto"),
             RuntimeError("HTTP 502 Bad Gateway"),
             RuntimeError("gh api: could not resolve host"),
+            RuntimeError("gh: dial tcp api.github.com: i/o timeout"),
+            RuntimeError("gh: net/http: TLS handshake timeout"),
+            RuntimeError("gh: context deadline exceeded"),
+            RuntimeError("gh: error connecting to api.github.com"),
+            RuntimeError("gh: This may be the result of a timeout"),
             subprocess.TimeoutExpired("gh", 30),
         )
         for exc in errores:
