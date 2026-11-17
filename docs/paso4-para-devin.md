@@ -341,7 +341,7 @@ carpetas en disco, solo en encargos finales.
 
 | Recurso | Vence | Se borra con | Nunca se borra si |
 |---|---|---|---|
-| Rama remota `encargo/*` | Al observar `Mergeado` o `Cerrado`, y al cancelar el encargo | `borrar_rama` del puerto (nuevo) | es base de un PR abierto (`prs_con_base`, nuevo) o su propio PR sigue `Abierto` |
+| Rama remota `encargo/*` | Al observar `Mergeado` o `Cerrado`, al cancelar o al terminar sin PR propio | `borrar_rama` del puerto | un PR abierto la usa como base (`prs_con_base`) o head (`prs_con_head`) |
 | PR de un encargo cancelado | Al cancelar | `cerrar_pr` del puerto (nuevo) | ya está `Mergeado` o `Cerrado` |
 | PR de una fase en `canceladas` | Al entrar la fase a `canceladas` | `cerrar_pr` | ya está `Mergeado` o `Cerrado` |
 | `espacio/<id>` | `hora_final` + `CERRADOS_VENTANA_S` (7 días) | borrar la carpeta | el encargo tiene un PR `Abierto`, o su ventana de sondeo de DeepSeek sigue abierta |

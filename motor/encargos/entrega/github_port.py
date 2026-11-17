@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -10,6 +11,23 @@ from motor.workspace import git
 
 if TYPE_CHECKING:
     from motor.github import PrView
+
+
+@dataclass(frozen=True)
+class CapacidadRemota:
+    """Lo que una mirada de solo lectura al remoto ya deja comprobado.
+
+    `integrar_bloqueado`: True solo con una regla fija y legible que impide
+    mergear (revisiones humanas requeridas o el actor sin permiso de push);
+    False cuando todas las fuentes consultadas salieron limpias; None cuando
+    algo quedó sin leer (red, 403 ambiguo, respuesta ilegible). None nunca
+    baja un nivel: produce espera o reintento en el flujo normal.
+    """
+
+    repo_ok: bool
+    base_ok: bool | None
+    integrar_bloqueado: bool | None
+    detalle: str = ""
 
 
 class EntregaGh:
@@ -75,6 +93,16 @@ class EntregaGh:
         )
         return tuple(int(n) for n in numeros.split())
 
+    def prs_con_head(self, repo: str, rama: str) -> tuple[int, ...]:
+        nombre = self.nombre(repo)
+        numeros = self._gh(
+            "api", "--paginate",
+            f"repos/{nombre}/pulls?state=open&head="
+            f"{quote(nombre.split('/')[0] + ':' + rama, safe='')}&per_page=100",
+            "--jq", ".[].number",
+        )
+        return tuple(int(n) for n in numeros.split())
+
 
 class EntregaFake:
     def _cargar(self) -> dict:
@@ -116,5 +144,13 @@ class EntregaFake:
         return tuple(sorted(
             pr["numero"] for clave, pr in estado["prs"].items()
             if clave.startswith(repo + "#") and pr["base"] == base
+            and pr["estado"] == "abierto"
+        ))
+
+    def prs_con_head(self, repo: str, rama: str) -> tuple[int, ...]:
+        estado = self._cargar()
+        return tuple(sorted(
+            pr["numero"] for clave, pr in estado["prs"].items()
+            if clave.startswith(repo + "#") and pr["rama"] == rama
             and pr["estado"] == "abierto"
         ))

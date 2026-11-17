@@ -3,8 +3,27 @@
 from __future__ import annotations
 
 
+def candidatos_por_ppid(padres: dict[int, int], raiz: int) -> list[int]:
+    hijos = []
+    for candidato, padre in padres.items():
+        visto = {candidato}
+        actual = padre
+        for _ in range(64):
+            if actual == raiz:
+                hijos.append(candidato)
+                break
+            if actual in visto or actual == 0:
+                break
+            visto.add(actual)
+            if actual not in padres:
+                break
+            actual = padres[actual]
+    return hijos
+
+
 def descendientes_validos(
-    snapshot: dict[int, tuple[int, int | None]], raiz: int
+    snapshot: dict[int, tuple[int, int | None]], raiz: int,
+    fin: int | None = None,
 ) -> list[int]:
     """PIDs que cuelgan de `raiz` con cada eslabón nacido en o después de su padre.
 
@@ -18,6 +37,7 @@ def descendientes_validos(
         pid
         for pid in snapshot
         if pid != raiz and _cadena_valida(snapshot, pid, raiz, inicio_raiz)
+        and (fin is None or ((creado := _creado(snapshot, pid)) is not None and creado < fin))
     )
 
 

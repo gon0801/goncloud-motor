@@ -1,6 +1,7 @@
 """Regresión: un PID reciclado no mantiene pendiente la parada de su dueño anterior."""
 
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from motor.plataforma import windows
@@ -76,6 +77,33 @@ class SinJobMataSoloElArbolConfirmadoTest(unittest.TestCase):
 
 
 class IdentidadGrupoTest(unittest.TestCase):
+    def test_pid_ausente_no_adopta_ppid_de_dia_siguiente_pero_conserva_huerfano(self):
+        inicio = datetime(2026, 11, 16, tzinfo=timezone.utc)
+        fin = inicio + timedelta(hours=8)
+
+        def filetime(hora):
+            return str(int((hora.timestamp() + 11_644_473_600) * 10_000_000))
+
+        for creado, esperado in (
+            (inicio + timedelta(days=1), "ausente"),
+            (inicio + timedelta(hours=4), "vivo"),
+            (fin + timedelta(seconds=1), "vivo"),
+            (fin + timedelta(seconds=3), "ausente"),
+        ):
+            with (
+                self.subTest(creado=creado),
+                patch.dict(windows._jobs, {}, clear=True),
+                patch.object(windows, "_consulta_pid", return_value="muerto"),
+                patch.object(windows, "_abrir_job", return_value=(None, "ausente")),
+                patch.object(windows, "_padres_procesos", return_value={20: 18108}),
+                patch.object(windows, "hora_inicio",
+                             side_effect=lambda pid, creado=creado: filetime(creado) if pid == 20 else ""),
+            ):
+                self.assertEqual(
+                    windows.presencia_grupo(18108, filetime(inicio), fin=fin.isoformat()),
+                    esperado,
+                )
+
     def test_pid_reutilizado_distingue_descendientes_anteriores_y_nuevos(self):
         for hijos, horas, esperado in (
             ([], {10: "300"}, "ausente"),
@@ -115,6 +143,33 @@ class HoraIlegibleNoEsAusenciaTest(unittest.TestCase):
 
 class MatarSinTocarPidReutilizadoTest(unittest.TestCase):
     """F2: reenumerar y volver a datar antes de matar, sin /T."""
+
+    def test_cerrar_huerfanos_no_mata_ppid_reusado_tras_el_cierre(self):
+        inicio = datetime(2026, 11, 16, tzinfo=timezone.utc)
+        fin = inicio + timedelta(hours=8)
+
+        def filetime(hora):
+            return str(int((hora.timestamp() + 11_644_473_600) * 10_000_000))
+
+        for creado, esperado in (
+            (inicio + timedelta(days=1), False),
+            (inicio + timedelta(hours=4), True),
+            (fin + timedelta(seconds=1), True),
+            (fin + timedelta(seconds=3), False),
+        ):
+            with (
+                self.subTest(creado=creado),
+                patch.dict(windows._jobs, {}, clear=True),
+                patch.object(windows, "_consulta_pid", return_value="muerto"),
+                patch.object(windows, "_abrir_job", return_value=(None, "ausente")),
+                patch.object(windows, "_padres_procesos", return_value={20: 18108}),
+                patch.object(windows, "hora_inicio",
+                             side_effect=lambda pid, creado=creado: filetime(creado) if pid == 20 else ""),
+                patch.object(windows, "_matar_pid_confirmado") as matar,
+                patch.object(windows.time, "sleep"),
+            ):
+                windows.cerrar_huerfanos(18108, filetime(inicio), fin=fin.isoformat())
+                self.assertEqual(bool(matar.call_args_list), esperado)
 
     def test_reenumera_y_alcanza_al_hijo_nacido_durante_el_cierre(self):
         pasadas = 0
@@ -164,5 +219,3 @@ class MatarSinTocarPidReutilizadoTest(unittest.TestCase):
         padres.assert_not_called()
         self.assertEqual(correr.call_args_list, [])
         proceso.kill.assert_not_called()
-
-

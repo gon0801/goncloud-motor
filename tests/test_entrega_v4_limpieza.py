@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from motor import plataforma
-from motor.encargos import ciclo, politica
+from motor.encargos import ciclo, politica, sesion
 from motor.encargos import despliegue
 from motor.encargos.registro import Evento, Registro
 from motor.github import FakeGitHub, PrView
@@ -80,6 +80,52 @@ class LimpiezaPorHechos(unittest.TestCase):
             self.assertEqual(self.reg.fold("x").estado, "cancelado")
         return numero
 
+    def test_cierre_pasa_hora_final_al_sondeo_y_al_cierre_del_grupo(self) -> None:
+        self._final()
+        enc = self.reg.fold("x")
+        intento = self.reg.base / "ejecucion" / "x"
+        intento.mkdir(parents=True)
+        (intento / "proc.json").write_text(json.dumps({
+            "pid": 18108, "inicio": "133100000000000000",
+        }), encoding="utf-8")
+
+        with (
+            mock.patch.object(plataforma, "estado_proc", return_value="muerto"),
+            mock.patch.object(plataforma, "matar_proc"),
+            mock.patch.object(plataforma, "cerrar_huerfanos") as cerrar_grupo,
+            mock.patch.object(plataforma, "presencia_grupo", return_value="ausente") as mirar,
+            mock.patch.object(sesion, "guardar_descendientes", return_value=[]),
+        ):
+            ciclo._cerrar_procesos_del_encargo(self.reg, enc)
+
+        self.assertIn(mock.call(18108, "133100000000000000", "", fin=enc.hora_final),
+                      cerrar_grupo.call_args_list)
+        self.assertIn(mock.call(18108, "133100000000000000", "", fin=enc.hora_final),
+                      mirar.call_args_list)
+
+    def test_lider_vivo_tras_cierre_extiende_el_limite_hasta_su_apagado(self) -> None:
+        self._final()
+        enc = self.reg.fold("x")
+        intento = self.reg.base / "ejecucion" / "x"
+        intento.mkdir(parents=True)
+        (intento / "proc.json").write_text(json.dumps({
+            "pid": 18108, "inicio": "133100000000000000",
+        }), encoding="utf-8")
+
+        with (
+            mock.patch.object(plataforma, "estado_proc",
+                              side_effect=["vivo", *(["muerto"] * 20)]),
+            mock.patch.object(plataforma, "matar_proc"),
+            mock.patch.object(plataforma, "cerrar_huerfanos") as cerrar_grupo,
+            mock.patch.object(plataforma, "presencia_grupo", return_value="ausente") as mirar,
+            mock.patch.object(sesion, "guardar_descendientes", return_value=[]),
+        ):
+            ciclo._cerrar_procesos_del_encargo(self.reg, enc)
+
+        limite = datetime.fromisoformat(cerrar_grupo.call_args.kwargs["fin"])
+        self.assertGreater(limite, datetime.fromisoformat(enc.hora_final))
+        self.assertEqual(mirar.call_args.kwargs["fin"], limite.isoformat())
+
     def _limpiar(self, minutos: int = 0, presupuesto: list[int] | None = None,
                 enc=None):
         from motor.encargos.entrega.limpieza import barrer_limpieza
@@ -107,6 +153,52 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertEqual({recurso: resultado for recurso, _, resultado, _, _
                           in enc.limpieza}["pr"], "borrado")
         self.assertTrue(enc.limpio)
+
+    def test_terminado_sin_pr_registrado_borra_rama(self) -> None:
+        self._final(cancelar=False)
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "fase terminada", "hora": hora(),
+        }}, "cierre-sin-pr:x")
+        enc = self._limpiar()
+        self.assertTrue(enc.limpio)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+
+    def test_terminado_sin_pr_con_head_abierto_conserva_rama(self) -> None:  # no-roja-en-base: antes conservaba toda rama sin PR propio, incluido el head abierto
+        self._final(cancelar=False)
+        self.gh.abrir_pr(self.repo, "encargo/x", "main", "ajeno", "cuerpo")
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "fase terminada", "hora": hora(),
+        }}, "cierre-con-head:x")
+        enc = self._limpiar()
+        self.assertTrue(enc.limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
+        self.assertNotIn("rama", {tipo for tipo, _, _, _, _ in enc.limpieza})
+
+    def test_rama_conservada_por_pr_ajeno_se_borra_al_cerrar_ese_pr(self) -> None:
+        self._final(cancelar=False)
+        numero = self.gh.abrir_pr(self.repo, "encargo/x", "main", "ajeno", "cuerpo").numero
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "fase terminada", "hora": hora(),
+        }}, "cierre-con-head-ajeno:x")
+        enc = self._limpiar()
+        self.assertTrue(enc.limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
+
+        self.gh.cerrar_pr(self.repo, numero)
+        for minutos in (60, 75, 90, 120, 60 * 24):
+            enc = self._limpiar(minutos)
+        self.assertFalse(self.gh.rama_existe(self.repo, "encargo/x"))
+        self.assertTrue(enc.limpio)
+
+    def test_terminado_sin_pr_con_base_abierta_conserva_rama(self) -> None:  # no-roja-en-base: ya se conservaba la rama base de un PR abierto
+        self._final(cancelar=False)
+        self.gh.abrir_pr(self.repo, "feat", "encargo/x", "apilado", "cuerpo")
+        self.reg.anotar("x", {"kind": "cierre_forzado", "data": {
+            "evidencia": "fase terminada", "hora": hora(),
+        }}, "cierre-con-base:x")
+        enc = self._limpiar()
+        self.assertTrue(enc.limpio)
+        self.assertTrue(self.gh.rama_existe(self.repo, "encargo/x"))
 
     def test_cerrado_limpio_no_repliega_historia_en_otra_pasada(self) -> None:
         import motor.encargos.entrega.limpieza as limpieza

@@ -210,13 +210,11 @@ def observar_arbol(att) -> str:
         duda = True
     elif agente is not None:
         identidades.append(agente)
-    if not identidades and not duda:
-        return "ausente"
     try:
         estados = [plataforma.estado_proc(ident) for ident in identidades]
     except (OSError, TypeError, ValueError):
         return "incierto"
-    if any(estado == "vivo" for estado in estados):
+    if "vivo" in estados:
         return "vivo"
     for ident, estado in zip(identidades, estados):
         if estado == "corte":
@@ -224,7 +222,7 @@ def observar_arbol(att) -> str:
         grupo = plataforma.presencia_grupo(
             int(ident["pid"]),
             str(ident.get("inicio") or ""),
-            str(ident.get("job") or ""),
+            str(ident.get("job") or ""), fin=getattr(att, "fin", ""),
         )
         if grupo == "vivo":
             return "vivo"

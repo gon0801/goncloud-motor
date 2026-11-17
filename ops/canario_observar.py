@@ -210,11 +210,11 @@ def _existe(ruta: Path) -> bool | None:
     return True
 
 
-def _vivo(directorio: Path, proc: dict) -> bool | None:
+def _vivo(directorio: Path, proc: dict, fin: str = "") -> bool | None:
     """Lo que dice `sesion.observar` sin escribir: el grupo del lanzador, el comprobador
     en curso y los descendientes de `arbol.json`. None: no se pudo mirar."""
     try:
-        estado = sesion.observar(directorio, proc, escribir=False)
+        estado = sesion.observar(directorio, proc, escribir=False, fin=fin)
     except (OSError, KeyError, TypeError, ValueError):
         return None
     if estado == "ausente" and not proc:
@@ -230,7 +230,7 @@ def _json_o_vacio(ruta: Path) -> dict:
     return datos if isinstance(datos, dict) else {}
 
 
-def _procesos_de_turnos(base: Path, encargo: str, eventos: list[dict]) -> Resto:
+def _procesos_de_turnos(base: Path, encargo: str, eventos: list[dict], fin: str) -> Resto:
     """Los mismos candidatos que cierra el motor al limpiar (`proc.json` o
     `wrapper.json` de `ejecucion/<id>` y de cada intento), más la identidad de cada
     `intento_abierto`, que sobrevive al borrado del directorio. El proceso vigente
@@ -258,7 +258,7 @@ def _procesos_de_turnos(base: Path, encargo: str, eventos: list[dict]) -> Resto:
     turnos = sum(1 for ev in eventos if ev["kind"] == "intento_abierto")
     return Resto(
         "proceso", f"algún proceso de sus {turnos} turnos",
-        _tri(_vivo(c, p) for c, p in unicos.values()),
+        _tri(_vivo(c, p, fin) for c, p in unicos.values()),
     )
 
 
@@ -341,7 +341,7 @@ def _recibos_de_despliegue(base: Path, encargo: str) -> tuple[Despliegue, ...] |
     return tuple(despliegues)
 
 
-def _despliegues(base: Path, encargo: str) -> tuple[Resto, ...]:
+def _despliegues(base: Path, encargo: str, fin: str) -> tuple[Resto, ...]:
     """Lo que quedó junto a los recibos del encargo y sus trabajadores."""
     raiz = base / "despliegues"
     try:
@@ -371,7 +371,7 @@ def _despliegues(base: Path, encargo: str) -> tuple[Resto, ...]:
         for nombre in ("proceso.json", "comando.json"):
             ident = _json_o_vacio(clave / nombre)
             if _existe(clave / nombre) and ident.get("estado") != "no_enviado":
-                vivos.append(_vivo(clave, ident))
+                vivos.append(_vivo(clave, ident, fin))
     puntero = raiz / f"{encargo}.actual"
     if (hay := _existe(puntero)) is not False:
         restos.append(Resto("despliegue", f"despliegues/{puntero.name}", hay))
@@ -440,7 +440,7 @@ def _restos(
             for rama in ramas
         ),
         *([] if ramas else [Resto("referencia", "ninguna rama que buscar en el clon del servicio", False)]),
-        _procesos_de_turnos(base, e.id, eventos),
+        _procesos_de_turnos(base, e.id, eventos, e.hora_final),
     )
 
 
@@ -448,9 +448,11 @@ def procesos(base: Path, encargo: str) -> tuple[Resto, ...]:
     """Los procesos del encargo que la fila limpio pide muertos, mirados con las mismas
     identidades que `observar`: los de sus turnos y sus trabajadores de despliegue."""
     eventos = _eventos(base / "registro.sqlite", encargo)
+    plegada = _plegar(eventos) if eventos else None
+    fin = plegada[1].hora_final if isinstance(plegada, tuple) else ""
     return (
-        _procesos_de_turnos(base, encargo, eventos),
-        *(r for r in _despliegues(base, encargo) if r.tipo == "proceso"),
+        _procesos_de_turnos(base, encargo, eventos, fin),
+        *(r for r in _despliegues(base, encargo, fin) if r.tipo == "proceso"),
     )
 
 
@@ -584,5 +586,5 @@ def observar(
         pliegue=pliegue,
         prs=prs,
         recibos=tuple(_recibo(e, f.id) for f in pliegue.fases if f.desplegable),
-        restos=_restos(base, e, eventos, prs, servicio, _despliegues(base, encargo)),
+        restos=_restos(base, e, eventos, prs, servicio, _despliegues(base, encargo, e.hora_final)),
     )
