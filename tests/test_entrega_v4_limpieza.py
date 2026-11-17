@@ -336,6 +336,20 @@ class LimpiezaPorHechos(unittest.TestCase):
             and ev["data"]["recurso"] == "runtime"
         ]), 2)
 
+    def test_runtime_de_solo_lectura_se_borra_con_v4(self) -> None:  # no-roja-en-base: verifica la ruta nueva con el mismo borde de permisos del cierre legado
+        from tests.test_limpieza_cierre import unlink_de_windows
+
+        self._final()
+        runtime = self.reg.base / "runtime" / "x"
+        runtime.mkdir(parents=True)
+        archivo = runtime / "solo-lectura"
+        archivo.write_text("dato", encoding="utf-8")
+        archivo.chmod(0o444)
+        with unlink_de_windows():
+            enc = self._limpiar()
+        self.assertFalse(runtime.exists())
+        self.assertTrue(enc.limpio)
+
     def test_reintegrar_no_invalida_la_limpieza_del_recibo_viejo(self) -> None:
         ruta = self._recibo(presente=True, reintegrado=True)
         enc = self._limpiar()
@@ -682,6 +696,23 @@ class LimpiezaPorHechos(unittest.TestCase):
         self.assertEqual(next((x[2:4] for x in enc.limpieza if x[0] == "runtime")),
                          ("agotado", 3))
         self.assertFalse(enc.limpio)
+
+    def test_reintento_que_borra_recupera_limpio(self) -> None:  # no-roja-en-base: cubre la recuperación verificable tras un fallo de limpieza bajo V4
+        self._final()
+        runtime = self.reg.base / "runtime" / "x"
+        runtime.mkdir(parents=True)
+        (runtime / "ocupado").write_text("dato", encoding="utf-8")
+        with mock.patch("motor.encargos.entrega.limpieza.borrar_arbol",
+                        side_effect=PermissionError("ocupado")):
+            enc = self._limpiar()
+        self.assertFalse(enc.limpio)
+        self.assertEqual(next(x[2] for x in enc.limpieza if x[0] == "runtime"), "fallo")
+        self._limpiar(9)
+        self.assertTrue(runtime.exists())
+        enc = self._limpiar(10)
+        self.assertFalse(runtime.exists())
+        self.assertTrue(enc.limpio)
+        self.assertEqual(next(x[2] for x in enc.limpieza if x[0] == "runtime"), "borrado")
 
     def test_timeout_de_github_se_reintenta_desde_el_registro(self) -> None:
         self._final(con_pr=True)
