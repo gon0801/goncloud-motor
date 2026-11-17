@@ -341,7 +341,7 @@ def _recibos_de_despliegue(base: Path, encargo: str) -> tuple[Despliegue, ...] |
     return tuple(despliegues)
 
 
-def _despliegues(base: Path, encargo: str) -> tuple[Resto, ...]:
+def _despliegues(base: Path, encargo: str, fin: str) -> tuple[Resto, ...]:
     """Lo que quedó junto a los recibos del encargo y sus trabajadores."""
     raiz = base / "despliegues"
     try:
@@ -371,7 +371,7 @@ def _despliegues(base: Path, encargo: str) -> tuple[Resto, ...]:
         for nombre in ("proceso.json", "comando.json"):
             ident = _json_o_vacio(clave / nombre)
             if _existe(clave / nombre) and ident.get("estado") != "no_enviado":
-                vivos.append(_vivo(clave, ident))
+                vivos.append(_vivo(clave, ident, fin))
     puntero = raiz / f"{encargo}.actual"
     if (hay := _existe(puntero)) is not False:
         restos.append(Resto("despliegue", f"despliegues/{puntero.name}", hay))
@@ -452,7 +452,7 @@ def procesos(base: Path, encargo: str) -> tuple[Resto, ...]:
     fin = plegada[1].hora_final if isinstance(plegada, tuple) else ""
     return (
         _procesos_de_turnos(base, encargo, eventos, fin),
-        *(r for r in _despliegues(base, encargo) if r.tipo == "proceso"),
+        *(r for r in _despliegues(base, encargo, fin) if r.tipo == "proceso"),
     )
 
 
@@ -586,5 +586,5 @@ def observar(
         pliegue=pliegue,
         prs=prs,
         recibos=tuple(_recibo(e, f.id) for f in pliegue.fases if f.desplegable),
-        restos=_restos(base, e, eventos, prs, servicio, _despliegues(base, encargo)),
+        restos=_restos(base, e, eventos, prs, servicio, _despliegues(base, encargo, e.hora_final)),
     )
