@@ -8454,7 +8454,9 @@ def _paso_despliegue_fase(
             return enc
     politica = politica_despliegue.resolver(espacio, enc, fase)
     if politica.requiere_despliegue is None:
-        if not politica.ESPERAS_V5:
+        from .politica import ESPERAS_V5
+
+        if not ESPERAS_V5:
             # Apagado el interruptor, una fase sin declaración sigue pendiente
             # de que se declare: no gasta intentos ni libera el cierre.
             return enc
