@@ -20,7 +20,7 @@ def _pedido() -> Encargo:
 class SituacionGuardada(unittest.TestCase):
     def test_deteniendo_con_causa_nueva_exige_su_hecho(self) -> None:
         from motor.encargos.situacion import (
-            Deteniendo, EstadoIncoherente, FaltaDeAvance, PorTope,
+            Deteniendo, Detenido, EstadoIncoherente, FaltaDeAvance, PorTope,
         )
 
         base = dict(id="e", clave="e", huella="h", director="", texto="pedido",
@@ -39,6 +39,12 @@ class SituacionGuardada(unittest.TestCase):
             e = Encargo(**base, situacion=Deteniendo(causa, True),
                         **{campo: vigente})
             self.assertEqual(e.situacion.orden, causa)
+            with self.subTest(causa=causa, estado="detenido"):
+                with self.assertRaises(EstadoIncoherente):
+                    Encargo(**base, situacion=Detenido(causa), **{campo: ajeno})
+                detenido = Encargo(**base, situacion=Detenido(causa),
+                                   **{campo: vigente})
+                self.assertEqual(detenido.situacion.causa, causa)
 
     def test_constructor_tipado_no_cambia_causas_ni_efectos_en_silencio(self) -> None:
         from motor.encargos.situacion import (

@@ -81,6 +81,13 @@ class HechosDeEspera(unittest.TestCase):
         e = esperar(e, "orden_espera", H3)
         self.assertEqual(e.racha_esperas_desde, "")
 
+    def test_avance_renueva_apertura_de_la_misma_clase(self):
+        e = esperar(pedido(), "checks_merge")
+        e = reducir(e, evento("plazo", H2), nuevo=True)
+        e = reducir(e, evento("revision", H2), nuevo=False)
+        e = esperar(e, "checks_merge", H3, abierta=H3)
+        self.assertEqual((e.espera_clase, e.espera_abierta), ("checks_merge", H3))
+
     def test_una_fila_que_no_detiene_no_mueve_la_racha(self):
         e = esperar(pedido(), "despliegue_en_curso")
         self.assertEqual(e.racha_esperas_desde, "")
@@ -197,6 +204,18 @@ class HechosDeEspera(unittest.TestCase):
         with self.assertRaises(TransicionIlegal):
             reducir(e, evento("falta_de_avance", H3, regla="turno_vivo",
                               desde=H1, turnos=0), nuevo=True)
+
+    def test_falta_de_avance_no_pisa_causa_de_encargo_detenido(self):
+        from motor.encargos.situacion import PorTope
+
+        e = esperar(pedido(), "proveedor")
+        e = reducir(e, evento("tope_espera", H3, clase="proveedor",
+                              abierta=H1, tope=H3), nuevo=True)
+        self.assertEqual(e.situacion.causa, PorTope("proveedor", H1, H3))
+        with self.assertRaises(TransicionIlegal):
+            reducir(e, evento("falta_de_avance", "2026-11-17T10:04:00Z", regla="esperas",
+                              desde=H1, turnos=0), nuevo=True)
+        self.assertEqual(e.situacion.causa, PorTope("proveedor", H1, H3))
 
     def test_turnos_y_reloj_cuentan_solo_hechos_con_avance(self):
         e = pedido()
