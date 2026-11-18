@@ -295,7 +295,12 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
             )
         )
     if args.cmd == "espera":
-        reanuda = tabla_esperas.hora_canonica(args.reanuda_en)
+        # Con el interruptor apagado se guarda el argumento tal cual: `reanuda_en`
+        # va en la ukey y repetir la misma orden tiene que seguir siendo la misma.
+        reanuda = (
+            tabla_esperas.hora_canonica(args.reanuda_en)
+            if politica.ESPERAS_V5 else ""
+        )
         if politica.ESPERAS_V5 and not reanuda:
             raise SystemExit(
                 "motor espera: `--reanuda-en` necesita una hora, como "

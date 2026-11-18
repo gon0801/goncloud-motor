@@ -257,4 +257,6 @@ def _mas_segundos(base: str, segundos: int) -> str:
             instante = instante.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         instante = datetime.now(timezone.utc)
-    return (instante + timedelta(seconds=segundos)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (instante + timedelta(seconds=segundos)).astimezone(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
