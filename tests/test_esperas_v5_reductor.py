@@ -13,6 +13,7 @@ H0 = "2026-11-17T10:00:00Z"
 H1 = "2026-11-17T10:01:00Z"
 H2 = "2026-11-17T10:02:00Z"
 H3 = "2026-11-17T10:03:00Z"
+H4 = "2026-11-17T10:04:00Z"
 
 
 def evento(kind: str, hora: str = H0, **datos: object) -> dict:
@@ -140,6 +141,15 @@ class HechosDeEspera(unittest.TestCase):
                                       abierta=H1, tope=H2), nuevo=True)
                 self.assertEqual((e.estado, e.tope_de), ("detenido", (clase, H1, H2)))
 
+    def test_autoridad_recuperada_invalida_su_tope_aunque_siga_esperando(self):
+        e = esperar(pedido(), "checks_merge")
+        e = reducir(e, evento("autoridad", H2, alcanzable=False), nuevo=True)
+        e = reducir(e, evento("autoridad", H3, alcanzable=True), nuevo=True)
+        self.assertTrue(e.autoridad)
+        with self.assertRaises(TransicionIlegal):
+            reducir(e, evento("tope_espera", H4, clase="autoridad",
+                              abierta=H2, tope=H4), nuevo=True)
+
     def test_un_tope_avisar_no_pisa_cancelacion_ni_otro_tope(self):
         from motor.encargos.situacion import PorTope
 
@@ -164,6 +174,20 @@ class HechosDeEspera(unittest.TestCase):
         e = evolucionar(e, reserva=False)
         e = reducir(e, evento("arbol", H3, observacion="ausente"), nuevo=True)
         self.assertEqual(e.situacion.causa, PorTope("checks_merge", H1, H3))
+
+    def test_impedimento_no_reemplaza_tope_de_cancelacion_vigente(self):
+        e = reducir(pedido(), evento("intento_abierto", H1, id="i",
+                                     pid=1, inicio=H1), nuevo=True)
+        e = reducir(e, evento("orden", H2, accion="cancelar"), nuevo=True)
+        e = reducir(e, evento("impedimento", H3, clase="entorno",
+                              causa="sin acceso", condicion="acceso"), nuevo=True)
+        self.assertEqual((e.espera_clase, e.espera_abierta), ("deteniendo", H2))
+        e = reducir(e, evento("tope_espera", H4, clase="deteniendo",
+                              abierta=H2, tope=H4), nuevo=True)
+        self.assertEqual((e.estado, e.orden_parada, e.tope_de),
+                         ("deteniendo", "cancelar", ()))
+        e = reducir(e, evento("arbol", H4, observacion="ausente"), nuevo=True)
+        self.assertEqual(e.estado, "cancelado")
 
     def test_falta_de_avance_detiene_y_continuar_reinicia(self):
         from motor.encargos.situacion import FaltaDeAvance
@@ -233,6 +257,18 @@ class HechosDeEspera(unittest.TestCase):
         e = reducir(e, evento("revision", H3), nuevo=False)
         self.assertEqual((e.ultimo_avance, e.turnos_sin_avance, e.reloj_turno),
                          (H3, 0, H3))
+
+    def test_actividad_en_espera_renueva_reloj_y_rechaza_decision_obsoleta(self):
+        e = reducir(pedido(), evento("intento_abierto", H1, id="i",
+                                     pid=1, inicio=H1), nuevo=True)
+        e = reducir(e, evento("espera", H2, motivo="red", reanuda_en=H4),
+                    nuevo=True)
+        e = reducir(e, evento("actividad", H3, observada=True,
+                              hecho="sigue compilando"), nuevo=True)
+        self.assertEqual(e.reloj_turno, H3)
+        with self.assertRaises(TransicionIlegal):
+            reducir(e, evento("falta_de_avance", H4, regla="turno_vivo",
+                              desde=H1, turnos=1), nuevo=True)
 
     def test_producto_repetido_no_cuenta_como_avance(self):
         from dataclasses import replace

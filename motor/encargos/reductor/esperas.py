@@ -50,7 +50,9 @@ def actualizar_marcas(anterior: Encargo | None, e: Encargo, evento: dict) -> Enc
         anterior is None or anterior.estado != "conciliando"
     ):
         clase = "efecto_incierto"
-    elif kind == "impedimento" and impedimento_bloquea_trabajo(e):
+    elif kind == "impedimento" and impedimento_bloquea_trabajo(e) and e.estado not in (
+        "deteniendo", "detenido", "cancelado", "terminado"
+    ):
         clase = "impedimento_trabajo"
     elif kind == "autoridad" and not e.autoridad and e.estado not in (
         "deteniendo", "detenido", "cancelado", "terminado"

@@ -65,7 +65,10 @@ def plegar_evento(
     ):
         return aplicado
     resultado = derivados(aplicado, evento)
-    if aplicado is not anterior:
+    if aplicado is not anterior or (
+        anterior is not None and anterior.estado == "esperando_reintento"
+        and evento["kind"] == "actividad" and evento["data"].get("observada")
+    ):
         resultado = esperas.actualizar_marcas(anterior, resultado, evento)
     if anterior is not None and resultado.estado != anterior.estado:
         if resultado.estado in ("terminado", "cancelado"):

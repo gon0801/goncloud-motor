@@ -86,7 +86,8 @@ def leer_tope(e: Encargo, d: dict) -> FilaEspera | None:
         or not isinstance(tope, str) or not tope
         or not isinstance(d.get("hora"), str) or not d["hora"]
         or e.espera_abierta != abierta
-        or e.espera_tope and e.espera_tope != tope):
+        or e.espera_tope and e.espera_tope != tope
+        or clase == "autoridad" and e.autoridad):
         return None
     en_espera = (
         isinstance(e.situacion, EsperandoReintento) and e.situacion.clase == clase
