@@ -208,6 +208,10 @@ def _despliegue_sin_receta(ctx: Contexto) -> bool | None:
         return None
     if resuelta.requiere_despliegue is None:
         return False
+    if resuelta.requiere_despliegue is False:
+        # La fase ya no necesita desplegar: la espera quedó resuelta y el paso
+        # adopta la política; `nivel_cumplido` la completa sin receta.
+        return True
     try:
         return despliegue.receta_resuelta(ctx.enc, ctx.registro.base, resuelta)
     except (OSError, ValueError, KeyError, TypeError):

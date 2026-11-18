@@ -202,6 +202,15 @@ class LecturasPorClase(unittest.TestCase):
             ),
         ):
             self.assertFalse(cierres._despliegue_sin_receta(ctx))
+        sin_despliegue = SimpleNamespace(
+            requiere_despliegue=False, desplegar="", checklist="", rollback=""
+        )
+        with mock.patch.object(
+            politica_despliegue, "resolver", return_value=sin_despliegue
+        ):
+            # La fase ya no necesita desplegar: la espera quedó resuelta aunque
+            # no haya receta ni máquina que validar.
+            self.assertTrue(cierres._despliegue_sin_receta(ctx))
         with mock.patch.object(
             politica_despliegue, "resolver", return_value=invalida
         ), mock.patch(
