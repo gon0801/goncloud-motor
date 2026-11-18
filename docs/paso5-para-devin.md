@@ -42,7 +42,8 @@ máquinas:
 
 Cambia la conducta en tres puntos, y solo con el interruptor encendido (regla 4):
 - una espera sin tope llega a su tope, y el encargo se detiene y avisa, o solo avisa en dos clases;
-- un turno vivo sin actividad, o una racha de turnos sin avance, detiene el encargo y avisa;
+- un turno vivo sin actividad, una racha de turnos sin avance, o una racha de esperas sin avance,
+  detiene el encargo y avisa;
 - volver a mirar una espera por hecho y releer DeepSeek ya no escriben eventos.
 
 No cambian:
@@ -145,9 +146,9 @@ Forma de trabajo acordada con David el 2026-11-16:
 # motor/encargos/tabla_esperas.py (nuevo)
 ClaseEspera = Literal[
     "revision_deepseek", "lectura_deepseek_fallida", "checks_merge", "despliegue_en_curso",
-    "despliegue_sin_receta", "despliegue_sin_receta_otra_fase", "autoridad",
+    "despliegue_sin_receta", "despliegue_sin_receta_otra_fase", "autoridad", "conductor_ocupado",
     "observacion_comprobador", "efecto_incierto", "sin_puerto_github", "cabeza_desviada",
-    "impedimento_entorno", "deteniendo", "base_movida", "tropiezo_merge", "destino_ocupado",
+    "impedimento_trabajo", "deteniendo", "base_movida", "tropiezo_merge", "destino_ocupado",
     "proveedor", "acceso_kimi", "sesion_local", "repo", "empuje", "empuje_transitorio",
     "github_pasajero", "preparacion_lanzamiento", "aprobado_sin_novedad", "orden_espera",
 ]
@@ -181,8 +182,9 @@ class PorTope:
 
 @dataclass(frozen=True)
 class FaltaDeAvance:
-    regla: Literal["turno_vivo", "turnos"]
-    desde: str         # turno_vivo: hora del último evento; turnos: hora del último avance
+    regla: Literal["turno_vivo", "turnos", "esperas"]
+    desde: str         # turno_vivo: hora del último evento que cuenta; turnos: hora del último
+                       # avance; esperas: racha_esperas_desde
     turnos: int
 
 # Detenido.causa gana PorTope y FaltaDeAvance.
@@ -196,6 +198,7 @@ class FaltaDeAvance:
 #   espera_tope: str = ""
 #   ultimo_avance: str = ""                      # hora del último kind de KINDS_DE_AVANCE
 #   turnos_sin_avance: int = 0
+#   racha_esperas_desde: str = ""                # ver "racha_esperas_desde" abajo
 #   tope_de: tuple[str, str, str] = ()           # (clase, abierta, tope), como otra_base_de
 #   falta_de_avance_de: tuple[str, str, int] = ()  # (regla, desde, turnos)
 
@@ -225,6 +228,16 @@ La tabla de clases no va a `AGENTS.md`: vive en `tabla_esperas.py`.
   medio un kind de `KINDS_DE_AVANCE` ni una espera de otra clase. Por eso el tope de
   `sesion_local` cuenta todos los reintentos, con sus turnos fallidos en medio.
 
+**`racha_esperas_desde`.** Es la hora en que empezó la racha de esperas sin avance, sin importar
+la clase. Existe porque `espera_abierta` vuelve a empezar al cambiar de clase: un push que falla
+con causa transitoria (`empuje_transitorio`) y luego la apertura del PR (`github_pasajero`),
+alternándose toda la noche, nunca llegarían a su tope de 6 h.
+- La pone la primera espera de una fila con `al_tope="detener"` cuando la racha está vacía.
+- La vacían un kind de `KINDS_DE_AVANCE` y `continuar`.
+- Las esperas de otras filas no la abren ni la vacían.
+- El reductor usa la `conducta` de la fila, sin mirar el interruptor: plegar no depende de
+  `ESPERAS_V5`.
+
 **`KINDS_DE_AVANCE`.** Es la lista cerrada de kinds que cuentan como avance:
 - `revision`, `pr_observado`, `fase_cancelada`, `fase_desplegada`, `cierre_forzado` y
   `resultado_directo`;
@@ -246,7 +259,7 @@ no cierran un bloqueo (`devolucion.py`) y no cambia en este paso.
 | Kind | Carga | Aplica |
 |---|---|---|
 | `espera` (existe) | `motivo`, `reanuda_en`, `hora` y, nuevos, `clase`, `abierta`, `tope` | Como hoy, y además pone `espera_*`. Un evento viejo sin `clase` pliega con `clase="legada"`, `abierta` igual a su `hora` y `tope=""`. Con `clase`, `validar` exige que esté en `ESPERAS`. |
-| `tope_espera` (nuevo) | `clase`, `abierta`, `tope`, `hora` | Pone `tope_de`. Si la fila dice `detener`, sigue el camino de `fallo_interno`: con un proceso vivo pasa a `deteniendo` con `orden_parada="tope"`, y sin proceso a `detenido` con `PorTope`. Si dice `avisar`, no cambia el estado. `validar` exige que el encargo esté en la espera de esa clase según el plegado (`espera_clase`, o el estado o impedimento de la clase) y que no esté cerrado. |
+| `tope_espera` (nuevo) | `clase`, `abierta`, `tope`, `hora` | Si la fila dice `detener`, pone `tope_de` y sigue el camino de `fallo_interno`: con un proceso vivo pasa a `deteniendo` con `orden_parada="tope"`, y sin proceso a `detenido` con `PorTope`. Si dice `avisar`, no cambia el estado ni `tope_de`: así, un `deteniendo` por un primer tope conserva su causa aunque después venza la fila `deteniendo`. `validar` exige que el encargo esté ahora en la espera de esa clase: `EsperandoReintento` con esa `clase`, o el estado o impedimento propio de la clase (`deteniendo`, `conciliando` por un efecto, el impedimento que frena el trabajo, la autoridad caída). También exige que `abierta` sea la `espera_abierta` vigente, y que el encargo no esté cerrado. `espera_clase` sola no basta, porque se conserva después de `plazo`. |
 | `falta_de_avance` (nuevo) | `regla`, `desde`, `turnos`, `hora` | Pone `falta_de_avance_de` y sigue el mismo camino, con `orden_parada="falta_de_avance"`. `validar` lo rechaza en un encargo cerrado o que ya se detiene. |
 
 - Las propiedades de fila de los dos kinds nuevos en `TABLA` (alcance, `corta_series`, marcador)
@@ -254,7 +267,9 @@ no cierran un bloqueo (`devolucion.py`) y no cambia en este paso.
 - El reductor lleva la cuenta:
   - `intento_abierto` suma 1 a `turnos_sin_avance`;
   - un kind de `KINDS_DE_AVANCE` la pone en 0 y escribe `ultimo_avance`;
-  - `continuar` también la pone en 0.
+  - `continuar` también la pone en 0;
+  - mientras no haya ningún avance, `ultimo_avance` queda vacío, y quien necesite una hora (el
+    `desde` de `regla="turnos"`) usa la del primer evento del encargo.
 - Cada lector de `orden_parada` que hoy trata `fallo_interno` trata igual `tope` y
   `falta_de_avance`. Búscalos con `git grep -n fallo_interno motor/encargos`. Al menos son estos:
   - `detencion.arbol`, que conserva el `motivo`;
@@ -276,11 +291,13 @@ Cómo se lee la tabla:
 - Si la lectura de cierre falla y la fila no dice otra cosa, la espera cuenta como "todavía no", y
   el tope la acota.
 - Un tope en minutos cuenta desde `abierta`, salvo que la fila diga otra cosa.
-- "60 min" es `TOPE_ESPERA_MIN`. "6 h" es `TOPE_ESPERA_PASAJERA_MIN`: lo llevan las seis clases
-  cuya causa casi siempre es externa y se arregla sola (`autoridad`, `proveedor`,
-  `empuje_transitorio`, `github_pasajero`, `tropiezo_merge` y `repo`). Así, un encargo que corre de
-  noche aguanta una caída de GitHub o una ventana
-  de cuota de 5 horas y termina solo.
+- "60 min" es `TOPE_ESPERA_MIN`. "6 h" es `TOPE_ESPERA_PASAJERA_MIN`: lo llevan las siete clases
+  cuya causa casi siempre es externa y se arregla sola (`autoridad`, `conductor_ocupado`,
+  `proveedor`, `empuje_transitorio`, `github_pasajero`, `tropiezo_merge` y `repo`). Así, un encargo
+  que corre de noche aguanta una caída de GitHub o una ventana de cuota de 5 horas y termina solo.
+- Con el interruptor encendido, una espera cuyo `reanuda_en` no se lee como hora (una `orden_espera`
+  vieja, o una `legada`) vence a los `TOPE_ESPERA_MIN` de su `abierta`. Hoy el barrido compara
+  cadenas, y `reanuda_en="nunca"` no vence jamás.
 - "Hoy" da el sitio aproximado en f30430f.
 
 | Clase | Tipo | Abre | Cierra | Intervalo | Tope | Al tope | Hoy |
@@ -288,15 +305,16 @@ Cómo se lee la tabla:
 | `revision_deepseek` | por hecho | PR publicado sin revisión de DeepSeek en su SHA; también la revisión externa antes de contar una ronda | comentario de DeepSeek con contenido en ese SHA, o el sticky de timeout (omite enseguida) | 60 s | `TOPE_DEEPSEEK_MIN`, desde el primer envío del SHA | `omitir`: como hoy, con la causa escrita, y la entrega sigue | `_paso_entrega` cerca de 9045; ronda externa cerca de 3541 |
 | `lectura_deepseek_fallida` | por hecho | no se pudo leer DeepSeek | la lectura sale | 120 s | `TOPE_DEEPSEEK_MIN`, desde el primer envío | `omitir`, como hoy | cerca de 9068 |
 | `checks_merge` | por hecho | checks requeridos en marcha al mergear | terminan: merge, o rojo devuelve | 120 s | 60 min | `detener` | cerca de 9251; la misma llamada sirve a `tropiezo_merge`, y la clase se elige por la rama |
-| `despliegue_en_curso` | por hecho | recibo `ejecutando` con trabajador vivo | recibo `aplicado` o `fallido` | 30 s | 60 min | `avisar`: el trabajador corta cada paso a los 900 s; matarlo a medias deja un despliegue a medias | cerca de 9651; recibo ilegible o trabajador muerto siguen en `incierto`, como hoy |
+| `despliegue_en_curso` | por hecho | recibo `ejecutando` con trabajador vivo | el recibo deja `ejecutando`, con cualquier resultado (`aplicado`, `fallido`, `ocupado`, `esperando` o `incierto`), y el paso hace con ese resultado lo mismo que hoy | 30 s | 60 min | `avisar`: el trabajador corta cada paso a los 900 s; matarlo a medias deja un despliegue a medias | cerca de 9651; recibo ilegible o trabajador muerto siguen en `incierto`, como hoy |
 | `despliegue_sin_receta` | por hecho | en la fase activa, `iniciar` devuelve `esperando` (sin receta, SHA o autorización) | aparece lo que faltaba | 300 s | 60 min | `detener` | cerca de 9651 |
-| `despliegue_sin_receta_otra_fase` | por hora | lo mismo en una fase no activa | aparece lo que faltaba | 30 s | `TOPE_ESPERA` (5 intentos) | `impedimento` con `espera_agotada`, como hoy | cerca de 8406 |
-| `autoridad` | por hecho | sin escrituras durante un despliegue, falta autoridad para conciliar, no concedió otro conductor, o `operar ver` no alcanzado (este último no escribe `espera`: su `abierta` sale del evento `autoridad`) | la autoridad vuelve | 30 s | 6 h | `detener` | cerca de 9371, 2952, 9991 y 10318 |
+| `despliegue_sin_receta_otra_fase` | por hora | lo mismo en una fase no activa; también cuando `politica_despliegue.resolver` da `requiere_despliegue=None`, que hoy retorna sin escribir ni contar y retiene el cierre del encargo. Ese caso cuenta un intento, igual que `esperando` | aparece lo que faltaba | 30 s | `TOPE_ESPERA` (5 intentos) | `impedimento` con `espera_agotada`, como hoy | cerca de 8369 y 8406 |
+| `autoridad` | por hecho | sin escrituras durante un despliegue, falta autoridad para conciliar, o `operar ver` no alcanzado (este último no escribe `espera`: su `abierta` sale del evento `autoridad`) | la autoridad vuelve | 30 s | 6 h | `detener` | cerca de 9371, 2952 y 10318 |
+| `conductor_ocupado` | por hora | al lanzar, `conceder` no concede: otro conductor tiene la reserva, o la autoridad no contestó al conceder | un `conceder` concede. Que `ver` conteste no la cierra | 30 s | 6 h | `detener` | cerca de 9991 |
 | `observacion_comprobador` | por hecho | checks declarados sin observación de esta versión | llega la observación | 30 s | 60 min | `detener` | cerca de 7857 |
 | `efecto_incierto` | por hecho | `conciliando` por un efecto incierto, también el que llega por `motor efecto` | el efecto queda `aplicado` | 30 s | 60 min | `detener` | cerca de 2961; `cli.py` `efecto`, que hoy no se vuelve a mirar |
 | `sin_puerto_github` | por hecho | sin `gh` y nivel `pr` o mayor | puerto configurado | 300 s | 60 min | `detener` | `entrega/ejecutar.py` cerca de 109 |
 | `cabeza_desviada` | por hecho | la cabeza del PR no es el SHA entregado, ya avisado una vez | la cabeza concilia | 60 s | 60 min | `detener` | cerca de 7407 |
-| `impedimento_entorno` | por hecho | un impedimento de entorno que frena el trabajo (el encargo sigue en `recibido`) | `impedimento_resuelto` | `pasada` | 60 min | `detener` | cerca de 1928. El tope de 3 fallos de instrumento (`instrumento.py`) queda fuera de la tabla y no cambia |
+| `impedimento_trabajo` | por hecho | un impedimento que frena el trabajo (`dominio.impedimento_bloquea_trabajo`): de entorno, de instrumento, o la inspección ya consumida (`inspeccion:<id>`, `dominio.espera_inspeccion_consumida`). El encargo sigue en `recibido` y no lanza turnos | el impedimento se levanta: `impedimento_resuelto`, un ajuste o una respuesta | `pasada` | 60 min | `detener` | cerca de 1928; `dominio.py` cerca de 3914. El tope de 3 fallos de `instrumento.py` decide cuándo se abre el impedimento y no cambia |
 | `deteniendo` | por hecho | orden o detención con un proceso vivo | el árbol queda ausente (`arbol`) | `pasada` | 60 min | `avisar`: la orden no cambia, y una cancelación sigue siendo definitiva | cerca de 1905 |
 | `base_movida` | por hora | PR atrás o en conflicto | `traer_main` limpio; un conflicto devuelve | 120 s | 60 min | `detener` | cerca de 6913-6973. Cambia: un `estado_merge` ilegible ya no cuenta como sin conflicto, sino como "todavía no" |
 | `tropiezo_merge` | por hora | el merge falla con un pasajero de `respuestas_merge` | el merge sale | escalera (120, 300, 900, 1800) | 6 h | `detener`. Cambia (David, 17-nov): hoy son 5 seguidos a 120 s y termina con `pendientes` | cerca de 9216; `respuestas_merge.py` |
@@ -310,7 +328,7 @@ Cómo se lee la tabla:
 | `github_pasajero` | por hora | otro fallo pasajero de GitHub | la operación sale | 120 s | 6 h | `detener` | cerca de 8756, 9017, 7933, 6257, 6192 y 8013 |
 | `preparacion_lanzamiento` | por hora | falla preparar el lanzamiento (buzón, poteto) | la preparación sale | 300 s | 60 min | `detener` | cerca de 9778, 9817 y 9921 |
 | `aprobado_sin_novedad` | por hora | la revisión aprobada ya cubre el producto | sale una entrega nueva | 300 s | 60 min | `detener` | cerca de 4320 |
-| `orden_espera` | por hora | la orden `motor espera` | su `reanuda_en` | `orden` | 1 intento: la orden es su propio tope | `seguir`: al vencer sigue como hoy | `cli.py` cerca de 297 |
+| `orden_espera` | por hora | la orden `motor espera`. `cli.py` y `validar_espera` exigen un `reanuda_en` que se lea como hora UTC | su `reanuda_en` | `orden` | 1 intento: la orden es su propio tope | `seguir`: al vencer sigue como hoy | `cli.py` cerca de 297 |
 
 **Lo que no entra en la tabla, y por qué:**
 - **El merge de David con nivel `pr`**, en la fase activa (`entrega/ejecutar.py`) y en las no
@@ -343,6 +361,10 @@ Aplica solo con el interruptor encendido. Entra en la 5.3.
   - Con `True`, escribe `plazo` y el paso sigue como hoy.
   - `espera` se escribe al abrir la espera, y cuando cambian la clase o el motivo. Al cambiar el
     motivo conserva `abierta`.
+  - Si el paso tiene una acción propia antes del tope, el barrido lo llama cuando toca esa acción
+    aunque la lectura dé `False`, y la acción escribe su evento como hoy. Hoy hay una: el disparo
+    de DeepSeek a los 2 minutos, que escribe `deepseek_disparado` (cerca de 9092). Sin esto, un PR
+    que necesita ese disparo gastaría los 30 minutos y omitiría una revisión que hoy sí se pide.
 - **Esperas por hora.** Quedan como hoy: al vencer, `plazo` y lo que sigue. Lo que sigue es trabajo
   nuevo, y el tope acota cuántas veces pasa.
 - **`deepseek_lectura`.** Se escribe solo cuando cambia lo leído: un comentario nuevo, otro SHA, o
@@ -358,23 +380,36 @@ Aplica solo con el interruptor encendido. Entra en la 5.3.
 ## Falta de avance
 
 Aplica solo con el interruptor encendido. Entra en la 5.4. El motor escribe `falta_de_avance` en
-dos casos:
+tres casos:
 
 1. **Turno vivo sin actividad** (`regla="turno_vivo"`).
-   - Hay un turno abierto (`intento_abierto` sin `intento_cerrado`), vivo o sin observar:
-     `herramienta_viva` en `True` o en `None`.
-   - El encargo no tiene ningún evento de ningún kind, `actividad` incluida, desde hace
-     `FALTA_DE_AVANCE_MIN`. `desde` es la hora de ese último evento.
-   - Hoy esos dos casos no tienen ningún reloj (`dominio.py`, decisión del árbol vivo, cerca de
-     3928). `colgada` sigue igual para la herramienta terminada a los 30 s.
+   - Hay un turno abierto (`intento_abierto` sin `intento_cerrado`) o una `reserva` sin
+     `intento_abierto`, y el árbol no está ausente: vivo con `herramienta_viva` en `True` o en
+     `None`, o `incierto`.
+   - El encargo no tiene, desde hace `FALTA_DE_AVANCE_MIN`, ningún evento de estos kinds:
+     `actividad`, `reserva`, `intento_abierto` o uno de `KINDS_DE_AVANCE`. `desde` es la hora del
+     último de ellos.
+   - Los demás kinds no reinician el reloj. El barrido escribe algunos cada pocos minutos sin que
+     el turno haga nada, como `conciliacion_fase` con `paso="consulta"` de una fase no activa, que
+     sale cada 2 minutos.
+   - Hoy estos casos no tienen ningún reloj (`dominio.py`, decisión del árbol vivo, cerca de
+     3928). La reserva con árbol `incierto` es la de un `arranque.json` ilegible tras un apagón:
+     `sesion.recuperar_arranque` devuelve `incierto`, y hoy el encargo queda en `ejecutando` para
+     siempre. `colgada` sigue igual para la herramienta terminada a los 30 s.
 2. **Racha de turnos sin avance** (`regla="turnos"`).
    - Un turno es un `intento_abierto`.
    - Cuando `turnos_sin_avance` llega a `TURNOS_SIN_AVANCE` y el último turno cerró sin avance, el
-     motor escribe `falta_de_avance` en vez de lanzar otro turno. `desde` es `ultimo_avance`.
+     motor escribe `falta_de_avance` en vez de lanzar otro turno. `desde` es `ultimo_avance`, o la
+     hora del primer evento del encargo si todavía no hubo avance.
    - Cubre los relanzamientos de `colgada`, `acceso_kimi` y `sesion_local`.
+3. **Racha de esperas sin avance** (`regla="esperas"`).
+   - Al abrir o volver a mirar una espera de una fila `detener`, si pasaron
+     `TOPE_ESPERA_PASAJERA_MIN` desde `racha_esperas_desde`, el motor escribe `falta_de_avance` en
+     vez de seguir esperando. `desde` es `racha_esperas_desde`.
+   - Si en esa misma vuelta la clase llega a su propio tope, gana `tope_espera`.
+   - Cubre las esperas que se alternan entre clases, cada una con su ventana propia.
 
-El turno vivo se cierra por el camino de `deteniendo`, y el encargo queda `detenido` con
-`FaltaDeAvance`.
+Con un proceso vivo, el encargo pasa por `deteniendo`, y queda `detenido` con `FaltaDeAvance`.
 
 ## Avisos y resumen
 
@@ -382,16 +417,24 @@ Aplica con el interruptor encendido. Entra en la 5.2, y el aviso de falta de ava
 
 - **Aviso de detención.** `_detencion_nueva` también avisa por `tope_espera` de una fila
   `detener` y por `falta_de_avance`, una vez por evento. La causa sale de `reporte._detencion`.
-- **Aviso de tope sin detención.** `_detencion_nueva` exige `detenido`, y una fila `avisar` no
-  cambia el estado. Por eso ese aviso sale por un camino propio en `entrega/avisos.py`: se dispara
-  por el evento `tope_espera`, con id `tope:{id del evento}`, sin mirar el estado, igual que hoy
-  salen los avisos de "trabado" de un impedimento.
+- **Aviso de tope sin detención.** Una fila `avisar` no cambia el estado, y hoy un encargo activo
+  no da aviso: `trabajos_nuevos` sale sin nada cuando `reporte()` es `None`, y `reporte()` solo
+  existe para `detenido`, `terminado` y `cancelado` (`reporte.py` cerca de 145). Por eso ese aviso
+  sale por un camino propio:
+  - en `entrega/avisos.py`, una función nueva, que no pasa por `reporte()`, lee con el mismo
+    `corte` los `tope_espera` nuevos de filas `avisar` y devuelve avisos con `tipo="tope"` e id
+    `tope:{id del evento}`;
+  - `motor/integraciones/directores.py` los arma con el texto de abajo, sin el «Terminó tu
+    encargo» que hoy antepone a todo tipo distinto de `detenido` (cerca de 1943);
+  - un `tope_espera` de una fila `detener` no pasa por este camino: su aviso es el de
+    `_detencion_nueva`, y cada tope da un solo aviso.
 - **Los textos:**
   - tope con `detener`: "la espera «{legible}» llegó a su tope ({tope}), abierta a las {hh:mm}; se
     reanuda con continuar";
   - tope con `avisar`: "la espera «{legible}» pasó su tope ({tope}) y sigo esperando: {qué falta}";
-  - falta de avance: "{n} turnos sin avance desde las {hh:mm}", o "el turno lleva
-    {FALTA_DE_AVANCE_MIN} min sin ningún hecho nuevo"; se reanuda con continuar.
+  - falta de avance: "{n} turnos sin avance desde las {hh:mm}", "el turno lleva
+    {FALTA_DE_AVANCE_MIN} min sin ningún hecho nuevo", o "lleva {TOPE_ESPERA_PASAJERA_MIN} esperando
+    sin avance, entre varias esperas, desde las {hh:mm}"; se reanuda con continuar.
 - **Resumen.**
   - Muestra los encargos `detenido` con su causa mientras sigan detenidos.
   - La alerta "la misma espera lleva más de 2 h" lee `espera_abierta` del plegado, y ya no la
@@ -402,7 +445,7 @@ Aplica con el interruptor encendido. Entra en la 5.2, y el aviso de falta de ava
 La evidencia de cada unidad incluye siempre las reglas 1 y 2, y desde la 5.1 la regla 3.
 
 **5.0 El reductor y la tabla, sin escritores.** Todo lo de "Tipos y campos nuevos":
-- `tabla_esperas.py` con sus 26 filas;
+- `tabla_esperas.py` con sus 27 filas;
 - las constantes de `politica.py` y las dos filas de `FILAS`;
 - los campos de `espera`, `tope_espera` y `falta_de_avance`, con `validar`, `aplicar` y sus filas
   de `TABLA`;
@@ -414,14 +457,20 @@ La evidencia de cada unidad incluye siempre las reglas 1 y 2, y desde la 5.1 la 
 Evidencia:
 - `verificar` en "estado igual en K de K" y `comparar --estricto` sin diferencias.
 - Una prueba de que ninguna fila de la tabla queda sin tope.
+- Una prueba de que toda fila con `tope_intentos` tiene `tipo="por_hora"`.
 - Una prueba por kind: el valor plegado y el rechazo al escribir.
+- `tope_espera` se rechaza después de `plazo`, y con un `abierta` que no es la vigente.
 - "Aplicar nunca lanza", con cargas vacías, tipos malos y fuera de dominio.
 - Un `espera` viejo pliega con `clase="legada"`.
 - `espera_abierta` se conserva entre esperas de la misma clase, se renueva con un avance y cambia
   con otra clase.
 - `turnos_sin_avance` sube con `intento_abierto` y vuelve a 0 con un avance y con `continuar`.
+- `racha_esperas_desde` la abre la primera espera de una fila `detener`, no la mueve una espera de
+  otra clase, y la vacían un avance y `continuar`.
 - `tope_espera` con `avisar` en `deteniendo` deja la orden `cancelar`, y `comprobar` no rompe
   `cancelacion_definitiva`.
+- Un `deteniendo` por un primer tope `detener` conserva su `tope_de` cuando después vence la fila
+  `deteniendo`.
 - `continuar` después de cada causa nueva.
 - El `git grep` de la regla 2 sale vacío.
 
@@ -434,9 +483,15 @@ Evidencia:
 - No se mueven, porque no son clases de la tabla: `_CI_SONDEO_S`, `_RELECTURA_DEEPSEEK_S`,
   `_CONCILIACION_INTERVALO_MIN`, `TOPE_FALLOS_BARRIDO` y `_QUIETUD_*`.
 - Se corrige el comentario de `_QUIETUD_S`.
+- `registro._estable` deja fuera del cotejo `clase`, `abierta` y `tope` de `espera`, como ya hace
+  con `_ATRIBUCION`: salen del plegado y no cambian el hecho. Sin esto, repetir después del
+  despliegue una espera escrita antes, con el mismo motivo y la misma reanudación, misma `ukey`,
+  da `ClaveOcupada` donde hoy da `igual`.
 
 Evidencia:
 - `git grep -n "marcar_espera(" motor/` muestra la clase en cada llamada.
+- Un `espera` guardado sin los campos nuevos y la misma escritura con ellos dan `igual`.
+- `motor espera` con un `reanuda_en` que no es hora se rechaza.
 - Con el interruptor apagado, una prueba de tabla usa la `hoy` de cada clase y da el mismo `reanuda_en` que la
   base.
 - `wc -l` de `ciclo.py` baja.
@@ -454,6 +509,16 @@ Evidencia, con el interruptor encendido, una prueba por fila:
 Evidencia, además:
 - en `tropiezo_merge` y `repo`: encendido, los reintentos siguen la escalera hasta las 6 h y luego
   el encargo se detiene; apagado, hacen lo de hoy (5 y 3 intentos, y `pendientes`);
+- el aviso de una fila `avisar` llega al canal de `directores.py` con su texto, sin «Terminó tu
+  encargo»;
+- `despliegue_en_curso` cierra con cada resultado del trabajador: `aplicado`, `fallido`,
+  `ocupado`, `esperando` e `incierto`;
+- `despliegue_sin_receta_otra_fase` con `requiere_despliegue=None` cuenta intentos y llega a su
+  tope;
+- `conductor_ocupado` con `ver` alcanzado y `conceder` negado sigue esperando, y a las 6 h se
+  detiene;
+- la inspección ya consumida (`inspeccion:<id>`) se detiene a los 60 min;
+- una espera con `reanuda_en="nunca"` vence a los 60 min;
 - una prueba de `deteniendo` con un proceso que no muere;
 - con el interruptor apagado, una prueba de que nada de esto pasa.
 
@@ -461,21 +526,30 @@ Evidencia, además:
 nueva del efecto que llega por `motor efecto`, y `deepseek_lectura`.
 
 Evidencia:
-- Por cada clase por hecho, 50 lecturas en "todavía no" escriben un solo `espera`, y la lectura que
-  cierra escribe un `plazo`.
+- Por cada clase por hecho, 50 lecturas en "todavía no" no escriben ningún evento después del que
+  abrió la espera, y la lectura que cierra escribe el evento de cierre de su fila: `plazo` en las
+  que hoy cierran con `plazo`, y en `autoridad`, `deteniendo` y `efecto_incierto` el que hoy las
+  cierra (`autoridad` alcanzable, `arbol` ausente, el efecto aplicado).
+- Un PR sin comentario de DeepSeek y con `revisor.disparo` dispara a los 2 minutos y escribe un
+  solo `deepseek_disparado`.
 - Un reinicio vuelve a leer enseguida.
 - Una lectura `None` antes del tope no escribe.
 - Una espera de 30 minutos sin eventos no dispara `quietud`.
 - 50 relecturas de DeepSeek sin cambio no escriben `deepseek_lectura`, y un comentario nuevo
   escribe uno.
 
-**5.4 Falta de avance.** Las dos reglas de `falta_de_avance` y su aviso.
+**5.4 Falta de avance.** Las tres reglas de `falta_de_avance` y su aviso.
 
 Evidencia:
 - Turno vivo con `herramienta_viva` en `True` y en `None`: un minuto antes de
   `FALTA_DE_AVANCE_MIN` sigue, y al llegar se detiene.
-- Una `actividad` reinicia el reloj del turno vivo.
-- Ocho turnos sin avance detienen, y siete no.
+- Una `actividad` reinicia el reloj del turno vivo, y un `conciliacion_fase` de consulta cada 2
+  minutos no lo reinicia.
+- Una `reserva` sin `intento_abierto` con árbol `incierto` se detiene a los `FALTA_DE_AVANCE_MIN`.
+- Ocho turnos sin avance detienen, y siete no. Si el encargo nunca tuvo avance, el aviso trae la
+  hora de su primer evento.
+- Una racha que alterna `empuje_transitorio` y `github_pasajero` se detiene a las 6 h, y un avance
+  en medio la reinicia.
 - Un kind de `KINDS_DE_AVANCE` reinicia la cuenta, e `incorporado` no la reinicia.
 - La forma del bucle de la Mini se detiene al octavo turno: turnos que alternan `producto_listo`,
   con el mismo `version` y `sha_git`, e `instrumento_fallo`.
@@ -500,6 +574,8 @@ Evidencia:
 | `motor/encargos/ciclo.py` y `dominio.py`, sin que crezcan | `docs/modelo-centro-encargos.md` (lo actualiza el revisor) |
 | `motor/encargos/resumen.py`, `reporte.py`, `entrega/avisos.py`, `entrega/ejecutar.py`, `cli.py`, `rutas.py`, `despliegue.py`, `instrumento.py`, `contencion.py` | `motor/encargos/revisor_deepseek.py` |
 | `motor/respuestas_merge.py`, para leer su conducta de la tabla | |
+| `motor/encargos/registro.py`, solo el cotejo de `espera` en `_estable` | |
+| `motor/integraciones/directores.py`, solo el aviso con `tipo="tope"` | |
 | `tools/plegado.py`, `tools/corpus_plegado.py`, `tools/asignar_propiedades_fila.py`, `tests/` | |
 | `AGENTS.md` y `CLAUDE.md`, solo las tablas generadas | |
 
@@ -526,7 +602,8 @@ Evidencia:
   detiene y avisa. Es la decisión 5 (2026-11-12). Los topes que ya tienen valor conservan su
   valor y su acción, salvo los dos que cambian abajo.
 - **6 horas para lo pasajero que se arregla solo:** `autoridad`, `proveedor`, `empuje_transitorio`
-  y `github_pasajero`. David lo eligió el 2026-11-17 ("6 horas"). Un encargo que corre mientras
+  y `github_pasajero`. David lo eligió el 2026-11-17 ("6 horas"). `conductor_ocupado` era parte de
+  `autoridad` y se separó porque se cierra por otro hecho; conserva las 6 h. Un encargo que corre mientras
   él duerme no debe quedar detenido por una caída de GitHub o por una ventana de cuota.
 - **Dos topes que ya existían pasan a esa ventana de 6 horas**, con reintentos cada vez más
   espaciados, y al final el encargo se detiene y avisa en vez de terminar incompleto:
@@ -543,6 +620,8 @@ Evidencia:
 
 **Del revisor**, que David puede cambiar:
 - **El merge de David no tiene tope.** Es la única espera de una persona.
+- **La racha de esperas sin avance usa las mismas 6 h.** Ninguna clase `detener` tiene un tope
+  mayor, así que nunca corta antes que el tope de su propia clase.
 - **`FALTA_DE_AVANCE_MIN = 60` y `TURNOS_SIN_AVANCE = 8`.**
   - Medido: el 99% de las rachas son de 5 turnos o menos, y los bucles fueron de 22 a 838.
   - Un comando legítimo de más de 60 minutos sin ningún evento detendría el encargo, y
