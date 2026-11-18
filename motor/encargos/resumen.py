@@ -27,6 +27,7 @@ ESTADOS_ACTIVOS = (
     "esperando_reintento",
     "conciliando",
     "deteniendo",
+    "detenido",
 )
 TOPE_MENSAJE = 4096
 ALERTA_RECIBIDO_S = 15 * 60
@@ -219,6 +220,10 @@ def _espera_en_palabras(motivo: str) -> str:
 
 
 def _paso(enc: Encargo) -> str:
+    if enc.estado == "detenido":
+        from .reporte import _detencion
+
+        return _frase(_detencion(enc), 200)
     if enc.estado == "deteniendo":
         motivo = _frase(enc.motivo, 120)
         return f"deteniéndose: {motivo}" if motivo else "deteniéndose"
@@ -250,7 +255,11 @@ def _clase_de_espera(motivo: object) -> str:
 def _espera_sostenida(enc: Encargo, ahora: float, desde: float | None) -> bool:
     """La misma espera visible se ha sostenido más allá del umbral. El rearme
     normal (plazo y otra vez espera) conserva `desde`; el texto de la alerta es
-    fijo para que la firma no cambie en cada vuelta."""
+    fijo para que la firma no cambie en cada vuelta. Desde la 5.1 la ventana se
+    lee de `espera_abierta` del plegado, sin repasar los eventos."""
+    abierta = _epoch(enc.espera_abierta) if enc.espera_abierta else None
+    if abierta is not None:
+        desde = abierta
     if desde is None or ahora - desde < ALERTA_ESPERA_S:
         return False
     return _paso(enc).startswith("esperando ")

@@ -28,6 +28,7 @@ from motor.encargos.entrega.avisos import (
     entrega_parcial_llana as _entrega_parcial_llana,
     id_aviso,
     titulo_del_pedido as _titulo_del_pedido,
+    topes_nuevos,
     trabajos_nuevos,
 )
 from motor.encargos.dominio import (
@@ -1840,6 +1841,16 @@ def _publicar_aviso(
     return _cerrar_aviso(guardado, True)
 
 
+def _espera_legible(clase: object) -> str:
+    """Cómo nombra el aviso a esa clase de espera."""
+    from motor.encargos.tabla_esperas import ESPERAS
+
+    try:
+        return ESPERAS[clase].legible  # type: ignore[index]
+    except (KeyError, TypeError):
+        return str(clase or "la espera")
+
+
 def _descartar_avances_de_terminados(
     registro: Registro,
     terminados: set[str],
@@ -1862,7 +1873,7 @@ def _descartar_avances_de_terminados(
             doc.get("encargo") not in terminados
             or doc.get("tipo") not in (
                 "inicio", "pr", "aviso", "relevo", "herramienta", "pendientes", "trabado",
-                "detenido",
+                "detenido", "tope",
             )
             or doc.get("estado") in ("publicado", "descartado")
         ):
@@ -1958,6 +1969,15 @@ def _trabajos_de_encargo(
             if ruta.is_file():
                 cuerpo = leer_texto(ruta)
         trabajos.append((aviso, cuerpo))
+    for aviso in topes_nuevos(registro, enc, corte_palabras):
+        titulo = _titulo_del_pedido(enc.texto, enc.clave)
+        clase = _espera_legible(aviso.get("clase"))
+        falta = _llano(enc.motivo)[0] if enc.motivo else "la misma espera"
+        trabajos.append((
+            aviso,
+            f"Tu encargo «{titulo}»: la espera «{clase}» pasó su tope "
+            f"({aviso.get('tope')}) y sigo esperando: {falta}",
+        ))
     apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
     for hecho in hechos_de_avance(enc, apariciones):
         aviso = _aviso_de_hecho(enc, hecho)

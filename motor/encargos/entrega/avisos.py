@@ -106,7 +106,11 @@ def _detencion_nueva(registro: Registro, enc: Encargo, corte: int) -> int:
         for evento in reversed(registro.eventos(enc.id)):
             if int(evento["id"]) <= corte:
                 break
-            if evento["kind"] in ("pr_otra_base", "fallo_interno"):
+            if evento["kind"] in ("pr_otra_base", "fallo_interno", "falta_de_avance"):
+                return int(evento["id"])
+            if evento["kind"] == "tope_espera" and _detiene(
+                (evento.get("data") or {}).get("clase")
+            ):
                 return int(evento["id"])
             if (evento["kind"] == "orden" and isinstance(evento["data"], dict)
                 and evento["data"].get("accion") == "parar"):
@@ -114,6 +118,55 @@ def _detencion_nueva(registro: Registro, enc: Encargo, corte: int) -> int:
     except (OSError, KeyError, TypeError, ValueError):
         return 0
     return 0
+
+
+def _detiene(clase: object) -> bool:
+    """La fila de esa clase detiene el encargo al llegar a su tope."""
+    from ..tabla_esperas import ESPERAS
+
+    return (
+        isinstance(clase, str)
+        and clase in ESPERAS
+        and ESPERAS[clase].conducta.al_tope == "detener"
+    )
+
+
+def topes_nuevos(registro: Registro, enc: Encargo, corte: int) -> tuple[dict, ...]:
+    """Los topes de las filas `avisar` que todavía no tienen aviso.
+
+    El aviso sale por este camino y no por `reporte()`: el encargo sigue activo
+    y su reporte no existe. Un tope cuya espera ya cerró, o de un encargo
+    cerrado, no se anuncia.
+    """
+    if enc.estado in ("terminado", "cancelado"):
+        return ()
+    from ..reductor.validacion_esperas import leer_tope
+
+    avisos: list[dict] = []
+    try:
+        eventos = registro.eventos(enc.id)
+    except (OSError, KeyError, TypeError, ValueError):
+        return ()
+    for evento in eventos:
+        if int(evento.get("id") or 0) <= corte or evento["kind"] != "tope_espera":
+            continue
+        datos = evento.get("data") or {}
+        if _detiene(datos.get("clase")):
+            # Su aviso es el de la detención, y sale una sola vez por evento.
+            continue
+        if leer_tope(enc, dict(datos)) is None:
+            # La espera ya cerró o el encargo se movió: no sale un «sigo esperando».
+            continue
+        aviso = aviso_de(enc)
+        aviso.update(
+            id=id_aviso(enc.id, f"tope:{evento['id']}"),
+            tipo="tope",
+            clase=str(datos.get("clase") or ""),
+            tope=str(datos.get("tope") or ""),
+            abierta=str(datos.get("abierta") or ""),
+        )
+        avisos.append(aviso)
+    return tuple(avisos)
 
 
 def trabajos_nuevos(registro: Registro, enc: Encargo, corte: int,
