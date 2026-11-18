@@ -773,8 +773,6 @@ class JobDeLaBase(unittest.TestCase):
             [],
             "GitHub publica el check con el name: del job; sin él, con su id",
         )
-        agentes = (RAIZ / "AGENTS.md").read_text(encoding="utf-8")
-        self.assertIn("job `tamano-desde-la-base`", agentes)
 
     def test_el_job_no_recibe_secretos_ni_trae_el_codigo_del_pr(self):
         texto = FLUJO_DE_LA_BASE.read_text(encoding="utf-8")

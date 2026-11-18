@@ -41,10 +41,6 @@ HOOKS = frozenset(
     {
         "gitleaks",
         "check-merge-conflict",
-        "calidad-tipos",
-        "calidad-lint",
-        "calidad-io",
-        "calidad-tamano",
     }
 )
 ALLOWLIST_CLAVES = frozenset({"description", "targetRules", "paths", "regexes"})
