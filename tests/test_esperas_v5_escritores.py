@@ -98,6 +98,27 @@ class EscritoresDeLaClase(unittest.TestCase):
         self.assertFalse(tabla_esperas.es_hora_utc("nunca"))
         self.assertFalse(tabla_esperas.es_hora_utc(""))
 
+    def test_el_intervalo_no_conserva_el_desplazamiento(self):
+        # Un intervalo sobre una base con desplazamiento sigue en UTC: sumar 30 s
+        # a las 02:30-07:00 da 09:30:30Z, no 02:30:30Z.
+        self.assertEqual(
+            tabla_esperas.reanuda_en("despliegue_en_curso", "2026-11-18T02:30:00-07:00"),
+            "2026-11-18T09:30:30Z",
+        )
+
+    def test_una_orden_escrita_a_mano_exige_la_hora_canonica(self):
+        from motor.encargos.registro import EventoIlegal
+
+        datos = {
+            "motivo": "espera ordenada", "reanuda_en": "20261118T100000Z",
+            "hora": H0, "clase": "orden_espera", "abierta": H0, "tope": "1 intentos",
+        }
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            with self.assertRaises(EventoIlegal):
+                self.reg.anotar(
+                    self.enc, {"kind": "espera", "data": datos}, f"mano:{self.enc}"
+                )
+
     def test_un_espera_guardada_antes_coteja_igual_con_los_campos_nuevos(self):
         guardada = {"motivo": "GitHub caído", "reanuda_en": H1, "hora": H0}
         self.reg.anotar(
@@ -162,6 +183,18 @@ class OrdenEsperada(unittest.TestCase):
         self.assertEqual(codigo, 0)
         datos = json.loads(salida.getvalue())
         self.assertEqual(datos["estado"], "esperando_reintento")
+
+    def test_apagado_conserva_el_argumento_y_su_identidad(self):
+        hora = "2026-11-18T02:30:00-07:00"
+        for _ in range(2):
+            with contextlib.redirect_stdout(io.StringIO()):
+                motor_cli.main([
+                    "espera", self.enc, "--base", str(self.base),
+                    "--motivo", "espera ordenada", "--reanuda-en", hora,
+                ])
+        esperas = [e for e in self.reg.eventos(self.enc) if e["kind"] == "espera"]
+        self.assertEqual(len(esperas), 1)
+        self.assertEqual(esperas[0]["data"]["reanuda_en"], hora)
 
 
 class TablaApagada(unittest.TestCase):

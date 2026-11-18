@@ -72,10 +72,13 @@ def validar_espera(e: Encargo, d: dict) -> None:
     if (
         d.get("clase") == "orden_espera"
         and politica.ESPERAS_V5
-        and not tabla_esperas.es_hora_utc(str(d.get("reanuda_en") or ""))
+        and tabla_esperas.hora_canonica(str(d.get("reanuda_en") or ""))
+        != str(d.get("reanuda_en") or "")
     ):
-        # Una orden que no vence nunca deja al encargo esperando para siempre.
-        raise TransicionIlegal("la espera ordenada necesita una hora UTC")
+        # El barrido ordena las horas como texto: una que se lea pero no esté en
+        # UTC canónico nunca vence o vence tarde. `marcar_espera` la canoniza
+        # antes de escribir; una orden escrita a mano tiene que venir así.
+        raise TransicionIlegal("la espera ordenada necesita una hora UTC canónica")
 
 
 def leer_tope(e: Encargo, d: dict) -> FilaEspera | None:
