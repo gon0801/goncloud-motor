@@ -21,8 +21,6 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parents[1]
 HERRAMIENTA = RAIZ / "tools" / "calidad.py"
 POLITICA = "motor/encargos/politica.py"
-FLUJO = RAIZ / ".github" / "workflows" / "quality.yml"
-PASO_DE_TAMANO = "      - name: Ningún archivo ni función de motor/ crece por encima de su límite"
 
 
 def _funcion(nombre: str, lineas: int, sangria: str = "") -> str:
@@ -206,67 +204,6 @@ class LimiteDeArchivo(unittest.TestCase):
         self.assertIn("HEAD^1", corrida.stderr)
         self.assertNotIn("git fetch", corrida.stderr)
         self.assertNotIn("Traceback", corrida.stderr)
-
-
-class BaseDelWorkflow(unittest.TestCase):
-    """El paso del job `gate` elige la base según el evento de GitHub."""
-
-    def setUp(self):
-        self.repo = _repo(self)
-        self.repo.escribir("motor/grande.py", _relleno(1200))
-        self.antes = self.repo.commit()
-        self.repo.escribir("motor/grande.py", _relleno(1201))
-        self.repo.commit()
-        self.repo.escribir("README", "no toca motor/\n")
-        self.repo.commit()
-
-    def _paso(self, contexto: dict[str, str]) -> subprocess.CompletedProcess:
-        lineas = FLUJO.read_text(encoding="utf-8").splitlines()
-        inicio = lineas.index(PASO_DE_TAMANO)
-        fin = next(i for i in range(inicio + 1, len(lineas)) if lineas[i].startswith("      - "))
-        paso = lineas[inicio + 1 : fin]
-        entorno = dict(os.environ)
-        for linea in paso:
-            variable = re.fullmatch(r"\s*(\w+): \$\{\{ ([\w.]+) \}\}", linea)
-            if variable:
-                entorno[variable.group(1)] = contexto.get(variable.group(2), "")
-        corre = paso.index("        run: |")
-        guion = textwrap.dedent("\n".join(paso[corre + 1 :]))
-
-        binarios = self.repo.raiz.parent / "bin"
-        binarios.mkdir(exist_ok=True)
-        python = binarios / "python"
-        python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
-        python.chmod(0o755)
-        entorno["PATH"] = f"{binarios}{os.pathsep}{entorno['PATH']}"
-        return subprocess.run(
-            ["bash", "-e", "-c", guion],
-            cwd=self.repo.raiz,
-            env=entorno,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    def test_un_push_de_dos_commits_compara_contra_donde_estaba_la_rama(self):
-        corrida = self._paso({"github.base_ref": "", "github.event.before": self.antes})
-        self.assertEqual(corrida.returncode, 1, corrida.stdout)
-        self.assertIn("motor/grande.py: archivo de 1201 líneas", corrida.stderr)
-        self.assertIn(f"en {self.antes} mide 1200", corrida.stderr)
-
-    def test_un_push_sin_commit_previo_compara_el_ultimo_y_lo_avisa(self):
-        for antes in ("0" * 40, "", "f" * 40):
-            with self.subTest(antes=antes):
-                corrida = self._paso({"github.base_ref": "", "github.event.before": antes})
-                self.assertEqual(corrida.returncode, 0, corrida.stderr)
-                self.assertIn("::warning", corrida.stdout)
-                self.assertIn("HEAD^1", corrida.stdout)
-
-    def test_un_pr_compara_contra_su_rama_base(self):
-        self.repo.git("update-ref", "refs/remotes/origin/main", self.antes)
-        corrida = self._paso({"github.base_ref": "main", "github.event.before": ""})
-        self.assertEqual(corrida.returncode, 1, corrida.stdout)
-        self.assertIn("en origin/main mide 1200", corrida.stderr)
 
     def test_no_hay_linea_base_que_actualizar(self):
         corrida = self.repo.tamano("--actualizar")

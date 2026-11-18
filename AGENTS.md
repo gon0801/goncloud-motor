@@ -28,7 +28,7 @@ falla si los dos archivos difieren.
 
 ## Calidad
 
-Los mismos comandos corren en local y en el job `gate` de `.github/workflows/quality.yml`:
+Comandos locales:
 
 - `python3 tools/calidad.py tipos` revisa con pyright en modo básico `motor/` y los dobles de
   GitHub de `tests/`.
