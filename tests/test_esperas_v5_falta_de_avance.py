@@ -6,6 +6,7 @@ escritor del barrido: el turno vivo, la racha de turnos y la racha de esperas.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -135,6 +136,36 @@ class TurnoVivo(Banco):
             )
         self.assertIn(a_los_61.estado, ("deteniendo", "detenido"))
 
+    def test_una_actividad_de_la_herramienta_llega_antes_de_detener(self):
+        self.reg.anotar(
+            self.enc,
+            {"kind": "reserva", "data": {"hora": H0, "host": "otra-maquina"}},
+            f"reserva:{self.enc}",
+        )
+        self.reg.anotar(
+            self.enc,
+            {"kind": "intento_abierto", "data": {
+                "id": "i", "pid": 7, "inicio": H0, "hora": H0,
+            }},
+            f"intento:{self.enc}",
+        )
+        directorio = Path(self.reg.base) / "ejecucion" / self.enc
+        directorio.mkdir(parents=True, exist_ok=True)
+        (directorio / "herramienta.json").write_text(
+            json.dumps({
+                "secuencia": 1, "hecho": "sigue compilando",
+                "hora": "2026-11-18T10:59:00Z",
+            }),
+            encoding="utf-8",
+        )
+        with self.con_v5(), mock.patch(
+            "motor.encargos.ciclo.observar", return_value="incierto"
+        ):
+            ciclo.barrer(self.reg, H61, 1.0, None, gh=None, umbral_s=10**9)
+        enc = self.reg.fold(self.enc)
+        self.assertNotIn(enc.estado, ("deteniendo", "detenido"))
+        self.assertEqual(_eventos(self.reg, self.enc, "falta_de_avance"), [])
+
     def test_una_conciliacion_de_consulta_no_reinicia_el_reloj(self):
         _fase(self.reg, self.enc)
         self.reg.anotar(
@@ -223,6 +254,26 @@ class RachaDeTurnos(Banco):
 
 
 class RachaDeEsperas(Banco):
+    def test_la_racha_se_mira_antes_del_plazo_de_una_espera_por_hora(self):
+        self._espera("empuje_transitorio", H0, H0, "2026-11-18T16:00:00Z")
+        self.reg.anotar(
+            self.enc, {"kind": "plazo", "data": {"hora": "2026-11-18T10:02:00Z"}},
+            f"plazo:{self.enc}:previo",
+        )
+        self._espera(
+            "checks_merge", "2026-11-18T15:59:00Z", "2026-11-18T15:59:00Z",
+            "2026-11-18T16:59:00Z",
+        )
+        with self.con_v5():
+            ciclo.barrer(self.reg, H6, 1.0, None, gh=None, umbral_s=10**9)
+        enc = self.reg.fold(self.enc)
+        self.assertIn(enc.estado, ("deteniendo", "detenido"))
+        self.assertEqual(enc.falta_de_avance_de, ("esperas", H0, 0))
+        self.assertEqual(
+            len(_eventos(self.reg, self.enc, "plazo")), 1,
+            "no se emite el plazo de reintento después de la racha",
+        )
+
     def _espera(self, clase: str, hora: str, abierta: str, tope: str) -> None:
         self.reg.anotar(
             self.enc,

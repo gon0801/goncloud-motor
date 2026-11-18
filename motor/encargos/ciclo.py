@@ -1917,12 +1917,18 @@ def _barrer_encargos(
         ):
             enc = _tope_de_la_espera(registro, enc, hora)
             if enc.estado == "esperando_reintento":
-                registro.anotar(
-                    encargo_id,
-                    {"kind": "plazo", "data": {"hora": hora}},
-                    f"plazo:{encargo_id}:{enc.reanuda_en}",
-                )
-                enc = registro.fold(encargo_id)
+                if politica.ESPERAS_V5:
+                    # La racha de esperas se mira después del tope propio de la
+                    # clase y antes de emitir el plazo: si ya cumplió sus 6 h,
+                    # el encargo se detiene en vez de reabrir la siguiente.
+                    enc = _falta_de_avance_de_esperas(registro, enc, hora)
+                if enc.estado == "esperando_reintento":
+                    registro.anotar(
+                        encargo_id,
+                        {"kind": "plazo", "data": {"hora": hora}},
+                        f"plazo:{encargo_id}:{enc.reanuda_en}",
+                    )
+                    enc = registro.fold(encargo_id)
         elif enc.estado not in ("terminado", "cancelado"):
             # Una espera que no vive en `esperando_reintento` (deteniendo,
             # conciliando, un impedimento del trabajo o la autoridad caída)
@@ -2031,12 +2037,9 @@ def _barrer_encargos(
                 registro, enc, gh, espacio, directorio, arbol, hora, epoch
             )
         if enc.estado not in ("cancelado", "terminado"):
-            # Las dos reglas de falta de avance que miran el estado del turno.
-            # La racha de esperas va después del cierre: si la espera acaba de
-            # cerrar, no se sigue esperando y la regla no aplica.
-            enc = _falta_de_avance_de_turno_vivo(
-                registro, enc, arbol, herramienta_en_curso(directorio), hora
-            )
+            # La racha de esperas de las aperturas que no viven en
+            # `esperando_reintento` (autoridad, efecto, impedimento). Las
+            # esperas por hora ya la miraron antes de su plazo.
             enc = _falta_de_avance_de_esperas(registro, enc, hora)
         if enc.estado not in ("cancelado", "terminado"):
             try:
@@ -2108,6 +2111,13 @@ def _barrer_encargos(
                 f"actividad:{encargo_id}:{firma[:16]}",
             )
             enc = registro.fold(encargo_id) or enc
+        if enc.estado not in ("cancelado", "terminado"):
+            # El turno vivo se mira después de incorporar la actividad de la
+            # herramienta y del espacio: una actividad observada en esta misma
+            # vuelta renueva el reloj antes de decidir que no hay avance.
+            enc = _falta_de_avance_de_turno_vivo(
+                registro, enc, arbol, herramienta_en_curso(directorio), hora
+            )
         por_incorporar = (
             arbol == "ausente"
             and (
