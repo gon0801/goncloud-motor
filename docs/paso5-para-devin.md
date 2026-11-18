@@ -199,6 +199,9 @@ class FaltaDeAvance:
 #   ultimo_avance: str = ""                      # hora del último kind de KINDS_DE_AVANCE
 #   turnos_sin_avance: int = 0
 #   racha_esperas_desde: str = ""                # ver "racha_esperas_desde" abajo
+#   primer_evento: str = ""                      # hora del primer evento del encargo
+#   reloj_turno: str = ""                        # hora del último actividad, reserva,
+#                                                # intento_abierto o kind de KINDS_DE_AVANCE
 #   tope_de: tuple[str, str, str] = ()           # (clase, abierta, tope), como otra_base_de
 #   falta_de_avance_de: tuple[str, str, int] = ()  # (regla, desde, turnos)
 
@@ -235,7 +238,7 @@ alternándose toda la noche, nunca llegarían a su tope de 6 h.
 - La pone la primera espera de una fila con `al_tope="detener"` cuando la racha está vacía.
 - La vacían un kind de `KINDS_DE_AVANCE`, `continuar` y una `orden_espera`: el tiempo que David
   ordenó esperar no cuenta como espera sin avance.
-- Las esperas de otras filas no la abren ni la vacían.
+- Las esperas de las demás filas, salvo `orden_espera`, no la abren ni la vacían.
 - El reductor usa la `conducta` de la fila, sin mirar el interruptor: plegar no depende de
   `ESPERAS_V5`.
 
@@ -261,7 +264,7 @@ no cierran un bloqueo (`devolucion.py`) y no cambia en este paso.
 |---|---|---|
 | `espera` (existe) | `motivo`, `reanuda_en`, `hora` y, nuevos, `clase`, `abierta`, `tope` | Como hoy, y además pone `espera_*`. Un evento viejo sin `clase` pliega con `clase="legada"`, `abierta` igual a su `hora` y `tope=""`. Con `clase`, `validar` exige que esté en `ESPERAS`. |
 | `tope_espera` (nuevo) | `clase`, `abierta`, `tope`, `hora` | Si la fila dice `detener`, pone `tope_de` y sigue el camino de `fallo_interno`: con un proceso vivo pasa a `deteniendo` con `orden_parada="tope"`, y sin proceso a `detenido` con `PorTope`. Si dice `avisar`, no cambia el estado ni `tope_de`: así, un `deteniendo` por un primer tope conserva su causa aunque después venza la fila `deteniendo`. `validar` exige que el encargo esté ahora en la espera de esa clase: `EsperandoReintento` con esa `clase`, o el estado o impedimento propio de la clase (`deteniendo`, `conciliando` por un efecto, el impedimento que frena el trabajo, la autoridad caída). También exige que `abierta` sea la `espera_abierta` vigente, y que el encargo no esté cerrado. `espera_clase` sola no basta, porque se conserva después de `plazo`. |
-| `falta_de_avance` (nuevo) | `regla`, `desde`, `turnos`, `hora` | Pone `falta_de_avance_de` y sigue el mismo camino, con `orden_parada="falta_de_avance"`. `validar` lo rechaza en un encargo cerrado o que ya se detiene, y cuando su `desde` ya no es el vigente porque llegó un avance entre la decisión y la escritura: en `esperas`, `desde` debe ser `racha_esperas_desde`; en `turnos`, `ultimo_avance` (o el primer evento); en `turno_vivo`, no puede haber un evento que cuente posterior a `desde`. |
+| `falta_de_avance` (nuevo) | `regla`, `desde`, `turnos`, `hora` | Pone `falta_de_avance_de` y sigue el mismo camino, con `orden_parada="falta_de_avance"`. `validar` lo rechaza en un encargo cerrado o que ya se detiene, y cuando su `desde` ya no es el vigente porque algo llegó entre la decisión y la escritura. Todo se lee del plegado: en `esperas`, `desde` debe ser `racha_esperas_desde`; en `turnos`, `ultimo_avance` (o `primer_evento` si está vacío), y además `turnos_sin_avance` debe seguir en `TURNOS_SIN_AVANCE` o más, para que un `continuar` en medio lo invalide; en `turno_vivo`, `reloj_turno`. |
 
 - Las propiedades de fila de los dos kinds nuevos en `TABLA` (alcance, `corta_series`, marcador)
   son las mismas que las de `fallo_interno`.
@@ -270,7 +273,10 @@ no cierran un bloqueo (`devolucion.py`) y no cambia en este paso.
   - un kind de `KINDS_DE_AVANCE` la pone en 0 y escribe `ultimo_avance`;
   - `continuar` también la pone en 0;
   - mientras no haya ningún avance, `ultimo_avance` queda vacío, y quien necesite una hora (el
-    `desde` de `regla="turnos"`) usa la del primer evento del encargo.
+    `desde` de `regla="turnos"`) usa `primer_evento`;
+  - el primer evento del encargo pone `primer_evento`, y ninguno lo cambia después;
+  - `actividad`, `reserva`, `intento_abierto` y los kinds de `KINDS_DE_AVANCE` ponen
+    `reloj_turno`.
 - Cada lector de `orden_parada` que hoy trata `fallo_interno` trata igual `tope` y
   `falta_de_avance`. Búscalos con `git grep -n fallo_interno motor/encargos`. Al menos son estos:
   - `detencion.arbol`, que conserva el `motivo`;
@@ -393,8 +399,8 @@ tres casos:
      (`herramienta_viva` en `True` o en `None`) o `incierto`. O hay una `reserva` sin
      `intento_abierto`, con cualquier árbol.
    - El encargo no tiene, desde hace `FALTA_DE_AVANCE_MIN`, ningún evento de estos kinds:
-     `actividad`, `reserva`, `intento_abierto` o uno de `KINDS_DE_AVANCE`. `desde` es la hora del
-     último de ellos.
+     `actividad`, `reserva`, `intento_abierto` o uno de `KINDS_DE_AVANCE`. Es decir, `reloj_turno`
+     tiene más de `FALTA_DE_AVANCE_MIN`, y `desde` es `reloj_turno`.
    - Los demás kinds no reinician el reloj. El barrido escribe algunos cada pocos minutos sin que
      el turno haga nada, como `conciliacion_fase` con `paso="consulta"` de una fase no activa, que
      sale cada 2 minutos.
@@ -410,8 +416,8 @@ tres casos:
 2. **Racha de turnos sin avance** (`regla="turnos"`).
    - Un turno es un `intento_abierto`.
    - Cuando `turnos_sin_avance` llega a `TURNOS_SIN_AVANCE` y el último turno cerró sin avance, el
-     motor escribe `falta_de_avance` en vez de lanzar otro turno. `desde` es `ultimo_avance`, o la
-     hora del primer evento del encargo si todavía no hubo avance.
+     motor escribe `falta_de_avance` en vez de lanzar otro turno. `desde` es `ultimo_avance`, o
+     `primer_evento` si todavía no hubo avance.
    - Cubre los relanzamientos de `colgada`, `acceso_kimi` y `sesion_local`.
 3. **Racha de esperas sin avance** (`regla="esperas"`).
    - Al abrir o volver a mirar una espera de una fila `detener`, si pasaron
@@ -443,8 +449,8 @@ Aplica con el interruptor encendido. Entra en la 5.2, y el aviso de falta de ava
     `_detencion_nueva`, y cada tope da un solo aviso;
   - al armarlo, si esa espera ya cerró o el encargo ya está cerrado, el aviso se descarta: no
     sale un «sigo esperando» de un despliegue que ya terminó;
-  - el descarte de avisos pendientes de `directores.py` (cerca de 2025), que hoy enumera los
-    tipos, incluye `tope`.
+  - el descarte de avisos pendientes de `directores.py` (`_descartar_avances_de_terminados`,
+    cerca de 1863), que hoy enumera los tipos, incluye `tope`.
 - **Los textos:**
   - tope con `detener`: "la espera «{legible}» llegó a su tope ({tope}), abierta a las {hh:mm}; se
     reanuda con continuar";
@@ -483,7 +489,9 @@ Evidencia:
   con otra clase.
 - `turnos_sin_avance` sube con `intento_abierto` y vuelve a 0 con un avance y con `continuar`.
 - `racha_esperas_desde` la abre la primera espera de una fila `detener`, no la mueve una espera de
-  otra clase, y la vacían un avance y `continuar`.
+  otra clase, y la vacían un avance, `continuar` y una `orden_espera`.
+- `primer_evento` queda fijo desde el primer evento, y `reloj_turno` lo mueven solo `actividad`,
+  `reserva`, `intento_abierto` y los avances, no un `conciliacion_fase`.
 - `tope_espera` con `avisar` en `deteniendo` deja la orden `cancelar`, y `comprobar` no rompe
   `cancelacion_definitiva`.
 - Un `deteniendo` por un primer tope `detener` conserva su `tope_de` cuando después vence la fila
@@ -575,8 +583,9 @@ Evidencia:
   en medio la reinicia.
 - Una espera breve, luego una `orden_espera` de 8 h y luego `proveedor` no se detiene al abrir
   `proveedor`: la orden vació la racha.
-- Un `falta_de_avance` de `esperas` decidido antes de un avance que se escribió primero se
-  rechaza.
+- Un `falta_de_avance` decidido antes de algo que se escribió primero se rechaza, una prueba por
+  regla: `esperas` tras un avance, `turnos` tras un avance y tras un `continuar`, y `turno_vivo`
+  tras una `actividad`.
 - Un kind de `KINDS_DE_AVANCE` reinicia la cuenta, e `incorporado` no la reinicia.
 - La forma del bucle de la Mini se detiene al octavo turno: turnos que alternan `producto_listo`,
   con el mismo `version` y `sha_git`, e `instrumento_fallo`.
