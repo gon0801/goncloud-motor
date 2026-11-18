@@ -1,0 +1,315 @@
+"""5.3: volver a mirar una espera por hecho no escribe.
+
+Con el interruptor encendido, cada clase por hecho tiene una lectura de cierre
+compartida por el paso y el barrido. Mientras la lectura diga «todavía no» (o no
+se pueda leer) no se escribe nada; cuando cierra, se escribe el evento de cierre
+según cómo se abrió la espera. La cadencia vive en memoria del proceso.
+"""
+
+from __future__ import annotations
+
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from motor.encargos import ciclo, cierres, despliegue, politica_despliegue
+from motor.encargos.frontera import DestinoEnsayo
+from motor.encargos.registro import Registro
+
+H0 = "2026-11-18T10:00:00Z"
+PASO = 400  # más que el intervalo mayor de la tabla
+
+
+def _recibir(reg: Registro, clave: str = "pedido-1") -> str:
+    return ciclo.recibir(reg, "Crea dato.txt con 42", clave, H0)["encargo"]
+
+
+def _eventos(reg: Registro, enc: str, kind: str) -> list[dict]:
+    return [e for e in reg.eventos(enc) if e["kind"] == kind]
+
+
+class Banco(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name) / "base"
+        self.reg = Registro(self.base)
+        self.addCleanup(self.reg.close)
+        self.enc = _recibir(self.reg)
+
+    def abrir(self, clase: str, motivo: str = "pendiente", hora: str = H0) -> None:
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            ciclo.marcar_espera(self.reg, self.enc, clase, motivo, hora)
+
+    def cerrar(self, epoch: float = 0.0, hora: str = H0):
+        enc = self.reg.fold(self.enc)
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            return ciclo._cerrar_espera_por_hecho(
+                self.reg, enc, None, Path(self._tmp.name) / "espacio",
+                Path(self._tmp.name) / "directorio", "ausente", hora, epoch,
+            )
+
+
+class CincuentaLecturas(Banco):
+    def test_cada_clase_por_hecho_no_escribe_mientras_no_cierra(self):
+        for clase in cierres.clases_por_hecho():
+            with self.subTest(clase=clase):
+                self.setUp()
+                self.abrir(clase)
+                antes = _eventos(self.reg, self.enc, "espera")
+                with mock.patch.dict(cierres.CIERRES, {clase: lambda ctx: False}):
+                    for i in range(50):
+                        self.cerrar(epoch=1.0 + PASO * (i + 1))
+                self.assertEqual(_eventos(self.reg, self.enc, "espera"), antes)
+                self.assertEqual(_eventos(self.reg, self.enc, "plazo"), [])
+                self.assertEqual(_eventos(self.reg, self.enc, "tope_espera"), [])
+
+    def test_la_lectura_que_cierra_escribe_plazo(self):
+        self.abrir("checks_merge")
+        with mock.patch.dict(cierres.CIERRES, {"checks_merge": lambda ctx: True}):
+            enc = self.cerrar(epoch=1.0)
+        self.assertEqual(enc.estado, "recibido")
+        self.assertEqual(len(_eventos(self.reg, self.enc, "plazo")), 1)
+
+    def test_una_lectura_none_no_escribe(self):
+        self.abrir("revision_deepseek")
+        with mock.patch.dict(cierres.CIERRES, {"revision_deepseek": lambda ctx: None}):
+            for i in range(50):
+                self.cerrar(epoch=1.0 + PASO * i)
+        self.assertEqual(_eventos(self.reg, self.enc, "plazo"), [])
+        self.assertEqual(len(_eventos(self.reg, self.enc, "espera")), 1)
+
+    def test_reiniciar_vuelve_a_leer_enseguida(self):
+        llamadas: list[float] = []
+
+        def lee(ctx):
+            llamadas.append(ctx.epoch)
+            return False
+
+        self.abrir("checks_merge")
+        with mock.patch.dict(cierres.CIERRES, {"checks_merge": lee}):
+            self.cerrar(epoch=1.0)
+            self.cerrar(epoch=2.0)  # dentro de la cadencia: no lee
+            self.assertEqual(len(llamadas), 1)
+            cierres.olvidar(self.reg)
+            self.cerrar(epoch=2.0)  # sin memoria: lee enseguida
+        self.assertEqual(len(llamadas), 2)
+
+    def test_una_espera_larga_sin_eventos_no_dispara_quietud(self):
+        self.abrir("checks_merge")
+        with mock.patch(
+            "motor.encargos.politica.ESPERAS_V5", True
+        ), mock.patch.dict(cierres.CIERRES, {"checks_merge": lambda ctx: False}):
+            for i in range(31):
+                ciclo.barrer(
+                    self.reg, H0, 1.0 + 60 * i, None, gh=None,
+                    umbral_s=10**9,
+                )
+        self.assertEqual(_eventos(self.reg, self.enc, "quietud"), [])
+
+
+class AutoridadDosAperturas(Banco):
+    def test_la_abierta_por_espera_se_cierra_con_plazo(self):
+        self.abrir("autoridad")
+        # La espera de autoridad se abre cuando la autoridad falta; el cierre
+        # solo escribe plazo, sin inventar el evento de autoridad.
+        enc = self.cerrar(epoch=1.0)
+        self.assertEqual(enc.estado, "recibido")
+        self.assertEqual(len(_eventos(self.reg, self.enc, "plazo")), 1)
+
+    def test_la_abierta_por_evento_la_cierra_autoridad(self):
+        self.reg.anotar(
+            self.enc,
+            {"kind": "autoridad", "data": {"alcanzable": False, "hora": H0}},
+            f"autoridad:{self.enc}:caida:{H0}",
+        )
+        enc = self.reg.fold(self.enc)
+        self.assertEqual(enc.espera_clase, "autoridad")
+        self.assertNotEqual(enc.estado, "esperando_reintento")
+        with mock.patch(
+            "motor.encargos.transporte.cargar", return_value={}
+        ), mock.patch(
+            "motor.encargos.transporte.operar",
+            return_value={"alcanzada": True, "salida": {"estado": ""}},
+        ):
+            ciclo._mirar_autoridad(self.reg, enc, H0)
+        eventos = _eventos(self.reg, self.enc, "autoridad")
+        self.assertTrue(eventos[-1]["data"]["alcanzable"])
+
+
+class LecturasPorClase(unittest.TestCase):
+    def test_checks_en_marcha_no_cierra_y_terminados_si(self):
+        ctx = SimpleNamespace(
+            gh=SimpleNamespace(checks_requeridos=lambda *a: SimpleNamespace(en_marcha=("ci",))),
+            enc=SimpleNamespace(pr_numero=1, pr_sha="a" * 40, entrega=SimpleNamespace(repo="r")),
+        )
+        self.assertFalse(cierres._checks_merge(ctx))
+        ctx.gh = SimpleNamespace(
+            checks_requeridos=lambda *a: SimpleNamespace(en_marcha=())
+        )
+        self.assertTrue(cierres._checks_merge(ctx))
+
+    def test_checks_ilegibles_no_son_verde(self):
+        ctx = SimpleNamespace(
+            gh=SimpleNamespace(checks_requeridos=mock.Mock(side_effect=RuntimeError("502"))),
+            enc=SimpleNamespace(pr_numero=1, pr_sha="a" * 40, entrega=SimpleNamespace(repo="r")),
+        )
+        self.assertIsNone(cierres._checks_merge(ctx))
+
+    def test_sin_puerto_github_cierra_cuando_aparece(self):
+        self.assertFalse(cierres._sin_puerto_github(SimpleNamespace(gh=None)))
+        self.assertTrue(cierres._sin_puerto_github(SimpleNamespace(gh=object())))
+
+    def test_cabeza_desviada_cierra_cuando_concilia(self):
+        enc = SimpleNamespace(
+            pr_numero=1, pr_sha="a" * 40, entrega=SimpleNamespace(repo="r")
+        )
+        igual = SimpleNamespace(gh=SimpleNamespace(ver=lambda *a: SimpleNamespace(head="a" * 40)), enc=enc)
+        distinta = SimpleNamespace(gh=SimpleNamespace(ver=lambda *a: SimpleNamespace(head="b" * 40)), enc=enc)
+        self.assertTrue(cierres._cabeza_desviada(igual))
+        self.assertFalse(cierres._cabeza_desviada(distinta))
+
+    def test_despliegue_en_curso_cierra_cuando_el_trabajador_no_vive(self):
+        enc = object()
+        ctx = SimpleNamespace(registro=object(), enc=enc)
+        with mock.patch.object(despliegue, "observacion", return_value="vivo"):
+            self.assertFalse(cierres._despliegue_en_curso(ctx))
+        with mock.patch.object(despliegue, "observacion", return_value="ausente"):
+            self.assertTrue(cierres._despliegue_en_curso(ctx))
+
+    def test_despliegue_sin_receta_cierra_cuando_la_fase_declara(self):
+        ctx = SimpleNamespace(
+            espacio=Path("."), enc=object(),
+        )
+        with mock.patch.object(
+            politica_despliegue, "resolver",
+            return_value=SimpleNamespace(requiere_despliegue=None),
+        ):
+            self.assertFalse(cierres._despliegue_sin_receta(ctx))
+        with mock.patch.object(
+            politica_despliegue, "resolver",
+            return_value=SimpleNamespace(requiere_despliegue=True),
+        ):
+            self.assertTrue(cierres._despliegue_sin_receta(ctx))
+
+    def test_efecto_incierto_consulta_el_destino(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        enc = SimpleNamespace(
+            efectos=(SimpleNamespace(estado="incierto", clave="k"),)
+        )
+        ctx = SimpleNamespace(registro=SimpleNamespace(base=base), enc=enc)
+        self.assertFalse(cierres._efecto_incierto(ctx))
+        DestinoEnsayo(base / "destino").aplicar("k", "cuerpo", "publicar")
+        self.assertTrue(cierres._efecto_incierto(ctx))
+
+    def test_autoridad_sigue_el_plegado(self):
+        self.assertTrue(cierres._autoridad(SimpleNamespace(enc=SimpleNamespace(autoridad=True))))
+        self.assertFalse(cierres._autoridad(SimpleNamespace(enc=SimpleNamespace(autoridad=False))))
+
+    def test_observacion_del_comprobador(self):
+        ctx = SimpleNamespace(
+            registro=object(), enc=SimpleNamespace(fase_activa="uno"),
+            espacio=Path("."), directorio=Path("."),
+        )
+        with mock.patch(
+            "motor.encargos.comprobacion.leer_declaradas", return_value=[]
+        ), mock.patch(
+            "motor.encargos.comprobacion.version_producto",
+            return_value=SimpleNamespace(firma="v"),
+        ), mock.patch(
+            "motor.encargos.comprobacion.huella_procedimiento", return_value="h"
+        ), mock.patch(
+            "motor.encargos.ciclo._observacion_de_la_version", return_value=None
+        ):
+            self.assertFalse(cierres._observacion_comprobador(ctx))
+        with mock.patch(
+            "motor.encargos.comprobacion.leer_declaradas", return_value=[]
+        ), mock.patch(
+            "motor.encargos.comprobacion.version_producto",
+            return_value=SimpleNamespace(firma="v"),
+        ), mock.patch(
+            "motor.encargos.comprobacion.huella_procedimiento", return_value="h"
+        ), mock.patch(
+            "motor.encargos.ciclo._observacion_de_la_version", return_value={}
+        ):
+            self.assertTrue(cierres._observacion_comprobador(ctx))
+
+
+class DeepSeekNoEscribeSinCambio(Banco):
+    def test_un_pr_sin_comentario_dispara_a_los_dos_minutos_una_vez(self):
+        from tests.dobles import github_por_numero
+        from tests.test_flujo_revisiones import _entrega_pr
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-disparo", github_por_numero)
+            vuelta.gh.textos[None] = None
+            e = vuelta("uno")
+            self.assertEqual(e.estado, "esperando_reintento")
+            self.assertEqual(e.espera_clase, "revision_deepseek")
+            t0 = time.time()
+            with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+                ciclo.barrer(r.reg, ciclo.ahora_iso(t0 + 130), t0 + 130, None, gh=vuelta.gh)
+                for i in range(1, 51):
+                    ciclo.barrer(
+                        r.reg, ciclo.ahora_iso(t0 + 130 + 61 * i),
+                        t0 + 130 + 61 * i, None, gh=vuelta.gh,
+                    )
+            disparos = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "entrega_externa"
+                and ev["data"].get("paso") == "deepseek_disparado"
+            ]
+            self.assertEqual(len(disparos), 1)
+            esperas = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "espera"
+                and ev["data"].get("clase") == "revision_deepseek"
+            ]
+            self.assertEqual(len(esperas), 1, "volver a mirar no escribe otra espera")
+
+    def test_cincuenta_relecturas_sin_cambio_no_escriben(self):
+        from tests.dobles import github_por_numero
+        from tests.test_flujo_revisiones import _entrega_pr
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-v53", github_por_numero)
+            vuelta.gh.textos[None] = (
+                'DeepSeek: CHANGES_REQUESTED\nai-review:findings='
+                '[{"id": "F1", "severity": "high", "status": "open", '
+                '"title": "x", "file": "saludo.txt"}]'
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.deepseek_sha, e.pr_sha)
+            directorio = r.espacio
+            t0 = time.time()
+            with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+                ciclo._releer_deepseek(r.reg, e, vuelta.gh, directorio, e.hora, t0)
+                antes = len(_eventos(r.reg, r.enc, "deepseek_lectura"))
+                for i in range(1, 51):
+                    ciclo._releer_deepseek(
+                        r.reg, r.fold(), vuelta.gh, directorio, e.hora, t0 + 61 * i
+                    )
+                self.assertEqual(
+                    len(_eventos(r.reg, r.enc, "deepseek_lectura")), antes
+                )
+                # Un comentario nuevo sí es un cambio leído.
+                vuelta.gh.textos[None] = (
+                    'DeepSeek: CHANGES_REQUESTED\nai-review:findings='
+                    '[{"id": "F2", "severity": "high", "status": "open", '
+                    '"title": "y", "file": "saludo.txt"}]'
+                )
+                ciclo._releer_deepseek(
+                    r.reg, r.fold(), vuelta.gh, directorio, e.hora, t0 + 61 * 51
+                )
+            self.assertEqual(
+                len(_eventos(r.reg, r.enc, "deepseek_lectura")), antes + 1
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
