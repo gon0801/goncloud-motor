@@ -1766,6 +1766,129 @@ def _puede_actuar_en_espera(registro: Registro, enc: Encargo) -> bool:
     )
 
 
+def _anotar_falta_de_avance(
+    registro: Registro,
+    enc: Encargo,
+    regla: str,
+    desde: str,
+    turnos: int,
+    hora: str,
+) -> Encargo:
+    """Escribe `falta_de_avance`; el reductor decide si detiene el encargo.
+
+    La causa viaja con su regla y su hora de origen. Si el estado se movió
+    entre la lectura y la escritura, el registro rechaza el hecho y manda el
+    plegado.
+    """
+    try:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "falta_de_avance",
+                "data": {
+                    "regla": regla,
+                    "desde": desde,
+                    "turnos": turnos,
+                    "hora": hora,
+                },
+            },
+            f"falta-avance:{enc.id}:{regla}:{desde}:{turnos}",
+        )
+    except Rechazo:
+        return enc
+    return registro.fold(enc.id) or enc
+
+
+def _falta_de_avance_de_turno_vivo(
+    registro: Registro,
+    enc: Encargo,
+    arbol: str,
+    herramienta_viva: bool | None,
+    hora: str,
+) -> Encargo:
+    """Rule 1: un turno vivo o una reserva sin intento, sin hechos por una hora."""
+    if not politica.ESPERAS_V5 or enc.estado not in ("recibido", "ejecutando"):
+        return enc
+    if enc.proc is not None:
+        if arbol not in ("vivo", "incierto"):
+            return enc
+        if arbol == "vivo" and herramienta_viva is False:
+            # La herramienta ya terminó: `colgada` es su camino, no este.
+            return enc
+    elif not enc.reserva:
+        return enc
+    desde = enc.reloj_turno
+    if not desde:
+        return enc
+    transcurrido = _epoch_de_hora(hora) - _epoch_de_hora(desde)
+    if transcurrido < politica.FALTA_DE_AVANCE_MIN * 60:
+        return enc
+    return _anotar_falta_de_avance(
+        registro, enc, "turno_vivo", desde, enc.turnos_sin_avance, hora
+    )
+
+
+def _falta_de_avance_de_turnos(
+    registro: Registro, enc: Encargo, hora: str
+) -> Encargo:
+    """Rule 2: ocho turnos seguidos sin avance detienen en vez de lanzar otro."""
+    if not politica.ESPERAS_V5 or enc.estado not in ("recibido", "ejecutando"):
+        return enc
+    if enc.proc is not None or enc.turnos_sin_avance < politica.TURNOS_SIN_AVANCE:
+        return enc
+    desde = enc.ultimo_avance or enc.primer_evento
+    if not desde:
+        return enc
+    return _anotar_falta_de_avance(
+        registro, enc, "turnos", desde, enc.turnos_sin_avance, hora
+    )
+
+
+def _falta_de_avance_de_esperas(
+    registro: Registro, enc: Encargo, hora: str
+) -> Encargo:
+    """Rule 3: una racha de esperas detener que dura seis horas se detiene.
+
+    Si la clase llega a su propio tope en la misma vuelta, manda `tope_espera`:
+    este camino no escribe nada cuando el tope ya venció.
+    """
+    from .tabla_esperas import ESPERAS, es_hora_utc, hora_canonica
+
+    if not politica.ESPERAS_V5 or enc.estado in (
+        "deteniendo", "detenido", "cancelado", "terminado"
+    ):
+        return enc
+    clase = enc.espera_clase
+    if clase not in ESPERAS or ESPERAS[clase].conducta.al_tope != "detener":
+        return enc
+    en_espera = (
+        enc.estado == "esperando_reintento"
+        or (clase == "autoridad" and not enc.autoridad)
+        or (clase == "efecto_incierto" and enc.estado == "conciliando")
+        or (clase == "impedimento_trabajo" and _impedimento_frena(enc))
+    )
+    if not en_espera:
+        return enc
+    desde = enc.racha_esperas_desde
+    if not desde:
+        return enc
+    transcurrido = _epoch_de_hora(hora) - _epoch_de_hora(desde)
+    if transcurrido < politica.TOPE_ESPERA_PASAJERA_MIN * 60:
+        return enc
+    tope = enc.espera_tope
+    if tope and es_hora_utc(tope) and hora_canonica(hora) >= hora_canonica(tope):
+        return enc
+    return _anotar_falta_de_avance(
+        registro, enc, "esperas", desde, enc.turnos_sin_avance, hora
+    )
+
+
+def _impedimento_frena(enc: Encargo) -> bool:
+    from .dominio import impedimento_bloquea_trabajo
+
+    return impedimento_bloquea_trabajo(enc)
+
+
 def _barrer_encargos(
     registro: Registro,
     ids: list[str],
@@ -1907,6 +2030,14 @@ def _barrer_encargos(
             enc = _cerrar_espera_por_hecho(
                 registro, enc, gh, espacio, directorio, arbol, hora, epoch
             )
+        if enc.estado not in ("cancelado", "terminado"):
+            # Las dos reglas de falta de avance que miran el estado del turno.
+            # La racha de esperas va después del cierre: si la espera acaba de
+            # cerrar, no se sigue esperando y la regla no aplica.
+            enc = _falta_de_avance_de_turno_vivo(
+                registro, enc, arbol, herramienta_en_curso(directorio), hora
+            )
+            enc = _falta_de_avance_de_esperas(registro, enc, hora)
         if enc.estado not in ("cancelado", "terminado"):
             try:
                 necesidades.atender(registro, enc, espacio, directorio, hora)
@@ -2156,6 +2287,12 @@ def _barrer_encargos(
         elif decision["matar"]:
             # Matar el turno (colgado, vencido) cierra solo las herramientas del turno.
             necesidades.cerrar_herramientas(directorio, solo_del_turno=True)
+        if decision["lanzar"] and politica.ESPERAS_V5 and not parada:
+            # Ocho turnos sin avance detienen en vez de lanzar el noveno.
+            # El hecho se escribe antes de consumir el turno.
+            enc = _falta_de_avance_de_turnos(registro, enc, hora)
+            if enc.estado in ("deteniendo", "detenido"):
+                decision["lanzar"] = False
         if decision["lanzar"] and lanzador is not None and not parada:
             _lanzar_uno(registro, enc, directorio, espacio, hora, lanzador)
             enc = registro.fold(encargo_id)

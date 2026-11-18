@@ -154,7 +154,22 @@ def _detencion(enc: Encargo) -> str:
             f"{_hora_de(causa.abierta)}; puedes usar continuar."
         )
     if isinstance(causa, FaltaDeAvance):
-        return f"El encargo se detuvo por falta de avance ({causa.regla}); puedes usar continuar."
+        from . import politica
+
+        desde = _hora_de(causa.desde)
+        if causa.regla == "turnos":
+            texto = f"{causa.turnos} turnos sin avance desde las {desde}"
+        elif causa.regla == "turno_vivo":
+            texto = (
+                "el turno lleva "
+                f"{politica.FALTA_DE_AVANCE_MIN} min sin ningún hecho nuevo"
+            )
+        else:
+            texto = (
+                f"lleva {politica.TOPE_ESPERA_PASAJERA_MIN} min esperando sin "
+                f"avance, entre varias esperas, desde las {desde}"
+            )
+        return f"El encargo se detuvo: {texto}; puedes usar continuar."
     if isinstance(causa, PorOrden):
         origen = {
             "parar": "por orden de David",
