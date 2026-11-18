@@ -57,6 +57,7 @@ def validar_quietud_vigilada(e: Encargo, d: dict) -> None:
 
 
 def validar_espera(e: Encargo, d: dict) -> None:
+    from .. import politica, tabla_esperas
     from ..dominio import TransicionIlegal, _CERRADOS
     from ..tabla_esperas import ESPERAS
 
@@ -68,6 +69,13 @@ def validar_espera(e: Encargo, d: dict) -> None:
         or not isinstance(d.get("tope"), str) or not d["tope"]
     ):
         raise TransicionIlegal("la espera necesita clase, apertura y tope válidos")
+    if (
+        d.get("clase") == "orden_espera"
+        and politica.ESPERAS_V5
+        and not tabla_esperas.es_hora_utc(str(d.get("reanuda_en") or ""))
+    ):
+        # Una orden que no vence nunca deja al encargo esperando para siempre.
+        raise TransicionIlegal("la espera ordenada necesita una hora UTC")
 
 
 def leer_tope(e: Encargo, d: dict) -> FilaEspera | None:

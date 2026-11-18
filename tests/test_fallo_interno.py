@@ -46,7 +46,10 @@ class Banco:
         self.malo = recibir(self.reg, "pedido que se traba", "malo", HORA)["encargo"]
         self.bueno = recibir(self.reg, "pedido sano", "bueno", HORA)["encargo"]
         for ident in (self.malo, self.bueno):
-            marcar_espera(self.reg, ident, "una espera con hora", REANUDA, HORA)
+            marcar_espera(
+                self.reg, ident, "github_pasajero", "una espera con hora", HORA,
+                reanuda_en=REANUDA,
+            )
         self.reg.anotar(
             self.malo,
             {"kind": "procedimiento", "data": {"nota": "dato privado", "hora": HORA}},

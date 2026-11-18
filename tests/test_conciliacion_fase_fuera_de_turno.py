@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 from motor import plataforma
-from motor.encargos import ciclo, despliegue
+from motor.encargos import ciclo, despliegue, tabla_esperas
 from motor.encargos.dominio import _fase_disponible
 from motor.encargos.registro import Registro
 from motor.github import PrView
@@ -28,6 +28,10 @@ from tests.test_flujo_revisiones import sonda_sin_aislamiento_del_host
 
 def setUpModule():
     sonda_sin_aislamiento_del_host()
+
+
+# La escalera ocupada no se espera en estas pruebas: la tabla devuelve su base.
+SIN_ESPERA_OCUPADA = lambda clase, base, intentos=1: base
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -769,7 +773,7 @@ class ConciliacionOcupadaAlTope(_Banco):
         self.hacer_receta_ocupada()
         reg, ident, gh, fusionado = self._preparar(dependiente=True)
         with mock.patch.object(
-            ciclo, "ESPERAS_OCUPADO_S", (0, 0, 0, 0, 0)
+            tabla_esperas, "reanuda_en", SIN_ESPERA_OCUPADA
         ):
             self._barrer(reg, gh, vueltas=8)
         enc = reg.fold(ident)
@@ -810,7 +814,9 @@ class ConciliacionOcupadaAlTope(_Banco):
     def test_el_libro_no_tapa_un_recibo_fallido(self):
         self.hacer_receta_ocupada()
         reg, ident, gh, fusionado = self._preparar(dependiente=True)
-        with mock.patch.object(ciclo, "ESPERAS_OCUPADO_S", (0, 0, 0, 0, 0)):
+        with mock.patch.object(
+            tabla_esperas, "reanuda_en", SIN_ESPERA_OCUPADA
+        ):
             self._barrer(reg, gh, vueltas=8)
         enc = reg.fold(ident)
         a = self._fase(enc, "A")
@@ -847,7 +853,9 @@ class ConciliacionOcupadaAlTope(_Banco):
     def test_una_orden_nueva_reintenta_el_tope_ocupado(self):
         self.hacer_receta_ocupada()
         reg, ident, gh, fusionado = self._preparar(dependiente=True)
-        with mock.patch.object(ciclo, "ESPERAS_OCUPADO_S", (0, 0, 0, 0, 0)):
+        with mock.patch.object(
+            tabla_esperas, "reanuda_en", SIN_ESPERA_OCUPADA
+        ):
             self._barrer(reg, gh, vueltas=8)
         enc = reg.fold(ident)
         a = self._fase(enc, "A")

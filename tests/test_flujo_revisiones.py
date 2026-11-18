@@ -2176,7 +2176,9 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             reanuda = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             )
-            marcar_espera(r.reg, r.enc, "cuota agotada", reanuda, hora)
+            marcar_espera(
+                r.reg, r.enc, "proveedor", "cuota agotada", hora, reanuda_en=reanuda
+            )
             self.assertEqual(r.fold().estado, "esperando_reintento")
             salida = corregir(r.reg, r.enc, "prioriza el modo Windows", "c1", hora)
             self.assertFalse(salida.get("rechazada"))

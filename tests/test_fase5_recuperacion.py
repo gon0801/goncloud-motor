@@ -238,9 +238,10 @@ class RecuperacionFase5(unittest.TestCase):
                     "observacion": "ausente", "hora": "2026-10-30T20:26:05Z",
                 }}, "arbol-ausente")
                 ciclo.marcar_espera(
-                    reg, ident,
+                    reg, ident, "revision_deepseek",
                     "esperando revisión de DeepSeek para el SHA f207a080f96f0741e5394894745b7d12869b64d6",
-                    "2026-10-30T20:27:04Z", "2026-10-30T20:26:04Z",
+                    "2026-10-30T20:26:04Z",
+                    reanuda_en="2026-10-30T20:27:04Z",
                 )
                 detenido = reg.fold(ident)
                 self.assertEqual(detenido.estado, "detenido")
