@@ -186,6 +186,18 @@ class HechosDeEspera(unittest.TestCase):
                 self.assertEqual((e.estado, e.falta_de_avance_de, e.turnos_sin_avance),
                                  ("recibido", (), 0))
 
+    def test_turno_cerrado_y_continuado_rechaza_decision_anterior(self):
+        e = reducir(pedido(), evento("reserva", H1), nuevo=False)
+        e = reducir(e, evento("orden", H2, accion="parar"), nuevo=True)
+        e = reducir(e, evento("reserva_cerrada", H2), nuevo=True)
+        e = reducir(e, evento("arbol", H2, observacion="ausente"), nuevo=True)
+        e = reducir(e, evento("orden", H3, accion="continuar"), nuevo=True)
+        self.assertEqual((e.estado, e.proc, e.reserva, e.reloj_turno),
+                         ("recibido", None, False, H1))
+        with self.assertRaises(TransicionIlegal):
+            reducir(e, evento("falta_de_avance", H3, regla="turno_vivo",
+                              desde=H1, turnos=0), nuevo=True)
+
     def test_turnos_y_reloj_cuentan_solo_hechos_con_avance(self):
         e = pedido()
         self.assertEqual(e.primer_evento, H0)

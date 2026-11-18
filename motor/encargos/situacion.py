@@ -198,6 +198,14 @@ def _contexto_inicial(e: Encargo) -> Contexto:
             situacion.orden.kind, situacion.orden.clase_ukey, situacion.orden.rechazo,
         )):
             raise EstadoIncoherente("datos de fallo interno sin proyección legada")
+        if isinstance(situacion.orden, PorTope) and (
+            situacion.orden.clase, situacion.orden.abierta, situacion.orden.tope
+        ) != e.tope_de:
+            raise EstadoIncoherente("el tope no coincide con el hecho guardado")
+        if isinstance(situacion.orden, FaltaDeAvance) and (
+            situacion.orden.regla, situacion.orden.desde, situacion.orden.turnos
+        ) != e.falta_de_avance_de:
+            raise EstadoIncoherente("la falta de avance no coincide con el hecho guardado")
         orden = (situacion.orden.accion
                  if isinstance(situacion.orden, (Parar, Cancelar))
                  else "tope" if isinstance(situacion.orden, PorTope)

@@ -120,6 +120,8 @@ def leer_falta_de_avance(e: Encargo, d: dict) -> bool:
         or type(turnos) is not int or turnos < 0
         or not isinstance(d.get("hora"), str) or not d["hora"]):
         return False
+    if regla == "turno_vivo" and e.proc is None and not e.reserva:
+        return False
     vigente = {
         "turno_vivo": e.reloj_turno,
         "turnos": e.ultimo_avance or e.primer_evento,
