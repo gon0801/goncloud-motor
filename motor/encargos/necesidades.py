@@ -542,7 +542,7 @@ def _detenida_ahora(registro: Registro, encargo_id: str) -> bool:
     if leer_parada_local(registro.base) is not None:
         return True
     enc = registro.fold(encargo_id)
-    return enc is not None and enc.orden_parada in ("parar", "cancelar", "fallo_interno")
+    return enc is not None and enc.orden_parada not in ("", "otra_base")
 
 
 def _vitalidad(marca: dict) -> str:

@@ -9,7 +9,7 @@ from typing import Literal
 from .despliegue import clave_de_recibo
 from .dominio import Encargo, Fase, dependencia_bloqueada, nivel_objetivo
 from .entrega.tipos import PrAbierto, PrBorrador, PrCerrado, PrDeFase, PrMergeado
-from .situacion import Detenido, FalloInterno, PorOrden, PorOtraBase
+from .situacion import Detenido, FaltaDeAvance, FalloInterno, PorOrden, PorOtraBase, PorTope
 
 Palabra = Literal[
     "detenido", "listo para tu merge", "falta limpiar", "cancelado",
@@ -132,6 +132,10 @@ def _detencion(enc: Encargo) -> str:
         return f"El PR de la fase {causa.fase} se mergeó en {causa.base}; puedes usar continuar."
     if isinstance(causa, FalloInterno):
         return "Un fallo interno detuvo el encargo; puedes usar continuar."
+    if isinstance(causa, PorTope):
+        return f"La espera {causa.clase} llegó a su tope ({causa.tope}); puedes usar continuar."
+    if isinstance(causa, FaltaDeAvance):
+        return f"El encargo se detuvo por falta de avance ({causa.regla}); puedes usar continuar."
     if isinstance(causa, PorOrden):
         origen = {
             "parar": "por orden de David",

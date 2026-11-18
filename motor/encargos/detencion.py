@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .dominio import Encargo
+    from .situacion import FaltaDeAvance, PorTope
 
 _PORQUE = {
     "ajena": "su clave ya guarda otro hecho",
@@ -59,6 +60,32 @@ def fallo_interno(e: Encargo, d: dict, hora: str) -> Encargo:
     )
 
 
+def detener_por(
+    e: Encargo, hora: str, causa: PorTope | FaltaDeAvance,
+) -> Encargo:
+    from .situacion import PorTope
+
+    if isinstance(causa, PorTope):
+        orden = "tope"
+        hechos = {"tope_de": (causa.clase, causa.abierta, causa.tope)}
+        motivo = (f"la espera {causa.clase} abierta en {causa.abierta} llegó a su "
+                  f"tope ({causa.tope}); se reanuda con continuar")
+    else:
+        orden = "falta_de_avance"
+        hechos = {"falta_de_avance_de": (causa.regla, causa.desde, causa.turnos)}
+        motivo = (f"el encargo no avanza ({causa.regla}, desde {causa.desde}, "
+                  f"{causa.turnos} turnos); se reanuda con continuar")
+    vivo = e.proc is not None or e.reserva
+    return evolucionar(
+        e, estado="deteniendo" if vivo else "detenido",
+        orden_parada=orden, intento_interrumpido=e.intento_interrumpido or vivo,
+        motivo=motivo, ultimo_hecho=motivo, intentos_nuevos=False,
+        escrituras=False, hora=hora or e.hora,
+        siguiente="cerrar el proceso y quedar detenido hasta continuar"
+        if vivo else "detenido hasta continuar", **hechos,
+    )
+
+
 def pr_otra_base(e: Encargo, d: dict, hora: str) -> Encargo:
     fase, base = d["fase"], d["base"]
     motivo = f"el PR de la fase {fase} quedó en {base}; continuar acepta esa base"
@@ -82,7 +109,8 @@ def arbol(e: Encargo, d: dict, hora: str) -> Encargo:
         hora=hora or e.hora,
         ultimo_hecho="el árbol de procesos quedó ausente",
         siguiente="ninguna" if estado == "cancelado" else "detenido hasta continuar",
-        motivo={"cancelar": "cancelado", "fallo_interno": e.motivo}.get(e.orden_parada, ""),
+        motivo={"cancelar": "cancelado", "fallo_interno": e.motivo,
+                "tope": e.motivo, "falta_de_avance": e.motivo}.get(e.orden_parada, ""),
     )
 
 

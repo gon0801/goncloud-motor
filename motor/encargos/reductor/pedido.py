@@ -94,6 +94,14 @@ def orden(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         return replace(resultado, canceladas=tuple(
             fid for fid in resultado.canceladas if fid != d.get("fase")
         ))
+    if d["accion"] == "continuar" and e.estado == "detenido" and e.orden_parada in (
+        "tope", "falta_de_avance"
+    ):
+        return replace(
+            resultado, tope_de=(), falta_de_avance_de=(), espera_clase="",
+            espera_abierta="", espera_tope="", racha_esperas_desde="",
+            turnos_sin_avance=0,
+        )
     if d["accion"] == "continuar" and e.estado == "detenido" and e.orden_parada == "otra_base":
         fase, base = e.otra_base_de
         prs = tuple(PrDeFase(p.fase, p.pr, base if p.fase == fase else p.aceptada_en)

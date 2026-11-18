@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from .dominio import TransicionIlegal
 
 if TYPE_CHECKING:
     from .dominio import Encargo, Fase, Proc
+    from .tabla_esperas import ClaseEspera
 
 
 class EstadoIncoherente(TransicionIlegal):
@@ -31,6 +32,23 @@ class FalloInterno:
 class PorOtraBase:
     fase: str
     base: str
+
+
+@dataclass(frozen=True)
+class PorTope:
+    clase: str
+    abierta: str
+    tope: str
+
+
+ReglaAvance = Literal["turno_vivo", "turnos", "esperas"]
+
+
+@dataclass(frozen=True)
+class FaltaDeAvance:
+    regla: ReglaAvance
+    desde: str
+    turnos: int
 
 
 @dataclass(frozen=True)
@@ -62,7 +80,9 @@ class CierreForzado:
 
 @dataclass(frozen=True)
 class Contexto:
-    orden_parada: Literal["", "parar", "cancelar", "fallo_interno", "otra_base"] = ""
+    orden_parada: Literal[
+        "", "parar", "cancelar", "fallo_interno", "otra_base", "tope", "falta_de_avance"
+    ] = ""
     reanuda_en: str = ""
     intento: str = ""
     proc: Proc | None = None
@@ -93,6 +113,9 @@ class Ejecutando:
 class EsperandoReintento:
     motivo: str
     reanuda_en: str
+    clase: ClaseEspera | Literal["legada"] = "legada"
+    abierta: str = ""
+    tope: str = ""
     contexto: Contexto = field(default_factory=Contexto, kw_only=True)
     estado: Literal["esperando_reintento"] = "esperando_reintento"
 
@@ -106,7 +129,7 @@ class Conciliando:
 
 @dataclass(frozen=True)
 class Deteniendo:
-    orden: Parar | Cancelar | FalloInterno
+    orden: Parar | Cancelar | FalloInterno | PorTope | FaltaDeAvance
     interrumpido: bool
     contexto: Contexto = field(default_factory=Contexto, kw_only=True)
     estado: Literal["deteniendo"] = "deteniendo"
@@ -114,7 +137,7 @@ class Deteniendo:
 
 @dataclass(frozen=True)
 class Detenido:
-    causa: PorOrden | FalloInterno | PorOtraBase
+    causa: PorOrden | FalloInterno | PorOtraBase | PorTope | FaltaDeAvance
     contexto: Contexto = field(default_factory=Contexto, kw_only=True)
     estado: Literal["detenido"] = "detenido"
 
@@ -158,7 +181,13 @@ def _contexto_inicial(e: Encargo) -> Contexto:
     elif isinstance(situacion, EsperandoReintento):
         _no_contradice(e.motivo, situacion.motivo, "motivo")
         _no_contradice(contexto.reanuda_en, situacion.reanuda_en, "reanuda_en")
+        _no_contradice(e.espera_clase, situacion.clase, "espera_clase")
+        _no_contradice(e.espera_abierta, situacion.abierta, "espera_abierta")
+        _no_contradice(e.espera_tope, situacion.tope, "espera_tope")
         object.__setattr__(e, "motivo", situacion.motivo)
+        object.__setattr__(e, "espera_clase", situacion.clase)
+        object.__setattr__(e, "espera_abierta", situacion.abierta)
+        object.__setattr__(e, "espera_tope", situacion.tope)
         contexto = replace(contexto, reanuda_en=situacion.reanuda_en)
     elif isinstance(situacion, Conciliando):
         efecto = next((x for x in e.efectos if x.estado == "incierto"), None)
@@ -169,8 +198,19 @@ def _contexto_inicial(e: Encargo) -> Contexto:
             situacion.orden.kind, situacion.orden.clase_ukey, situacion.orden.rechazo,
         )):
             raise EstadoIncoherente("datos de fallo interno sin proyección legada")
+        if isinstance(situacion.orden, PorTope) and (
+            situacion.orden.clase, situacion.orden.abierta, situacion.orden.tope
+        ) != e.tope_de:
+            raise EstadoIncoherente("el tope no coincide con el hecho guardado")
+        if isinstance(situacion.orden, FaltaDeAvance) and (
+            situacion.orden.regla, situacion.orden.desde, situacion.orden.turnos
+        ) != e.falta_de_avance_de:
+            raise EstadoIncoherente("la falta de avance no coincide con el hecho guardado")
         orden = (situacion.orden.accion
-                 if isinstance(situacion.orden, (Parar, Cancelar)) else "fallo_interno")
+                 if isinstance(situacion.orden, (Parar, Cancelar))
+                 else "tope" if isinstance(situacion.orden, PorTope)
+                 else "falta_de_avance" if isinstance(situacion.orden, FaltaDeAvance)
+                 else "fallo_interno")
         _no_contradice(contexto.orden_parada, orden, "orden_parada")
         _no_contradice(contexto.intento_interrumpido, situacion.interrumpido,
                        "intento_interrumpido")
@@ -186,6 +226,14 @@ def _contexto_inicial(e: Encargo) -> Contexto:
             if (causa.fase, causa.base) != e.otra_base_de:
                 raise EstadoIncoherente("la otra base no coincide con el hecho guardado")
             orden = "otra_base"
+        elif isinstance(causa, PorTope):
+            if (causa.clase, causa.abierta, causa.tope) != e.tope_de:
+                raise EstadoIncoherente("el tope no coincide con el hecho guardado")
+            orden = "tope"
+        elif isinstance(causa, FaltaDeAvance):
+            if (causa.regla, causa.desde, causa.turnos) != e.falta_de_avance_de:
+                raise EstadoIncoherente("la falta de avance no coincide con el hecho guardado")
+            orden = "falta_de_avance"
         else:
             if (causa.accion == "reabrir" and not e.reaperturas
                     or causa.accion == "importar" and e.reaperturas):
@@ -241,25 +289,36 @@ def materializar(e: Encargo) -> Situacion:
     if e.estado == "ejecutando":
         return Ejecutando(e.fase_activa, e.intento, e.proc, e.reserva, contexto=contexto)
     if e.estado == "esperando_reintento":
-        return EsperandoReintento(e.motivo, e.reanuda_en, contexto=contexto)
+        return EsperandoReintento(e.motivo, e.reanuda_en,
+                                  cast("ClaseEspera | Literal['legada']",
+                                       e.espera_clase or "legada"),
+                                  e.espera_abierta, e.espera_tope, contexto=contexto)
     if e.estado == "conciliando":
         efecto = next((x for x in e.efectos if x.estado == "incierto"), None)
         return Conciliando(efecto.id if efecto else "", contexto=contexto)
     if e.estado == "deteniendo":
-        orden: Parar | Cancelar | FalloInterno = Parar()
+        orden: Parar | Cancelar | FalloInterno | PorTope | FaltaDeAvance = Parar()
         if e.orden_parada == "cancelar":
             orden = Cancelar()
         elif e.orden_parada == "fallo_interno":
             orden = FalloInterno("", "", "")
+        elif e.orden_parada == "tope" and len(e.tope_de) == 3:
+            orden = PorTope(*e.tope_de)
+        elif e.orden_parada == "falta_de_avance" and len(e.falta_de_avance_de) == 3:
+            orden = FaltaDeAvance(*e.falta_de_avance_de)
         return Deteniendo(orden, e.intento_interrumpido, contexto=contexto)
     if e.estado == "detenido":
-        causa: PorOrden | FalloInterno | PorOtraBase = (
+        causa: PorOrden | FalloInterno | PorOtraBase | PorTope | FaltaDeAvance = (
             PorOrden("reabrir" if e.reaperturas else "importar")
         )
         if e.orden_parada == "fallo_interno":
             causa = FalloInterno("", "", "")
         elif e.orden_parada == "otra_base":
             causa = PorOtraBase(*e.otra_base_de)
+        elif e.orden_parada == "tope" and len(e.tope_de) == 3:
+            causa = PorTope(*e.tope_de)
+        elif e.orden_parada == "falta_de_avance" and len(e.falta_de_avance_de) == 3:
+            causa = FaltaDeAvance(*e.falta_de_avance_de)
         elif e.orden_parada == "parar":
             causa = PorOrden("parar")
         return Detenido(causa, contexto=contexto)

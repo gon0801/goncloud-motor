@@ -42,8 +42,8 @@ def asignar(texto: str) -> str:
         n.value for n in arbol.body if isinstance(n, ast.AnnAssign)
         and isinstance(n.target, ast.Name) and n.target.id == "TABLA"
     )
-    if not isinstance(tabla, ast.Dict) or len(tabla.keys) != 86:
-        raise ValueError("se esperaban las 86 filas literales de TABLA")
+    if not isinstance(tabla, ast.Dict) or len(tabla.keys) != 88:
+        raise ValueError("se esperaban las 88 filas literales de TABLA")
     vistos: set[str] = set()
     for llave, valor in zip(tabla.keys, tabla.values, strict=True):
         if not isinstance(llave, ast.Constant) or not isinstance(llave.value, str):
@@ -91,7 +91,7 @@ def main() -> None:
             raise SystemExit("TABLA no coincide con las propiedades reproducibles")
     else:
         RUTA.write_text(esperado, encoding="utf-8")
-    print("86 filas reproducibles")
+    print("88 filas reproducibles")
 
 
 if __name__ == "__main__":

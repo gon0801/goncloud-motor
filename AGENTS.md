@@ -10,6 +10,8 @@ falla si los dos archivos difieren.
 | La limpieza se reintenta desde el registro, sin borrar de golpe. | 3 intentos; 10 min; 20 borrados por pasada; 20 consultas GitHub por 120 s | David, 16-nov | el tercer fallo agota el recurso; cada reintento espera 10 min y una pasada borra a lo sumo 20 recursos; las consultas a GitHub comparten un presupuesto de 20 por 120 s |
 | DeepSeek: 30 minutos y se sigue con omisión explícita. | 30 min | David, 6-nov | a los 29 min espera; a los 31 min omite con la causa escrita |
 | Sin el revisor de DeepSeek en el SHA ni en la base del PR no se espera su revisión. | 0 min | David, 2026-11-13 | sin un workflow de ai-review omite enseguida con la causa escrita; lo que no se pudo leer espera el tope |
+| Toda espera técnica tiene un tope y al vencer detiene o cumple su acción declarada. | 60 min por omisión | David, 12-nov (decisión 5) | una espera sin tope detiene con causa escrita; las filas con tope previo conservan su acción salvo merge y repo |
+| Las esperas pasajeras externas pueden durar una noche antes de detener. | 6 h | David, 17-nov | autoridad, conductor, proveedor, empuje transitorio, GitHub, merge y repo reintentan durante 6 h; al tope se detiene |
 | Un encargo cerrado se sondea 7 días desde el cierre, con 5 consultas por pasada. | 7 días; 5 por pasada | David, 6-nov | a los 6 días sondea; a los 8 no; 5 consultas entran y la 6.ª queda para la pasada siguiente |
 | El CI no autoriza el merge, pero no frena publicar, revisar ni corregir. | no es compuerta | David, 3-nov | un CI pendiente o verde no detiene la entrega; un error de lectura nunca cuenta como verde |
 | Sin tope de rondas. | sin tope | David, 1-nov | el freno no escala por contar vueltas |

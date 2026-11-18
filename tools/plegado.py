@@ -68,6 +68,9 @@ Campos = dict[str, Any]
 CLAVES_NUEVAS = frozenset((
     "prs", "canceladas", "otra_base_de", "limpieza", "limpio", "hora_final",
     "entrega_devuelta", "primer_envio_por_sha",
+    "espera_clase", "espera_abierta", "espera_tope", "ultimo_avance",
+    "turnos_sin_avance", "racha_esperas_desde", "primer_evento", "reloj_turno",
+    "tope_de", "falta_de_avance_de",
 ))
 
 

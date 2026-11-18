@@ -1,12 +1,77 @@
 """Manejadores del reductor extraídos de dominio."""
 
 from __future__ import annotations
+from dataclasses import replace
+
 from ..encargo import evolucionar
+from ..politica import KINDS_DE_AVANCE
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..dominio import Encargo
+
+
+def actualizar_marcas(anterior: Encargo | None, e: Encargo, evento: dict) -> Encargo:
+    from ..dominio import impedimento_bloquea_trabajo
+    from ..tabla_esperas import ESPERAS
+
+    kind = evento["kind"]
+    d = evento["data"]
+    hora = str(d.get("hora") or "")
+    cambios: dict = {}
+    if anterior is None:
+        cambios["primer_evento"] = hora
+    avance = kind in KINDS_DE_AVANCE and anterior is not None
+    if kind == "producto_listo" and avance and anterior is not None:
+        fase_id = str(d.get("fase") or e.fase_activa)
+        previa = next((f.producto for f in anterior.fases if f.id == fase_id), None)
+        actual = next((f.producto for f in e.fases if f.id == fase_id), None)
+        avance = actual is not None and (
+            previa is None or (actual.firma, actual.sha_git) != (previa.firma, previa.sha_git)
+        )
+    if avance:
+        cambios.update(ultimo_avance=hora, turnos_sin_avance=0,
+                       espera_abierta="", racha_esperas_desde="")
+    if kind == "intento_abierto":
+        cambios["turnos_sin_avance"] = e.turnos_sin_avance + 1
+    if kind == "orden" and d.get("accion") == "continuar":
+        cambios.update(turnos_sin_avance=0, racha_esperas_desde="",
+                       espera_clase="", espera_abierta="", espera_tope="")
+    if kind in ("actividad", "reserva", "intento_abierto") or avance:
+        cambios["reloj_turno"] = hora
+
+    clase = ""
+    if kind == "espera" and e.estado == "esperando_reintento":
+        clase = e.espera_clase
+    elif e.estado == "deteniendo" and (anterior is None or anterior.estado != "deteniendo"):
+        clase = "deteniendo"
+    elif kind == "efecto" and e.estado == "conciliando" and (
+        anterior is None or anterior.estado != "conciliando"
+    ):
+        clase = "efecto_incierto"
+    elif kind == "impedimento" and impedimento_bloquea_trabajo(e) and e.estado not in (
+        "deteniendo", "detenido", "cancelado", "terminado"
+    ):
+        clase = "impedimento_trabajo"
+    elif kind == "autoridad" and not e.autoridad and e.estado not in (
+        "deteniendo", "detenido", "cancelado", "terminado"
+    ):
+        clase = "autoridad"
+    if clase and clase != "legada":
+        abierta = (
+            e.espera_abierta if clase == e.espera_clase and e.espera_abierta
+            and not avance else hora
+        )
+        cambios.update(espera_clase=clase, espera_abierta=abierta)
+        if clase != e.espera_clase:
+            cambios["espera_tope"] = ""
+        if clase == "orden_espera":
+            cambios["racha_esperas_desde"] = ""
+        elif (clase in ESPERAS and ESPERAS[clase].conducta.al_tope == "detener"
+              and not e.racha_esperas_desde):
+            cambios["racha_esperas_desde"] = hora
+    return replace(e, **cambios) if cambios else e
 
 
 def incorporado(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
@@ -176,20 +241,53 @@ def plazo(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
 
 def espera(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import _CERRADOS
+    from ..tabla_esperas import ESPERAS
 
-    if e.estado in _CERRADOS:
+    if not isinstance(d, dict) or e.estado in _CERRADOS:
         return e
     if not d.get("motivo") or not d.get("reanuda_en"):
         return e
+    clase = d.get("clase")
+    clase = clase if isinstance(clase, str) and clase in ESPERAS else "legada"
+    abierta = hora if clase == "legada" else (
+        e.espera_abierta if clase == e.espera_clase and e.espera_abierta
+        else str(d.get("abierta") or hora)
+    )
     return evolucionar(
         e,
         estado="esperando_reintento",
+        espera_clase=clase,
+        espera_abierta=abierta,
+        espera_tope=str(d.get("tope") or "") if clase != "legada" else "",
         motivo=d["motivo"],
         reanuda_en=d["reanuda_en"],
         siguiente=f"reanudar en {d['reanuda_en']}",
         ultimo_hecho=d["motivo"],
         hora=hora or e.hora,
     )
+
+
+def tope_espera(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
+    from ..detencion import detener_por
+    from ..situacion import PorTope
+    from .validacion_esperas import leer_tope
+
+    fila = leer_tope(e, d)
+    if fila is None:
+        return e
+    if fila.conducta.al_tope == "avisar":
+        return e
+    return detener_por(e, hora, PorTope(d["clase"], d["abierta"], d["tope"]))
+
+
+def falta_de_avance(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
+    from ..detencion import detener_por
+    from ..situacion import FaltaDeAvance
+    from .validacion_esperas import leer_falta_de_avance
+
+    if not leer_falta_de_avance(e, d):
+        return e
+    return detener_por(e, hora, FaltaDeAvance(d["regla"], d["desde"], d["turnos"]))
 
 def excepcion(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
     from ..dominio import replace
