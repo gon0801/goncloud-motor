@@ -42,6 +42,7 @@ class Contexto:
     espacio: object = None
     directorio: object = None
     arbol: str = ""
+    puede_actuar: bool = True
 
 
 def olvidar(registro: object, encargo_id: str = "") -> None:
@@ -144,9 +145,10 @@ def _revision_deepseek(ctx: Contexto) -> bool | None:
     if isinstance(lectura, ErrorLectura):
         return None
     if isinstance(lectura, PendienteLectura):
-        _accion_deepseek_si_toca(
-            ctx.registro, enc, gh, ctx.espacio, sha, primera, ctx.hora
-        )
+        if ctx.puede_actuar:
+            _accion_deepseek_si_toca(
+                ctx.registro, enc, gh, ctx.espacio, sha, primera, ctx.hora
+            )
         return False
     _leidos, comentarios = lectura.datos if isinstance(lectura.datos, tuple) else ([], [])
     # Los avisos de timeout viajan en `leidos` y no en `comentarios`: el paso
@@ -195,8 +197,8 @@ def _despliegue_en_curso(ctx: Contexto) -> bool | None:
 
 
 def _despliegue_sin_receta(ctx: Contexto) -> bool | None:
-    """Cierra cuando la fase ya declara si despliega y con qué receta."""
-    from . import politica_despliegue
+    """Cierra cuando la receta, el SHA y la máquina ya permiten desplegar."""
+    from . import despliegue, politica_despliegue
 
     if ctx.espacio is None:
         return None
@@ -204,7 +206,12 @@ def _despliegue_sin_receta(ctx: Contexto) -> bool | None:
         resuelta = politica_despliegue.resolver(ctx.espacio, ctx.enc)
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    return resuelta.requiere_despliegue is not None
+    if resuelta.requiere_despliegue is None:
+        return False
+    try:
+        return despliegue.receta_resuelta(ctx.enc, ctx.registro.base, resuelta)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def _autoridad(ctx: Contexto) -> bool | None:
@@ -213,10 +220,16 @@ def _autoridad(ctx: Contexto) -> bool | None:
 
 
 def _observacion_comprobador(ctx: Contexto) -> bool | None:
-    """Cierra cuando llega la observación del comprobador para la versión."""
+    """Cierra cuando llega la observación del comprobador para la versión.
+
+    Si no llegó, vuelve a llamar a `iniciar_comprobacion`: comprueba si el
+    comprobador sigue vivo y relanza el ausente. Sin eso, un comprobador que
+    murió antes de escribir su observación dejaría la espera hasta el tope.
+    """
     from .ciclo import _observacion_de_la_version
     from .comprobacion import (
-        huella_procedimiento, interno_de, leer_declaradas, version_producto,
+        huella_procedimiento, iniciar_comprobacion, interno_de, leer_declaradas,
+        version_producto,
     )
 
     if ctx.espacio is None or ctx.directorio is None:
@@ -227,12 +240,19 @@ def _observacion_comprobador(ctx: Contexto) -> bool | None:
             return None
         version = version_producto(ctx.espacio).firma
         procedimiento = huella_procedimiento(ctx.espacio, declaradas)
-        return _observacion_de_la_version(
+        observacion = _observacion_de_la_version(
             ctx.registro, ctx.enc, version, declaradas, ctx.directorio,
             procedimiento, getattr(ctx.enc, "fase_activa", None),
-        ) is not None
+        )
     except (OSError, ValueError, KeyError, TypeError):
         return None
+    if observacion is None:
+        try:
+            iniciar_comprobacion(ctx.espacio, ctx.directorio)
+        except (OSError, ValueError):
+            return None
+        return False
+    return True
 
 
 def _efecto_incierto(ctx: Contexto) -> bool | None:

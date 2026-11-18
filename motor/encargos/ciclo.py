@@ -1683,6 +1683,30 @@ def _espera_por_hecho(enc: Encargo) -> bool:
     return clase in ESPERAS and ESPERAS[clase].tipo == "por_hecho"
 
 
+def _tope_de_la_espera_omitir(enc: Encargo, hora: str) -> bool:
+    """La fila `omitir` de la espera ya cumplió su tope.
+
+    `_tope_de_la_espera` solo escribe para las filas que detienen o avisan. Las
+    esperas de DeepSeek omiten: al llegar a su tope hay que devolver el control
+    al paso, que registra la omisión con su causa, aunque la lectura siga
+    diciendo que no o haya fallado.
+    """
+    from .tabla_esperas import ESPERAS, hora_canonica, tope_de
+
+    clase = enc.espera_clase
+    fila = ESPERAS.get(clase) if clase in ESPERAS else None
+    if fila is None or fila.conducta.al_tope != "omitir" or fila.conducta.tope_s is None:
+        return False
+    desde = ""
+    if fila.desde == "primer_envio":
+        fase = enc.fase_actual
+        sha = str((fase.pr_sha if fase is not None else "") or enc.pr_sha or "")
+        desde = next((t for s, t in enc.primer_envio_por_sha if s == sha), "")
+    tope = tope_de(clase, enc.espera_abierta, desde)
+    ahora = hora_canonica(hora)
+    return bool(tope) and bool(ahora) and ahora >= hora_canonica(tope)
+
+
 def _cerrar_espera_por_hecho(
     registro: Registro,
     enc: Encargo,
@@ -1695,9 +1719,11 @@ def _cerrar_espera_por_hecho(
 ) -> Encargo:
     """Relee la espera por hecho y escribe el cierre cuando la lectura cierra.
 
-    Mientras la función de cierre devuelva `False` o `None` no se escribe nada.
-    Cuando devuelve `True`, una espera abierta por `espera` se cierra con su
-    `plazo`, que es el evento de hoy, y el paso sigue como siempre.
+    Mientras la función de cierre devuelva `False` o `None` no se escribe nada,
+    salvo que la fila `omitir` ya haya cumplido su tope: ahí se reanuda el paso
+    para que registre la omisión. Cuando devuelve `True`, una espera abierta por
+    `espera` se cierra con su `plazo`, que es el evento de hoy, y el paso sigue
+    como siempre.
     """
     from . import cierres
 
@@ -1710,8 +1736,11 @@ def _cerrar_espera_por_hecho(
         arbol=arbol,
         hora=hora,
         epoch=epoch,
+        puede_actuar=_puede_actuar_en_espera(registro, enc),
     )
-    if cierres.cerrar(ctx) is not True or enc.estado != "esperando_reintento":
+    if cierres.cerrar(ctx) is not True and not _tope_de_la_espera_omitir(enc, hora):
+        return enc
+    if enc.estado != "esperando_reintento":
         return enc
     try:
         registro.anotar(
@@ -1722,6 +1751,19 @@ def _cerrar_espera_por_hecho(
     except Rechazo:
         return enc
     return registro.fold(enc.id) or enc
+
+
+def _puede_actuar_en_espera(registro: Registro, enc: Encargo) -> bool:
+    """La espera puede hacer su efecto externo: sin parada, con autorización.
+
+    Son las mismas guardas que protegen el paso de entrega. Una lectura puede
+    seguir mirando durante una parada; el disparo de DeepSeek no.
+    """
+    return (
+        leer_parada_local(registro.base) is None
+        and bool(getattr(enc, "escrituras", True))
+        and bool(getattr(enc, "intentos_nuevos", True))
+    )
 
 
 def _barrer_encargos(

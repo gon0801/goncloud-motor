@@ -11,11 +11,13 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from motor.encargos import ciclo, cierres, despliegue, politica_despliegue
+from motor.encargos.dominio import Fase
 from motor.encargos.frontera import DestinoEnsayo
 from motor.encargos.registro import Registro
 
@@ -44,8 +46,8 @@ class Banco(unittest.TestCase):
         with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
             ciclo.marcar_espera(self.reg, self.enc, clase, motivo, hora)
 
-    def cerrar(self, epoch: float = 0.0, hora: str = H0):
-        enc = self.reg.fold(self.enc)
+    def cerrar(self, epoch: float = 0.0, hora: str = H0, enc=None):
+        enc = enc or self.reg.fold(self.enc)
         with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
             return ciclo._cerrar_espera_por_hecho(
                 self.reg, enc, None, Path(self._tmp.name) / "espacio",
@@ -180,20 +182,52 @@ class LecturasPorClase(unittest.TestCase):
         with mock.patch.object(despliegue, "observacion", return_value="ausente"):
             self.assertTrue(cierres._despliegue_en_curso(ctx))
 
-    def test_despliegue_sin_receta_cierra_cuando_la_fase_declara(self):
+    def test_despliegue_sin_receta_no_cierra_con_una_receta_invalida(self):
+        enc = SimpleNamespace(
+            fase_actual=SimpleNamespace(integrado_sha="a" * 40),
+            fase_activa="uno",
+        )
         ctx = SimpleNamespace(
-            espacio=Path("."), enc=object(),
+            espacio=Path("."), enc=enc, registro=SimpleNamespace(base=Path(".")),
+        )
+        invalida = SimpleNamespace(
+            requiere_despliegue=True, desplegar="", checklist="c.sh", rollback="r.sh"
+        )
+        valida = SimpleNamespace(
+            requiere_despliegue=True, desplegar="d.sh", checklist="c.sh", rollback="r.sh"
         )
         with mock.patch.object(
-            politica_despliegue, "resolver",
-            return_value=SimpleNamespace(requiere_despliegue=None),
+            politica_despliegue, "resolver", return_value=SimpleNamespace(
+                requiere_despliegue=None
+            ),
         ):
             self.assertFalse(cierres._despliegue_sin_receta(ctx))
         with mock.patch.object(
-            politica_despliegue, "resolver",
-            return_value=SimpleNamespace(requiere_despliegue=True),
+            politica_despliegue, "resolver", return_value=invalida
+        ), mock.patch(
+            "motor.encargos.despliegue._maquina", return_value=object()
+        ):
+            self.assertFalse(cierres._despliegue_sin_receta(ctx))
+        with mock.patch.object(
+            politica_despliegue, "resolver", return_value=valida
+        ), mock.patch(
+            "motor.encargos.despliegue._maquina", return_value=object()
         ):
             self.assertTrue(cierres._despliegue_sin_receta(ctx))
+        sin_sha = SimpleNamespace(fase_actual=SimpleNamespace(integrado_sha=""), fase_activa="uno")
+        with mock.patch.object(
+            politica_despliegue, "resolver", return_value=valida
+        ), mock.patch(
+            "motor.encargos.despliegue._maquina", return_value=object()
+        ):
+            self.assertFalse(
+                cierres._despliegue_sin_receta(
+                    SimpleNamespace(
+                        espacio=Path("."), enc=sin_sha,
+                        registro=SimpleNamespace(base=Path(".")),
+                    )
+                )
+            )
 
     def test_efecto_incierto_consulta_el_destino(self):
         tmp = tempfile.TemporaryDirectory()
@@ -225,8 +259,11 @@ class LecturasPorClase(unittest.TestCase):
             "motor.encargos.comprobacion.huella_procedimiento", return_value="h"
         ), mock.patch(
             "motor.encargos.ciclo._observacion_de_la_version", return_value=None
-        ):
+        ), mock.patch(
+            "motor.encargos.comprobacion.iniciar_comprobacion"
+        ) as relanzar:
             self.assertFalse(cierres._observacion_comprobador(ctx))
+            relanzar.assert_called_once()
         with mock.patch(
             "motor.encargos.comprobacion.leer_declaradas", return_value=[]
         ), mock.patch(
@@ -236,8 +273,11 @@ class LecturasPorClase(unittest.TestCase):
             "motor.encargos.comprobacion.huella_procedimiento", return_value="h"
         ), mock.patch(
             "motor.encargos.ciclo._observacion_de_la_version", return_value={}
-        ):
+        ), mock.patch(
+            "motor.encargos.comprobacion.iniciar_comprobacion"
+        ) as relanzar:
             self.assertTrue(cierres._observacion_comprobador(ctx))
+            relanzar.assert_not_called()
 
 
 class DeepSeekNoEscribeSinCambio(Banco):
@@ -309,6 +349,65 @@ class DeepSeekNoEscribeSinCambio(Banco):
             self.assertEqual(
                 len(_eventos(r.reg, r.enc, "deepseek_lectura")), antes + 1
             )
+
+
+class TopeDeLasEsperasQueOmiten(Banco):
+    def _enc_deepseek(self):
+        sha = "a" * 40
+        fase = replace(Fase("f", "x"), pr_sha=sha, pr_numero=1)
+        return replace(
+            self.reg.fold(self.enc),
+            fases=(fase,),
+            fase_activa="f",
+            primer_envio_por_sha=((sha, H0),),
+        )
+
+    def test_revision_y_lectura_fallida_vencen_a_los_treinta_minutos(self):
+        for clase in ("revision_deepseek", "lectura_deepseek_fallida"):
+            with self.subTest(clase=clase):
+                self.setUp()
+                self.abrir(clase)
+                enc = self._enc_deepseek()
+                with mock.patch.dict(cierres.CIERRES, {clase: lambda ctx: None}):
+                    self.cerrar(
+                        enc=enc, epoch=1.0, hora="2026-11-18T10:29:00Z"
+                    )
+                    self.assertEqual(
+                        _eventos(self.reg, self.enc, "plazo"), []
+                    )
+                    self.cerrar(
+                        enc=self.reg.fold(self.enc), epoch=2.0,
+                        hora="2026-11-18T10:30:01Z",
+                    )
+                self.assertEqual(len(_eventos(self.reg, self.enc, "plazo")), 1)
+
+
+class DisparoBajoParada(unittest.TestCase):
+    def _ctx(self, puede: bool):
+        sha = "a" * 40
+        enc = SimpleNamespace(
+            fase_actual=SimpleNamespace(pr_sha=sha, pr_numero=1),
+            entrega=SimpleNamespace(repo="r"),
+            primer_envio_por_sha=((sha, H0),),
+            pr_sha=sha,
+        )
+        gh = SimpleNamespace(comentarios_deepseek=lambda *a: [])
+        return cierres.Contexto(
+            registro=object(), enc=enc, gh=gh, espacio=Path("."),
+            hora="2026-11-18T10:02:00Z", epoch=122.0, puede_actuar=puede,
+        )
+
+    def test_una_parada_o_falta_de_autoridad_no_dispara(self):
+        with mock.patch(
+            "motor.encargos.ciclo._accion_deepseek_si_toca"
+        ) as accion:
+            self.assertFalse(cierres._revision_deepseek(self._ctx(False)))
+            accion.assert_not_called()
+        with mock.patch(
+            "motor.encargos.ciclo._accion_deepseek_si_toca"
+        ) as accion:
+            self.assertFalse(cierres._revision_deepseek(self._ctx(True)))
+            accion.assert_called_once()
 
 
 if __name__ == "__main__":
