@@ -11,7 +11,7 @@ if TYPE_CHECKING:
         MarcasDeepSeekCerrado, PausaAgente, Proc, RefRevision, Solicitud,
         SondeoCI, VersionProducto,
     )
-    from .situacion import Situacion
+    from .situacion import ReglaAvance, Situacion
     from .entrega.tipos import PrDeFase
 
 
@@ -207,6 +207,16 @@ class Encargo:
     prs: tuple[PrDeFase, ...] = ()
     canceladas: tuple[str, ...] = ()
     otra_base_de: tuple[str, str] = ("", "")
+    espera_clase: str = ""
+    espera_abierta: str = ""
+    espera_tope: str = ""
+    ultimo_avance: str = ""
+    turnos_sin_avance: int = 0
+    racha_esperas_desde: str = ""
+    primer_evento: str = ""
+    reloj_turno: str = ""
+    tope_de: tuple[str, str, str] | tuple[()] = ()
+    falta_de_avance_de: tuple[ReglaAvance, str, int] | tuple[()] = ()
     limpieza: tuple[tuple[str, str, str, int, str], ...] = ()
     limpio: str = ""
     hora_final: str = ""

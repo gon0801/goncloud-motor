@@ -9,8 +9,8 @@ from motor.encargos.dominio import Fase, TransicionIlegal, reducir
 from motor.encargos.reductor import TABLA
 
 ESPERAS = set("""
-    afirmacion comprobacion efecto espera excepcion incorporado pendiente_entrega
-    plazo quietud_vigilada sin_progreso
+    afirmacion comprobacion efecto espera excepcion falta_de_avance incorporado
+    pendiente_entrega plazo quietud_vigilada sin_progreso tope_espera
 """.split())
 NECESIDADES = set("""
     autoridad autorizacion decision estrategia herramienta impedimento
@@ -103,6 +103,7 @@ class ValidacionEsperasNecesidades(unittest.TestCase):
             "quietud_vigilada", "autoridad", "autorizacion", "decision",
             "estrategia", "herramienta", "impedimento", "impedimento_resuelto",
             "instrumento_no_disponible", "quietud", "solicitud", "via",
+            "tope_espera", "falta_de_avance",
         }
         for kind in con_validacion:
             with self.subTest(kind=kind):

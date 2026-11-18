@@ -15,6 +15,15 @@ from dataclasses import dataclass
 # `ciclo.py` ni en ningún otro módulo.
 TOPE_DEEPSEEK_MIN = 30
 ESPERA_SIN_REVISOR_MIN = 0
+TOPE_ESPERA_MIN = 60
+TOPE_ESPERA_PASAJERA_MIN = 360
+FALTA_DE_AVANCE_MIN = 60
+TURNOS_SIN_AVANCE = 8
+ESPERAS_V5 = False
+KINDS_DE_AVANCE: frozenset[str] = frozenset((
+    "revision", "pr_observado", "fase_cancelada", "fase_desplegada",
+    "cierre_forzado", "resultado_directo", "producto_listo",
+))
 CERRADOS_VENTANA_S = 7 * 24 * 60 * 60
 CERRADOS_POR_PASADA = 5
 ENTREGA_V4 = True
@@ -110,6 +119,20 @@ FILAS: tuple[Fila, ...] = (
         valor=f"{ESPERA_SIN_REVISOR_MIN} min",
         decision="David, 2026-11-13",
         comportamiento="sin un workflow de ai-review omite enseguida con la causa escrita; lo que no se pudo leer espera el tope",
+    ),
+    Fila(
+        id="tope_esperas",
+        regla="Toda espera técnica tiene un tope y al vencer detiene o cumple su acción declarada.",
+        valor=f"{TOPE_ESPERA_MIN} min por omisión",
+        decision="David, 12-nov (decisión 5)",
+        comportamiento="una espera sin tope detiene con causa escrita; las filas con tope previo conservan su acción salvo merge y repo",
+    ),
+    Fila(
+        id="tope_esperas_pasajeras",
+        regla="Las esperas pasajeras externas pueden durar una noche antes de detener.",
+        valor=f"{TOPE_ESPERA_PASAJERA_MIN // 60} h",
+        decision="David, 17-nov",
+        comportamiento="autoridad, conductor, proveedor, empuje transitorio, GitHub, merge y repo reintentan durante 6 h; al tope se detiene",
     ),
     Fila(
         id="cerrados",

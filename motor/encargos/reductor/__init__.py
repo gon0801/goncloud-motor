@@ -65,6 +65,8 @@ def plegar_evento(
     ):
         return aplicado
     resultado = derivados(aplicado, evento)
+    if aplicado is not anterior:
+        resultado = esperas.actualizar_marcas(anterior, resultado, evento)
     if anterior is not None and resultado.estado != anterior.estado:
         if resultado.estado in ("terminado", "cancelado"):
             return replace(resultado, hora_final=str(evento["data"].get("hora") or ""),
@@ -123,6 +125,7 @@ TABLA: dict[str, Fila] = {
     'estrategia': Fila(necesidades.estrategia, validar=validacion_necesidades.validar_estrategia),
     'excepcion': Fila(esperas.excepcion, corta_series=False, marcador=True),
     'fallo_interno': Fila(detencion.fallo_interno, validar=validacion_detencion.validar_fallo_interno),
+    'falta_de_avance': Fila(esperas.falta_de_avance, validar=validacion_esperas.validar_falta_de_avance),
     'fase_desplegada': Fila(fase.fase_desplegada, alcance="fase", validar=validacion_fase.validar_fase_desplegada),
     'fase_reabierta': Fila(fase.fase_reabierta, alcance="fase", validar=validacion_fase.validar_fase_reabierta),
     'fase_reactivada': Fila(fase.fase_reactivada, alcance="fase", validar=validacion_fase.validar_fase_reactivada),
@@ -163,6 +166,7 @@ TABLA: dict[str, Fila] = {
     'sin_progreso': Fila(esperas.sin_progreso),
     'solicitud': Fila(necesidades.solicitud, validar=validacion_necesidades.validar_solicitud),
     'solicitud_tardia': Fila(necesidades.solicitud_tardia),
+    'tope_espera': Fila(esperas.tope_espera, validar=validacion_esperas.validar_tope_espera),
     'via': Fila(necesidades.via, validar=validacion_necesidades.validar_via),
 }
 

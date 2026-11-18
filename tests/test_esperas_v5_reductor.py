@@ -7,8 +7,7 @@ from pathlib import Path
 
 from motor.encargos.dominio import Fase, TransicionIlegal, reducir
 from motor.encargos.registro import EventoIlegal, Registro
-from motor.encargos.situacion import Detenido, Deteniendo, FaltaDeAvance, PorTope
-from motor.encargos.tabla_esperas import ESPERAS
+from motor.encargos.situacion import Detenido, Deteniendo
 
 H0 = "2026-11-17T10:00:00Z"
 H1 = "2026-11-17T10:01:00Z"
@@ -32,6 +31,10 @@ def esperar(e, clase="checks_merge", hora=H1, abierta=H1):
 
 class TablaEsperas(unittest.TestCase):
     def test_todas_las_clases_tienen_un_solo_tope(self):
+        from motor.encargos.politica import ESPERAS_V5
+        from motor.encargos.tabla_esperas import ESPERAS
+
+        self.assertIs(ESPERAS_V5, False)
         self.assertEqual(len(ESPERAS), 27)
         self.assertEqual(set(ESPERAS), {fila.clase for fila in ESPERAS.values()})
         for fila in ESPERAS.values():
@@ -50,8 +53,8 @@ class TablaEsperas(unittest.TestCase):
 
 class HechosDeEspera(unittest.TestCase):
     def test_espera_vieja_y_abierta_entre_reintentos(self):
-        e = reducir(pedido(), evento("espera", H1, motivo="vieja", reanuda_en=H2),
-                    nuevo=False)
+        e = reducir(pedido(), evento("espera", H1, motivo="vieja", reanuda_en=H2,
+                                     abierta=H0), nuevo=False)
         self.assertEqual((e.situacion.clase, e.espera_clase, e.espera_abierta, e.espera_tope),
                          ("legada", "legada", H1, ""))
         e = esperar(e, hora=H2)
@@ -61,7 +64,7 @@ class HechosDeEspera(unittest.TestCase):
         self.assertEqual((e.situacion.clase, e.situacion.abierta, e.espera_abierta),
                          ("checks_merge", H1, H1))
         e = reducir(e, evento("plazo", H3), nuevo=True)
-        e = esperar(e, "proveedor", H3)
+        e = esperar(e, "proveedor", H3, abierta=H3)
         self.assertEqual(e.espera_abierta, H3)
 
     def test_avance_reinicia_ventana_y_racha_y_orden_la_vacia(self):
@@ -72,16 +75,29 @@ class HechosDeEspera(unittest.TestCase):
         self.assertEqual(e.racha_esperas_desde, H1)
         e = reducir(e, evento("revision", H2), nuevo=False)
         self.assertEqual((e.racha_esperas_desde, e.ultimo_avance), ("", H2))
-        e = esperar(e, "proveedor", H3, abierta=H1)
+        e = esperar(e, "proveedor", H3, abierta=H3)
         self.assertEqual((e.espera_abierta, e.racha_esperas_desde), (H3, H3))
         e = reducir(e, evento("plazo", H3), nuevo=True)
         e = esperar(e, "orden_espera", H3)
         self.assertEqual(e.racha_esperas_desde, "")
 
+    def test_una_fila_que_no_detiene_no_mueve_la_racha(self):
+        e = esperar(pedido(), "despliegue_en_curso")
+        self.assertEqual(e.racha_esperas_desde, "")
+        e = reducir(e, evento("plazo", H2), nuevo=True)
+        e = esperar(e, "proveedor", H2, abierta=H2)
+        self.assertEqual(e.racha_esperas_desde, H2)
+        e = reducir(e, evento("plazo", H3), nuevo=True)
+        e = esperar(e, "destino_ocupado", H3, abierta=H3)
+        self.assertEqual(e.racha_esperas_desde, H2)
+
     def test_rechaza_clase_desconocida_y_tope_desactualizado(self):
         with self.assertRaises(TransicionIlegal):
             esperar(pedido(), "inventada")
         e = esperar(pedido())
+        with self.assertRaises(TransicionIlegal):
+            reducir(e, evento("tope_espera", H2, clase="checks_merge",
+                              abierta=H1, tope="otro"), nuevo=True)
         with self.assertRaises(TransicionIlegal):
             reducir(e, evento("tope_espera", H2, clase="checks_merge",
                               abierta=H0, tope=H3), nuevo=True)
@@ -91,6 +107,8 @@ class HechosDeEspera(unittest.TestCase):
                                     abierta=H1, tope=H3), nuevo=True)
 
     def test_tope_detiene_y_continuar_reabre(self):
+        from motor.encargos.situacion import PorTope
+
         e = esperar(pedido())
         e = reducir(e, evento("tope_espera", H3, clase="checks_merge",
                               abierta=H1, tope=H3), nuevo=True)
@@ -101,7 +119,23 @@ class HechosDeEspera(unittest.TestCase):
         self.assertEqual((e.estado, e.tope_de, e.espera_abierta, e.turnos_sin_avance),
                          ("recibido", (), "", 0))
 
+    def test_otras_aperturas_tienen_clase_y_tope_comprobable(self):
+        for clase, hecho in (
+            ("autoridad", evento("autoridad", H1, alcanzable=False)),
+            ("efecto_incierto", evento("efecto", H1, id="x", estado="incierto")),
+            ("impedimento_trabajo", evento("impedimento", H1, clase="entorno",
+                                           causa="sin acceso", condicion="acceso")),
+        ):
+            with self.subTest(clase=clase):
+                e = reducir(pedido(), hecho, nuevo=True)
+                self.assertEqual((e.espera_clase, e.espera_abierta), (clase, H1))
+                e = reducir(e, evento("tope_espera", H2, clase=clase,
+                                      abierta=H1, tope=H2), nuevo=True)
+                self.assertEqual((e.estado, e.tope_de), ("detenido", (clase, H1, H2)))
+
     def test_un_tope_avisar_no_pisa_cancelacion_ni_otro_tope(self):
+        from motor.encargos.situacion import PorTope
+
         e = reducir(pedido(), evento("orden", H1, accion="cancelar"), nuevo=True)
         self.assertIsInstance(e.situacion, Deteniendo)
         e = reducir(e, evento("tope_espera", H2, clase="deteniendo",
@@ -125,6 +159,8 @@ class HechosDeEspera(unittest.TestCase):
         self.assertEqual(e.situacion.causa, PorTope("checks_merge", H1, H3))
 
     def test_falta_de_avance_detiene_y_continuar_reinicia(self):
+        from motor.encargos.situacion import FaltaDeAvance
+
         for regla, desde, turnos in (("turnos", H0, 8), ("turno_vivo", H1, 0),
                                       ("esperas", H1, 0)):
             with self.subTest(regla=regla):
@@ -153,10 +189,14 @@ class HechosDeEspera(unittest.TestCase):
     def test_turnos_y_reloj_cuentan_solo_hechos_con_avance(self):
         e = pedido()
         self.assertEqual(e.primer_evento, H0)
+        e = reducir(e, {"kind": "intento_abierto", "data": {}}, nuevo=False)
+        self.assertEqual((e.turnos_sin_avance, e.reloj_turno), (0, ""))
         e = reducir(e, evento("intento_abierto", H1, id="i", pid=1, inicio=H1), nuevo=False)
         self.assertEqual((e.turnos_sin_avance, e.reloj_turno), (1, H1))
         e = reducir(e, evento("conciliacion_fase", H2), nuevo=False)
         self.assertEqual((e.primer_evento, e.reloj_turno), (H0, H1))
+        e = reducir(e, evento("incorporado", H2, generacion=0), nuevo=False)
+        self.assertEqual((e.turnos_sin_avance, e.reloj_turno), (1, H1))
         e = reducir(e, evento("actividad", H2, observada=True), nuevo=False)
         self.assertEqual(e.reloj_turno, H2)
         e = reducir(e, evento("revision", H3), nuevo=False)
@@ -173,28 +213,68 @@ class HechosDeEspera(unittest.TestCase):
         e = reducir(e, evento("producto_listo", H2, fase="f", version="v",
                               sha_git="sha"), nuevo=True)
         self.assertEqual(e.ultimo_avance, H1)
+        e = reducir(e, evento("producto_listo", H3, fase="f", version="v",
+                              sha_git="otro"), nuevo=True)
+        self.assertEqual(e.ultimo_avance, H3)
 
     def test_guardias_de_falta_de_avance_rechazan_decisiones_viejas(self):
         e = esperar(pedido(), "proveedor")
+        self.assertEqual(
+            reducir(e, evento("falta_de_avance", H2, regla="esperas",
+                              desde=H1, turnos=0), nuevo=True).estado,
+            "detenido",
+        )
         for regla, desde, turnos in (("esperas", H0, 0), ("turnos", H0, 8),
                                       ("turno_vivo", H0, 0), ("no", H1, 0)):
             with self.subTest(regla=regla), self.assertRaises(TransicionIlegal):
                 reducir(e, evento("falta_de_avance", H2, regla=regla,
                                   desde=desde, turnos=turnos), nuevo=True)
 
+    def test_actividad_avance_y_continuar_invalidan_decisiones_anteriores(self):
+        e = reducir(pedido(), evento("reserva", H1), nuevo=False)
+        e = reducir(e, evento("actividad", H2, observada=True), nuevo=False)
+        with self.assertRaises(TransicionIlegal):
+            reducir(e, evento("falta_de_avance", H3, regla="turno_vivo",
+                              desde=H1, turnos=0), nuevo=True)
+        e = esperar(pedido(), "proveedor")
+        e = reducir(e, evento("revision", H2), nuevo=False)
+        with self.assertRaises(TransicionIlegal):
+            reducir(e, evento("falta_de_avance", H3, regla="esperas",
+                              desde=H1, turnos=0), nuevo=True)
+        for i in range(8):
+            e = reducir(e, evento("intento_abierto", H3, id=str(i), pid=1,
+                                  inicio=H3), nuevo=False)
+            e = reducir(e, evento("intento_cerrado", H3), nuevo=False)
+        e = reducir(e, evento("falta_de_avance", H3, regla="turnos",
+                              desde=H2, turnos=8), nuevo=True)
+        self.assertEqual(e.estado, "detenido")
+        e = reducir(e, evento("orden", H3, accion="continuar"), nuevo=True)
+        with self.assertRaises(TransicionIlegal):
+            reducir(e, evento("falta_de_avance", H3, regla="turnos",
+                              desde=H2, turnos=8), nuevo=True)
+
     def test_aplicar_datos_malos_no_lanza(self):
+        from motor.encargos.reductor import TABLA
+
         e = pedido()
-        for kind in ("tope_espera", "falta_de_avance"):
+        for kind in ("espera", "tope_espera", "falta_de_avance"):
             for datos in ({}, {"clase": [], "abierta": {}, "tope": float("nan")},
                           {"regla": {}, "desde": [], "turnos": float("inf")},
-                          {"clase": "sin_clase", "regla": "no", "hora": None}):
+                          {"clase": "sin_clase", "regla": "no", "hora": None},
+                          [], None):
                 with self.subTest(kind=kind, datos=datos):
-                    self.assertIsNotNone(reducir(e, {"kind": kind, "data": datos},
-                                                nuevo=False))
+                    self.assertIn(kind, TABLA)
+                    self.assertIsNotNone(TABLA[kind].aplicar(e, datos, H0, False))
+                    if isinstance(datos, dict):
+                        self.assertIsNotNone(reducir(e, {"kind": kind, "data": datos},
+                                                    nuevo=False))
 
 
 class RegistroEsperas(unittest.TestCase):
     def test_nuevos_kinds_se_escriben_en_secuencias_legales(self):
+        from motor.encargos.situacion import FaltaDeAvance
+        from motor.encargos.reporte import reporte
+
         temp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, temp)
         reg = Registro(Path(temp) / "base")
@@ -206,6 +286,7 @@ class RegistroEsperas(unittest.TestCase):
         reg.anotar("p", evento("tope_espera", H3, clase="checks_merge", abierta=H1,
                                tope=H3), "tope:p")
         self.assertEqual(reg.fold("p").tope_de, ("checks_merge", H1, H3))
+        self.assertIn("checks_merge", reporte(reg.fold("p"), False).causa)
         reg.anotar("p", evento("orden", H3, accion="continuar"), "continuar:p")
         with self.assertRaises(EventoIlegal):
             reg.anotar("p", evento("falta_de_avance", H3, regla="turnos",
@@ -213,6 +294,26 @@ class RegistroEsperas(unittest.TestCase):
         for i in range(8):
             reg.anotar("p", evento("intento_abierto", H3, id=str(i), pid=1,
                                    inicio=H3), f"turno:{i}")
+            reg.anotar("p", evento("intento_cerrado", H3), f"cierre:{i}")
         reg.anotar("p", evento("falta_de_avance", H3, regla="turnos",
                                desde=H0, turnos=8), "falta:p")
         self.assertEqual(reg.fold("p").situacion.causa, FaltaDeAvance("turnos", H0, 8))
+
+    def test_comprobar_conserva_la_cancelacion_tras_un_aviso(self):
+        from tools.plegado import cargar_reductor, comprobar
+
+        temp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, temp)
+        reg = Registro(Path(temp) / "base")
+        self.addCleanup(reg.close)
+        reg.anotar("p", evento("entrega", H0, id="p", clave="p", huella="h",
+                                texto="pedido"), "inicio:p")
+        reg.anotar("p", evento("orden", H1, accion="cancelar"), "cancelar:p")
+        reg.anotar("p", evento("tope_espera", H2, clase="deteniendo", abierta=H1,
+                               tope=H2), "tope:p")
+        reg.anotar("p", evento("arbol", H3, observacion="ausente"), "arbol:p")
+        resultado = comprobar(cargar_reductor(Path(__file__).resolve().parents[1]),
+                              reg.base / "registro.sqlite")
+        self.assertFalse(
+            [v for v in resultado.violaciones if v.regla == "cancelacion_definitiva"],
+        )
