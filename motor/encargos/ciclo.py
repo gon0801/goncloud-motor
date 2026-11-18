@@ -2980,7 +2980,7 @@ def _intentar_cierre_paso(
             marcar_espera(
                 registro,
                 enc.id,
-                "autoridad",
+                "efecto_incierto",
                 "resultado comprobado; conciliar efecto sin recibo antes de publicar",
                 hora,
             )
@@ -10113,6 +10113,12 @@ def marcar_espera(
         if enc is not None and enc.espera_clase == clase and enc.espera_abierta
         else hora
     )
+    if politica.ESPERAS_V5:
+        # El barrido ordena las horas como texto. Con el interruptor encendido
+        # toda espera guarda la apertura y la reanudación en UTC canónico, venga
+        # el desplazamiento que venga; apagado, se guarda lo de hoy.
+        reanuda_en = tabla_esperas.hora_canonica(reanuda_en) if reanuda_en else ""
+        abierta = tabla_esperas.hora_canonica(abierta) or abierta
     reanuda_en = reanuda_en or tabla_esperas.reanuda_en(clase, hora, intentos)
     registro.anotar(
         encargo_id,

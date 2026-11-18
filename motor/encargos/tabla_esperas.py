@@ -226,17 +226,26 @@ def tope_intentos_de_hoy(clase: ClaseEspera) -> int:
     return int(ESPERAS[clase].hoy.tope_intentos or 0)
 
 
-def es_hora_utc(texto: str) -> bool:
-    """La cadena es una hora UTC que el barrido puede comparar."""
-    from datetime import datetime
+def hora_canonica(texto: str) -> str:
+    """La hora en UTC canónico (`...Z`), que es como el barrido compara cadenas.
 
-    if not isinstance(texto, str) or not texto.endswith("Z"):
-        return False
+    Acepta un desplazamiento (`+02:00`, `-07:00`) y devuelve el mismo instante en
+    UTC. Devuelve "" si no se lee como hora.
+    """
+    from datetime import datetime, timezone
+
     try:
-        datetime.fromisoformat(texto.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    return True
+        instante = datetime.fromisoformat(str(texto).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return ""
+    if instante.tzinfo is None:
+        instante = instante.replace(tzinfo=timezone.utc)
+    return instante.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def es_hora_utc(texto: str) -> bool:
+    """La cadena es una hora que el barrido puede ordenar."""
+    return bool(hora_canonica(texto))
 
 
 def _mas_segundos(base: str, segundos: int) -> str:

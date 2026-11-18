@@ -77,6 +77,27 @@ class EscritoresDeLaClase(unittest.TestCase):
         self.assertEqual(data["reanuda_en"], "2026-11-18T18:00:00Z")
         self.assertEqual(data["tope"], "1 intentos")
 
+    def test_con_el_interruptor_encendido_las_horas_quedan_en_utc(self):
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            ciclo.marcar_espera(
+                self.reg, self.enc, "proveedor", "cuota agotada",
+                "2026-11-18T09:00:00+00:00",
+                reanuda_en="2026-11-18T02:30:00-07:00",
+            )
+        data = self._espera()
+        self.assertEqual(data["abierta"], "2026-11-18T09:00:00Z")
+        self.assertEqual(data["reanuda_en"], "2026-11-18T09:30:00Z")
+        self.assertEqual(data["tope"], "2026-11-18T15:00:00Z")
+
+    def test_es_hora_utc_lee_los_desplazamientos(self):
+        self.assertEqual(
+            tabla_esperas.hora_canonica("2026-11-18T02:30:00-07:00"),
+            "2026-11-18T09:30:00Z",
+        )
+        self.assertTrue(tabla_esperas.es_hora_utc("2026-11-18T09:30:00+00:00"))
+        self.assertFalse(tabla_esperas.es_hora_utc("nunca"))
+        self.assertFalse(tabla_esperas.es_hora_utc(""))
+
     def test_un_espera_guardada_antes_coteja_igual_con_los_campos_nuevos(self):
         guardada = {"motivo": "GitHub caído", "reanuda_en": H1, "hora": H0}
         self.reg.anotar(

@@ -295,15 +295,17 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
             )
         )
     if args.cmd == "espera":
-        if politica.ESPERAS_V5 and not tabla_esperas.es_hora_utc(args.reanuda_en):
+        reanuda = tabla_esperas.hora_canonica(args.reanuda_en)
+        if politica.ESPERAS_V5 and not reanuda:
             raise SystemExit(
-                "motor espera: `--reanuda-en` necesita una hora UTC como "
-                "2026-11-18T09:00:00Z con ESPERAS_V5 encendido"
+                "motor espera: `--reanuda-en` necesita una hora, como "
+                "2026-11-18T09:00:00Z o 2026-11-18T02:00:00-07:00, con "
+                "ESPERAS_V5 encendido"
             )
         return _json(
             marcar_espera(
                 reg, args.encargo, "orden_espera", args.motivo, hora,
-                reanuda_en=args.reanuda_en,
+                reanuda_en=reanuda or args.reanuda_en,
             )
         )
     if args.cmd == "pregunta":
