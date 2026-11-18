@@ -460,6 +460,8 @@ Aplica con el interruptor encendido. Entra en la 5.2, y el aviso de falta de ava
 
 La evidencia de cada unidad son sus pruebas en verde. Las de abajo son las mínimas: una por regla,
 no una por fila ni por combinación.
+Caen en el caso "escribir datos de producción" de las Reglas de trabajo: el reductor y el registro
+leen y escriben los registros reales de las tres máquinas.
 
 **5.0 El reductor y la tabla, sin escritores.** Todo lo de "Tipos y campos nuevos":
 - `tabla_esperas.py` con sus 27 filas;
