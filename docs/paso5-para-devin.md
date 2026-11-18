@@ -3,9 +3,8 @@
 Devin, este documento es tu contrato para implementar el paso 5 de
 `docs/modelo-centro-encargos.md`, la tabla de esperas. Nadie va a contestar preguntas mientras
 trabajas. Si algo no está escrito aquí, decide con las reglas de este documento y deja la decisión
-en `## Tradeoffs` del PR. Este documento manda sobre cualquier otro texto del repo, salvo
-`AGENTS.md`. Las reglas de `docs/paso3-para-devin.md` y `docs/paso4-para-devin.md` siguen valiendo
-donde este documento no diga otra cosa.
+en `## Tradeoffs` del PR. La forma de trabajar es la de "Reglas de trabajo" en `AGENTS.md`; las
+reglas de los pasos 3 y 4 ya no aplican. Este documento solo dice qué construir.
 
 ## Para qué
 
@@ -64,26 +63,25 @@ No cambian:
 ## Quién y arranque
 
 - **Devin** implementa: una rama `reconstruccion/paso5-<n>-<tema>` y un PR por unidad.
-- **El revisor** es una sesión de Claude Code que trabaja para David. Revisa con un verificador
-  independiente, DeepSeek, Devin Review y CodeRabbit. Es el único que mergea, despliega, toca `ops/`
-  y las máquinas, y enciende el interruptor.
+- **El revisor** es una sesión de Claude Code que trabaja para David. Revisa uno solo, con
+  DeepSeek como opinión. Es el único que mergea, despliega, toca `ops/` y las máquinas, y enciende
+  el interruptor.
 - **David** solo decide lo que este documento marca como suyo.
 
 1. Lee completos:
    - `AGENTS.md`;
    - `docs/modelo-centro-encargos.md`, sobre todo "Toda espera tiene salida" y "Estados del
      encargo";
-   - las reglas de trabajo de `docs/paso3-para-devin.md` y `docs/paso4-para-devin.md`;
    - este documento.
 2. Cada unidad sale de `origin/main`. Si la anterior todavía no está mergeada, sal de su rama y
    ponla como base de tu PR. Cuando la anterior entre, cambia la base con
    `gh pr edit <n> --base main`.
 3. Empieza por la 5.0.
 
-Forma de trabajo acordada con David el 2026-11-16:
-- evidencia completa una sola vez antes de `LISTO`;
+Forma de trabajo: la de "Reglas de trabajo" en `AGENTS.md`. En corto:
+- la evidencia son las pruebas en verde; no pegues corpus, mutaciones ni comandos de calidad;
 - en cada ronda corriges solo lo que dice el comentario del revisor;
-- máximo 2 rondas por PR, y una 3.ª solo por un High;
+- máximo 2 rondas por PR, y una 3.ª solo por algo grave;
 - el revisor mergea cada unidad en cuanto pasa.
 
 ## Preaprobaciones
@@ -103,24 +101,19 @@ Forma de trabajo acordada con David el 2026-11-16:
 | `git rebase` de una rama subida, `push --force`, `--no-verify` | todos | Negado |
 | Escribir comentarios que empiecen con `ai-review:` | todos | Negado: solo David |
 
-> **Prohibido.** Lo mismo que en el paso 4:
+> **Prohibido:**
 > - mergear;
 > - reescribir la historia de una rama subida;
-> - saltarte un hook;
-> - descartar hallazgos de DeepSeek;
+> - saltarte la revisión de secretos;
 > - cambiar el plegado de una clave que ya existe;
-> - hacer crecer `ciclo.py` o `dominio.py`;
 > - subir datos de registros reales o nombres de repos privados (el repo es público);
 > - preguntarle algo a David.
 
 ## Reglas de trabajo
 
-1. **Tamaño, registros guardados, nada real y corpus.** Valen tal cual las reglas 1, 3, 5 y 6 del
-   paso 4.
-   - Los kinds nuevos rechazan `{}`. Por eso las pruebas de la 5.0 escriben secuencias legales de
-     los dos con `Registro`, para que `generar` pueda sembrarlos.
-   - Mover los topes a la tabla y sacar las lecturas de cierre de `ciclo.py` debe hacer bajar
-     `ciclo.py`. Pega `wc -l` antes y después en `## Verification`.
+1. **Registros guardados y nada real.** Plegar un registro guardado nunca falla y las claves que
+   ya existen no cambian de valor; el revisor lo comprueba con la compuerta de plegado en las tres
+   máquinas. No subas datos de registros reales ni nombres de repos privados.
 2. **Kinds.** La 5.0 enseña al reductor `tope_espera`, `falta_de_avance` y los campos nuevos de
    `espera`, sin escritores.
    - Ningún escritor entra a `main` antes de que el revisor publique `Desplegado` para la 5.0.
@@ -465,7 +458,10 @@ Aplica con el interruptor encendido. Entra en la 5.2, y el aviso de falta de ava
 
 ## Cola de unidades
 
-La evidencia de cada unidad incluye siempre las reglas 1 y 2, y desde la 5.1 la regla 3.
+La evidencia de cada unidad son sus pruebas en verde. Las de abajo son las mínimas: una por regla,
+no una por fila ni por combinación.
+Caen en el caso "escribir datos de producción" de las Reglas de trabajo de `AGENTS.md`: el reductor y el registro
+leen y escriben los registros reales de las tres máquinas.
 
 **5.0 El reductor y la tabla, sin escritores.** Todo lo de "Tipos y campos nuevos":
 - `tabla_esperas.py` con sus 27 filas;
@@ -478,7 +474,6 @@ La evidencia de cada unidad incluye siempre las reglas 1 y 2, y desde la 5.1 la 
 - `CLAVES_NUEVAS`.
 
 Evidencia:
-- `verificar` en "estado igual en K de K" y `comparar --estricto` sin diferencias.
 - Una prueba de que ninguna fila de la tabla queda sin tope.
 - Una prueba de que toda fila con `tope_intentos` tiene `tipo="por_hora"`.
 - Una prueba por kind: el valor plegado y el rechazo al escribir.
@@ -522,13 +517,13 @@ Evidencia:
   acepta como hoy con el interruptor apagado.
 - Con el interruptor apagado, una prueba de tabla usa la `hoy` de cada clase y da el mismo `reanuda_en` que la
   base.
-- `wc -l` de `ciclo.py` baja.
 
 **5.2 Topes y avisos.**
 - Se escribe `tope_espera` en las filas `detener` y `avisar`. Las demás conservan su acción.
 - Entran el aviso, el resumen con detenidos y `continuar` de punta a punta.
 
-Evidencia, con el interruptor encendido, una prueba por fila:
+Evidencia, con el interruptor encendido, una prueba por acción (`detener`, `avisar`, `omitir`,
+`pendientes`, `devolver`, `impedimento`, `seguir`), no una por fila:
 - un minuto antes del tope sigue esperando, y en las filas por cuenta, un intento antes;
 - al tope hace su acción;
 - en las filas `detener` sale un solo aviso, y `continuar` abre una ventana nueva;
@@ -607,7 +602,7 @@ Evidencia:
 |---|---|
 | `motor/encargos/tabla_esperas.py` (nuevo), y las funciones de cierre en módulos nuevos de `motor/encargos/` | `ops/` completo, `.github/workflows/` |
 | `motor/encargos/situacion.py`, `encargo.py`, `reductor/`, `detencion.py`, `politica.py`, `necesidades.py` | `motor/machine.py`, `motor/flota/`, `motor/encargos/lote.py` |
-| `motor/encargos/ciclo.py` y `dominio.py`, sin que crezcan | `docs/modelo-centro-encargos.md` (lo actualiza el revisor) |
+| `motor/encargos/ciclo.py` y `dominio.py` | `docs/modelo-centro-encargos.md` (lo actualiza el revisor) |
 | `motor/encargos/resumen.py`, `reporte.py`, `entrega/avisos.py`, `entrega/ejecutar.py`, `cli.py`, `rutas.py`, `despliegue.py`, `instrumento.py`, `contencion.py` | `motor/encargos/revisor_deepseek.py` |
 | `motor/respuestas_merge.py`, para leer su conducta de la tabla | |
 | `motor/encargos/registro.py`, solo el cotejo de `espera` | |
@@ -619,15 +614,13 @@ Evidencia:
 
 | Situación | Acción |
 |---|---|
-| `kinds --base origin/main` en rojo en la 5.1 o después | Es esperado mientras la 5.0 no esté en `main`. Dilo en `## Verification` y sigue. |
-| `tamano` rechaza el PR | Saca código de `ciclo.py` o `dominio.py`, o borra lo que reemplazaste. Nunca subas el límite. |
 | Una clave existente cambia de valor en el corpus | No sigas. Escribe la clave y la causa en el PR y espera la ronda. |
 | Encuentras una llamada a `marcar_espera` que no cabe en ninguna clase | Agrega una clase con tope de 60 min y `detener`, y nómbrala en `## Tradeoffs`. |
 | Una llamada sirve a varias clases | Elige la clase por la rama que la escribe, como en `checks_merge` y `tropiezo_merge`. |
 | Una lectura de cierre no se puede sacar del paso sin cambiar lo que el paso decide | Deja esa clase como por hora, con su tope, y explícalo en `## Tradeoffs`. |
 | Dudas si un kind es avance | Si cambia el resultado de una fase y no se escribe en cada turno, es avance. Si no, no lo es. |
 | Una prueba vieja falla | Si la conducta cambió por una fila de este documento, actualízala y nómbrala en `## Tradeoffs`. Si no, tu cambio está mal. |
-| DeepSeek insiste en un hallazgo que crees falso | Contesta con la evidencia y deja el PR abierto. Solo David descarta. |
+| DeepSeek insiste en un hallazgo que crees falso | Contesta con la evidencia; el revisor decide. |
 | `main` avanzó y hay conflicto | `git merge origin/main`, resuelve, corre las comprobaciones y haz push normal. |
 | Te quedaste sin contexto | Este documento, tus ramas y el último comentario del revisor en cada PR tienen todo el estado. |
 

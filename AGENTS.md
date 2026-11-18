@@ -26,49 +26,33 @@ falla si los dos archivos difieren.
 | Un dato, un dueño: derivar en vez de guardar copias. | derivar | David, sin fecha registrada en el pedido | la tabla de política y la de AGENTS.md se generan de una sola fuente |
 | Mientras se reconstruye el centro, un Medium de DeepSeek en estas rutas va a la lista de fuera de alcance, no a otro parche; Critical y High no cambian. | motor/encargos/ciclo.py, motor/encargos/dominio.py | David, 12-nov | un Medium anclado en una ruta congelada queda en «Hallazgos fuera de alcance» con su razón; uno en otra ruta, o un High en la congelada, vuelve al responsable |
 
-## Calidad
+## Reglas de trabajo
 
-Comandos locales:
+Iguales en todos los repos de David. Si otro documento de este repo dice otra cosa sobre calidad,
+candados, evidencia, rondas o pruebas, manda esto.
 
-- `python3 tools/calidad.py tipos` revisa con pyright en modo básico `motor/` y los dobles de
-  GitHub de `tests/`.
-- `python3 tools/calidad.py lint` revisa el código con ruff.
-- `python3 tools/calidad.py io` falla ante cualquier `read_text(`, `write_text(` o
-  `json.loads(...read_text...)` fuera de `motor/io.py`; solo `motor/daemon.py` queda exento
-  por la prohibición de tocar el modo planes.
-- `python3 tools/calidad.py tamano --base origin/main` falla si un archivo de `motor/` de más
-  de 1,000 líneas o una función de más de 100 mide más que en la base, en líneas o en tokens
-  de código, o si uno que en la base no existe o cabe pasa del límite. Borrar comentarios o
-  líneas en blanco no deja espacio. Los tamaños se leen de git; no hay línea base que editar.
-  En una ruta de `CONGELAMIENTOS` de `motor/encargos/politica.py` falla también cualquier
-  función nueva, aunque sea chica. Se arregla sacando código de ahí. En un PR también lo
-  juzga el job `tamano-desde-la-base` (`pull_request_target`), que corre el `calidad.py` de la
-  punta de la base con `--cabeza` sobre la unión del PR con esa punta, leída de git: editar la
-  herramienta o el workflow en el PR no lo apaga. Cada push a `main` lo repite en los PR
-  abiertos contra `main` (`tamano-al-avanzar-la-base.yml`).
-- `python3 tools/calidad.py kinds --base origin/main` falla si `motor/encargos/` o
-  `motor/integraciones/` escriben un kind de evento que el reductor de la base no sabe plegar:
-  desplegarlo bloquearía volver a la versión anterior. Se arregla en dos PR: el primero solo
-  enseña el kind al reductor y se despliega; el segundo agrega el escritor. En un PR lo juzga
-  también el job `tamano-desde-la-base`, igual que `tamano`: editar la herramienta en el PR no
-  lo apaga.
-- `python3 tools/pruebas_nuevas.py --base origin/main` falla si una prueba nueva o cambiada
-  pasa con el código de la base, salvo que lleve `# no-roja-en-base: <razón>`.
+- Todo cambio entra por PR; nadie sube directo a la rama principal.
+- Pruebas nuevas solo en 4 casos: dinero (precios, pujas, presupuestos, cobros), escribir datos de
+  producción, instalar o borrar en las máquinas, y una falla que ya pasó en producción (una prueba,
+  no una batería). Lo demás: basta comprobar que corre.
+- Las pruebas que ya existen deben pasar antes de mergear: en CI si el repo lo tiene; si no, en
+  local.
+- Revisa uno solo, distinto de quien escribió. Solo bloquea por seguridad, datos, el comportamiento
+  pedido roto o uno de los 4 casos sin su prueba, siempre con el comando que lo reproduce. Lo demás
+  va en notas.
+- DeepSeek opina en el PR; el revisor decide. Un hallazgo Low nunca abre otra vuelta.
+- Máximo 2 rondas de revisión por PR; una 3.ª solo por algo grave.
+- Los cambios grandes van detrás de un interruptor apagado y se despliegan poco a poco.
+- El tamaño de archivos y funciones es una meta, no un freno.
+- Los encargos o contratos para otro agente son cortos: qué debe pasar y cómo se comprueba.
+- Revisión cruzada con otro modelo solo cuando David la pide.
+- Nunca subas llaves ni contraseñas; no uses `--no-verify` sobre la revisión de secretos.
+- No agregues compuertas, checklists, revisores, baterías ni CI obligatorios sin que David lo pida.
 
-La línea base de los errores de hoy está en `.github/calidad/baseline.json`. Solo frena los
-errores nuevos. Para regenerarla se corre `python3 tools/calidad.py tipos --actualizar` con el
-código de la rama base. Las herramientas se instalan con
-`python3 -m pip install pyright==1.1.414 ruff==0.17.4`. Las pruebas del job de reevaluación en
-`tests/test_calidad_tamano.py` necesitan `jq` en el PATH; las imágenes de GitHub Actions lo traen.
+### Solo en este repo
 
-## Pruebas y revisiones
-
-- Elige pruebas, verificaciones y revisiones que aporten evidencia útil al comportamiento solicitado
-  y al riesgo del cambio. Explica qué demuestra cada comprobación y qué incertidumbre resuelve.
-- Explica el impacto real y la evidencia de cada hallazgo. Distingue los problemas que impiden
-  cumplir el pedido de las observaciones que ayudan a mejorarlo.
-- Aplica poteto-mode siempre y usa las skills, herramientas y apoyos que aporten al trabajo.
-  La revisión por otro modelo y la revisión real de DeepSeek se mantienen en el flujo de entrega.
-- Conserva la evidencia que sigue siendo válida. Repite una comprobación o amplía una revisión
-  cuando un cambio, un riesgo o información nueva lo justifiquen.
-- Nunca subir contrasenas ni llaves a un repo.
+- Antes de mergear un cambio del reductor o de la validación, corre
+  `ops/compuerta-plegado.sh --sha <cabeza>` en las tres máquinas. Solo lee y tarda un minuto.
+- Un kind de evento nuevo se enseña primero al reductor y se despliega antes que su escritor. Antes
+  de mergear un PR que escriba eventos, el revisor corre `python3 tools/calidad.py kinds --base origin/main`.
+- Después de desplegar, corre `ops/canario-encargos.sh` en las tres máquinas.
