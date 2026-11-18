@@ -255,11 +255,13 @@ def _clase_de_espera(motivo: object) -> str:
 def _espera_sostenida(enc: Encargo, ahora: float, desde: float | None) -> bool:
     """La misma espera visible se ha sostenido más allá del umbral. El rearme
     normal (plazo y otra vez espera) conserva `desde`; el texto de la alerta es
-    fijo para que la firma no cambie en cada vuelta. Desde la 5.1 la ventana se
-    lee de `espera_abierta` del plegado, sin repasar los eventos."""
-    abierta = _epoch(enc.espera_abierta) if enc.espera_abierta else None
-    if abierta is not None:
-        desde = abierta
+    fijo para que la firma no cambie en cada vuelta. Con `ESPERAS_V5` encendido
+    la ventana se lee de `espera_abierta` del plegado, sin repasar los eventos;
+    apagado, se reconstruye como hoy."""
+    from .politica import ESPERAS_V5
+
+    if ESPERAS_V5 and enc.espera_abierta:
+        desde = _epoch(enc.espera_abierta)
     if desde is None or ahora - desde < ALERTA_ESPERA_S:
         return False
     return _paso(enc).startswith("esperando ")

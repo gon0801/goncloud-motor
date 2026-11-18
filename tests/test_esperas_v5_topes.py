@@ -172,6 +172,20 @@ class ReintentosLargos(Banco):
         enc = self.reg.fold(self.enc)
         self.assertFalse([i for i in enc.impedimentos if i.clase == "repo"])
 
+    def test_repo_encendido_sigue_la_escalera(self):
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            for i in range(3):
+                ciclo._fallo_de_repo(
+                    self.reg, self.reg.fold(self.enc),
+                    "git fetch: no se alcanza el remoto", f"2026-11-18T10:0{i}:00Z",
+                    f"repo-{i}",
+                )
+        esperas = _eventos(self.reg, self.enc, "espera")
+        self.assertEqual(
+            [e["data"]["reanuda_en"] for e in esperas],
+            ["2026-11-18T10:05:00Z", "2026-11-18T10:16:00Z", "2026-11-18T10:32:00Z"],
+        )
+
     def test_el_tropiezo_de_merge_se_reintenta_con_el_interruptor_encendido(self):
         from motor.respuestas_merge import BaseMovida, tras_el_rechazo
 
@@ -181,6 +195,35 @@ class ReintentosLargos(Banco):
                 tras_el_rechazo(BaseMovida(causa), None, causa, 9), (causa, causa)
             )
         self.assertEqual(tras_el_rechazo(BaseMovida(causa), None, causa, 9)[0], "")
+
+    def test_la_escalera_del_merge_espacia_los_reintentos(self):
+        from motor.encargos.tabla_esperas import reanuda_en
+
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            self.assertEqual(
+                [reanuda_en("tropiezo_merge", H0, n) for n in (1, 2, 3, 4)],
+                [
+                    "2026-11-18T10:02:00Z", "2026-11-18T10:05:00Z",
+                    "2026-11-18T10:15:00Z", "2026-11-18T10:30:00Z",
+                ],
+            )
+
+
+class Vencimiento(Banco):
+    def test_una_hora_que_no_se_lee_no_adelanta_el_plazo(self):
+        self.espera("proveedor", H0, reanuda_en="0")
+        enc = self.reg.fold(self.enc)
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            self.assertFalse(ciclo._vencio_la_reanudacion(enc, H0))
+            self.assertFalse(ciclo._vencio_la_reanudacion(enc, H_59))
+            self.assertTrue(ciclo._vencio_la_reanudacion(enc, H_61))
+
+    def test_una_hora_con_desplazamiento_vence_en_su_instante(self):
+        self.espera("proveedor", H0, reanuda_en="2026-11-18T03:00:00-07:00")
+        enc = self.reg.fold(self.enc)
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            self.assertFalse(ciclo._vencio_la_reanudacion(enc, "2026-11-18T09:59:00Z"))
+            self.assertTrue(ciclo._vencio_la_reanudacion(enc, "2026-11-18T10:00:00Z"))
 
 
 class Resumen(Banco):
@@ -196,9 +239,14 @@ class Resumen(Banco):
         self.espera("proveedor", H0)
         enc = self.reg.fold(self.enc)
         desde = resumen._epoch(enc.espera_abierta)
-        self.assertTrue(
-            resumen._espera_sostenida(enc, desde + 3 * 60 * 60, None)
-        )
-        self.assertFalse(
-            resumen._espera_sostenida(enc, desde + 60 * 60, None)
-        )
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            self.assertTrue(
+                resumen._espera_sostenida(enc, desde + 3 * 60 * 60, None)
+            )
+            self.assertFalse(
+                resumen._espera_sostenida(enc, desde + 60 * 60, None)
+            )
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", False):
+            self.assertFalse(
+                resumen._espera_sostenida(enc, desde + 3 * 60 * 60, None)
+            )

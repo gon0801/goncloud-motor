@@ -1656,6 +1656,24 @@ def _vencio_sin_hora(enc: Encargo, hora: str) -> bool:
     return ahora >= _reanuda_desde(abierta, politica.TOPE_ESPERA_MIN * 60)
 
 
+def _vencio_la_reanudacion(enc: Encargo, hora: str) -> bool:
+    """La hora de reanudación de la espera ya pasó.
+
+    Encendido el interruptor mandan los instantes, no el texto: una hora con
+    desplazamiento o una forma rara no puede vencer antes de su momento. Si la
+    hora no se lee, manda el plazo desde la apertura.
+    """
+    from .tabla_esperas import hora_canonica
+
+    if not politica.ESPERAS_V5:
+        return bool(hora >= enc.reanuda_en)
+    reanuda = hora_canonica(enc.reanuda_en)
+    ahora = hora_canonica(hora)
+    if reanuda and ahora:
+        return ahora >= reanuda
+    return _vencio_sin_hora(enc, hora)
+
+
 def _barrer_encargos(
     registro: Registro,
     ids: list[str],
@@ -1679,7 +1697,7 @@ def _barrer_encargos(
         if enc is None:
             continue
         if enc.estado == "esperando_reintento" and enc.reanuda_en and (
-            hora >= enc.reanuda_en or _vencio_sin_hora(enc, hora)
+            _vencio_la_reanudacion(enc, hora)
         ):
             enc = _tope_de_la_espera(registro, enc, hora)
             if enc.estado == "esperando_reintento":
@@ -4405,7 +4423,11 @@ def _fallo_de_repo(
     # La serie es del intento: los fallos siguientes del mismo intento suman en `espera`.
     if registro.por_ukey(fallo.ukey) is None:
         Directo(registro, enc).con(fallo)
-    marcar_espera(registro, enc.id, "repo", causa, hora)
+    enc = registro.fold(enc.id) or enc
+    # La serie suma la espera que se escribe ahora; el intento que va es el
+    # siguiente, y es el que decide la escalera de la reanudación.
+    previas = _fallos_de_repo_seguidos(enc, causa)
+    marcar_espera(registro, enc.id, "repo", causa, hora, intentos=previas + 1)
     enc = registro.fold(enc.id) or enc
     veces = _fallos_de_repo_seguidos(enc, causa)
     if politica.ESPERAS_V5:
@@ -8432,9 +8454,10 @@ def _paso_despliegue_fase(
             return enc
     politica = politica_despliegue.resolver(espacio, enc, fase)
     if politica.requiere_despliegue is None:
-        # Igual que `esperando`: sin declarar si la fase despliega no hay receta
-        # que correr, y esperar sin contar retenía el cierre del encargo para
-        # siempre.
+        if not politica.ESPERAS_V5:
+            # Apagado el interruptor, una fase sin declaración sigue pendiente
+            # de que se declare: no gasta intentos ni libera el cierre.
+            return enc
         return _espera_sin_receta(
             registro, enc, fase,
             "falta declarar si la fase despliega y su receta real", hora,
@@ -9346,6 +9369,7 @@ def _paso_entrega_paso(
                     "checks_merge" if checks is not None and checks.en_marcha
                     else "tropiezo_merge",
                     espera, hora,
+                    intentos=_fallos_de_repo_seguidos(enc, causa) + 1,
                 )
                 return _con_espera(registro.fold(enc.id) or enc)
             if checks is not None and checks.fallas:
