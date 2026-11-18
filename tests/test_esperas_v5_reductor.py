@@ -144,6 +144,9 @@ class HechosDeEspera(unittest.TestCase):
     def test_autoridad_recuperada_invalida_su_tope_aunque_siga_esperando(self):
         e = esperar(pedido(), "checks_merge")
         e = reducir(e, evento("autoridad", H2, alcanzable=False), nuevo=True)
+        vigente = reducir(e, evento("tope_espera", H3, clase="autoridad",
+                                    abierta=H2, tope=H3), nuevo=True)
+        self.assertEqual(vigente.estado, "detenido")
         e = reducir(e, evento("autoridad", H3, alcanzable=True), nuevo=True)
         self.assertTrue(e.autoridad)
         with self.assertRaises(TransicionIlegal):
