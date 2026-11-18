@@ -1,7 +1,7 @@
-"""`calidad.py tamano` frena que un archivo o una función de `motor/` crezca.
+"""`calidad.py tamano` mide si un archivo o una función de `motor/` crece; ya no frena nada.
 
 Cada prueba arma un repo de git temporal con su propio `motor/`, guarda una base
-en un commit y corre la herramienta como la corre el CI, contra esa base.
+en un commit y corre la herramienta como la corría el CI, contra esa base.
 """
 
 from __future__ import annotations

@@ -53,5 +53,6 @@ candados, evidencia, rondas o pruebas, manda esto.
 
 - Antes de mergear un cambio del reductor o de la validación, corre
   `ops/compuerta-plegado.sh --sha <cabeza>` en las tres máquinas. Solo lee y tarda un minuto.
-- Un kind de evento nuevo se enseña primero al reductor y se despliega antes que su escritor.
+- Un kind de evento nuevo se enseña primero al reductor y se despliega antes que su escritor. Antes
+  de mergear un PR que escriba eventos, el revisor corre `python3 tools/calidad.py kinds --base origin/main`.
 - Después de desplegar, corre `ops/canario-encargos.sh` en las tres máquinas.
