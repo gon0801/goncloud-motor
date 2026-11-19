@@ -196,6 +196,121 @@ class EscritoresDeLaClase(unittest.TestCase):
             )
 
 
+class _LibroOcupado:
+    """Lo mínimo de `despliegue` que mira `_despliegue_ocupado` al vencer."""
+
+    def __init__(self, ultimo: str) -> None:
+        self.ultimo = ultimo
+
+    def ocupado(self, registro, enc):
+        return {"intentos": 1, "ultimo": self.ultimo, "proceso": "app.cli vivo"}
+
+    def recibo_de(self, registro, enc, fase):
+        return None
+
+
+class PlazoDeLaVentana(unittest.TestCase):
+    """Un plazo es el vencimiento de una ventana: encargo, reanudación y apertura.
+
+    Un plazo ya consumido no puede tapar el de otra ventana con la misma
+    reanudación, y los tres escritores usan la misma clave. Tras detener y
+    continuar la ventana queda vacía: la espera siguiente estrena apertura y su
+    plazo también.
+    """
+
+    REANUDA = "2026-11-18T10:30:00Z"
+    NUEVA = "2026-11-18T10:40:00Z"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.reg = Registro(Path(self._tmp.name) / "base")
+        self.addCleanup(self.reg.close)
+        self.enc = _recibir(self.reg)
+        ciclo._RACHA_BARRIDO.clear()
+
+    def _detener_y_continuar(self) -> None:
+        # Sin proceso, el fallo interno deja el encargo detenido en el acto;
+        # continuar borra la ventana, como la orden del propietario.
+        self.reg.anotar(
+            self.enc,
+            {"kind": "fallo_interno", "data": {
+                "rechazo": "ajena", "kind": "plazo", "ukey": "plazo:*",
+                "campos": "@kind,nota", "hora": H1,
+            }},
+            "fallo-de-prueba",
+        )
+        ciclo.ordenar(self.reg, self.enc, "continuar", "sigo-1", H1)
+        self.assertEqual(self.reg.fold(self.enc).espera_abierta, "")
+
+    def _plazos(self) -> list[dict]:
+        return [e for e in self.reg.eventos(self.enc) if e["kind"] == "plazo"]
+
+    def test_el_barrido_cierra_la_ventana_nueva_con_su_propia_clave(self):
+        ciclo.marcar_espera(
+            self.reg, self.enc, "github_pasajero", "GitHub caído", H0,
+            reanuda_en=self.REANUDA,
+        )
+        ciclo._barrer_encargos(
+            self.reg, [self.enc], self.REANUDA,
+            ciclo._epoch_de_hora(self.REANUDA), None,
+        )
+        self.assertEqual(self.reg.fold(self.enc).estado, "recibido")
+
+        self._detener_y_continuar()
+        ciclo.marcar_espera(
+            self.reg, self.enc, "github_pasajero", "GitHub caído", self.NUEVA,
+            reanuda_en=self.REANUDA,
+        )
+        self.assertEqual(self.reg.fold(self.enc).espera_abierta, self.NUEVA)
+        ciclo._barrer_encargos(
+            self.reg, [self.enc], self.NUEVA,
+            ciclo._epoch_de_hora(self.NUEVA), None,
+        )
+
+        self.assertEqual(self.reg.fold(self.enc).estado, "recibido")
+        self.assertEqual(len(self._plazos()), 2)
+        for abierta in (H0, self.NUEVA):
+            self.assertIsNotNone(
+                self.reg.por_ukey(
+                    ciclo._clave_de_plazo(self.enc, self.REANUDA, abierta)
+                )
+            )
+
+    def test_el_despliegue_ocupado_consume_el_plazo_de_su_ventana(self):
+        ciclo.marcar_espera(
+            self.reg, self.enc, "destino_ocupado", "el destino está ocupado", H0,
+            reanuda_en=self.REANUDA,
+        )
+        self._detener_y_continuar()
+        # La ventana anterior ya consumió su plazo con la clave histórica: es lo
+        # que escribía el camino ocupado antes de unificar la clave.
+        self.reg.anotar(
+            self.enc, {"kind": "plazo", "data": {"hora": self.REANUDA}},
+            ciclo._clave_de_plazo(self.enc, self.REANUDA, ""),
+        )
+        ciclo.marcar_espera(
+            self.reg, self.enc, "destino_ocupado", "el destino está ocupado",
+            self.NUEVA, reanuda_en=self.REANUDA,
+        )
+        self.assertEqual(self.reg.fold(self.enc).espera_abierta, self.NUEVA)
+
+        with mock.patch.object(
+            tabla_esperas, "reanuda_en", lambda clase, base, intentos=1: base
+        ):
+            ciclo._despliegue_ocupado(
+                self.reg, self.reg.fold(self.enc), _LibroOcupado(self.REANUDA),
+                self.NUEVA,
+            )
+
+        self.assertEqual(self.reg.fold(self.enc).estado, "recibido")
+        self.assertIsNotNone(
+            self.reg.por_ukey(
+                ciclo._clave_de_plazo(self.enc, self.REANUDA, self.NUEVA)
+            )
+        )
+
+
 class OrdenEsperada(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
