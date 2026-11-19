@@ -5140,12 +5140,15 @@ def _accion_deepseek_si_toca(
     sha: str,
     primera: str,
     hora: str,
+    revisor=None,
 ) -> bool:
     """La acción propia de la espera de DeepSeek: disparar al revisor.
 
     Es lo único que la espera hace antes de su tope aunque la lectura siga
     diciendo «todavía no». Se dispara a los dos minutos del primer envío y una
-    sola vez por SHA; el evento es el mismo que escribe el paso.
+    sola vez por SHA; el evento es el mismo que escribe el paso. El paso pasa el
+    `revisor` que ya leyó para no repetir su lectura (y su `git fetch`) en la
+    misma vuelta; la espera por hecho, que no lo tiene, lo resuelve aquí.
     """
     fase = enc.fase_actual
     if gh is None or fase is None or not enc.pr_numero:
@@ -5158,7 +5161,8 @@ def _accion_deepseek_si_toca(
     )
     if disparado:
         return False
-    revisor = revisor_deepseek(espacio, sha, _base_objetivo_del_pr(enc, gh))
+    if revisor is None:
+        revisor = revisor_deepseek(espacio, sha, _base_objetivo_del_pr(enc, gh))
     if not revisor.disparo or _minutos_desde(primera, hora) < 2:
         return False
     _disparar_deepseek(gh, enc, espacio, sha, revisor.disparo)
@@ -9574,7 +9578,7 @@ def _paso_entrega_paso(
             return _paso_entrega_paso(registro, enc, gh, hora)
         if not comentarios:
             _accion_deepseek_si_toca(
-                registro, enc, gh, espacio, sha, primera, hora
+                registro, enc, gh, espacio, sha, primera, hora, revisor=revisor
             )
             if minutos >= revisor.espera_min:
                 texto = texto_de_omision(revisor, sha, minutos)
