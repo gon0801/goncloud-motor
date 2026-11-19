@@ -45,8 +45,9 @@ sigue y se anota por qué.
   pedido roto o uno de los 4 casos sin su prueba, con el comando que lo reproduce o, si no se puede
   reproducir, la línea exacta y el riesgo. Lo demás va en notas.
 - Sin tope de rondas: se sigue mientras cada ronda traiga avance, y nadie pide permiso por una
-  ronda más. Si el mismo bloqueante vuelve tres rondas seguidas sin avance, la siguiente la hace otro
-  modelo más fuerte; solo se detiene si ese tampoco puede, y dice por qué.
+  ronda más. A la segunda vuelta seguida sin avance, el rol pasa a otro modelo autorizado; si ese
+  tampoco avanza, se entrega el PR con los pendientes abiertos, sin detenerse
+  (`docs/flujo-revisiones.md`).
 - Todo cambio que toca producción dice en el PR cómo regresarlo.
 - Nunca subas llaves ni contraseñas; no uses `--no-verify` sobre la revisión de secretos. Si marca
   algo que no es una llave, se agrega a `.gitleaksignore` con su razón y se sigue.
