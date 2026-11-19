@@ -1746,7 +1746,7 @@ def _cerrar_espera_por_hecho(
         registro.anotar(
             enc.id,
             {"kind": "plazo", "data": {"hora": hora}},
-            f"plazo:{enc.id}:{enc.reanuda_en}",
+            _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
         )
     except Rechazo:
         return enc
@@ -1889,6 +1889,19 @@ def _impedimento_frena(enc: Encargo) -> bool:
     return impedimento_bloquea_trabajo(enc)
 
 
+def _clave_de_plazo(encargo_id: str, reanuda_en: str, abierta: str) -> str:
+    """La clave del vencimiento de una ventana: encargo, reanudación y apertura.
+
+    Los tres caminos que consumen un plazo (el barrido y las dos reaperturas de
+    `_despliegue_ocupado`) usan esta misma clave, para que el vencimiento de una
+    ventana sea un solo evento lo mire quien lo mire. Sin apertura se conserva
+    la clave histórica `plazo:{encargo}:{reanuda}`, que es la que ya traen los
+    registros escritos antes de que la espera guardara su ventana.
+    """
+    base = f"plazo:{encargo_id}:{reanuda_en}"
+    return f"{base}:{abierta}" if abierta else base
+
+
 def _barrer_encargos(
     registro: Registro,
     ids: list[str],
@@ -1926,7 +1939,9 @@ def _barrer_encargos(
                     registro.anotar(
                         encargo_id,
                         {"kind": "plazo", "data": {"hora": hora}},
-                        f"plazo:{encargo_id}:{enc.reanuda_en}",
+                        _clave_de_plazo(
+                            encargo_id, enc.reanuda_en, enc.espera_abierta
+                        ),
                     )
                     enc = registro.fold(encargo_id)
         elif enc.estado not in ("terminado", "cancelado"):
@@ -4578,8 +4593,9 @@ def _incorporar_entradas(
 
 # Los topes y las escaleras de las esperas viven en `tabla_esperas`: aquí solo
 # se leen, y el nombre de cada uno dice de qué clase sale. `hoy` es lo que hacía
-# el motor desde f30430f; con `politica.ESPERAS_V5` encendido manda la conducta
-# nueva y estos topes dejan de aplicarse.
+# el motor desde f30430f. Estas cuentas se siguen comparando sin mirar
+# `politica.ESPERAS_V5` hasta que la 5.2 escriba `tope_espera`; entonces dejan
+# de aplicarse.
 TOPE_FALLOS_REPO = tabla_esperas.tope_intentos_de_hoy("repo")
 TOPE_FALLOS_ENTREGA = tabla_esperas.tope_intentos_de_hoy("empuje")
 # Lo que el aviso del resumen dice en palabras simples cuando se corta el bucle.
@@ -10009,7 +10025,7 @@ def _despliegue_ocupado(
                 registro.anotar(
                     enc.id,
                     {"kind": "plazo", "data": {"hora": hora}},
-                    f"plazo:{enc.id}:{enc.reanuda_en}",
+                    _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
                 )
             return None
         texto = (
@@ -10043,13 +10059,14 @@ def _despliegue_ocupado(
         )
         return _con_espera(registro.fold(enc.id) or enc)
     if enc.estado == "esperando_reintento":
-        # La espera venció: reabre el encargo con el mismo evento plazo que usa
-        # el barrido (deduplicado por ukey) para que el recibo ocupado vuelva a
-        # ser reintentable en este mismo paso.
+        # La espera venció: reabre el encargo con la misma clave de plazo que
+        # usa el barrido para esta ventana (encargo, reanudación y apertura),
+        # así el vencimiento es un solo evento y el recibo ocupado vuelve a ser
+        # reintentable en este mismo paso.
         registro.anotar(
             enc.id,
             {"kind": "plazo", "data": {"hora": hora}},
-            f"plazo:{enc.id}:{enc.reanuda_en}",
+            _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
         )
     return None
 
@@ -10571,6 +10588,21 @@ def marcar_espera(
             # se escribe el plazo.
             return vista(enc)
     reanuda_en = reanuda_en or tabla_esperas.reanuda_en(clase, hora, intentos)
+    tope = tabla_esperas.tope_de(clase, abierta, desde)
+    # La clave histórica es la de antes de la 5.1: mismo motivo y misma
+    # reanudación. Repetir esa escritura después del despliegue tiene que caer
+    # en el cotejo de compatibilidad y dar `igual`, no insertar otro evento que
+    # devuelva a espera un encargo que ya había avanzado. Solo una apertura
+    # distinta, de una espera que ya trae la clase, estrena clave.
+    ukey = f"espera:{encargo_id}:{reanuda_en}:{motivo}"
+    previa = registro.por_ukey(ukey)
+    if previa is not None:
+        guardada = previa.get("data") or {}
+        if not guardada.get("clase"):
+            abierta = str(guardada.get("abierta") or guardada.get("hora") or abierta)
+            tope = str(guardada.get("tope") or tope)
+        elif str(guardada.get("abierta") or "") != abierta:
+            ukey = f"{ukey}:{abierta}"
     registro.anotar(
         encargo_id,
         {
@@ -10581,10 +10613,10 @@ def marcar_espera(
                 "hora": hora,
                 "clase": clase,
                 "abierta": abierta,
-                "tope": tabla_esperas.tope_de(clase, abierta, desde),
+                "tope": tope,
             },
         },
-        f"espera:{encargo_id}:{reanuda_en}:{motivo}",
+        ukey,
     )
     return vista(registro.fold(encargo_id))
 
