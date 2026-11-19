@@ -176,6 +176,19 @@ class LecturasPorClase(unittest.TestCase):
         )
         self.assertTrue(cierres._checks_merge(ctx))
 
+    def test_una_punta_movida_despierta_el_paso(self):
+        from motor.github import PuntaMovida
+
+        ctx = SimpleNamespace(
+            gh=SimpleNamespace(
+                checks_requeridos=mock.Mock(side_effect=PuntaMovida("movida"))
+            ),
+            enc=SimpleNamespace(
+                pr_numero=1, pr_sha="a" * 40, entrega=SimpleNamespace(repo="r")
+            ),
+        )
+        self.assertTrue(cierres._checks_merge(ctx))
+
     def test_sin_puerto_github_cierra_cuando_aparece(self):
         self.assertFalse(cierres._sin_puerto_github(SimpleNamespace(gh=None)))
         self.assertTrue(cierres._sin_puerto_github(SimpleNamespace(gh=object())))
@@ -482,10 +495,7 @@ class MultifaseDeepSeek(unittest.TestCase):
         self.assertTrue(cierres._lectura_deepseek_fallida(ctx))
         self.assertEqual(llamadas[-1], (101, self.SHA_A))
 
-    def test_al_vencer_a_se_omite_y_el_cierre_sigue(self):
-        reg = Registro(Path(tempfile.mkdtemp()) / "base")
-        self.addCleanup(reg.close)
-        enc_id = _recibir(reg, "cierre-multifase")
+    def _cierre_multifase(self, reg, enc_id):
         a = Fase(
             "A", "x", estado="preparada", evidencia="ok", pr_numero=101,
             pr_sha=self.SHA_A, deepseek_sha=self.SHA_A,
@@ -512,24 +522,31 @@ class MultifaseDeepSeek(unittest.TestCase):
                 raise RuntimeError("gh api: 502")
             return []
 
-        gh = SimpleNamespace(comentarios_deepseek=comentarios)
-        antes = ciclo._veredicto_antes_de_cerrar(
-            reg, enc_cerrando(), gh, "2026-11-18T10:29:00Z"
-        )
-        self.assertIsNotNone(antes)
-        self.assertEqual(antes.estado, "esperando_reintento")
-        esperas = [e for e in reg.eventos(enc_id) if e["kind"] == "espera"]
-        self.assertEqual(esperas[-1]["data"]["numero"], 101)
+        return enc_cerrando, SimpleNamespace(comentarios_deepseek=comentarios)
 
-        reg.anotar(
-            enc_id, {"kind": "plazo", "data": {"hora": "2026-11-18T10:30:00Z"}},
-            f"plazo:{enc_id}:A",
-        )
-        self.assertIsNone(
-            ciclo._veredicto_antes_de_cerrar(
-                reg, enc_cerrando(), gh, "2026-11-18T10:30:00Z"
+    def test_al_vencer_a_se_omite_y_el_cierre_sigue(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "cierre-multifase")
+        enc_cerrando, gh = self._cierre_multifase(reg, enc_id)
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            antes = ciclo._veredicto_antes_de_cerrar(
+                reg, enc_cerrando(), gh, "2026-11-18T10:29:00Z"
             )
-        )
+            self.assertIsNotNone(antes)
+            self.assertEqual(antes.estado, "esperando_reintento")
+            esperas = [e for e in reg.eventos(enc_id) if e["kind"] == "espera"]
+            self.assertEqual(esperas[-1]["data"]["numero"], 101)
+
+            reg.anotar(
+                enc_id, {"kind": "plazo", "data": {"hora": "2026-11-18T10:30:00Z"}},
+                f"plazo:{enc_id}:A",
+            )
+            self.assertIsNone(
+                ciclo._veredicto_antes_de_cerrar(
+                    reg, enc_cerrando(), gh, "2026-11-18T10:30:00Z"
+                )
+            )
         notas = [e for e in reg.eventos(enc_id) if e["kind"] == "nota_pr"]
         self.assertTrue(
             any(
@@ -541,6 +558,43 @@ class MultifaseDeepSeek(unittest.TestCase):
         self.assertEqual(
             len([e for e in reg.eventos(enc_id) if e["kind"] == "espera"]), 1
         )
+
+    def test_con_el_interruptor_apagado_la_relectura_vencida_sigue_esperando(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "cierre-sin-interruptor")
+        enc_cerrando, gh = self._cierre_multifase(reg, enc_id)
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", False):
+            resultado = ciclo._veredicto_antes_de_cerrar(
+                reg, enc_cerrando(), gh, "2026-11-18T10:30:00Z"
+            )
+        self.assertIsNotNone(resultado)
+        self.assertEqual(resultado.estado, "esperando_reintento")
+        self.assertFalse(
+            [e for e in reg.eventos(enc_id) if e["kind"] == "nota_pr"]
+        )
+        self.assertEqual(
+            len([e for e in reg.eventos(enc_id) if e["kind"] == "espera"]), 1
+        )
+
+    def test_el_tope_sin_primer_envio_usa_el_registrado(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "tope-sin-envio")
+        ciclo.marcar_espera(
+            reg, enc_id, "lectura_deepseek_fallida", "no se pudo leer", H0,
+            desde=H0, numero=101, sha=self.SHA_A, fase="A",
+        )
+        enc = replace(reg.fold(enc_id), primer_envio_por_sha=())
+        self.assertFalse(ciclo._paso_el_tope_de_lectura(
+            reg, enc, 101, self.SHA_A, "2026-11-18T10:29:00Z"
+        ))
+        self.assertTrue(ciclo._paso_el_tope_de_lectura(
+            reg, enc, 101, self.SHA_A, "2026-11-18T10:30:00Z"
+        ))
+        self.assertFalse(ciclo._paso_el_tope_de_lectura(
+            reg, enc, 999, "c" * 40, "2026-11-18T10:30:00Z"
+        ))
 
     def test_una_espera_legada_sin_identidad_conserva_su_clave(self):
         reg = Registro(Path(tempfile.mkdtemp()) / "base")
