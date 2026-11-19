@@ -78,6 +78,15 @@ class EscritoresDeLaClase(unittest.TestCase):
             )
         self.assertEqual(self._espera()["reanuda_en"], "2026-11-18T10:02:00Z")
 
+    def test_el_sin_puerto_github_tambien_cuenta_desde_la_escritura(self):
+        from motor.encargos.entrega.ejecutar import esperar_sin_gh
+
+        with mock.patch.object(
+            ciclo, "_reanuda_en", return_value="2026-11-18T10:06:00Z"
+        ):
+            esperar_sin_gh(self.reg, self.reg.fold(self.enc), H0)
+        self.assertEqual(self._espera()["reanuda_en"], "2026-11-18T10:11:00Z")
+
     def test_la_misma_clase_conserva_apertura_y_otra_la_estrena(self):
         ciclo.marcar_espera(self.reg, self.enc, "sesion_local", "falló", H0)
         self.reg.anotar(
