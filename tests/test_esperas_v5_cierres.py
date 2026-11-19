@@ -482,6 +482,98 @@ class MultifaseDeepSeek(unittest.TestCase):
         self.assertTrue(cierres._lectura_deepseek_fallida(ctx))
         self.assertEqual(llamadas[-1], (101, self.SHA_A))
 
+    def test_al_vencer_a_se_omite_y_el_cierre_sigue(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "cierre-multifase")
+        a = replace(
+            Fase("A", "x"), estado="preparada", evidencia="ok", pr_numero=101,
+            pr_sha=self.SHA_A, deepseek_sha=self.SHA_A,
+            ultimo_paso_entrega="deepseek_leido",
+        )
+        b = replace(
+            Fase("B", "x"), pr_numero=202, pr_sha=self.SHA_B,
+            deepseek_sha=self.SHA_B, ultimo_paso_entrega="deepseek_leido",
+        )
+
+        def enc_cerrando():
+            base = reg.fold(enc_id)
+            return replace(
+                base, fase_activa="B", fases=(a, b),
+                entrega=replace(base.entrega, nivel="integrado"),
+                primer_envio_por_sha=(
+                    (self.SHA_A, H0),
+                    (self.SHA_B, "2026-11-18T10:20:00Z"),
+                ),
+            )
+
+        def comentarios(repo, numero, sha):
+            if numero == 101:
+                raise RuntimeError("gh api: 502")
+            return []
+
+        gh = SimpleNamespace(comentarios_deepseek=comentarios)
+        antes = ciclo._veredicto_antes_de_cerrar(
+            reg, enc_cerrando(), gh, "2026-11-18T10:29:00Z"
+        )
+        self.assertIsNotNone(antes)
+        self.assertEqual(antes.estado, "esperando_reintento")
+        esperas = [e for e in reg.eventos(enc_id) if e["kind"] == "espera"]
+        self.assertEqual(esperas[-1]["data"]["numero"], 101)
+
+        reg.anotar(
+            enc_id, {"kind": "plazo", "data": {"hora": "2026-11-18T10:30:00Z"}},
+            f"plazo:{enc_id}:A",
+        )
+        self.assertIsNone(
+            ciclo._veredicto_antes_de_cerrar(
+                reg, enc_cerrando(), gh, "2026-11-18T10:30:00Z"
+            )
+        )
+        notas = [e for e in reg.eventos(enc_id) if e["kind"] == "nota_pr"]
+        self.assertTrue(
+            any(
+                "sin relectura de DeepSeek del PR #101" in e["data"]["texto"]
+                for e in notas
+            ),
+            notas,
+        )
+        self.assertEqual(
+            len([e for e in reg.eventos(enc_id) if e["kind"] == "espera"]), 1
+        )
+
+    def test_una_espera_legada_sin_identidad_conserva_su_clave(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "legado-identidad")
+        reg.anotar(
+            enc_id,
+            {"kind": "espera", "data": {
+                "motivo": "no se pudo leer",
+                "reanuda_en": "2026-11-18T10:01:00Z",
+                "hora": H0,
+                "clase": "lectura_deepseek_fallida",
+                "abierta": H0,
+                "tope": "2026-11-18T10:30:00Z",
+            }},
+            f"espera:{enc_id}:2026-11-18T10:01:00Z:no se pudo leer",
+        )
+        reg.anotar(
+            enc_id,
+            {"kind": "plazo", "data": {"hora": "2026-11-18T10:01:00Z"}},
+            f"plazo:{enc_id}:legado",
+        )
+        antes = len([e for e in reg.eventos(enc_id) if e["kind"] == "espera"])
+        ciclo.marcar_espera(
+            reg, enc_id, "lectura_deepseek_fallida", "no se pudo leer", H0,
+            reanuda_en="2026-11-18T10:01:00Z",
+            numero=101, sha=self.SHA_A, fase="A",
+        )
+        self.assertEqual(
+            len([e for e in reg.eventos(enc_id) if e["kind"] == "espera"]), antes
+        )
+        self.assertEqual(reg.fold(enc_id).estado, "recibido")
+
     def test_otra_fase_con_el_mismo_motivo_estrena_su_identidad(self):
         reg = Registro(Path(tempfile.mkdtemp()) / "base")
         self.addCleanup(reg.close)

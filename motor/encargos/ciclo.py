@@ -6517,6 +6517,43 @@ def _cierre_sin_aplicar(
     return registro.fold(enc.id)
 
 
+def _paso_el_tope_de_lectura(enc: Encargo, sha: str, hora: str) -> bool:
+    """La relectura de ese SHA ya lleva el tope de DeepSeek desde su primer envío."""
+    from .politica import TOPE_DEEPSEEK_MIN
+
+    primera = _desde_del_primer_envio(enc, sha)
+    return bool(primera) and _minutos_desde(primera, hora) >= TOPE_DEEPSEEK_MIN
+
+
+def _anotar_omision_de_lectura(
+    registro: Registro,
+    enc: Encargo,
+    numero: int,
+    fase: str,
+    sha: str,
+    causa: str,
+    hora: str,
+) -> None:
+    """La relectura fallida de un PR cumplió su tope: se omite y el cierre sigue.
+
+    No resuelve los hallazgos que ese PR ya tenía: la omisión es de la
+    relectura, no de lo ya leído. La nota deja la causa a la vista.
+    """
+    from .politica import TOPE_DEEPSEEK_MIN
+
+    texto = (
+        f"sin relectura de DeepSeek del PR #{numero} de la fase {fase} tras "
+        f"{TOPE_DEEPSEEK_MIN} min: se omite y el cierre sigue con los "
+        "hallazgos conocidos"
+        + (f" ({causa})" if causa else "")
+    )
+    registro.anotar(
+        enc.id,
+        {"kind": "nota_pr", "data": {"texto": texto[:2000], "hora": hora}},
+        f"nota-deepseek-omitida:{enc.id}:{fase}:{sha}",
+    )
+
+
 def _veredicto_antes_de_cerrar(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> Encargo | None:
@@ -6542,64 +6579,77 @@ def _veredicto_antes_de_cerrar(
         return None
     fase = enc.fase_actual
     sha = enc.pr_sha
-    sha_leido = sha
-    numero_leido = enc.pr_numero
-    fase_leido = enc.fase_activa
     try:
         comentarios = _deepseek_con_contenido(
             gh.comentarios_deepseek(enc.entrega.repo, enc.pr_numero, sha), sha
         )
-        previas = []
-        if all(f.estado == "preparada" for f in enc.fases if f.id != enc.fase_activa):
-            for f in enc.fases:
-                if (
-                    f.id == enc.fase_activa
-                    or f.nivel_alcanzado not in ("pr", "integrado", "desplegado")
-                    or not f.pr_numero
-                    or not f.pr_sha
-                ):
-                    continue
-                sha_leido = f.pr_sha
-                numero_leido = f.pr_numero
-                fase_leido = f.id
-                previas.append(
-                    (
-                        f,
-                        _deepseek_con_contenido(
-                            gh.comentarios_deepseek(
-                                enc.entrega.repo, f.pr_numero, f.pr_sha
-                            ),
-                            f.pr_sha,
-                        ),
-                    )
-                )
     except Exception as exc:
-        if fase.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
-            causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
-            _anotar_instrumento(
-                registro, enc, "github", causa,
-                "reintentar la lectura de DeepSeek antes de cerrar",
-                hora, f"deepseek-cerrar-{sha[:12]}",
+        if fase.deepseek_huella == HUELLA_DEEPSEEK_SIN_REVISION:
+            return None
+        causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura de DeepSeek antes de cerrar",
+            hora, f"deepseek-cerrar-{sha[:12]}",
+        )
+        if _paso_el_tope_de_lectura(enc, sha, hora):
+            _anotar_omision_de_lectura(
+                registro, enc, enc.pr_numero, enc.fase_activa, sha, causa, hora
             )
-            # La fila cuenta desde el primer envío del SHA cuya lectura falló,
-            # que en el bucle de fases previas puede ser el de otra fase. Sin
-            # esa entrada, `tope_de` cae en la apertura de la espera.
-            primera = next(
-                (t for s, t in enc.primer_envio_por_sha if s == sha_leido), ""
-            )
+            comentarios = []
+        else:
+            primera = _desde_del_primer_envio(enc, sha)
             marcar_espera(
                 registro, enc.id, "lectura_deepseek_fallida", causa, hora,
                 desde=primera,
                 reloj="escritura",
-                numero=numero_leido,
-                sha=sha_leido,
-                fase=fase_leido,
+                numero=enc.pr_numero,
+                sha=sha,
+                fase=enc.fase_activa,
             )
             return registro.fold(enc.id)
-        # La fase siguió sin revisión: una relectura fallida no
-        # vuelve a frenar el cierre. Si llega un comentario, el siguiente
-        # barrido lo lee y lo trata como tardío.
-        return None
+    previas = []
+    if all(f.estado == "preparada" for f in enc.fases if f.id != enc.fase_activa):
+        for f in enc.fases:
+            if (
+                f.id == enc.fase_activa
+                or f.nivel_alcanzado not in ("pr", "integrado", "desplegado")
+                or not f.pr_numero
+                or not f.pr_sha
+            ):
+                continue
+            try:
+                leidos = _deepseek_con_contenido(
+                    gh.comentarios_deepseek(
+                        enc.entrega.repo, f.pr_numero, f.pr_sha
+                    ),
+                    f.pr_sha,
+                )
+            except Exception as exc:
+                if f.deepseek_huella == HUELLA_DEEPSEEK_SIN_REVISION:
+                    continue
+                causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
+                _anotar_instrumento(
+                    registro, enc, "github", causa,
+                    "reintentar la lectura de DeepSeek antes de cerrar",
+                    hora, f"deepseek-cerrar-{f.pr_sha[:12]}",
+                )
+                if _paso_el_tope_de_lectura(enc, f.pr_sha, hora):
+                    _anotar_omision_de_lectura(
+                        registro, enc, f.pr_numero, f.id, f.pr_sha, causa, hora
+                    )
+                    continue
+                primera = _desde_del_primer_envio(enc, f.pr_sha)
+                marcar_espera(
+                    registro, enc.id, "lectura_deepseek_fallida", causa, hora,
+                    desde=primera,
+                    reloj="escritura",
+                    numero=f.pr_numero,
+                    sha=f.pr_sha,
+                    fase=f.id,
+                )
+                return registro.fold(enc.id)
+            previas.append((f, leidos))
     if comentarios and _huella_comentarios(comentarios) != fase.deepseek_huella:
         enc = _anotar_lectura_deepseek(
             registro, enc, enc.pr_numero, sha, comentarios, hora
@@ -10566,12 +10616,28 @@ def marcar_espera(
     # en el cotejo de compatibilidad y dar `igual`, no insertar otro evento que
     # devuelva a espera un encargo que ya había avanzado. Solo una apertura
     # distinta, de una espera que ya trae la clase, estrena clave.
-    ukey = f"espera:{encargo_id}:{reanuda_en}:{motivo}"
-    if numero or sha:
+    base_ukey = f"espera:{encargo_id}:{reanuda_en}:{motivo}"
+    previa = registro.por_ukey(base_ukey)
+    datos_previos = (previa or {}).get("data") or {}
+    try:
+        numero_previo = int(datos_previos.get("numero") or 0)
+    except (TypeError, ValueError):
+        numero_previo = 0
+    legado_sin_identidad = previa is not None and not (
+        str(datos_previos.get("sha") or "") or numero_previo
+    )
+    if (numero or sha) and not legado_sin_identidad:
         # La identidad de la lectura fallida forma parte de la clave: otra
         # fase o SHA con el mismo motivo es otra espera, no la misma.
-        ukey = f"{ukey}:{int(numero or 0)}:{sha}"
-    previa = registro.por_ukey(ukey)
+        ukey = f"{base_ukey}:{int(numero or 0)}:{sha}"
+    else:
+        ukey = base_ukey
+    if legado_sin_identidad:
+        # La escritura histórica no tenía identidad: se conserva su clave y su
+        # payload para no reabrir una ventana cuyo plazo ya se consumió.
+        numero, sha, fase = 0, "", ""
+    if ukey != base_ukey:
+        previa = registro.por_ukey(ukey)
     if previa is not None:
         guardada = previa.get("data") or {}
         if not guardada.get("clase"):
