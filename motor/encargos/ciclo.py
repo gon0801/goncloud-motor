@@ -1756,18 +1756,8 @@ def _cerrar_espera_por_hecho(
         return enc
     if enc.estado != "esperando_reintento":
         return enc
-    try:
-        registro.anotar(
-            enc.id,
-            {"kind": "plazo", "data": {
-                "hora": hora,
-                "ventana": [enc.espera_clase, enc.espera_abierta, enc.reanuda_en],
-            }},
-            _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
-        )
-    except EventoIlegal:
-        return enc
-    return registro.fold(enc.id) or enc
+    enc, _aplicado = _plazo_de_la_ventana(registro, enc, hora)
+    return enc
 
 
 def _puede_actuar_en_espera(registro: Registro, enc: Encargo) -> bool:
