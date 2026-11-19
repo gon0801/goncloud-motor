@@ -448,6 +448,28 @@ def _rutas(receta: dict) -> None:
             raise ValueError(f"falta receta real: {paso} debe ser una ruta relativa dentro del repo")
 
 
+def receta_resuelta(enc, base: Path, politica) -> bool:
+    """La receta, el SHA y la máquina ya permiten intentar el despliegue.
+
+    Es la misma comprobación que hace `iniciar` antes de lanzar, sin lanzar.
+    Una receta inválida mantiene abierta `despliegue_sin_receta` hasta que se
+    corrija; cerrarla dejaría que el paso la reabriera con el mismo error y
+    reiniciara su tope en cada vuelta.
+    """
+    receta = {k: getattr(politica, k) for k in ("desplegar", "checklist", "rollback")}
+    fase = enc.fase_actual
+    try:
+        _rutas(receta)
+        if fase is None or not re.fullmatch(
+            r"[0-9a-f]{40,64}", str(fase.integrado_sha or "")
+        ):
+            return False
+        _maquina(base)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return True
+
+
 def _objeto(path: Path) -> dict:
     datos = leer_json(path)
     if not isinstance(datos, dict):

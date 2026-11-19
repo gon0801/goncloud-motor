@@ -1,0 +1,433 @@
+"""Lecturas de cierre de las esperas por hecho, compartidas por el paso y el barrido.
+
+Con `politica.ESPERAS_V5` encendido, una espera por hecho no se vuelve a mirar
+cada pasada: el barrido pregunta aquí si toca leer, llama a la función de la
+clase y solo cuando la lectura cierra escribe el evento de cierre. Mientras la
+lectura diga «todavía no» o «no se pudo leer», no se escribe nada.
+
+Cada función devuelve `True` si la espera cerró, `False` si todavía no y `None`
+si no se pudo leer. El intervalo y el tope salen de `tabla_esperas`; el cuándo
+volver a leer vive en memoria del proceso, como los sondeos de la limpieza. Al
+reiniciar el supervisor no hay memoria y se lee enseguida.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Callable
+from weakref import WeakKeyDictionary
+
+from . import tabla_esperas
+from .tabla_esperas import ESPERAS, ClaseEspera
+
+LecturaCierre = Callable[["Contexto"], bool | None]
+
+# (encargo, clase, apertura) -> epoch de la última lectura. El barrido y el paso
+# comparten la misma tabla: una espera no se lee dos veces por la misma vuelta.
+_SONDEOS: WeakKeyDictionary[object, dict[tuple[str, str, str], float]] = (
+    WeakKeyDictionary()
+)
+
+
+@dataclass(frozen=True)
+class Contexto:
+    """Lo que una lectura de cierre necesita, sin importar el paso que la abre."""
+
+    registro: object
+    enc: object
+    hora: str
+    epoch: float
+    gh: object = None
+    espacio: object = None
+    directorio: object = None
+    arbol: str = ""
+    puede_actuar: bool = True
+
+
+def olvidar(registro: object, encargo_id: str = "") -> None:
+    """Olvida las lecturas de un encargo, o de toda la base, en este proceso."""
+    if encargo_id:
+        sondeos = _SONDEOS.get(registro, {})
+        for clave in [c for c in sondeos if c[0] == encargo_id]:
+            sondeos.pop(clave, None)
+        return
+    _SONDEOS.pop(registro, None)
+
+
+def _epoch(hora: str) -> float:
+    try:
+        return datetime.fromisoformat(str(hora).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def toca_mirar(
+    registro: object,
+    enc: object,
+    clase: str,
+    epoch: float,
+    intervalo_s: int,
+) -> bool:
+    """¿Pasó el intervalo desde la última lectura de esta espera?
+
+    `intervalo_s == 0` significa cada pasada. Sin memoria previa (arranque del
+    supervisor) devuelve `True`: al reiniciar se lee enseguida.
+    """
+    clave = (str(getattr(enc, "id", "")), clase, str(getattr(enc, "espera_abierta", "")))
+    sondeos = _SONDEOS.setdefault(registro, {})
+    previo = sondeos.get(clave)
+    if intervalo_s > 0 and previo is not None and 0 <= epoch - previo < intervalo_s:
+        return False
+    sondeos[clave] = epoch
+    return True
+
+
+def cerrar(ctx: Contexto) -> bool | None:
+    """La lectura de cierre de la espera vigente.
+
+    Una clase que no es por hecho no tiene lectura propia: el reloj la cierra
+    como hoy y aquí se devuelve `True`. Una clase por hecho sin función de
+    cierre también deja el camino de hoy.
+    """
+    clase = str(getattr(ctx.enc, "espera_clase", "") or "")
+    fila = ESPERAS.get(clase) if clase in ESPERAS else None
+    if fila is None or fila.tipo != "por_hecho":
+        return True
+    lectura = CIERRES.get(clase)
+    if lectura is None:
+        return True
+    intentos = _intentos_de(ctx.enc)
+    intervalo = tabla_esperas.intervalo_s(clase, intentos)
+    if not toca_mirar(
+        ctx.registro, ctx.enc, clase, ctx.epoch, intervalo
+    ):
+        return False
+    return lectura(ctx)
+
+
+def _intentos_de(enc: object) -> int:
+    """El intento de la espera, para las escaleras: `espera_tope` lo dice."""
+    tope = str(getattr(enc, "espera_tope", "") or "")
+    if tope.endswith(" intentos"):
+        try:
+            return max(1, int(tope.split()[0]))
+        except (TypeError, ValueError):
+            return 1
+    return 1
+
+
+# --------------------------------------------------------------------------
+# Una lectura por clase por hecho.
+# --------------------------------------------------------------------------
+
+
+def _revision_deepseek(ctx: Contexto) -> bool | None:
+    """Cierra con un comentario de DeepSeek en el SHA, o con su sticky de timeout.
+
+    Antes del tope hay una acción propia: el disparo del revisor a los dos
+    minutos del primer envío. Se ejecuta aunque la lectura diga «todavía no», y
+    escribe su evento una sola vez. Si el registro no tiene el primer envío (un
+    PR adoptado), la edad se mide desde la apertura de la espera de ese mismo
+    PR y SHA: sin eso, cada sondeo contaría cero minutos y el revisor no
+    tendría tiempo de responder antes de la omisión.
+    """
+    from .ciclo import _accion_deepseek_si_toca, _leer_deepseek
+
+    from .lectura import Error as ErrorLectura, Pendiente as PendienteLectura
+
+    enc, gh = ctx.enc, ctx.gh
+    fase = getattr(enc, "fase_actual", None)
+    if gh is None or fase is None or not fase.pr_sha:
+        return None
+    sha = str(fase.pr_sha)
+    numero = int(getattr(fase, "pr_numero", 0) or 0)
+    primera = _primera_de_la_lectura(
+        ctx, "revision_deepseek", numero, sha, str(getattr(fase, "id", "") or "")
+    )
+    lectura = _leer_deepseek(gh, enc.entrega.repo, fase.pr_numero, sha, primera)
+    if isinstance(lectura, ErrorLectura):
+        return None
+    if isinstance(lectura, PendienteLectura):
+        if ctx.puede_actuar:
+            _accion_deepseek_si_toca(
+                ctx.registro, enc, gh, ctx.espacio, sha, primera, ctx.hora
+            )
+        return False
+    _leidos, comentarios = lectura.datos if isinstance(lectura.datos, tuple) else ([], [])
+    # Los avisos de timeout viajan en `leidos` y no en `comentarios`: el paso
+    # los trata como ausencia y omite en la misma vuelta.
+    return True if (comentarios or (_leidos and not comentarios)) else False
+
+
+def _identidad_de_la_espera(
+    registro, enc, clase: str
+) -> tuple[int, str, str]:
+    """El PR, el SHA (o head) y la fase que abrieron la última espera de esa clase."""
+    from .ciclo import _espera_guardada
+
+    datos = _espera_guardada(registro, getattr(enc, "id", ""), clase)
+    try:
+        numero = int(datos.get("numero") or 0)
+    except (TypeError, ValueError):
+        numero = 0
+    return numero, str(datos.get("sha") or ""), str(datos.get("fase") or "")
+
+
+def _primera_de_la_lectura(
+    ctx: Contexto, clase: str, numero: int, sha: str, fase: str = ""
+) -> str:
+    """El primer envío del SHA o, si no está, la apertura de su espera.
+
+    La apertura solo vale para la espera de ese mismo PR y SHA: la de otra
+    lectura no acredita la edad de esta. Sin una ni otra, `ctx.hora` deja la
+    edad en cero, como hoy.
+    """
+    from .ciclo import _espera_guardada
+
+    primera = next(
+        (
+            t for s, t in getattr(ctx.enc, "primer_envio_por_sha", ())
+            if s == sha
+        ),
+        "",
+    )
+    if primera or not numero or not sha:
+        return primera or ctx.hora
+    return str(_espera_guardada(
+        ctx.registro, getattr(ctx.enc, "id", ""), clase, numero, sha, fase,
+    ).get("abierta") or "") or ctx.hora
+
+
+def _lectura_deepseek_fallida(ctx: Contexto) -> bool | None:
+    """Cierra cuando vuelve a salir la misma lectura de DeepSeek que falló.
+
+    `_veredicto_antes_de_cerrar` puede abrirla al releer el PR de una fase
+    anterior mientras cierra la activa: la espera guarda su PR, SHA y fase, y el
+    cierre vuelve a leer ese PR, no el de la fase activa.
+    """
+    from .ciclo import _leer_deepseek
+    from .lectura import Error as ErrorLectura
+
+    enc, gh = ctx.enc, ctx.gh
+    numero, sha, fase_espera = _identidad_de_la_espera(
+        ctx.registro, enc, "lectura_deepseek_fallida"
+    )
+    if not numero or not sha:
+        fase = getattr(enc, "fase_actual", None)
+        if fase is None or not fase.pr_sha:
+            return None
+        numero, sha = fase.pr_numero, str(fase.pr_sha)
+        fase_espera = str(getattr(fase, "id", "") or "")
+    if gh is None:
+        return None
+    primera = _primera_de_la_lectura(
+        ctx, "lectura_deepseek_fallida", numero, sha, fase_espera
+    )
+    lectura = _leer_deepseek(gh, enc.entrega.repo, numero, sha, primera)
+    return None if isinstance(lectura, ErrorLectura) else True
+
+
+def _checks_merge(ctx: Contexto) -> bool | None:
+    """Cierra cuando los checks requeridos dejan de estar en marcha.
+
+    Una `PoliticaBloquea` o una `PuntaMovida` no son lecturas rotas: el PR
+    cambió su decisión de revisión o su cabeza se movió, y el paso de entrega
+    sabe manejarlo (devuelve el trabajo o fija el impedimento). Se cierra la
+    espera para despertarlo. Un error de transporte sigue siendo `None`.
+    """
+    from motor.github import PoliticaBloquea, PuntaMovida
+
+    enc, gh = ctx.enc, ctx.gh
+    if gh is None or not getattr(enc, "pr_numero", 0) or not getattr(enc, "pr_sha", ""):
+        return None
+    try:
+        checks = gh.checks_requeridos(enc.entrega.repo, enc.pr_numero, enc.pr_sha)
+    except (PoliticaBloquea, PuntaMovida):
+        return True
+    except Exception:  # noqa: BLE001  una lectura ilegible no es un verde
+        return None
+    return not bool(getattr(checks, "en_marcha", ()))
+
+
+def _despliegue_en_curso(ctx: Contexto) -> bool | None:
+    """Cierra cuando el trabajador de la receta deja de estar vivo."""
+    from . import despliegue
+
+    try:
+        return despliegue.observacion(ctx.registro, ctx.enc) != "vivo"
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _despliegue_sin_receta(ctx: Contexto) -> bool | None:
+    """Cierra cuando la receta, el SHA y la máquina ya permiten desplegar."""
+    from . import despliegue, politica_despliegue
+
+    if ctx.espacio is None:
+        return None
+    try:
+        resuelta = politica_despliegue.resolver(ctx.espacio, ctx.enc)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if resuelta.requiere_despliegue is None:
+        return False
+    if resuelta.requiere_despliegue is False:
+        # La fase ya no necesita desplegar: la espera quedó resuelta y el paso
+        # adopta la política; `nivel_cumplido` la completa sin receta.
+        return True
+    try:
+        return despliegue.receta_resuelta(ctx.enc, ctx.registro.base, resuelta)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _autoridad(ctx: Contexto) -> bool | None:
+    """Cierra cuando la autoridad vuelve. `_mirar_autoridad` ya la refrescó."""
+    return bool(getattr(ctx.enc, "autoridad", True))
+
+
+def _observacion_comprobador(ctx: Contexto) -> bool | None:
+    """Cierra cuando llega la observación del comprobador para la versión.
+
+    Si no llegó, vuelve a llamar a `iniciar_comprobacion`: comprueba si el
+    comprobador sigue vivo y relanza el ausente. Sin eso, un comprobador que
+    murió antes de escribir su observación dejaría la espera hasta el tope.
+    """
+    from .ciclo import _observacion_de_la_version
+    from .comprobacion import (
+        huella_procedimiento, iniciar_comprobacion, interno_de, leer_declaradas,
+        version_producto,
+    )
+
+    if ctx.espacio is None or ctx.directorio is None:
+        return None
+    try:
+        declaradas = leer_declaradas(interno_de(ctx.espacio))
+        if declaradas is None:
+            return None
+        version = version_producto(ctx.espacio).firma
+        procedimiento = huella_procedimiento(ctx.espacio, declaradas)
+        observacion = _observacion_de_la_version(
+            ctx.registro, ctx.enc, version, declaradas, ctx.directorio,
+            procedimiento, getattr(ctx.enc, "fase_activa", None),
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if observacion is None:
+        try:
+            iniciar_comprobacion(ctx.espacio, ctx.directorio)
+        except (OSError, ValueError):
+            return None
+        return False
+    return True
+
+
+def _efecto_incierto(ctx: Contexto) -> bool | None:
+    """Cierra cuando el efecto incierto ya figura aplicado en el destino.
+
+    Con autoridad configurada el destino no se consulta desde aquí: la
+    conciliación la hace el paso cuando la espera se cierra por su tope. Se
+    devuelve `None` para no inventar un cierre que no se pudo leer.
+    """
+    from .frontera import DestinoEnsayo
+    from .transporte import ConfigAutoridadInvalida, cargar
+
+    pendientes = [
+        e for e in getattr(ctx.enc, "efectos", ()) if e.estado == "incierto"
+    ]
+    if not pendientes:
+        return True
+    try:
+        if cargar(ctx.registro.base) is not None:
+            return None
+    except (ConfigAutoridadInvalida, OSError, ValueError):
+        return None
+    destino = DestinoEnsayo(ctx.registro.base / "destino")
+    for efecto in pendientes:
+        try:
+            consulta = destino.consultar(efecto.clave)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        if consulta.get("estado") != "aplicado":
+            return False
+    return True
+
+
+def _sin_puerto_github(ctx: Contexto) -> bool | None:
+    """Cierra cuando este supervisor ya tiene puerto de GitHub."""
+    return ctx.gh is not None
+
+
+def _ultimo_head_registrado(registro, enc) -> str:
+    """El último head del PR que el paso anotó como desviado.
+
+    Es solo el respaldo de una espera escrita antes de que guardara el head que
+    la abrió: el orden de las anotaciones no es el de las observaciones, así que
+    no sirve para decidir si el head volvió a cambiar.
+    """
+    try:
+        eventos = registro.eventos(getattr(enc, "id", ""))
+    except (OSError, KeyError, TypeError, ValueError):
+        return ""
+    for evento in reversed(eventos):
+        datos = evento.get("data") or {}
+        if (
+            evento.get("kind") == "entrega_externa"
+            and datos.get("paso") == "head_vigente"
+            and str(datos.get("head") or "")
+        ):
+            return str(datos["head"])
+    return ""
+
+
+def _cabeza_desviada(ctx: Contexto) -> bool | None:
+    """Cierra cuando la cabeza del PR vuelve al SHA o cambia a otro head.
+
+    Se compara con el head que abrió esta espera, asociado a su PR y fase: un
+    head ya informado que vuelve (A aprobado, B, C y otra vez B) no despierta el
+    paso una y otra vez, y un cambio posterior a C sí. Un head vacío o ilegible
+    no confirma ni la conciliación ni una cabeza nueva.
+    """
+    enc, gh = ctx.enc, ctx.gh
+    pr_numero = int(getattr(enc, "pr_numero", 0) or 0)
+    if gh is None or not pr_numero:
+        return None
+    try:
+        vista = gh.ver(enc.entrega.repo, enc.pr_numero)
+    except Exception:  # noqa: BLE001  una lectura ilegible no es una conciliación
+        return None
+    observado = str(getattr(vista, "head", "") or "").strip()
+    if not observado:
+        return None
+    aprobado = str(getattr(enc, "pr_sha", "") or "")
+    if observado == aprobado:
+        return True
+    numero, head, fase = _identidad_de_la_espera(
+        ctx.registro, enc, "cabeza_desviada"
+    )
+    if numero == pr_numero and head and (
+        not fase or fase == str(getattr(enc, "fase_activa", "") or "")
+    ):
+        return observado != head
+    ultimo = _ultimo_head_registrado(ctx.registro, enc)
+    return bool(ultimo) and observado != ultimo
+
+
+CIERRES: dict[ClaseEspera, LecturaCierre] = {
+    "revision_deepseek": _revision_deepseek,
+    "lectura_deepseek_fallida": _lectura_deepseek_fallida,
+    "checks_merge": _checks_merge,
+    "despliegue_en_curso": _despliegue_en_curso,
+    "despliegue_sin_receta": _despliegue_sin_receta,
+    "autoridad": _autoridad,
+    "observacion_comprobador": _observacion_comprobador,
+    "efecto_incierto": _efecto_incierto,
+    "sin_puerto_github": _sin_puerto_github,
+    "cabeza_desviada": _cabeza_desviada,
+}
+
+
+def clases_por_hecho() -> tuple[str, ...]:
+    """Las clases por hecho que tienen lectura de cierre propia."""
+    return tuple(CIERRES)

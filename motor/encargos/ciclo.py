@@ -15,6 +15,7 @@ import uuid
 from concurrent.futures import TimeoutError as MiradaTardia
 from dataclasses import replace
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 from motor.fallas import es_sesion_local
 from motor.github import Conflicto, MergeRechazado, PoliticaBloquea
@@ -1683,6 +1684,95 @@ def _vencio_la_reanudacion(enc: Encargo, hora: str) -> bool:
     return _vencio_sin_hora(enc, hora)
 
 
+def _espera_por_hecho(enc: Encargo) -> bool:
+    """La espera vigente se cierra con una lectura externa, no con el reloj."""
+    from .tabla_esperas import ESPERAS
+
+    clase = enc.espera_clase
+    return clase in ESPERAS and ESPERAS[clase].tipo == "por_hecho"
+
+
+def _tope_de_la_espera_omitir(enc: Encargo, hora: str) -> bool:
+    """La fila `omitir` de la espera ya cumplió su tope.
+
+    `_tope_de_la_espera` solo escribe para las filas que detienen o avisan. Las
+    esperas de DeepSeek omiten: al llegar a su tope hay que devolver el control
+    al paso, que registra la omisión con su causa, aunque la lectura siga
+    diciendo que no o haya fallado.
+    """
+    from .tabla_esperas import ESPERAS, hora_canonica, tope_de
+
+    clase = enc.espera_clase
+    fila = ESPERAS.get(clase) if clase in ESPERAS else None
+    if fila is None or fila.conducta.al_tope != "omitir" or fila.conducta.tope_s is None:
+        return False
+    # El tope vigente del registro es el que se calculó para el SHA cuya lectura
+    # falló, que en el cierre de una fase B puede ser el PR de una fase A. Se
+    # usa tal cual; solo un evento antiguo sin `espera_tope` se recalcula.
+    tope = str(getattr(enc, "espera_tope", "") or "")
+    if not tope or not hora_canonica(tope):
+        desde = ""
+        if fila.desde == "primer_envio":
+            fase = enc.fase_actual
+            sha = str((fase.pr_sha if fase is not None else "") or enc.pr_sha or "")
+            desde = _desde_del_primer_envio(enc, sha)
+        tope = tope_de(clase, enc.espera_abierta, desde)
+    ahora = hora_canonica(hora)
+    return bool(tope) and bool(ahora) and ahora >= hora_canonica(tope)
+
+
+def _cerrar_espera_por_hecho(
+    registro: Registro,
+    enc: Encargo,
+    gh,
+    espacio: Path,
+    directorio: Path,
+    arbol: str,
+    hora: str,
+    epoch: float,
+) -> Encargo:
+    """Relee la espera por hecho y escribe el cierre cuando la lectura cierra.
+
+    Mientras la función de cierre devuelva `False` o `None` no se escribe nada,
+    salvo que la fila `omitir` ya haya cumplido su tope: ahí se reanuda el paso
+    para que registre la omisión. Cuando devuelve `True`, una espera abierta por
+    `espera` se cierra con su `plazo`, que es el evento de hoy, y el paso sigue
+    como siempre.
+    """
+    from . import cierres
+
+    ctx = cierres.Contexto(
+        registro=registro,
+        enc=enc,
+        gh=gh,
+        espacio=espacio,
+        directorio=directorio,
+        arbol=arbol,
+        hora=hora,
+        epoch=epoch,
+        puede_actuar=_puede_actuar_en_espera(registro, enc),
+    )
+    if cierres.cerrar(ctx) is not True and not _tope_de_la_espera_omitir(enc, hora):
+        return enc
+    if enc.estado != "esperando_reintento":
+        return enc
+    enc, _aplicado = _plazo_de_la_ventana(registro, enc, hora)
+    return enc
+
+
+def _puede_actuar_en_espera(registro: Registro, enc: Encargo) -> bool:
+    """La espera puede hacer su efecto externo: sin parada, con autorización.
+
+    Son las mismas guardas que protegen el paso de entrega. Una lectura puede
+    seguir mirando durante una parada; el disparo de DeepSeek no.
+    """
+    return (
+        leer_parada_local(registro.base) is None
+        and bool(getattr(enc, "escrituras", True))
+        and bool(getattr(enc, "intentos_nuevos", True))
+    )
+
+
 def _clave_de_plazo(encargo_id: str, reanuda_en: str, abierta: str) -> str:
     """La clave del vencimiento de una ventana: encargo, reanudación y apertura.
 
@@ -1742,7 +1832,8 @@ def _barrer_encargos(
         if enc is None:
             continue
         if enc.estado == "esperando_reintento" and enc.reanuda_en and (
-            _vencio_la_reanudacion(enc, hora)
+            not (politica.ESPERAS_V5 and _espera_por_hecho(enc))
+            and _vencio_la_reanudacion(enc, hora)
         ):
             ventana = (enc.espera_clase, enc.espera_abierta, enc.reanuda_en)
             enc = _tope_de_la_espera(registro, enc, hora)
@@ -1752,8 +1843,9 @@ def _barrer_encargos(
             fresco = registro.fold(encargo_id) or enc
             if (
                 fresco.estado == "esperando_reintento"
-                and (fresco.espera_clase, fresco.espera_abierta, fresco.reanuda_en)
-                == ventana
+                and (
+                    fresco.espera_clase, fresco.espera_abierta, fresco.reanuda_en
+                ) == ventana
             ):
                 fresco, _ = _plazo_de_la_ventana(registro, fresco, hora)
             enc = fresco
@@ -1854,6 +1946,16 @@ def _barrer_encargos(
                 enc = registro.fold(encargo_id) or enc
         else:
             arbol = observar(directorio, proc)
+        if (
+            politica.ESPERAS_V5
+            and enc.estado == "esperando_reintento"
+            and _espera_por_hecho(enc)
+        ):
+            # La espera por hecho no gasta un plazo por vuelta: se relee con la
+            # cadencia de su fila y solo escribe cuando la lectura cierra.
+            enc = _cerrar_espera_por_hecho(
+                registro, enc, gh, espacio, directorio, arbol, hora, epoch
+            )
         if enc.estado not in ("cancelado", "terminado"):
             try:
                 necesidades.atender(registro, enc, espacio, directorio, hora)
@@ -4918,6 +5020,59 @@ def _disparar_deepseek(
         pass
 
 
+def _accion_deepseek_si_toca(
+    registro: Registro,
+    enc: Encargo,
+    gh,
+    espacio: Path,
+    sha: str,
+    primera: str,
+    hora: str,
+    revisor=None,
+) -> bool:
+    """La acción propia de la espera de DeepSeek: disparar al revisor.
+
+    Es lo único que la espera hace antes de su tope aunque la lectura siga
+    diciendo «todavía no». Se dispara a los dos minutos del primer envío y una
+    sola vez por SHA; el evento es el mismo que escribe el paso. El paso pasa el
+    `revisor` que ya leyó para no repetir su lectura (y su `git fetch`) en la
+    misma vuelta; la espera por hecho, que no lo tiene, lo resuelve aquí.
+    """
+    fase = enc.fase_actual
+    if gh is None or fase is None or not enc.pr_numero:
+        return False
+    disparado = any(
+        ev["kind"] == "entrega_externa"
+        and ev["data"].get("paso") == "deepseek_disparado"
+        and ev["data"].get("sha") == sha
+        for ev in registro.eventos(enc.id)
+    )
+    if disparado:
+        return False
+    if revisor is None:
+        revisor = revisor_deepseek(espacio, sha, _base_objetivo_del_pr(enc, gh))
+    if not revisor.disparo or _minutos_desde(primera, hora) < 2:
+        return False
+    _disparar_deepseek(gh, enc, espacio, sha, revisor.disparo)
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "deepseek_disparado",
+                "repo": enc.entrega.repo,
+                "numero": enc.pr_numero,
+                "sha": sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:deepseek_disparado:{sha}",
+    )
+    return True
+
+
 def _bloquear_entrega(registro: Registro, enc: Encargo, causa: str, hora: str) -> None:
     """El conflicto de la entrada frena el paso de entrega sobre el producto
     vigente: lo resuelve el responsable en el espacio y su arreglo, con
@@ -5695,6 +5850,38 @@ def _marca_deepseek(enc: Encargo) -> dict:
     return enc.lectura_deepseek.como_dict()
 
 
+# (encargo, fase, sha) -> epoch de la última relectura. La cadencia vive en
+# memoria del proceso; el registro solo guarda lo que cambió al leer.
+_SONDEOS_DEEPSEEK: WeakKeyDictionary[Registro, dict[tuple[str, str, str], float]] = (
+    WeakKeyDictionary()
+)
+
+
+def _toca_releer_deepseek(
+    registro: Registro, enc: Encargo, sha: str, epoch: float
+) -> bool:
+    """¿Pasó el espaciado desde la última lectura de este SHA?
+
+    Con `ESPERAS_V5` la cadencia vive en memoria del proceso y al reiniciar se
+    lee enseguida. Apagado, la hora de la última lectura es la del registro,
+    como hoy. Un error de la lectura anterior acorta el espaciado.
+    """
+    marca = _marca_deepseek(enc)
+    espaciado = _REINTENTO_FORZADO_S if marca.get("error") else _RELECTURA_DEEPSEEK_S
+    if not politica.ESPERAS_V5:
+        try:
+            desde = epoch - float(marca.get("epoch") or 0)
+        except (TypeError, ValueError):
+            desde = _RELECTURA_DEEPSEEK_S
+        return not (marca.get("sha") == sha and 0 <= desde < espaciado)
+    clave = (enc.id, enc.fase_activa, sha)
+    previo = _SONDEOS_DEEPSEEK.get(registro, {}).get(clave)
+    if previo is not None and 0 <= epoch - previo < espaciado:
+        return False
+    _SONDEOS_DEEPSEEK.setdefault(registro, {})[clave] = epoch
+    return True
+
+
 def _marcar_lectura_deepseek(
     registro: Registro,
     enc: Encargo,
@@ -5746,12 +5933,7 @@ def _releer_deepseek(
         return enc
     sha = fase.pr_sha
     marca = _marca_deepseek(enc)
-    try:
-        desde = epoch - float(marca.get("epoch") or 0)
-    except (TypeError, ValueError):
-        desde = _RELECTURA_DEEPSEEK_S
-    espaciado = _REINTENTO_FORZADO_S if marca.get("error") else _RELECTURA_DEEPSEEK_S
-    if marca.get("sha") == sha and 0 <= desde < espaciado:
+    if not _toca_releer_deepseek(registro, enc, sha, epoch):
         return enc
     try:
         comentarios = _deepseek_con_contenido(
@@ -5764,17 +5946,36 @@ def _releer_deepseek(
         # agente no se redirige.
         error = f"{type(exc).__name__}: {exc}"
         # Un aviso al empezar el tramo de fallos y otro cuando pasan
-        # `_AVISO_LECTURA_DEEPSEEK_S` desde el último, no según el reloj.
+        # `_AVISO_LECTURA_DEEPSEEK_S` desde el último, no según el reloj. Con el
+        # interruptor encendido el último aviso vive en su evento, así que un
+        # reinicio no lo repite; apagado se lee de la marca, como hoy.
         try:
             ultimo_aviso = float(marca.get("aviso") or 0)
         except (TypeError, ValueError):
             ultimo_aviso = 0.0
+        if politica.ESPERAS_V5:
+            ultimo_aviso = next(
+                (
+                    _epoch_de_hora(str(ev["data"].get("hora") or ""))
+                    for ev in reversed(registro.eventos(enc.id))
+                    if ev["kind"] == "lectura_fallida"
+                    and ev["data"].get("fuente") == "deepseek"
+                    and ev["data"].get("causa")
+                ),
+                0.0,
+            )
         nuevo_tramo = (
             not marca.get("error") or epoch - ultimo_aviso >= _AVISO_LECTURA_DEEPSEEK_S
         )
-        _marcar_lectura_deepseek(
-            registro, enc, sha, epoch, error, epoch if nuevo_tramo else ultimo_aviso
-        )
+        if not politica.ESPERAS_V5:
+            _marcar_lectura_deepseek(
+                registro, enc, sha, epoch, error, epoch if nuevo_tramo else ultimo_aviso
+            )
+        elif not marca.get("error"):
+            # El error empieza: este es el cambio que el registro conserva.
+            _marcar_lectura_deepseek(
+                registro, enc, sha, epoch, error, epoch
+            )
         if not nuevo_tramo:
             return enc
         registro.anotar(
@@ -5792,7 +5993,17 @@ def _releer_deepseek(
             f"lectura-fallida:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch)}",
         )
         return registro.fold(enc.id) or enc
-    _marcar_lectura_deepseek(registro, enc, sha, epoch)
+    huella = _huella_comentarios(comentarios) if comentarios else ""
+    cambio = (
+        bool(marca.get("error"))
+        or marca.get("sha") != sha
+        or (bool(comentarios) and huella != fase.deepseek_huella)
+    )
+    if not politica.ESPERAS_V5 or cambio:
+        # Con el interruptor encendido, `deepseek_lectura` se escribe solo cuando
+        # cambia lo leído: otro SHA, un comentario nuevo, o un error que empieza
+        # o termina. Apagado, cada lectura deja su marca, como hoy.
+        _marcar_lectura_deepseek(registro, enc, sha, epoch)
     if marca.get("error"):
         registro.anotar(
             enc.id,
@@ -5809,10 +6020,7 @@ def _releer_deepseek(
             f"lectura-recuperada:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch)}",
         )
         enc = registro.fold(enc.id) or enc
-    if not comentarios:
-        return enc
-    huella = _huella_comentarios(comentarios)
-    if huella == fase.deepseek_huella:
+    if not comentarios or huella == fase.deepseek_huella:
         return enc
     enc = _anotar_lectura_deepseek(
         registro, enc, fase.pr_numero, sha, comentarios, hora
@@ -6339,6 +6547,65 @@ def _cierre_sin_aplicar(
     return registro.fold(enc.id)
 
 
+def _tope_registrado_de_lectura(
+    registro: Registro, enc: Encargo, numero: int, sha: str
+) -> str:
+    """El tope que guardó la espera de lectura fallida para ese PR y SHA."""
+    return str(_espera_guardada(
+        registro, enc.id, "lectura_deepseek_fallida", numero, sha
+    ).get("tope") or "")
+
+
+def _paso_el_tope_de_lectura(
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+) -> bool:
+    """La relectura de ese PR y SHA ya cumplió su tope.
+
+    Si el registro no guarda el primer envío del SHA, manda el vencimiento que
+    el escritor guardó en la espera para ese mismo PR y SHA. Sin él, no se
+    puede afirmar que venció.
+    """
+    from .politica import TOPE_DEEPSEEK_MIN
+    from .tabla_esperas import hora_canonica
+
+    primera = _desde_del_primer_envio(enc, sha)
+    if primera:
+        return _minutos_desde(primera, hora) >= TOPE_DEEPSEEK_MIN
+    tope = _tope_registrado_de_lectura(registro, enc, numero, sha)
+    ahora = hora_canonica(hora)
+    vencimiento = hora_canonica(tope)
+    return bool(ahora) and bool(vencimiento) and ahora >= vencimiento
+
+
+def _anotar_omision_de_lectura(
+    registro: Registro,
+    enc: Encargo,
+    numero: int,
+    fase: str,
+    sha: str,
+    causa: str,
+    hora: str,
+) -> None:
+    """La relectura fallida de un PR cumplió su tope: se omite y el cierre sigue.
+
+    No resuelve los hallazgos que ese PR ya tenía: la omisión es de la
+    relectura, no de lo ya leído. La nota deja la causa a la vista.
+    """
+    from .politica import TOPE_DEEPSEEK_MIN
+
+    texto = (
+        f"sin relectura de DeepSeek del PR #{numero} de la fase {fase} tras "
+        f"{TOPE_DEEPSEEK_MIN} min: se omite y el cierre sigue con los "
+        "hallazgos conocidos"
+        + (f" ({causa})" if causa else "")
+    )
+    registro.anotar(
+        enc.id,
+        {"kind": "nota_pr", "data": {"texto": texto[:2000], "hora": hora}},
+        f"nota-deepseek-omitida:{enc.id}:{fase}:{sha}",
+    )
+
+
 def _veredicto_antes_de_cerrar(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> Encargo | None:
@@ -6364,57 +6631,87 @@ def _veredicto_antes_de_cerrar(
         return None
     fase = enc.fase_actual
     sha = enc.pr_sha
-    sha_leido = sha
     try:
         comentarios = _deepseek_con_contenido(
             gh.comentarios_deepseek(enc.entrega.repo, enc.pr_numero, sha), sha
         )
-        previas = []
-        if all(f.estado == "preparada" for f in enc.fases if f.id != enc.fase_activa):
-            for f in enc.fases:
-                if (
-                    f.id == enc.fase_activa
-                    or f.nivel_alcanzado not in ("pr", "integrado", "desplegado")
-                    or not f.pr_numero
-                    or not f.pr_sha
-                ):
-                    continue
-                sha_leido = f.pr_sha
-                previas.append(
-                    (
-                        f,
-                        _deepseek_con_contenido(
-                            gh.comentarios_deepseek(
-                                enc.entrega.repo, f.pr_numero, f.pr_sha
-                            ),
-                            f.pr_sha,
-                        ),
-                    )
-                )
     except Exception as exc:
-        if fase.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
-            causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
-            _anotar_instrumento(
-                registro, enc, "github", causa,
-                "reintentar la lectura de DeepSeek antes de cerrar",
-                hora, f"deepseek-cerrar-{sha[:12]}",
+        if fase.deepseek_huella == HUELLA_DEEPSEEK_SIN_REVISION:
+            return None
+        causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura de DeepSeek antes de cerrar",
+            hora, f"deepseek-cerrar-{sha[:12]}",
+        )
+        if politica.ESPERAS_V5 and _paso_el_tope_de_lectura(
+            registro, enc, enc.pr_numero, sha, hora
+        ):
+            _anotar_omision_de_lectura(
+                registro, enc, enc.pr_numero, enc.fase_activa, sha, causa, hora
             )
-            # La fila cuenta desde el primer envío del SHA cuya lectura falló,
-            # que en el bucle de fases previas puede ser el de otra fase. Sin
-            # esa entrada, `tope_de` cae en la apertura de la espera.
-            primera = next(
-                (t for s, t in enc.primer_envio_por_sha if s == sha_leido), ""
-            )
+            comentarios = []
+        else:
+            primera = _desde_del_primer_envio(enc, sha)
             marcar_espera(
                 registro, enc.id, "lectura_deepseek_fallida", causa, hora,
                 desde=primera,
                 reloj="escritura",
+                numero=enc.pr_numero,
+                sha=sha,
+                fase=enc.fase_activa,
             )
             return registro.fold(enc.id)
-        # La fase siguió sin revisión: una relectura fallida no
-        # vuelve a frenar el cierre. Si llega un comentario, el siguiente
-        # barrido lo lee y lo trata como tardío.
-        return None
+    previas = []
+    if all(f.estado == "preparada" for f in enc.fases if f.id != enc.fase_activa):
+        for f in enc.fases:
+            if (
+                f.id == enc.fase_activa
+                or f.nivel_alcanzado not in ("pr", "integrado", "desplegado")
+                or not f.pr_numero
+                or not f.pr_sha
+            ):
+                continue
+            try:
+                leidos = _deepseek_con_contenido(
+                    gh.comentarios_deepseek(
+                        enc.entrega.repo, f.pr_numero, f.pr_sha
+                    ),
+                    f.pr_sha,
+                )
+            except Exception as exc:
+                if politica.ESPERAS_V5:
+                    if f.deepseek_huella == HUELLA_DEEPSEEK_SIN_REVISION:
+                        continue
+                elif fase.deepseek_huella == HUELLA_DEEPSEEK_SIN_REVISION:
+                    # Con el interruptor apagado manda la huella de la fase
+                    # activa, como en la base: si B ya se omitió, no se abre
+                    # una espera por una fase previa.
+                    return None
+                causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
+                _anotar_instrumento(
+                    registro, enc, "github", causa,
+                    "reintentar la lectura de DeepSeek antes de cerrar",
+                    hora, f"deepseek-cerrar-{f.pr_sha[:12]}",
+                )
+                if politica.ESPERAS_V5 and _paso_el_tope_de_lectura(
+                    registro, enc, f.pr_numero, f.pr_sha, hora
+                ):
+                    _anotar_omision_de_lectura(
+                        registro, enc, f.pr_numero, f.id, f.pr_sha, causa, hora
+                    )
+                    continue
+                primera = _desde_del_primer_envio(enc, f.pr_sha)
+                marcar_espera(
+                    registro, enc.id, "lectura_deepseek_fallida", causa, hora,
+                    desde=primera,
+                    reloj="escritura",
+                    numero=f.pr_numero,
+                    sha=f.pr_sha,
+                    fase=f.id,
+                )
+                return registro.fold(enc.id)
+            previas.append((f, leidos))
     if comentarios and _huella_comentarios(comentarios) != fase.deepseek_huella:
         enc = _anotar_lectura_deepseek(
             registro, enc, enc.pr_numero, sha, comentarios, hora
@@ -7561,6 +7858,7 @@ def _head_desviado(
             "cabeza_desviada",
             causa_head + "; el paso se reanuda cuando el head del PR concilie",
             hora,
+            **_identidad_si_v5(enc, numero, head_vigente),
         )
     else:
         _devolver(
@@ -9225,9 +9523,23 @@ def _paso_entrega_paso(
     )
     if enc.deepseek_sha != sha or por_releer:
         primera = next(
-            (t for s, t in enc.primer_envio_por_sha if s == sha), hora,
+            (t for s, t in enc.primer_envio_por_sha if s == sha), "",
         )
-        eventos = registro.eventos(enc.id)
+        if (
+            not primera
+            and politica.ESPERAS_V5
+            and enc.espera_clase in (
+                "revision_deepseek", "lectura_deepseek_fallida"
+            )
+        ):
+            # Un PR adoptado puede no tener el primer envío. Solo la ventana de
+            # esta misma lectura aporta la edad: la de otra fase o de otro SHA
+            # no se hereda, o se omitiría a DeepSeek antes de tiempo.
+            primera = str(_espera_guardada(
+                registro, enc.id, enc.espera_clase, numero, sha,
+                enc.fase_activa,
+            ).get("abierta") or "")
+        primera = primera or hora
         minutos = _minutos_desde(primera, hora)
         lectura_ds = _leer_deepseek(
             gh, enc.entrega.repo, numero, sha, primera
@@ -9250,6 +9562,9 @@ def _paso_entrega_paso(
                 registro, enc.id, "lectura_deepseek_fallida", causa, hora,
                 desde=primera,
                 reloj="escritura",
+                numero=numero,
+                sha=sha,
+                fase=enc.fase_activa,
             )
             return _con_espera(registro.fold(enc.id) or enc)
         revisor = revisor_deepseek(espacio, sha, base)
@@ -9274,30 +9589,9 @@ def _paso_entrega_paso(
                 return enc, Avanzo()
             return _paso_entrega_paso(registro, enc, gh, hora)
         if not comentarios:
-            disparado = any(
-                ev["kind"] == "entrega_externa"
-                and ev["data"].get("paso") == "deepseek_disparado"
-                and ev["data"].get("sha") == sha
-                for ev in eventos
+            _accion_deepseek_si_toca(
+                registro, enc, gh, espacio, sha, primera, hora, revisor=revisor
             )
-            if revisor.disparo and not disparado and minutos >= 2:
-                _disparar_deepseek(gh, enc, espacio, sha, revisor.disparo)
-                registro.anotar(
-                    enc.id,
-                    {
-                        "kind": "entrega_externa",
-                        "data": {
-                            "fase": enc.fase_activa,
-                            "intento": enc.intento,
-                            "paso": "deepseek_disparado",
-                            "repo": enc.entrega.repo,
-                            "numero": numero,
-                            "sha": sha,
-                            "hora": hora,
-                        },
-                    },
-                    f"entrega:{enc.id}:{enc.fase_activa}:deepseek_disparado:{sha}",
-                )
             if minutos >= revisor.espera_min:
                 texto = texto_de_omision(revisor, sha, minutos)
                 enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
@@ -9311,6 +9605,7 @@ def _paso_entrega_paso(
                 f"esperando revisión de DeepSeek para el SHA {sha}",
                 hora,
                 desde=primera,
+                **_identidad_si_v5(enc, numero, sha),
             )
             return _con_espera(registro.fold(enc.id) or enc)
         relectura_ds = enc.deepseek_sha == sha
@@ -10275,6 +10570,68 @@ def _desde_del_primer_envio(enc: Encargo, sha: str) -> str:
     return next((t for s, t in enc.primer_envio_por_sha if s == sha), "")
 
 
+def _espera_guardada(
+    registro: Registro,
+    encargo_id: str,
+    clase: str,
+    numero: int = 0,
+    sha: str = "",
+    fase: str = "",
+) -> dict:
+    """Los datos de la última espera guardada de esa clase.
+
+    Con `numero` y `sha` solo cuenta la espera de esa lectura, y con `fase`
+    también la de esa fase: la identidad es lo que permite atribuir su ventana a
+    ese PR y SHA. Una espera sin identidad, o de otra lectura, no se hereda.
+    """
+    if (numero or sha) and not (numero and sha):
+        return {}
+    try:
+        eventos = registro.eventos(encargo_id)
+    except (OSError, KeyError, TypeError, ValueError):
+        return {}
+    for evento in reversed(eventos):
+        datos = evento.get("data") or {}
+        if evento.get("kind") != "espera" or datos.get("clase") != clase:
+            continue
+        if numero or sha:
+            try:
+                numero_evento = int(datos.get("numero") or 0)
+            except (TypeError, ValueError):
+                numero_evento = 0
+            if not numero_evento or numero_evento != int(numero):
+                continue
+            if str(datos.get("sha") or "") != str(sha):
+                continue
+            if fase and str(datos.get("fase") or "") != fase:
+                continue
+        return datos
+    return {}
+
+
+def _identidad_guardada_de_espera(
+    registro: Registro, encargo_id: str, clase: str
+) -> tuple[int, str]:
+    """El PR y el SHA de la última espera guardada de esa clase, si los trae."""
+    datos = _espera_guardada(registro, encargo_id, clase)
+    try:
+        numero = int(datos.get("numero") or 0)
+    except (TypeError, ValueError):
+        numero = 0
+    return numero, str(datos.get("sha") or "")
+
+
+def _identidad_si_v5(enc: Encargo, numero: int, sha: str) -> dict:
+    """La identidad de la lectura para la espera, solo con `ESPERAS_V5`.
+
+    Apagado, la espera se escribe como en la base (sin identidad) y su clave
+    histórica no cambia; encendido, la ventana queda atada a ese PR y SHA.
+    """
+    if not politica.ESPERAS_V5:
+        return {}
+    return {"numero": numero, "sha": sha, "fase": enc.fase_activa}
+
+
 def _esperar_revision_externa(
     registro: Registro, enc: Encargo, commit_entregado: str, hora: str
 ) -> None:
@@ -10286,6 +10643,7 @@ def _esperar_revision_externa(
         hora,
         desde=_desde_del_primer_envio(enc, commit_entregado),
         reloj="escritura",
+        **_identidad_si_v5(enc, enc.pr_numero, commit_entregado),
     )
 
 
@@ -10299,6 +10657,9 @@ def marcar_espera(
     intentos: int = 1,
     desde: str = "",
     reloj: str = "barrido",
+    numero: int = 0,
+    sha: str = "",
+    fase: str = "",
 ) -> dict:
     """Anota la espera con su clase, la hora en que abrió y su tope.
 
@@ -10316,11 +10677,26 @@ def marcar_espera(
     pasada, que es lo que hacían los que usaban `_reanuda_desde(hora, ...)` o
     la propia `hora`. Cada sitio conserva su base, porque una misma clase
     puede tener escritores con relojes distintos.
+
+    `numero`, `sha` y `fase` identifican la lectura que falló cuando la espera
+    es `lectura_deepseek_fallida` de una fase previa: el cierre vuelve a leer
+    ese PR, no el de la fase activa. Con `ESPERAS_V5` también identifican la
+    espera de `revision_deepseek` y el head que abrió una `cabeza_desviada`.
+    Solo se guardan cuando se pasan.
     """
     enc = registro.fold(encargo_id)
+    identidad_previa = _identidad_guardada_de_espera(registro, encargo_id, clase)
+    identidad = (int(numero or 0), str(sha or ""))
+    misma_lectura = (not numero and not sha) or (
+        identidad_previa != (0, "") and identidad_previa == identidad
+    )
+    # La apertura se conserva mientras la espera siga siendo la misma: es lo
+    # que hace finito su tope. Un `plazo` cierra la ventana pero no la estrena;
+    # una espera nueva con la misma clase y otra lectura empieza en `hora`.
     abierta = (
         enc.espera_abierta
         if enc is not None and enc.espera_clase == clase and enc.espera_abierta
+        and misma_lectura
         else hora
     )
     if politica.ESPERAS_V5:
@@ -10331,6 +10707,28 @@ def marcar_espera(
             tabla_esperas.hora_canonica(reanuda_en) if reanuda_en else reanuda_en
         )
         abierta = tabla_esperas.hora_canonica(abierta) or abierta
+    if politica.ESPERAS_V5 and enc is not None:
+        fila = tabla_esperas.ESPERAS.get(clase)
+        if (
+            fila is not None
+            and fila.tipo == "por_hecho"
+            and enc.estado == "esperando_reintento"
+            and enc.espera_clase == clase
+            and enc.espera_abierta == abierta
+            and enc.motivo == motivo
+        ):
+            if clase == "lectura_deepseek_fallida" and (numero or sha):
+                # La misma lectura no escribe; otra fase o SHA sí estrena su
+                # identidad, aunque el motivo y la apertura coincidan.
+                if _identidad_guardada_de_espera(
+                    registro, encargo_id, clase
+                ) == (int(numero or 0), str(sha or "")):
+                    return vista(enc)
+            else:
+                # Volver a mirar la misma espera por hecho no escribe otro
+                # evento: la cadencia del barrido decide cuándo se lee y su
+                # cierre cuándo se escribe el plazo.
+                return vista(enc)
     if reanuda_en is None:
         # Apagado, cada sitio conserva su reloj: `hora` es una sola para todos
         # los encargos de la pasada y un paso que tarda minutos dejaría el
@@ -10347,8 +10745,28 @@ def marcar_espera(
     # en el cotejo de compatibilidad y dar `igual`, no insertar otro evento que
     # devuelva a espera un encargo que ya había avanzado. Solo una apertura
     # distinta, de una espera que ya trae la clase, estrena clave.
-    ukey = f"espera:{encargo_id}:{reanuda_en}:{motivo}"
-    previa = registro.por_ukey(ukey)
+    base_ukey = f"espera:{encargo_id}:{reanuda_en}:{motivo}"
+    previa = registro.por_ukey(base_ukey)
+    datos_previos = (previa or {}).get("data") or {}
+    try:
+        numero_previo = int(datos_previos.get("numero") or 0)
+    except (TypeError, ValueError):
+        numero_previo = 0
+    legado_sin_identidad = previa is not None and not (
+        str(datos_previos.get("sha") or "") or numero_previo
+    )
+    if (numero or sha) and not legado_sin_identidad:
+        # La identidad de la lectura fallida forma parte de la clave: otra
+        # fase o SHA con el mismo motivo es otra espera, no la misma.
+        ukey = f"{base_ukey}:{int(numero or 0)}:{sha}"
+    else:
+        ukey = base_ukey
+    if legado_sin_identidad:
+        # La escritura histórica no tenía identidad: se conserva su clave y su
+        # payload para no reabrir una ventana cuyo plazo ya se consumió.
+        numero, sha, fase = 0, "", ""
+    if ukey != base_ukey:
+        previa = registro.por_ukey(ukey)
     if previa is not None:
         guardada = previa.get("data") or {}
         if not guardada.get("clase"):
@@ -10356,19 +10774,23 @@ def marcar_espera(
             tope = str(guardada.get("tope") or tope)
         elif str(guardada.get("abierta") or "") != abierta:
             ukey = f"{ukey}:{abierta}"
+    datos = {
+        "motivo": motivo,
+        "reanuda_en": reanuda_en,
+        "hora": hora,
+        "clase": clase,
+        "abierta": abierta,
+        "tope": tope,
+    }
+    if numero:
+        datos["numero"] = int(numero)
+    if sha:
+        datos["sha"] = str(sha)
+    if fase:
+        datos["fase"] = str(fase)
     registro.anotar(
         encargo_id,
-        {
-            "kind": "espera",
-            "data": {
-                "motivo": motivo,
-                "reanuda_en": reanuda_en,
-                "hora": hora,
-                "clase": clase,
-                "abierta": abierta,
-                "tope": tope,
-            },
-        },
+        {"kind": "espera", "data": datos},
         ukey,
     )
     return vista(registro.fold(encargo_id))

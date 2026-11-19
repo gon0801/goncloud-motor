@@ -187,6 +187,19 @@ def escalera(clase: ClaseEspera) -> tuple[int, ...]:
     return intervalo if isinstance(intervalo, tuple) else (intervalo,)
 
 
+def intervalo_s(clase: ClaseEspera, intentos: int = 1) -> int:
+    """Segundos entre dos lecturas de la fila.
+
+    Una escalera gasta un paso por intento y repite el último. Las filas que
+    decide quien escribe la espera (`pasada`, `rutas`, `orden`) no tienen una
+    cadencia propia: devuelven 0, que significa «cada pasada».
+    """
+    intervalo = conducta(clase).intervalo
+    if isinstance(intervalo, tuple):
+        intervalo = intervalo[max(0, min(intentos, len(intervalo)) - 1)]
+    return intervalo if isinstance(intervalo, int) else 0
+
+
 def reanuda_en(clase: ClaseEspera, base: str, intentos: int = 1) -> str:
     """Cuándo vuelve a mirarse: `base` más el intervalo de la clase.
 
