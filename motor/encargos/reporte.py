@@ -126,6 +126,19 @@ def _fase(enc: Encargo, fase: Fase, prs: dict[str, PrDeFase]) -> ReporteFase:
     return ReporteFase(fase.id, "entrega parcial", "No se acreditó la integración.")
 
 
+def _hora_de(texto: str) -> str:
+    """La hora del registro en hh:mm, en la zona de David."""
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        instante = datetime.fromisoformat(str(texto).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return texto
+    if instante.tzinfo is None:
+        instante = instante.replace(tzinfo=timezone.utc)
+    return instante.astimezone(timezone(timedelta(hours=-7))).strftime("%H:%M")
+
+
 def _detencion(enc: Encargo) -> str:
     causa = enc.situacion.causa if isinstance(enc.situacion, Detenido) else None
     if isinstance(causa, PorOtraBase):
@@ -133,7 +146,13 @@ def _detencion(enc: Encargo) -> str:
     if isinstance(causa, FalloInterno):
         return "Un fallo interno detuvo el encargo; puedes usar continuar."
     if isinstance(causa, PorTope):
-        return f"La espera {causa.clase} llegó a su tope ({causa.tope}); puedes usar continuar."
+        from .tabla_esperas import ESPERAS
+
+        legible = ESPERAS[causa.clase].legible if causa.clase in ESPERAS else causa.clase
+        return (
+            f"La espera «{legible}» llegó a su tope ({causa.tope}), abierta a las "
+            f"{_hora_de(causa.abierta)}; puedes usar continuar."
+        )
     if isinstance(causa, FaltaDeAvance):
         return f"El encargo se detuvo por falta de avance ({causa.regla}); puedes usar continuar."
     if isinstance(causa, PorOrden):

@@ -1299,7 +1299,8 @@ class CorpusPlegado(unittest.TestCase):
             shutil.copytree(RAIZ / "motor", copia / "motor")
             filas = copia / "motor" / "encargos" / "reductor" / "__init__.py"
             texto = filas.read_text(encoding="utf-8")
-            original = "'plazo': Fila(esperas.plazo, corta_series=False)"
+            original = ("'plazo': Fila(esperas.plazo, corta_series=False, "
+                    "validar=validacion_esperas.validar_plazo)")
             self.assertIn(original, texto)
             filas.write_text(texto.replace(original, original.replace("False", "True"), 1),
                              encoding="utf-8")

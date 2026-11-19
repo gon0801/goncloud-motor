@@ -1568,9 +1568,17 @@ def barrer(
             if aparcado_por_barrido(previo):
                 informes.append(vista_o_minima(previo))
                 continue
+            # El tope se cobra en el recorrido común: `conducir_pr` puede dar la
+            # pasada por atendida y, si la receta sigue sin declararse, el
+            # sondeo reescribiría la espera sin llegar nunca a su tope.
+            previo = _tope_de_la_espera(registro, previo, hora)
             atendido = False
-            if (gh is not None and leer_parada_local(registro.base) is None
-                and previo.via != "directa"):
+            if (
+                previo.estado not in ("detenido", "deteniendo")
+                and gh is not None
+                and leer_parada_local(registro.base) is None
+                and previo.via != "directa"
+            ):
                 fase = fase_final_pendiente(registro, previo, epoch) if presupuesto_pr else ""
                 if fase:
                     presupuesto_pr -= 1
@@ -1604,6 +1612,77 @@ def barrer(
     return informes
 
 
+def _tope_de_la_espera(registro: Registro, enc: Encargo, hora: str) -> Encargo:
+    """Con `ESPERAS_V5`, escribe `tope_espera` si la espera llegó al tope de su fila.
+
+    Solo las filas con tope por tiempo deciden aquí; las que cuentan intentos los
+    gasta su paso, que ya cierra la espera con su acción. Un tope de una fila
+    `avisar` no cambia el estado: el hecho queda en el registro para el aviso.
+    """
+    from .tabla_esperas import ESPERAS, hora_canonica, tope_de
+
+    if not politica.ESPERAS_V5:
+        return enc
+    clase = enc.espera_clase
+    if clase not in ESPERAS or not enc.espera_abierta:
+        return enc
+    fila = ESPERAS[clase]
+    if fila.conducta.al_tope not in ("detener", "avisar") or fila.conducta.tope_s is None:
+        return enc
+    abierta = hora_canonica(enc.espera_abierta)
+    tope = tope_de(clase, enc.espera_abierta)
+    ahora = hora_canonica(hora)
+    if not abierta or not tope or not ahora or ahora < hora_canonica(tope):
+        return enc
+    try:
+        registro.anotar(
+            enc.id,
+            {"kind": "tope_espera", "data": {
+                "clase": clase, "abierta": enc.espera_abierta,
+                "tope": tope, "hora": hora,
+            }},
+            f"tope:{enc.id}:{clase}:{enc.espera_abierta}:{tope}",
+        )
+    except Rechazo:
+        # La espera se movió entre la lectura y la escritura: manda el plegado.
+        return registro.fold(enc.id) or enc
+    return registro.fold(enc.id) or enc
+
+
+def _vencio_sin_hora(enc: Encargo, hora: str) -> bool:
+    """Una reanudación que no se lee como hora vence a `TOPE_ESPERA_MIN`.
+
+    Apagado el interruptor, `reanuda_en="nunca"` no vence jamás, como hoy.
+    """
+    from .tabla_esperas import es_hora_utc, hora_canonica
+
+    if not politica.ESPERAS_V5 or not enc.reanuda_en or es_hora_utc(enc.reanuda_en):
+        return False
+    abierta = hora_canonica(enc.espera_abierta) or ""
+    ahora = hora_canonica(hora)
+    if not abierta or not ahora:
+        return False
+    return ahora >= _reanuda_desde(abierta, politica.TOPE_ESPERA_MIN * 60)
+
+
+def _vencio_la_reanudacion(enc: Encargo, hora: str) -> bool:
+    """La hora de reanudación de la espera ya pasó.
+
+    Encendido el interruptor mandan los instantes, no el texto: una hora con
+    desplazamiento o una forma rara no puede vencer antes de su momento. Si la
+    hora no se lee, manda el plazo desde la apertura.
+    """
+    from .tabla_esperas import hora_canonica
+
+    if not politica.ESPERAS_V5:
+        return bool(hora >= enc.reanuda_en)
+    reanuda = hora_canonica(enc.reanuda_en)
+    ahora = hora_canonica(hora)
+    if reanuda and ahora:
+        return ahora >= reanuda
+    return _vencio_sin_hora(enc, hora)
+
+
 def _clave_de_plazo(encargo_id: str, reanuda_en: str, abierta: str) -> str:
     """La clave del vencimiento de una ventana: encargo, reanudación y apertura.
 
@@ -1615,6 +1694,29 @@ def _clave_de_plazo(encargo_id: str, reanuda_en: str, abierta: str) -> str:
     """
     base = f"plazo:{encargo_id}:{reanuda_en}"
     return f"{base}:{abierta}" if abierta else base
+
+
+def _plazo_de_la_ventana(
+    registro: Registro, enc: Encargo, hora: str,
+) -> tuple[Encargo, bool]:
+    """Cierra el plazo de la ventana de `enc` con su comprobación atómica.
+
+    El `plazo` lleva la ventana y `validar_plazo` la comprueba en la misma
+    transacción del INSERT. Si otra orden reemplazó la espera, el evento se
+    rechaza y el vencimiento se abandona: manda el plegado.
+    """
+    try:
+        registro.anotar(
+            enc.id,
+            {"kind": "plazo", "data": {
+                "hora": hora,
+                "ventana": [enc.espera_clase, enc.espera_abierta, enc.reanuda_en],
+            }},
+            _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
+        )
+    except EventoIlegal:
+        return registro.fold(enc.id) or enc, False
+    return registro.fold(enc.id) or enc, True
 
 
 def _barrer_encargos(
@@ -1639,19 +1741,27 @@ def _barrer_encargos(
         enc = registro.fold(encargo_id)
         if enc is None:
             continue
-        if (
-            enc.estado == "esperando_reintento"
-            and enc.reanuda_en
-            and hora >= enc.reanuda_en
+        if enc.estado == "esperando_reintento" and enc.reanuda_en and (
+            _vencio_la_reanudacion(enc, hora)
         ):
-            registro.anotar(
-                encargo_id,
-                {"kind": "plazo", "data": {"hora": hora}},
-                # La ventana va en la clave: un plazo ya consumido no
-                # puede tapar el de una ventana nueva con la misma hora.
-                _clave_de_plazo(encargo_id, enc.reanuda_en, enc.espera_abierta),
-            )
-            enc = registro.fold(encargo_id)
+            ventana = (enc.espera_clase, enc.espera_abierta, enc.reanuda_en)
+            enc = _tope_de_la_espera(registro, enc, hora)
+            # Una orden pudo abrir otra espera entre la lectura y el tope. El
+            # `plazo` solo cierra la ventana que se leyó: si el plegado ya no
+            # es esa misma espera, se abandona este vencimiento.
+            fresco = registro.fold(encargo_id) or enc
+            if (
+                fresco.estado == "esperando_reintento"
+                and (fresco.espera_clase, fresco.espera_abierta, fresco.reanuda_en)
+                == ventana
+            ):
+                fresco, _ = _plazo_de_la_ventana(registro, fresco, hora)
+            enc = fresco
+        elif enc.estado not in ("terminado", "cancelado"):
+            # Una espera que no vive en `esperando_reintento` (deteniendo,
+            # conciliando, un impedimento del trabajo o la autoridad caída)
+            # también llega al tope de su fila.
+            enc = _tope_de_la_espera(registro, enc, hora)
         if enc.estado in ("terminado", "cancelado"):
             # Un encargo cerrado no vuelve al buzón, pero sí pasa por la
             # autoridad mientras le quede algo que reintentar: el resultado o
@@ -4361,9 +4471,20 @@ def _fallo_de_repo(
     # La serie es del intento: los fallos siguientes del mismo intento suman en `espera`.
     if registro.por_ukey(fallo.ukey) is None:
         Directo(registro, enc).con(fallo)
-    marcar_espera(registro, enc.id, "repo", causa, hora, reloj="escritura")
+    enc = registro.fold(enc.id) or enc
+    # La serie suma la espera que se escribe ahora; el intento que va es el
+    # siguiente, y es el que decide la escalera de la reanudación. El reloj es
+    # el de este sitio: mide al fallar, no al empezar la pasada.
+    previas = _fallos_de_repo_seguidos(enc, causa)
+    marcar_espera(
+        registro, enc.id, "repo", causa, hora,
+        intentos=previas + 1, reloj="escritura",
+    )
     enc = registro.fold(enc.id) or enc
     veces = _fallos_de_repo_seguidos(enc, causa)
+    if politica.ESPERAS_V5:
+        # El tope de la fila (6 h) lo cobra el barrido; aquí no se corta antes.
+        return
     if veces < TOPE_FALLOS_REPO:
         return
     texto = (
@@ -8399,7 +8520,16 @@ def _paso_despliegue_fase(
             return enc
     politica = politica_despliegue.resolver(espacio, enc, fase)
     if politica.requiere_despliegue is None:
-        return enc
+        from .politica import ESPERAS_V5
+
+        if not ESPERAS_V5:
+            # Apagado el interruptor, una fase sin declaración sigue pendiente
+            # de que se declare: no gasta intentos ni libera el cierre.
+            return enc
+        return _espera_sin_receta(
+            registro, enc, fase,
+            "falta declarar si la fase despliega y su receta real", hora,
+        )
     if politica.requiere_despliegue is False:
         return _anotar_conciliacion(registro, enc, fase, "preparada", hora)
     rutas = {k: getattr(politica, k) for k in ("desplegar", "checklist", "rollback")}
@@ -8442,32 +8572,7 @@ def _paso_despliegue_fase(
         causa = str(resultado.get("motivo") or "la receta no arrancó")
         if resultado.get("recibo"):
             causa += "; recibo: " + str(resultado["recibo"])
-        intentos = int(fase.despliegue_espera_intentos) + 1
-        causa = f"fase {fase.id}: {causa}"
-        if intentos >= TOPE_ESPERA:
-            causa += f" (la receta no arrancó {intentos} veces)"
-            enc = _anotar_impedimento_de_fase(
-                registro, enc, fase, causa, hora,
-                intentos=int(fase.despliegue_intentos),
-            )
-            ordenes = despliegue.continuaciones(registro, enc.id)
-            return _anotar_conciliacion(
-                registro, enc, fase, "espera_agotada", hora,
-                causa=causa,
-                huella=f"agotada:{intentos}:{ordenes}",
-                ordenes=ordenes,
-            )
-        clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
-        _anotar_impedimento(
-            registro, enc, clase, causa,
-            "que el despliegue pueda completarse o se retire del pedido", hora,
-        )
-        reanuda = tabla_esperas.reanuda_en("despliegue_sin_receta_otra_fase", hora)
-        return _anotar_conciliacion(
-            registro, enc, fase, "espera", hora,
-            causa=causa, reanuda_en=reanuda,
-            huella=f"{reanuda}:{intentos}", intentos=intentos,
-        )
+        return _espera_sin_receta(registro, enc, fase, causa, hora)
     if estado != "aplicado":
         # La receta sigue corriendo o quedó pendiente. No se marca una espera
         # del encargo: la fase activa conserva su turno y la próxima pasada
@@ -8494,6 +8599,45 @@ def _asegurar_commit_local(espacio: Path, sha: str, base: str) -> None:
         return
     if base:
         _git(espacio, "fetch", "--quiet", "origin", base)
+
+
+def _espera_sin_receta(
+    registro: Registro, enc: Encargo, fase, causa: str, hora: str
+) -> Encargo:
+    """Una fase no activa espera su receta contando intentos.
+
+    Cuenta `esperando` y también el caso en que la política no dice si la fase
+    despliega: los dos dejan la causa visible y llegan al mismo tope. Al tope la
+    causa queda como impedimento terminal y el cierre deja de esperarla.
+    """
+    from . import despliegue
+
+    intentos = int(fase.despliegue_espera_intentos) + 1
+    causa = f"fase {fase.id}: {causa}"
+    if intentos >= TOPE_ESPERA:
+        causa += f" (la receta no arrancó {intentos} veces)"
+        enc = _anotar_impedimento_de_fase(
+            registro, enc, fase, causa, hora,
+            intentos=int(fase.despliegue_intentos),
+        )
+        ordenes = despliegue.continuaciones(registro, enc.id)
+        return _anotar_conciliacion(
+            registro, enc, fase, "espera_agotada", hora,
+            causa=causa,
+            huella=f"agotada:{intentos}:{ordenes}",
+            ordenes=ordenes,
+        )
+    clase = "despliegue:" + hashlib.sha256(causa.encode()).hexdigest()[:12]
+    _anotar_impedimento(
+        registro, enc, clase, causa,
+        "que el despliegue pueda completarse o se retire del pedido", hora,
+    )
+    reanuda = tabla_esperas.reanuda_en("despliegue_sin_receta_otra_fase", hora)
+    return _anotar_conciliacion(
+        registro, enc, fase, "espera", hora,
+        causa=causa, reanuda_en=reanuda,
+        huella=f"{reanuda}:{intentos}", intentos=intentos,
+    )
 
 
 def _conciliar_fases(
@@ -9295,6 +9439,7 @@ def _paso_entrega_paso(
                     "checks_merge" if checks is not None and checks.en_marcha
                     else "tropiezo_merge",
                     espera, hora,
+                    intentos=_fallos_de_repo_seguidos(enc, causa) + 1,
                 )
                 return _con_espera(registro.fold(enc.id) or enc)
             if checks is not None and checks.fallas:
@@ -9599,11 +9744,9 @@ def _despliegue_ocupado(
             # mismo SHA vuelve a correr y la causa se resuelve si despliega.
             despliegue.reabrir_ventana(registro, enc, ordenes)
             if enc.estado == "esperando_reintento":
-                registro.anotar(
-                    enc.id,
-                    {"kind": "plazo", "data": {"hora": hora}},
-                    _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
-                )
+                fresco, aplicado = _plazo_de_la_ventana(registro, enc, hora)
+                if not aplicado:
+                    return _con_espera(fresco)
             return None
         texto = (
             f"El despliegue estuvo ocupado {intentos} veces desde "
@@ -9640,11 +9783,9 @@ def _despliegue_ocupado(
         # usa el barrido para esta ventana (encargo, reanudación y apertura),
         # así el vencimiento es un solo evento y el recibo ocupado vuelve a ser
         # reintentable en este mismo paso.
-        registro.anotar(
-            enc.id,
-            {"kind": "plazo", "data": {"hora": hora}},
-            _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
-        )
+        fresco, aplicado = _plazo_de_la_ventana(registro, enc, hora)
+        if not aplicado:
+            return _con_espera(fresco)
     return None
 
 

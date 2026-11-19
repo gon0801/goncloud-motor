@@ -219,6 +219,12 @@ def _espera_en_palabras(motivo: str) -> str:
 
 
 def _paso(enc: Encargo) -> str:
+    from .politica import ESPERAS_V5
+
+    if ESPERAS_V5 and enc.estado == "detenido":
+        from .reporte import _detencion
+
+        return _frase(_detencion(enc), 200)
     if enc.estado == "deteniendo":
         motivo = _frase(enc.motivo, 120)
         return f"deteniéndose: {motivo}" if motivo else "deteniéndose"
@@ -250,7 +256,13 @@ def _clase_de_espera(motivo: object) -> str:
 def _espera_sostenida(enc: Encargo, ahora: float, desde: float | None) -> bool:
     """La misma espera visible se ha sostenido más allá del umbral. El rearme
     normal (plazo y otra vez espera) conserva `desde`; el texto de la alerta es
-    fijo para que la firma no cambie en cada vuelta."""
+    fijo para que la firma no cambie en cada vuelta. Con `ESPERAS_V5` encendido
+    la ventana se lee de `espera_abierta` del plegado, sin repasar los eventos;
+    apagado, se reconstruye como hoy."""
+    from .politica import ESPERAS_V5
+
+    if ESPERAS_V5 and enc.espera_abierta:
+        desde = _epoch(enc.espera_abierta)
     if desde is None or ahora - desde < ALERTA_ESPERA_S:
         return False
     return _paso(enc).startswith("esperando ")
@@ -475,7 +487,10 @@ def construir(registro: Registro, ahora: float | None = None, host: str = "") ->
     vistos: set[tuple[str, str]] = set()
     for ident in registro.ids():
         enc = plegar_aislado(registro, ident)
-        if enc is None or enc.estado not in ESTADOS_ACTIVOS:
+        from .politica import ESPERAS_V5
+
+        activos = ESTADOS_ACTIVOS + (("detenido",) if ESPERAS_V5 else ())
+        if enc is None or enc.estado not in activos:
             continue
         eventos = registro.eventos(ident)
         entradas.append(_entrada(enc, eventos, momento))

@@ -356,7 +356,7 @@ class RegistroEsperas(unittest.TestCase):
         reg.anotar("p", evento("tope_espera", H3, clase="checks_merge", abierta=H1,
                                tope=H3), "tope:p")
         self.assertEqual(reg.fold("p").tope_de, ("checks_merge", H1, H3))
-        self.assertIn("checks_merge", reporte(reg.fold("p"), False).causa)
+        self.assertIn("checks del merge", reporte(reg.fold("p"), False).causa)
         reg.anotar("p", evento("orden", H3, accion="continuar"), "continuar:p")
         with self.assertRaises(EventoIlegal):
             reg.anotar("p", evento("falta_de_avance", H3, regla="turnos",

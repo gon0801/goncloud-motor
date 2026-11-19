@@ -28,6 +28,7 @@ from motor.encargos.entrega.avisos import (
     entrega_parcial_llana as _entrega_parcial_llana,
     id_aviso,
     titulo_del_pedido as _titulo_del_pedido,
+    topes_nuevos,
     trabajos_nuevos,
 )
 from motor.encargos.dominio import (
@@ -1535,6 +1536,12 @@ def _bloquea_el_sondeo(
     """
     if doc.get("estado") not in _ESTADOS_PENDIENTES_DE_ENTREGA:
         return False
+    if doc.get("tipo") == "tope" and not politica.ESPERAS_V5:
+        # Apagado el interruptor no se reenvía, pero el aviso tampoco frena el
+        # sondeo del canal: si el canal se recuperó, la prueba de conciliación
+        # tiene que poder comprobarlo. Su estado guardado se conserva para
+        # cuando el interruptor vuelva.
+        return False
     encargo = str(doc.get("encargo") or "")
     if not encargo:
         return resumen_activo
@@ -1575,6 +1582,36 @@ def _canales_con_avisos_pendientes(
     return pendientes
 
 
+def _el_tope_sigue_vigente(enc, doc: dict) -> bool:
+    """La espera de un aviso `tope` guardado sigue siendo la del encargo.
+
+    Se valida con la misma regla que la escritura del tope (`leer_tope`), con la
+    clase, la apertura y la hora que el aviso guardó. Si la espera cerró o el
+    encargo se movió, el aviso ya no tiene nada que decir.
+    """
+    from motor.encargos.reductor.validacion_esperas import leer_tope
+
+    datos = {
+        "clase": doc.get("clase"), "abierta": doc.get("abierta"),
+        "tope": doc.get("tope"), "hora": doc.get("hora") or doc.get("abierta"),
+    }
+    return leer_tope(enc, datos) is not None
+
+
+def _descartar_aviso(
+    registro: Registro, ident: str, doc: dict, vista: "VistaAvisos | None" = None
+) -> None:
+    """Saca del camino un aviso guardado que ya no vale."""
+    doc["estado"] = "descartado"
+    doc["motivo"] = "la espera del aviso ya cerró"
+    for campo in ("proximo_intento", "fallos"):
+        doc.pop(campo, None)
+    if vista is not None:
+        vista.put(doc)
+    else:
+        _atomico(registro.base / "avisos" / f"{ident}.json", doc)
+
+
 def _reintentar_avisos_sueltos(
     registro: Registro,
     vuelta: Vuelta,
@@ -1613,6 +1650,15 @@ def _reintentar_avisos_sueltos(
             continue
         enc = encargos.get(str(doc.get("encargo") or ""))
         if enc is None or enc.estado in _ESTADOS_SIN_AVANCE:
+            continue
+        if doc.get("tipo") == "tope" and not politica.ESPERAS_V5:
+            # Con el interruptor apagado no se reenvía un aviso de tope que
+            # quedó incierto antes de apagarlo.
+            continue
+        if doc.get("tipo") == "tope" and not _el_tope_sigue_vigente(enc, doc):
+            # La espera que abrió este aviso ya cerró: no se reenvía un
+            # «sigo esperando» de algo que terminó mientras el canal caía.
+            _descartar_aviso(registro, ident, doc, vista)
             continue
         try:
             nombre = nombre_canal(str(doc.get("canal") or ""))
@@ -1840,6 +1886,16 @@ def _publicar_aviso(
     return _cerrar_aviso(guardado, True)
 
 
+def _espera_legible(clase: object) -> str:
+    """Cómo nombra el aviso a esa clase de espera."""
+    from motor.encargos.tabla_esperas import ESPERAS
+
+    try:
+        return ESPERAS[clase].legible  # type: ignore[index]
+    except (KeyError, TypeError):
+        return str(clase or "la espera")
+
+
 def _descartar_avances_de_terminados(
     registro: Registro,
     terminados: set[str],
@@ -1862,7 +1918,7 @@ def _descartar_avances_de_terminados(
             doc.get("encargo") not in terminados
             or doc.get("tipo") not in (
                 "inicio", "pr", "aviso", "relevo", "herramienta", "pendientes", "trabado",
-                "detenido",
+                "detenido", "tope",
             )
             or doc.get("estado") in ("publicado", "descartado")
         ):
@@ -1958,6 +2014,16 @@ def _trabajos_de_encargo(
             if ruta.is_file():
                 cuerpo = leer_texto(ruta)
         trabajos.append((aviso, cuerpo))
+    if politica.ESPERAS_V5:
+        for aviso in topes_nuevos(registro, enc, corte_palabras):
+            titulo = _titulo_del_pedido(enc.texto, enc.clave)
+            clase = _espera_legible(aviso.get("clase"))
+            falta = _llano(enc.motivo)[0] if enc.motivo else "la misma espera"
+            trabajos.append((
+                aviso,
+                f"Tu encargo «{titulo}»: la espera «{clase}» pasó su tope "
+                f"({aviso.get('tope')}) y sigo esperando: {falta}",
+            ))
     apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
     for hecho in hechos_de_avance(enc, apariciones):
         aviso = _aviso_de_hecho(enc, hecho)

@@ -42,6 +42,28 @@ def leer_cierre(
     return fases, disponible, pendientes
 
 
+def validar_plazo(e: Encargo, d: dict) -> None:
+    """Un `plazo` con ventana solo cierra la espera que se leyó.
+
+    Los `plazo` anteriores no traen `ventana` y se aplican como siempre. Con
+    ventana, la comprobación corre dentro de la misma transacción del INSERT:
+    una orden que reemplace la espera en ese hueco no se cierra.
+    """
+    ventana = d.get("ventana")
+    if ventana is None:
+        return
+    from ..dominio import TransicionIlegal
+
+    if e.estado != "esperando_reintento":
+        raise TransicionIlegal("el plazo espera un encargo en espera")
+    try:
+        esperada = (str(ventana[0]), str(ventana[1]), str(ventana[2]))
+    except (TypeError, IndexError, KeyError):
+        raise TransicionIlegal("la ventana del plazo no es válida") from None
+    if esperada != (e.espera_clase, e.espera_abierta, e.reanuda_en):
+        raise TransicionIlegal("la espera cambió antes de cerrar su plazo")
+
+
 def validar_incorporado(e: Encargo, d: dict) -> None:
     from ..dominio import TransicionIlegal
 

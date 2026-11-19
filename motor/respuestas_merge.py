@@ -100,8 +100,13 @@ def tras_el_rechazo(
     tropiezos seguidos antes de este; el que llega al tope dice cuántos hubo."""
     if lectura is None and not isinstance(error, PASAJERAS):
         return "", causa
+    from motor.encargos import politica
     from motor.encargos.tabla_esperas import tope_intentos_de_hoy
 
+    if politica.ESPERAS_V5:
+        # El tope de la fila es de 6 h y lo cobra el barrido: un tropiezo se
+        # reintenta hasta entonces.
+        return causa, causa
     if seguidos + 1 < tope_intentos_de_hoy("tropiezo_merge"):
         return causa, causa
     operacion, detalle = causa.split(": ", 1)

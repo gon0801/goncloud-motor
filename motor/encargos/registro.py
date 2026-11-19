@@ -204,6 +204,7 @@ _ATRIBUCION: Mapping[str, frozenset[str]] = {"entrega_externa": frozenset({"inte
 # repetir la misma escritura con ellos es el mismo hecho. Entre dos eventos que
 # sí los traen se comparan como cualquier otro campo.
 _NUEVOS_EN_ESPERA = frozenset({"clase", "abierta", "tope"})
+_NUEVOS_EN_PLAZO = frozenset({"ventana"})
 
 
 def _estable(kind: str, data: Mapping[str, object]) -> dict:
@@ -215,9 +216,10 @@ def _sin_los_nuevos(
     kind: str, data: Mapping[str, object], guardado: Mapping[str, object]
 ) -> dict:
     """Lo nuevo de un `espera` sin los campos que el guardado no tiene."""
-    if kind != "espera":
+    nuevos = {"espera": _NUEVOS_EN_ESPERA, "plazo": _NUEVOS_EN_PLAZO}.get(kind)
+    if nuevos is None:
         return dict(data)
-    faltan = _NUEVOS_EN_ESPERA - set(guardado)
+    faltan = nuevos - set(guardado)
     return {k: v for k, v in data.items() if k not in faltan}
 
 
