@@ -419,5 +419,100 @@ class DisparoBajoParada(unittest.TestCase):
             accion.assert_called_once()
 
 
+class MultifaseDeepSeek(unittest.TestCase):
+    SHA_A = "a" * 40
+    SHA_B = "b" * 40
+
+    def _enc(self, reg, enc_id):
+        return SimpleNamespace(
+            id=enc_id,
+            fase_actual=SimpleNamespace(pr_numero=202, pr_sha=self.SHA_B),
+            entrega=SimpleNamespace(repo="r"),
+            primer_envio_por_sha=((self.SHA_A, H0), (self.SHA_B, "2026-11-18T10:20:00Z")),
+            pr_sha=self.SHA_B,
+            pr_numero=202,
+        )
+
+    def test_la_espera_por_la_fase_a_no_cierra_con_b(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "multifase")
+        ciclo.marcar_espera(
+            reg, enc_id, "lectura_deepseek_fallida", "A ilegible", H0,
+            desde=H0, numero=101, sha=self.SHA_A, fase="A",
+        )
+        llamadas: list[tuple[int, str]] = []
+
+        def comentarios(repo, numero, sha):
+            llamadas.append((numero, sha))
+            if numero == 101:
+                raise RuntimeError("gh api: 502")
+            return [{"texto": "DeepSeek: APPROVED", "sha": sha}]
+
+        ctx = cierres.Contexto(
+            registro=reg, enc=self._enc(reg, enc_id),
+            gh=SimpleNamespace(comentarios_deepseek=comentarios),
+            hora=H0, epoch=1.0,
+        )
+        self.assertIsNone(cierres._lectura_deepseek_fallida(ctx))
+        self.assertEqual(llamadas, [(101, self.SHA_A)])
+
+        def comentarios_ok(repo, numero, sha):
+            llamadas.append((numero, sha))
+            return [{"texto": "DeepSeek: APPROVED", "sha": sha}]
+
+        ctx = replace(
+            ctx, gh=SimpleNamespace(comentarios_deepseek=comentarios_ok)
+        )
+        self.assertTrue(cierres._lectura_deepseek_fallida(ctx))
+        self.assertEqual(llamadas[-1], (101, self.SHA_A))
+
+    def test_otra_fase_con_el_mismo_motivo_estrena_su_identidad(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "identidad-multifase")
+        ciclo.marcar_espera(
+            reg, enc_id, "lectura_deepseek_fallida", "no se pudo leer", H0,
+            desde=H0, numero=202, sha=self.SHA_B, fase="B",
+        )
+        ciclo.marcar_espera(
+            reg, enc_id, "lectura_deepseek_fallida", "no se pudo leer", H0,
+            desde=H0, numero=101, sha=self.SHA_A, fase="A",
+        )
+        esperas = [e for e in reg.eventos(enc_id) if e["kind"] == "espera"]
+        self.assertEqual(len(esperas), 2)
+        self.assertEqual(
+            (esperas[-1]["data"]["numero"], esperas[-1]["data"]["sha"]),
+            (101, self.SHA_A),
+        )
+
+    def test_el_tope_registrado_de_a_manda_sobre_el_primer_envio_de_b(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "tope-multifase")
+        fase_b = replace(Fase("B", "x"), pr_sha=self.SHA_B, pr_numero=202)
+        enc = replace(
+            reg.fold(enc_id),
+            fase_activa="B",
+            fases=(fase_b,),
+            espera_clase="lectura_deepseek_fallida",
+            espera_abierta=H0,
+            espera_tope="2026-11-18T10:30:00Z",
+            primer_envio_por_sha=(
+                (self.SHA_A, H0), (self.SHA_B, "2026-11-18T10:20:00Z"),
+            ),
+        )
+        self.assertFalse(ciclo._tope_de_la_espera_omitir(enc, "2026-11-18T10:29:00Z"))
+        self.assertTrue(ciclo._tope_de_la_espera_omitir(enc, "2026-11-18T10:30:00Z"))
+        # Un evento antiguo sin tope registrado cae en el primer envío activo.
+        antiguo = replace(enc, espera_tope="")
+        self.assertFalse(ciclo._tope_de_la_espera_omitir(
+            antiguo, "2026-11-18T10:30:00Z"
+        ))
+        self.assertTrue(ciclo._tope_de_la_espera_omitir(
+            antiguo, "2026-11-18T10:50:00Z"
+        ))
+
+
 if __name__ == "__main__":
     unittest.main()
