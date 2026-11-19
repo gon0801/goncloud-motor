@@ -81,7 +81,7 @@ No cambian:
 Forma de trabajo: la de "Reglas de trabajo" en `AGENTS.md`. En corto:
 - la evidencia son las pruebas en verde; no pegues corpus, mutaciones ni comandos de calidad;
 - en cada ronda corriges solo lo que dice el comentario del revisor;
-- máximo 2 rondas por PR, y una 3.ª solo por algo grave;
+- sin tope de rondas por PR mientras cada ronda traiga avance; nadie pide permiso por una ronda más;
 - el revisor mergea cada unidad en cuanto pasa.
 
 ## Preaprobaciones
