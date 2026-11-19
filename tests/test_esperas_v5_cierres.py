@@ -161,6 +161,21 @@ class LecturasPorClase(unittest.TestCase):
         )
         self.assertIsNone(cierres._checks_merge(ctx))
 
+    def test_una_politica_que_bloquea_despierta_el_paso(self):
+        from motor.github import PoliticaBloquea
+
+        ctx = SimpleNamespace(
+            gh=SimpleNamespace(
+                checks_requeridos=mock.Mock(
+                    side_effect=PoliticaBloquea("la política del PR cambió")
+                )
+            ),
+            enc=SimpleNamespace(
+                pr_numero=1, pr_sha="a" * 40, entrega=SimpleNamespace(repo="r")
+            ),
+        )
+        self.assertTrue(cierres._checks_merge(ctx))
+
     def test_sin_puerto_github_cierra_cuando_aparece(self):
         self.assertFalse(cierres._sin_puerto_github(SimpleNamespace(gh=None)))
         self.assertTrue(cierres._sin_puerto_github(SimpleNamespace(gh=object())))
