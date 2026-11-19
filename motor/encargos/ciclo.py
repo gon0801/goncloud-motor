@@ -1646,7 +1646,7 @@ def _tope_de_la_espera(registro: Registro, enc: Encargo, hora: str) -> Encargo:
         )
     except Rechazo:
         # La espera se movió entre la lectura y la escritura: manda el plegado.
-        return enc
+        return registro.fold(enc.id) or enc
     return registro.fold(enc.id) or enc
 
 
