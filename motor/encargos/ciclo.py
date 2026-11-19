@@ -9574,7 +9574,7 @@ def _despliegue_ocupado(
                 registro.anotar(
                     enc.id,
                     {"kind": "plazo", "data": {"hora": hora}},
-                    f"plazo:{enc.id}:{enc.reanuda_en}:{enc.espera_abierta}",
+                    f"plazo:{enc.id}:{enc.reanuda_en}",
                 )
             return None
         texto = (
@@ -9614,7 +9614,7 @@ def _despliegue_ocupado(
         registro.anotar(
             enc.id,
             {"kind": "plazo", "data": {"hora": hora}},
-            f"plazo:{enc.id}:{enc.reanuda_en}:{enc.espera_abierta}",
+            f"plazo:{enc.id}:{enc.reanuda_en}",
         )
     return None
 
