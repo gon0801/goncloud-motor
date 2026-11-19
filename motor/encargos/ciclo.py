@@ -6534,9 +6534,11 @@ def _tope_registrado_de_lectura(
         except (TypeError, ValueError):
             numero_evento = 0
         sha_evento = str(datos.get("sha") or "")
-        if (numero and numero_evento and numero_evento != numero) or (
-            sha and sha_evento and sha_evento != sha
-        ):
+        if not numero_evento or not sha_evento:
+            # Un tope legado sin identidad no acredita a qué PR y SHA pertenece:
+            # no se hereda a una lectura nueva.
+            continue
+        if numero_evento != numero or sha_evento != sha:
             continue
         if str(datos.get("tope") or ""):
             return str(datos["tope"])
@@ -10608,9 +10610,15 @@ def marcar_espera(
     ese PR, no el de la fase activa. Solo se guardan cuando se pasan.
     """
     enc = registro.fold(encargo_id)
+    identidad_previa = _identidad_guardada_de_espera(registro, encargo_id, clase)
+    identidad = (int(numero or 0), str(sha or ""))
+    misma_lectura = (not numero and not sha) or (
+        identidad_previa != (0, "") and identidad_previa == identidad
+    )
     abierta = (
         enc.espera_abierta
         if enc is not None and enc.espera_clase == clase and enc.espera_abierta
+        and misma_lectura
         else hora
     )
     if politica.ESPERAS_V5:

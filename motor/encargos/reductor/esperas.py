@@ -249,9 +249,12 @@ def espera(e: Encargo, d: dict, hora: str, nuevo: bool) -> Encargo:
         return e
     clase = d.get("clase")
     clase = clase if isinstance(clase, str) and clase in ESPERAS else "legada"
+    pedida = str(d.get("abierta") or "")
     abierta = hora if clase == "legada" else (
-        e.espera_abierta if clase == e.espera_clase and e.espera_abierta
-        else str(d.get("abierta") or hora)
+        e.espera_abierta
+        if clase == e.espera_clase and e.espera_abierta
+        and (not pedida or pedida == e.espera_abierta)
+        else pedida or hora
     )
     return evolucionar(
         e,
