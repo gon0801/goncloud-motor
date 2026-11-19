@@ -1637,7 +1637,7 @@ def _tope_de_la_espera(registro: Registro, enc: Encargo, hora: str) -> Encargo:
         )
     except Rechazo:
         # La espera se movió entre la lectura y la escritura: manda el plegado.
-        return enc
+        return registro.fold(enc.id) or enc
     return registro.fold(enc.id) or enc
 
 
@@ -1713,14 +1713,24 @@ def _barrer_encargos(
         if enc.estado == "esperando_reintento" and enc.reanuda_en and (
             _vencio_la_reanudacion(enc, hora)
         ):
+            ventana = (enc.espera_clase, enc.espera_abierta, enc.reanuda_en)
             enc = _tope_de_la_espera(registro, enc, hora)
-            if enc.estado == "esperando_reintento":
+            # Una orden pudo abrir otra espera entre la lectura y el tope. El
+            # `plazo` solo cierra la ventana que se leyó: si el plegado ya no
+            # es esa misma espera, se abandona este vencimiento.
+            fresco = registro.fold(encargo_id) or enc
+            if (
+                fresco.estado == "esperando_reintento"
+                and (fresco.espera_clase, fresco.espera_abierta, fresco.reanuda_en)
+                == ventana
+            ):
                 registro.anotar(
                     encargo_id,
                     {"kind": "plazo", "data": {"hora": hora}},
-                    _clave_de_plazo(encargo_id, enc.reanuda_en, enc.espera_abierta),
+                    _clave_de_plazo(encargo_id, fresco.reanuda_en, fresco.espera_abierta),
                 )
-                enc = registro.fold(encargo_id)
+                fresco = registro.fold(encargo_id) or fresco
+            enc = fresco
         elif enc.estado not in ("terminado", "cancelado"):
             # Una espera que no vive en `esperando_reintento` (deteniendo,
             # conciliando, un impedimento del trabajo o la autoridad caída)

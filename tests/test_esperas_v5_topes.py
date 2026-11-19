@@ -379,3 +379,36 @@ class SinRecetaDeclarada(unittest.TestCase):
         self.assertEqual(fase.despliegue_espera_intentos, 0)
         self.assertFalse(fase.despliegue_espera_agotada)
         self.assertNotIn("espera", self._pasos_de_b())
+
+
+class CarreraDelVencimiento(Banco):
+    """Una orden que cambia la espera entre el vencimiento y el plazo."""
+
+    def test_una_orden_que_cambia_la_espera_no_reabre_la_nueva(self):
+        original = ciclo._tope_de_la_espera
+
+        def carrera(registro, enc, hora):
+            # La orden entra después de la lectura del barrido y antes del tope.
+            ciclo.marcar_espera(
+                registro, enc.id, "orden_espera", "hasta mañana", hora,
+                reanuda_en="2026-11-19T10:00:00Z",
+            )
+            return original(registro, enc, hora)
+
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            self.espera("despliegue_en_curso", H0)
+        with (
+            mock.patch("motor.encargos.politica.ESPERAS_V5", True),
+            mock.patch.object(
+                ciclo, "_tope_de_la_espera", side_effect=carrera
+            ),
+        ):
+            ciclo._barrer_encargos(
+                self.reg, [self.enc], H_61,
+                ciclo._epoch_de_hora(H_61), None,
+            )
+        fresco = self.reg.fold(self.enc)
+        self.assertEqual(fresco.estado, "esperando_reintento")
+        self.assertEqual(fresco.espera_clase, "orden_espera")
+        self.assertEqual(fresco.reanuda_en, "2026-11-19T10:00:00Z")
+        self.assertEqual(_eventos(self.reg, self.enc, "plazo"), [])
