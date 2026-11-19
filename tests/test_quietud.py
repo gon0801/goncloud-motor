@@ -145,7 +145,10 @@ class QuietudDelEncargo(unittest.TestCase):
             vuelta("uno")
             t = time.time()
             hora = ahora_iso(t)
-            marcar_espera(r.reg, r.enc, "GitHub caido", ahora_iso(t + 10 * _QUIETUD_S), hora)
+            marcar_espera(
+                r.reg, r.enc, "github_pasajero", "GitHub caido",
+                hora, reanuda_en=ahora_iso(t + 10 * _QUIETUD_S),
+            )
             for i in range(0, 3 * _QUIETUD_S, PASO_S):
                 e = _barrido(r, vuelta.gh, t + i)
             self.assertEqual(e.estado, "esperando_reintento")

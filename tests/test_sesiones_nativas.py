@@ -1060,9 +1060,15 @@ class CopiaQueFalla(unittest.TestCase):
     def test_el_aviso_de_la_copia_no_corta_la_racha_de_fallos_de_repo(self):  # no-roja-en-base: la prueba migra la firma del registro al fold; el comportamiento probado ya estaba en la base
         registro, enc, hora = self._encargo()
         causa = "git fetch: no se alcanza el remoto"
-        marcar_espera(registro, enc.id, causa, "2026-11-01T10:00:00Z", hora)
+        marcar_espera(
+            registro, enc.id, "repo", causa, hora,
+            reanuda_en="2026-11-01T10:00:00Z",
+        )
         _copiar_sesion_sin_caer(registro, enc, self.origen, self.tmp / "almacen", "restaurar", hora)
-        marcar_espera(registro, enc.id, causa, "2026-11-01T10:05:00Z", hora)
+        marcar_espera(
+            registro, enc.id, "repo", causa, hora,
+            reanuda_en="2026-11-01T10:05:00Z",
+        )
         self.assertEqual(len(self._fallos(registro, enc)), 1)
         self.assertEqual(_fallos_de_repo_seguidos(registro.fold(enc.id), causa), 2)
 

@@ -50,7 +50,7 @@ from .comprobacion import (
     sincronizar_declaradas_de_fase,
     version_producto,
 )
-from . import capacidades, necesidades, politica, producto_listo, trabajos_ci
+from . import capacidades, necesidades, politica, producto_listo, tabla_esperas, trabajos_ci
 from .dominio import (
     _CERRADOS,
     Encargo,
@@ -144,11 +144,11 @@ _UMBRAL_S = 30
 _CONCILIACION_INTERVALO_MIN = 2.0
 
 # Quietud: un encargo abierto que no espera con hora ni tiene agente, lanzamiento
-# o paso externo en curso, y cuyo registro no se mueve. Toda espera con hora
-# dura como mucho 300 s (puerto o repo de entrega) y al vencer deja un evento,
-# así que 600 s sin ningún evento no puede ser una espera legítima. Las 3
-# vueltas seguidas evitan escalar por una sola observación, por ejemplo la
-# primera del supervisor tras una caída.
+# o paso externo en curso, y cuyo registro no se mueve. Una espera no llega aquí
+# porque `sin_nada_en_curso` exige `recibido` o `ejecutando`: una espera dura lo
+# que diga su clase, hasta 6 h, y al vencer deja un evento. Con un turno abierto
+# en curso tampoco salta. Las 3 vueltas seguidas evitan escalar por una sola
+# observación, por ejemplo la primera del supervisor tras una caída.
 _QUIETUD_S = 600
 _QUIETUD_VUELTAS = 3
 _RELECTURA_DEEPSEEK_S = 60
@@ -1269,9 +1269,10 @@ def _incorporar_falla_sesion_local(
     marcar_espera(
         registro,
         enc.id,
+        "sesion_local",
         f"falla local de la sesión, no del proveedor: {mensaje[:200]}",
-        _reanuda_en(1800),
         hora,
+        reloj="escritura",
     )
     return registro.fold(enc.id)
 
@@ -1603,6 +1604,19 @@ def barrer(
     return informes
 
 
+def _clave_de_plazo(encargo_id: str, reanuda_en: str, abierta: str) -> str:
+    """La clave del vencimiento de una ventana: encargo, reanudación y apertura.
+
+    Los tres caminos que consumen un plazo (el barrido y las dos reaperturas de
+    `_despliegue_ocupado`) usan esta misma clave, para que el vencimiento de una
+    ventana sea un solo evento lo mire quien lo mire. Sin apertura se conserva
+    la clave histórica `plazo:{encargo}:{reanuda}`, que es la que ya traen los
+    registros escritos antes de que la espera guardara su ventana.
+    """
+    base = f"plazo:{encargo_id}:{reanuda_en}"
+    return f"{base}:{abierta}" if abierta else base
+
+
 def _barrer_encargos(
     registro: Registro,
     ids: list[str],
@@ -1633,7 +1647,9 @@ def _barrer_encargos(
             registro.anotar(
                 encargo_id,
                 {"kind": "plazo", "data": {"hora": hora}},
-                f"plazo:{encargo_id}:{enc.reanuda_en}",
+                # La ventana va en la clave: un plazo ya consumido no
+                # puede tapar el de una ventana nueva con la misma hora.
+                _clave_de_plazo(encargo_id, enc.reanuda_en, enc.espera_abierta),
             )
             enc = registro.fold(encargo_id)
         if enc.estado in ("terminado", "cancelado"):
@@ -2953,9 +2969,10 @@ def _intentar_cierre_paso(
         marcar_espera(
             registro,
             enc.id,
+            "autoridad",
             "resultado comprobado; falta autoridad para conciliar efectos",
-            _reanuda_en(30),
             hora,
+            reloj="escritura",
         )
         return _con_espera(registro.fold(enc.id) or enc)
     destino = DestinoEnsayo(registro.base / "destino")
@@ -2980,9 +2997,10 @@ def _intentar_cierre_paso(
             marcar_espera(
                 registro,
                 enc.id,
+                "efecto_incierto",
                 "resultado comprobado; conciliar efecto sin recibo antes de publicar",
-                _reanuda_en(30),
                 hora,
+                reloj="escritura",
             )
             return _con_espera(registro.fold(enc.id) or enc)
     enc = registro.fold(enc.id)
@@ -3260,8 +3278,8 @@ def _incorporar(
             marcar_espera(
                 registro,
                 enc.id,
+                "acceso_kimi",
                 "renovando el acceso de Kimi para continuar la misma sesion",
-                hora,
                 hora,
             )
             return _marcar_incorporado(registro, enc, hora)
@@ -3326,9 +3344,10 @@ def _incorporar(
                 marcar_espera(
                     registro,
                     enc.id,
+                    "proveedor",
                     "runtime del agente: " + causa["causa"],
-                    causa["hasta"],
                     hora,
+                    reanuda_en=causa["hasta"],
                 )
             return _marcar_incorporado(registro, enc, hora)
         if any(p.agente == agente for p in enc.pausas):
@@ -3545,12 +3564,7 @@ def _incorporar_responsable(
             # vuelta sin novedad del supervisor no es una vuelta sin avance, y el
             # bloqueante abierto puede ser uno que su fuente ya cerró. No cuenta;
             # se espera, sin lanzar otro turno que devolvería lo mismo.
-            marcar_espera(
-                registro, enc.id,
-                f"esperando la revisión externa del commit {commit_entregado[:12]} "
-                "(DeepSeek) antes de contar otra vuelta",
-                _reanuda_en(60), hora,
-            )
+            _esperar_revision_externa(registro, enc, commit_entregado, hora)
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
         if abierto:
@@ -4248,12 +4262,13 @@ def _incorporar_entradas(
     return ""
 
 
-# Veces seguidas que el mismo fallo de git deja esperar al encargo antes de
-# pedir ayuda: reintentar cada 5 minutos sin fin no arregla lo que no cambia.
-TOPE_FALLOS_REPO = 3
-# El commit o push de la misma version no se reintenta en bucle: a la segunda
-# falla seguida vuelve al responsable con la causa exacta.
-TOPE_FALLOS_ENTREGA = 2
+# Los topes y las escaleras de las esperas viven en `tabla_esperas`: aquí solo
+# se leen, y el nombre de cada uno dice de qué clase sale. `hoy` es lo que hacía
+# el motor desde f30430f. Estas cuentas se siguen comparando sin mirar
+# `politica.ESPERAS_V5` hasta que la 5.2 escriba `tope_espera`; entonces dejan
+# de aplicarse.
+TOPE_FALLOS_REPO = tabla_esperas.tope_intentos_de_hoy("repo")
+TOPE_FALLOS_ENTREGA = tabla_esperas.tope_intentos_de_hoy("empuje")
 # Lo que el aviso del resumen dice en palabras simples cuando se corta el bucle.
 _AVISO_ENTREGA_DEVUELTA = (
     "el motor dejo de reintentar; el trabajo vuelve al responsable."
@@ -4264,14 +4279,12 @@ _TOPE_CAUSA_AVISO = 140
 
 # Un despliegue ocupado (salida 75 con reversa sin cambios) es transitorio: se
 # reintenta solo con espera creciente desde el último desenlace ocupado. La suma
-# (465 min) más el tope de 900 s de cada corrida cubre una ventana de ~8 h; la
-# ingesta diaria del destino tarda 30-50 min y queda cubierta de sobra. Al
-# sexto intento ocupado seguido se rinde con un impedimento en llano.
-ESPERAS_OCUPADO_S = (900, 1800, 3600, 7200, 14400)
-TOPE_OCUPADO = len(ESPERAS_OCUPADO_S) + 1
+# más el tope de 900 s de cada corrida cubre una ventana de horas; la ingesta
+# diaria del destino tarda 30-50 min y queda cubierta de sobra.
+TOPE_OCUPADO = tabla_esperas.tope_intentos_de_hoy("destino_ocupado")
 # Una receta conciliada que no arranca no puede reintentarse para siempre: al
 # tope deja su causa como impedimento terminal y el cierre deja de esperarla.
-TOPE_ESPERA = 5
+TOPE_ESPERA = tabla_esperas.tope_intentos_de_hoy("despliegue_sin_receta_otra_fase")
 
 
 def _causa_con_aviso(
@@ -4327,10 +4340,11 @@ def _esperar_entrega_sin_avance(
     marcar_espera(
         registro,
         enc.id,
+        "aprobado_sin_novedad",
         "la revisión aprobada ya cubre el producto y la entrega no tiene nada "
         "nuevo que publicar; no se relanza al revisor",
-        _reanuda_en(300),
         hora,
+        reloj="escritura",
     )
     return registro.fold(enc.id) or enc
 
@@ -4347,7 +4361,7 @@ def _fallo_de_repo(
     # La serie es del intento: los fallos siguientes del mismo intento suman en `espera`.
     if registro.por_ukey(fallo.ukey) is None:
         Directo(registro, enc).con(fallo)
-    marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+    marcar_espera(registro, enc.id, "repo", causa, hora, reloj="escritura")
     enc = registro.fold(enc.id) or enc
     veces = _fallos_de_repo_seguidos(enc, causa)
     if veces < TOPE_FALLOS_REPO:
@@ -6200,7 +6214,7 @@ def _cierre_sin_aplicar(
         "reintentar la comprobación del veredicto de DeepSeek antes de cerrar",
         hora, f"deepseek-sin-aplicar-{sha[:12]}",
     )
-    marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+    marcar_espera(registro, enc.id, "github_pasajero", causa, hora, reloj="escritura")
     return registro.fold(enc.id)
 
 
@@ -6229,6 +6243,7 @@ def _veredicto_antes_de_cerrar(
         return None
     fase = enc.fase_actual
     sha = enc.pr_sha
+    sha_leido = sha
     try:
         comentarios = _deepseek_con_contenido(
             gh.comentarios_deepseek(enc.entrega.repo, enc.pr_numero, sha), sha
@@ -6243,6 +6258,7 @@ def _veredicto_antes_de_cerrar(
                     or not f.pr_sha
                 ):
                     continue
+                sha_leido = f.pr_sha
                 previas.append(
                     (
                         f,
@@ -6262,7 +6278,17 @@ def _veredicto_antes_de_cerrar(
                 "reintentar la lectura de DeepSeek antes de cerrar",
                 hora, f"deepseek-cerrar-{sha[:12]}",
             )
-            marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+            # La fila cuenta desde el primer envío del SHA cuya lectura falló,
+            # que en el bucle de fases previas puede ser el de otra fase. Sin
+            # esa entrada, `tope_de` cae en la apertura de la espera.
+            primera = next(
+                (t for s, t in enc.primer_envio_por_sha if s == sha_leido), ""
+            )
+            marcar_espera(
+                registro, enc.id, "lectura_deepseek_fallida", causa, hora,
+                desde=primera,
+                reloj="escritura",
+            )
             return registro.fold(enc.id)
         # La fase siguió sin revisión: una relectura fallida no
         # vuelve a frenar el cierre. Si llega un comentario, el siguiente
@@ -6951,7 +6977,7 @@ def _traer_la_base_al_pr(
             f"reintentar traer {base} a la rama del PR",
             hora, f"traer-main-{enc.generacion}",
         )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        marcar_espera(registro, enc.id, "base_movida", causa, hora, reloj="escritura")
         return _con_espera(registro.fold(enc.id) or enc)
     return enc, Avanzo()
 
@@ -7411,8 +7437,9 @@ def _head_desviado(
         # concilie (otro head distinto vuelve a abrir el aviso).
         marcar_espera(
             registro, enc.id,
+            "cabeza_desviada",
             causa_head + "; el paso se reanuda cuando el head del PR concilie",
-            _reanuda_desde(hora, 60), hora,
+            hora,
         )
     else:
         _devolver(
@@ -7859,10 +7886,11 @@ def _espera_por_observacion(
         marcar_espera(
             registro,
             enc.id,
+            "observacion_comprobador",
             "esperando la observacion del comprobador sobre la version "
             f"{version[:12]} antes de publicar",
-            _reanuda_en(30),
             hora,
+            reloj="escritura",
         )
         observado = registro.fold(enc.id) or enc
         return observado, Espera(observado.reanuda_en, observado.motivo)
@@ -7939,7 +7967,7 @@ def _head_antes_de_cerrar(
             "reintentar la lectura del head del PR antes de cerrar",
             hora, f"head-ver-{enc.generacion}",
         )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        marcar_espera(registro, enc.id, "github_pasajero", causa, hora, reloj="escritura")
         return registro.fold(enc.id)
     head = str(getattr(vista, "head", "") or "").strip()
     if head and head != enc.pr_sha:
@@ -8011,8 +8039,12 @@ def _entregar_con_pendientes(
                 ref_base = _ref_existente(espacio, f"origin/{base}", base)
                 conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}") if ref_base else None
                 if conteo is None or conteo.returncode != 0:
-                    marcar_espera(registro, enc.id, "no se pudieron comprobar los commits para publicar el PR",
-                                  _reanuda_en(120), hora)
+                    marcar_espera(
+                        registro, enc.id, "github_pasajero",
+                        "no se pudieron comprobar los commits para publicar el PR",
+                        hora,
+                        reloj="escritura",
+                    )
                     return registro.fold(enc.id)
                 if conteo.stdout.strip() == "0":
                     relevo = any(p.startswith(_RELEVO_AGOTADO) for p in pendientes)
@@ -8358,8 +8390,8 @@ def _paso_despliegue_fase(
                 registro, enc, fase, causa, hora,
                 intentos=int(fase.despliegue_intentos),
             )
-        reanuda = _reanuda_desde(
-            str(libro.get("ultimo") or hora), ESPERAS_OCUPADO_S[intentos - 1]
+        reanuda = tabla_esperas.reanuda_en(
+            "destino_ocupado", str(libro.get("ultimo") or hora), intentos
         )
         if _reanuda_desde(hora, 0) < reanuda:
             # La espera es de esta fase: la fase activa conserva su turno y
@@ -8430,7 +8462,7 @@ def _paso_despliegue_fase(
             registro, enc, clase, causa,
             "que el despliegue pueda completarse o se retire del pedido", hora,
         )
-        reanuda = _reanuda_desde(hora, 30)
+        reanuda = tabla_esperas.reanuda_en("despliegue_sin_receta_otra_fase", hora)
         return _anotar_conciliacion(
             registro, enc, fase, "espera", hora,
             causa=causa, reanuda_en=reanuda,
@@ -8707,7 +8739,12 @@ def _paso_entrega_paso(
                 hora, f"push-{enc.generacion}",
             )
             return registro.fold(enc.id) or enc, Devolver("responsable", causa)
-        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        marcar_espera(
+            registro, enc.id,
+            "empuje_transitorio" if _fallo_transitorio(causa) else "empuje",
+            causa, hora,
+            reloj="escritura",
+        )
         return _con_espera(registro.fold(enc.id) or enc)
     # El push de la rama funcionó: la causa de transporte de la recepción ya
     # no está y su aviso se levanta. Si la publicación falla después, se anota
@@ -8765,7 +8802,7 @@ def _paso_entrega_paso(
                 "reintentar la consulta del PR ya registrado",
                 hora, f"pr-ver-{enc.generacion}",
             )
-            marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+            marcar_espera(registro, enc.id, "github_pasajero", causa, hora, reloj="escritura")
             return _con_espera(registro.fold(enc.id) or enc)
         enc = anotar_pr(registro, enc, enc.fase_activa, vista_pr, hora)
         numero = enc.pr_numero
@@ -9024,7 +9061,7 @@ def _paso_entrega_paso(
                 "reintentar la apertura del PR de la misma rama",
                 hora, f"pr-{enc.generacion}",
             )
-            marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+            marcar_espera(registro, enc.id, "github_pasajero", causa, hora, reloj="escritura")
             return _con_espera(registro.fold(enc.id) or enc)
     # El PR se consultó o se abrió: la máquina sí alcanza el remoto y publica.
     _resolver_impedimentos_de_entrega(
@@ -9065,7 +9102,11 @@ def _paso_entrega_paso(
                 if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
                     return enc, Avanzo()
                 return _paso_entrega_paso(registro, enc, gh, hora)
-            marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+            marcar_espera(
+                registro, enc.id, "lectura_deepseek_fallida", causa, hora,
+                desde=primera,
+                reloj="escritura",
+            )
             return _con_espera(registro.fold(enc.id) or enc)
         revisor = revisor_deepseek(espacio, sha, base)
         if isinstance(lectura_ds, PendienteLectura):
@@ -9122,9 +9163,10 @@ def _paso_entrega_paso(
             marcar_espera(
                 registro,
                 enc.id,
+                "revision_deepseek",
                 f"esperando revisión de DeepSeek para el SHA {sha}",
-                _reanuda_desde(hora, 60),
                 hora,
+                desde=primera,
             )
             return _con_espera(registro.fold(enc.id) or enc)
         relectura_ds = enc.deepseek_sha == sha
@@ -9248,7 +9290,12 @@ def _paso_entrega_paso(
                     checks.en_marcha
                 )
             if espera:
-                marcar_espera(registro, enc.id, espera, _reanuda_desde(hora, 120), hora)
+                marcar_espera(
+                    registro, enc.id,
+                    "checks_merge" if checks is not None and checks.en_marcha
+                    else "tropiezo_merge",
+                    espera, hora,
+                )
                 return _con_espera(registro.fold(enc.id) or enc)
             if checks is not None and checks.fallas:
                 # El CI rojo explica por qué no hubo merge: vuelve al responsable
@@ -9384,10 +9431,11 @@ def _espera_despliegue_sin_autoridad(
     ):
         marcar_espera(
             registro, fresco.id,
+            "autoridad",
             "la autoridad se perdió durante el paso de despliegue; el paso se "
             "reanuda cuando la autoridad vuelva y el recibo que haya quedado se "
             "concilia",
-            _reanuda_desde(hora, 30), hora,
+            hora,
         )
     return _con_espera(registro.fold(fresco.id) or fresco)
 
@@ -9554,7 +9602,7 @@ def _despliegue_ocupado(
                 registro.anotar(
                     enc.id,
                     {"kind": "plazo", "data": {"hora": hora}},
-                    f"plazo:{enc.id}:{enc.reanuda_en}",
+                    _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
                 )
             return None
         texto = (
@@ -9565,7 +9613,9 @@ def _despliegue_ocupado(
             "termine el despliegue puede reintentarse con el mismo SHA."
         )
         return _preguntar_despliegue(registro, enc, texto, hora)
-    reanuda = _reanuda_desde(str(libro.get("ultimo") or hora), ESPERAS_OCUPADO_S[intentos - 1])
+    reanuda = tabla_esperas.reanuda_en(
+        "destino_ocupado", str(libro.get("ultimo") or hora), intentos
+    )
     if _reanuda_desde(hora, 0) < reanuda:
         maquina = ""
         try:
@@ -9580,16 +9630,20 @@ def _despliegue_ocupado(
             + (f" ({proceso})" if proceso else "")
             + f"; se reintenta solo a las {reanuda}"
         )
-        marcar_espera(registro, enc.id, texto, reanuda, hora)
+        marcar_espera(
+            registro, enc.id, "destino_ocupado", texto, hora,
+            reanuda_en=reanuda, intentos=intentos,
+        )
         return _con_espera(registro.fold(enc.id) or enc)
     if enc.estado == "esperando_reintento":
-        # La espera venció: reabre el encargo con el mismo evento plazo que usa
-        # el barrido (deduplicado por ukey) para que el recibo ocupado vuelva a
-        # ser reintentable en este mismo paso.
+        # La espera venció: reabre el encargo con la misma clave de plazo que
+        # usa el barrido para esta ventana (encargo, reanudación y apertura),
+        # así el vencimiento es un solo evento y el recibo ocupado vuelve a ser
+        # reintentable en este mismo paso.
         registro.anotar(
             enc.id,
             {"kind": "plazo", "data": {"hora": hora}},
-            f"plazo:{enc.id}:{enc.reanuda_en}",
+            _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
         )
     return None
 
@@ -9649,8 +9703,12 @@ def _paso_despliegue(
             return _preguntar_despliegue(registro, enc, causa, hora)
         # Solo la receta en curso avanza sola. Una fase sin declarar o una
         # receta inválida no cambian por mirarlas cada 30 s.
-        plazo = 30 if resultado["estado"] == "ejecutando" else 300
-        marcar_espera(registro, enc.id, causa, _reanuda_desde(hora, plazo), hora)
+        clase = (
+            "despliegue_en_curso"
+            if resultado["estado"] == "ejecutando"
+            else "despliegue_sin_receta"
+        )
+        marcar_espera(registro, enc.id, clase, causa, hora)
         return _con_espera(registro.fold(enc.id) or enc)
     registro.anotar(
         enc.id,
@@ -9784,7 +9842,10 @@ def _lanzar_uno_en_turno(
                     "retirar el enlace o directorio que bloquea el buzón y reintentar",
                     hora, f"buzon-{generacion}",
                 )
-                marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+                marcar_espera(
+                    registro, enc.id, "preparacion_lanzamiento", causa, hora,
+                    reloj="escritura",
+                )
                 return
             contenido += "\n\n" + necesidades.bloque_capacidades(espacio, recursos)
             resuelta = _texto_inspeccion_resuelta(enc)
@@ -9823,7 +9884,10 @@ def _lanzar_uno_en_turno(
                     "retirar el enlace o directorio que bloquea el buzón y reintentar",
                     hora, f"buzon-{generacion}",
                 )
-                marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+                marcar_espera(
+                    registro, enc.id, "preparacion_lanzamiento", causa, hora,
+                    reloj="escritura",
+                )
                 return
             contenido += "\n\n" + instrucciones_responsable(
                 interno_de(espacio), necesidades.bloque_capacidades(espacio, recursos)
@@ -9925,7 +9989,10 @@ def _lanzar_uno_en_turno(
                         "instalar poteto-mode en la generacion o en la politica y reintentar",
                         hora, f"poteto-{generacion}",
                     )
-                    marcar_espera(registro, enc.id, str(exc), _reanuda_en(300), hora)
+                    marcar_espera(
+                        registro, enc.id, "preparacion_lanzamiento", str(exc), hora,
+                        reloj="escritura",
+                    )
                     return
                 contenido += (
                     "\n\nLee poteto-mode en " + str(skill)
@@ -9989,17 +10056,13 @@ def _lanzar_uno_en_turno(
                 _liberar_flota()
                 return
             if not _conseguir_conductor(registro, enc, token, hora):
-                from datetime import datetime, timedelta, timezone
-
-                reanuda = (datetime.now(timezone.utc) + timedelta(seconds=30)).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ"
-                )
                 marcar_espera(
                     registro,
                     enc.id,
+                    "conductor_ocupado",
                     "la autoridad no concedio otro conductor",
-                    reanuda,
                     hora,
+                    reloj="escritura",
                 )
                 _liberar_flota()
                 return
@@ -10037,9 +10100,10 @@ def _lanzar_uno_en_turno(
                 marcar_espera(
                     registro,
                     enc.id,
+                    "proveedor",
                     "cuenta del agente: " + str(exc),
-                    causa["hasta"],
                     hora,
+                    reanuda_en=causa["hasta"],
                 )
             return
         except Exception:
@@ -10060,16 +10124,111 @@ def _lanzar_uno_en_turno(
                 pass
 
 
+def _desde_del_primer_envio(enc: Encargo, sha: str) -> str:
+    """La hora del primer envío registrado de ese SHA, o "" si no está.
+
+    Las filas `revision_deepseek` y `lectura_deepseek_fallida` cuentan su tope
+    desde el primer envío, no desde la apertura de la espera. Sin entrada en el
+    registro, `tope_de` cae en la apertura.
+    """
+    return next((t for s, t in enc.primer_envio_por_sha if s == sha), "")
+
+
+def _esperar_revision_externa(
+    registro: Registro, enc: Encargo, commit_entregado: str, hora: str
+) -> None:
+    """Espera el veredicto de DeepSeek del commit antes de contar otra vuelta."""
+    marcar_espera(
+        registro, enc.id, "revision_deepseek",
+        f"esperando la revisión externa del commit {commit_entregado[:12]} "
+        "(DeepSeek) antes de contar otra vuelta",
+        hora,
+        desde=_desde_del_primer_envio(enc, commit_entregado),
+        reloj="escritura",
+    )
+
+
 def marcar_espera(
-    registro: Registro, encargo_id: str, motivo: str, reanuda_en: str, hora: str
+    registro: Registro,
+    encargo_id: str,
+    clase: str,
+    motivo: str,
+    hora: str,
+    reanuda_en: str | None = None,
+    intentos: int = 1,
+    desde: str = "",
+    reloj: str = "barrido",
 ) -> dict:
+    """Anota la espera con su clase, la hora en que abrió y su tope.
+
+    El intervalo y el tope salen de `tabla_esperas`: la clase decide cuánto se
+    espera y cuánto aguanta. `reanuda_en` se pasa solo cuando lo decide el paso
+    (la orden del propietario, la ruta de agentes o el libro del destino
+    ocupado); `None`, el defecto, pide el intervalo de la clase. Una cadena
+    vacía es una fecha explícita: no se reemplaza por el intervalo, y
+    `validar_espera` la rechaza como antes. Una espera de la misma clase
+    conserva su apertura; un avance o otra clase la estrenan.
+
+    `reloj` dice desde dónde cuenta el intervalo implícito con el interruptor
+    apagado: `escritura` es el momento de esta llamada, que es lo que hacían
+    los pasos que en main usaban `_reanuda_en`; `barrido` es la `hora` de la
+    pasada, que es lo que hacían los que usaban `_reanuda_desde(hora, ...)` o
+    la propia `hora`. Cada sitio conserva su base, porque una misma clase
+    puede tener escritores con relojes distintos.
+    """
+    enc = registro.fold(encargo_id)
+    abierta = (
+        enc.espera_abierta
+        if enc is not None and enc.espera_clase == clase and enc.espera_abierta
+        else hora
+    )
+    if politica.ESPERAS_V5:
+        # El barrido ordena las horas como texto. Con el interruptor encendido
+        # toda espera guarda la apertura y la reanudación en UTC canónico, venga
+        # el desplazamiento que venga; apagado, se guarda lo de hoy.
+        reanuda_en = (
+            tabla_esperas.hora_canonica(reanuda_en) if reanuda_en else reanuda_en
+        )
+        abierta = tabla_esperas.hora_canonica(abierta) or abierta
+    if reanuda_en is None:
+        # Apagado, cada sitio conserva su reloj: `hora` es una sola para todos
+        # los encargos de la pasada y un paso que tarda minutos dejaría el
+        # plazo vencido al nacer en los caminos que medían al fallar.
+        base = (
+            _reanuda_en(0)
+            if not politica.ESPERAS_V5 and reloj == "escritura"
+            else hora
+        )
+        reanuda_en = tabla_esperas.reanuda_en(clase, base, intentos)
+    tope = tabla_esperas.tope_de(clase, abierta, desde)
+    # La clave histórica es la de antes de la 5.1: mismo motivo y misma
+    # reanudación. Repetir esa escritura después del despliegue tiene que caer
+    # en el cotejo de compatibilidad y dar `igual`, no insertar otro evento que
+    # devuelva a espera un encargo que ya había avanzado. Solo una apertura
+    # distinta, de una espera que ya trae la clase, estrena clave.
+    ukey = f"espera:{encargo_id}:{reanuda_en}:{motivo}"
+    previa = registro.por_ukey(ukey)
+    if previa is not None:
+        guardada = previa.get("data") or {}
+        if not guardada.get("clase"):
+            abierta = str(guardada.get("abierta") or guardada.get("hora") or abierta)
+            tope = str(guardada.get("tope") or tope)
+        elif str(guardada.get("abierta") or "") != abierta:
+            ukey = f"{ukey}:{abierta}"
     registro.anotar(
         encargo_id,
         {
             "kind": "espera",
-            "data": {"motivo": motivo, "reanuda_en": reanuda_en, "hora": hora},
+            "data": {
+                "motivo": motivo,
+                "reanuda_en": reanuda_en,
+                "hora": hora,
+                "clase": clase,
+                "abierta": abierta,
+                "tope": tope,
+            },
         },
-        f"espera:{encargo_id}:{reanuda_en}:{motivo}",
+        ukey,
     )
     return vista(registro.fold(encargo_id))
 

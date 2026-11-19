@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos import ciclo
+from motor.encargos import ciclo, tabla_esperas
 from motor.encargos.ciclo import (
     ahora_iso,
     barrer,
@@ -81,7 +81,8 @@ class SeriesDeReintentos(unittest.TestCase):
             causa = "git fetch: fatal: repository not found"
             contador = itertools.count()
             with mock.patch.object(
-                ciclo, "_reanuda_en", lambda _s: f"2030-01-01T00:00:{next(contador):02d}Z"
+                tabla_esperas, "reanuda_en",
+                lambda _clase, _base, intentos=1: f"2030-01-01T00:00:{next(contador):02d}Z",
             ):
                 for i in range(3):
                     ciclo._fallo_de_repo(

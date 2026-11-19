@@ -67,9 +67,8 @@ CHECKS_SIN_LEER = "checks sin leer"
 # Los tropiezos de un merge (las PASAJERAS y los checks sin leer) comparten una
 # serie: el motor cuenta las esperas seguidas por lo que va antes del primer
 # ": ", y todas empiezan igual. Con una serie por tipo, dos tipos que se alternan
-# no llegan nunca al tope. Con cinco, dos lecturas fallidas todavía dejan tres
-# intentos a una base movida.
-TOPE_TROPIEZOS_MERGE = 5
+# no llegan nunca al tope. El tope sale de `tabla_esperas`: con cinco, dos
+# lecturas fallidas todavía dejan tres intentos a una base movida.
 
 _RECHAZOS_DE_MERGE = (
     (Borrador, ("draft", "borrador")),
@@ -101,7 +100,9 @@ def tras_el_rechazo(
     tropiezos seguidos antes de este; el que llega al tope dice cuántos hubo."""
     if lectura is None and not isinstance(error, PASAJERAS):
         return "", causa
-    if seguidos + 1 < TOPE_TROPIEZOS_MERGE:
+    from motor.encargos.tabla_esperas import tope_intentos_de_hoy
+
+    if seguidos + 1 < tope_intentos_de_hoy("tropiezo_merge"):
         return causa, causa
     operacion, detalle = causa.split(": ", 1)
     return "", f"{operacion} tras {seguidos + 1} tropiezos seguidos: {detalle}"

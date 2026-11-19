@@ -200,10 +200,25 @@ class _Plegado:
 # con el intento que lo observó primero, y reescribirlo no cambiaría el plegado.
 _ATRIBUCION: Mapping[str, frozenset[str]] = {"entrega_externa": frozenset({"intento"})}
 
+# Campos que la 5.1 agregó a `espera`. Un evento guardado antes no los trae, y
+# repetir la misma escritura con ellos es el mismo hecho. Entre dos eventos que
+# sí los traen se comparan como cualquier otro campo.
+_NUEVOS_EN_ESPERA = frozenset({"clase", "abierta", "tope"})
+
 
 def _estable(kind: str, data: Mapping[str, object]) -> dict:
     atribucion = _ATRIBUCION.get(kind, frozenset())
     return {k: v for k, v in data.items() if k != "hora" and k not in atribucion}
+
+
+def _sin_los_nuevos(
+    kind: str, data: Mapping[str, object], guardado: Mapping[str, object]
+) -> dict:
+    """Lo nuevo de un `espera` sin los campos que el guardado no tiene."""
+    if kind != "espera":
+        return dict(data)
+    faltan = _NUEVOS_EN_ESPERA - set(guardado)
+    return {k: v for k, v in data.items() if k not in faltan}
 
 
 _AUSENTE = object()
@@ -214,7 +229,8 @@ def _campos_distintos(
 ) -> tuple[str, ...]:
     """En qué difieren dos hechos de la misma ukey, con la comparación de `_cotejar`."""
     (encargo, kind, data), (otro_encargo, otro_kind, otra_data) = guardado, nuevo
-    a, b = _estable(kind, data), _estable(otro_kind, otra_data)
+    a = _estable(kind, data)
+    b = _estable(otro_kind, _sin_los_nuevos(otro_kind, otra_data, data))
     distintas = (k for k in a.keys() | b.keys() if a.get(k, _AUSENTE) != b.get(k, _AUSENTE))
     return (
         *((_OTRO_ENCARGO,) if encargo != otro_encargo else ()),

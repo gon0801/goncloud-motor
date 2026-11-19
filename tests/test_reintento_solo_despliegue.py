@@ -148,8 +148,9 @@ class ReintentoCorreSoloLaReceta(BancoReintento):
         )
         self.orden(reg, ident, "reintento-con-espera")
         ciclo.marcar_espera(
-            reg, ident, "la fase en curso espera por otra causa",
-            "2026-11-05T13:00:00+00:00", base.HORA,
+            reg, ident, "despliegue_sin_receta",
+            "la fase en curso espera por otra causa", base.HORA,
+            reanuda_en="2026-11-05T13:00:00+00:00",
         )
         sweeps((
             "2026-11-05T12:01:00+00:00", "2026-11-05T12:02:00+00:00",

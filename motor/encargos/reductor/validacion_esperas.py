@@ -57,6 +57,7 @@ def validar_quietud_vigilada(e: Encargo, d: dict) -> None:
 
 
 def validar_espera(e: Encargo, d: dict) -> None:
+    from .. import politica, tabla_esperas
     from ..dominio import TransicionIlegal, _CERRADOS
     from ..tabla_esperas import ESPERAS
 
@@ -68,6 +69,16 @@ def validar_espera(e: Encargo, d: dict) -> None:
         or not isinstance(d.get("tope"), str) or not d["tope"]
     ):
         raise TransicionIlegal("la espera necesita clase, apertura y tope válidos")
+    if (
+        d.get("clase") == "orden_espera"
+        and politica.ESPERAS_V5
+        and tabla_esperas.hora_canonica(str(d.get("reanuda_en") or ""))
+        != str(d.get("reanuda_en") or "")
+    ):
+        # El barrido ordena las horas como texto: una que se lea pero no esté en
+        # UTC canónico nunca vence o vence tarde. `marcar_espera` la canoniza
+        # antes de escribir; una orden escrita a mano tiene que venir así.
+        raise TransicionIlegal("la espera ordenada necesita una hora UTC canónica")
 
 
 def leer_tope(e: Encargo, d: dict) -> FilaEspera | None:

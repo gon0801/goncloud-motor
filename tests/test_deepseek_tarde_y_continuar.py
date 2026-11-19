@@ -19,6 +19,7 @@ from unittest import mock
 from motor.encargos import ciclo
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso, barrer, recibir
+from motor.encargos.politica import TOPE_DEEPSEEK_MIN
 from motor.encargos.dominio import (
     bloqueantes_abiertos,
     decision_proceso,
@@ -907,6 +908,43 @@ class FailOpenDelUltimoCierre(unittest.TestCase):
             self.assertTrue(
                 any("abre otro encargo" in n for n in e.procedimiento),
                 e.procedimiento,
+            )
+
+
+class TopeDeLaLecturaFallidaCuentaDesdeElPrimerEnvio(unittest.TestCase):
+    def test_el_cierre_usa_el_primer_envio_del_sha(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = _dos_fases_con_pr_en_la_segunda(
+                self, tmp, "ds-tope-desde"
+            )
+            sha = e.pr_sha
+            # La fase activa ya tiene una lectura con huella: la relectura
+            # fallida al cerrar abre la espera y su tope.
+            r.reg.anotar(
+                r.enc,
+                {"kind": "entrega_externa", "data": {
+                    "fase": "dos", "intento": e.intento,
+                    "paso": "deepseek_leido", "repo": e.entrega.repo,
+                    "numero": 2, "sha": sha, "huella": "limpia",
+                    "recibo": sha, "hora": r.hora,
+                }},
+                "ds-tope-desde:ds-limpia",
+            )
+            vuelta.gh.falla = True
+            desde = next(
+                t for s, t in r.fold().primer_envio_por_sha if s == sha
+            )
+            hora = ciclo._reanuda_desde(r.hora, 25 * 60)
+            ciclo._veredicto_antes_de_cerrar(r.reg, r.fold(), vuelta.gh, hora)
+            esperas = [
+                ev["data"] for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "espera"
+                and ev["data"].get("clase") == "lectura_deepseek_fallida"
+            ]
+            self.assertEqual(len(esperas), 1, esperas)
+            self.assertEqual(
+                esperas[0]["tope"],
+                ciclo._reanuda_desde(desde, TOPE_DEEPSEEK_MIN * 60),
             )
 
 

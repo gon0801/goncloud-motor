@@ -43,7 +43,7 @@ from .ciclo import (
     resolver_entrega,
 )
 from .dominio import relevos_de
-from . import politica
+from . import politica, tabla_esperas
 from .entrega.entrada import desde_cli
 from .frontera import DestinoEnsayo, despachar
 from .reporte import reporte
@@ -295,8 +295,25 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
             )
         )
     if args.cmd == "espera":
+        # Con el interruptor apagado se guarda el argumento tal cual: `reanuda_en`
+        # va en la ukey y repetir la misma orden tiene que seguir siendo la misma.
+        reanuda = (
+            tabla_esperas.hora_canonica(args.reanuda_en)
+            if politica.ESPERAS_V5 else ""
+        )
+        if politica.ESPERAS_V5 and not reanuda:
+            raise SystemExit(
+                "motor espera: `--reanuda-en` necesita una hora, como "
+                "2026-11-18T09:00:00Z o 2026-11-18T02:00:00-07:00, con "
+                "ESPERAS_V5 encendido"
+            )
         return _json(
-            marcar_espera(reg, args.encargo, args.motivo, args.reanuda_en, hora)
+            marcar_espera(
+                reg, args.encargo, "orden_espera", args.motivo, hora,
+                # El CLI siempre pasa la fecha (puede venir vacía): una cadena
+                # vacía es explícita y `validar_espera` la rechaza como antes.
+                reanuda_en=reanuda or args.reanuda_en,
+            )
         )
     if args.cmd == "pregunta":
         # La pregunta es un aviso: no cambia el estado ni espera a una persona.
@@ -461,8 +478,8 @@ def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
         candidatas = candidatas_de(enc, rol)
         if not candidatas:
             marcar_espera(
-                reg, enc.id, f"sin ruta de agentes para el rol {rol}",
-                proximo(enc, hora, set()), hora,
+                reg, enc.id, "proveedor", f"sin ruta de agentes para el rol {rol}",
+                hora, reanuda_en=proximo(enc, hora, set()),
             )
             return None
         generacion = None
@@ -544,8 +561,10 @@ def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
                 or "; ".join(causas)
                 or "sin ruta de agentes disponible en este host"
             )
-        marcar_espera(reg, enc.id, motivo,
-                     proximo(replace(enc, agentes=candidatas), hora, set(disponibles)), hora)
+        marcar_espera(
+            reg, enc.id, "proveedor", motivo, hora,
+            reanuda_en=proximo(replace(enc, agentes=candidatas), hora, set(disponibles)),
+        )
         return None
 
     return lanzar

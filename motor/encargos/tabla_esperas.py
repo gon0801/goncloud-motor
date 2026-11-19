@@ -1,4 +1,10 @@
-"""Clases de espera y sus límites, separados de los escritores."""
+"""Clases de espera y sus límites, separados de los escritores.
+
+Cada espera tiene una fila: su tipo, desde dónde cuenta el tope, cómo la nombra
+el aviso y dos conductas. `hoy` es lo que hace el motor desde f30430f;
+`conducta` es lo que manda con `politica.ESPERAS_V5` encendido. Quien escribe
+una espera pide aquí su intervalo y su tope; no guarda copias de esos números.
+"""
 
 from __future__ import annotations
 
@@ -132,7 +138,7 @@ ESPERAS: dict[ClaseEspera, FilaEspera] = {
     "sesion_local": FilaEspera(
         "sesion_local", "por_hora", "abierta", "sesión local",
         Conducta((0, 1800), _NORMAL, None, "detener"),
-        Conducta((0, 1800), None, None, "seguir"),
+        Conducta(1800, None, None, "seguir"),
     ),
     "repo": FilaEspera(
         "repo", "por_hora", "abierta", "repositorio",
@@ -167,3 +173,90 @@ ESPERAS: dict[ClaseEspera, FilaEspera] = {
         Conducta("orden", None, 1, "seguir"),
     ),
 }
+
+
+def conducta(clase: ClaseEspera) -> Conducta:
+    """La conducta que manda ahora: la de hoy si el interruptor está apagado."""
+    fila = ESPERAS[clase]
+    return fila.conducta if politica.ESPERAS_V5 else fila.hoy
+
+
+def escalera(clase: ClaseEspera) -> tuple[int, ...]:
+    """Los segundos de cada intento de una fila con escalera."""
+    intervalo = conducta(clase).intervalo
+    return intervalo if isinstance(intervalo, tuple) else (intervalo,)
+
+
+def reanuda_en(clase: ClaseEspera, base: str, intentos: int = 1) -> str:
+    """Cuándo vuelve a mirarse: `base` más el intervalo de la clase.
+
+    Una escalera gasta un paso por intento y repite el último. Las filas
+    `pasada`, `rutas` y `orden` las decide quien escribe la espera: ahí la base
+    ya es la hora elegida y se devuelve tal cual.
+    """
+    intervalo = conducta(clase).intervalo
+    if isinstance(intervalo, tuple):
+        intervalo = intervalo[max(0, min(intentos, len(intervalo)) - 1)]
+    if not isinstance(intervalo, int):
+        return base
+    return _mas_segundos(base, intervalo)
+
+
+def tope_de(clase: ClaseEspera, abierta: str, desde: str = "") -> str:
+    """El tope de la fila: la hora en que vence, o los intentos que aguanta.
+
+    Una fila que cuenta desde el primer envío usa `desde` cuando quien escribe
+    lo conoce; si no, la apertura de la espera.
+    """
+    fila = ESPERAS[clase]
+    # El tope se escribe siempre con la conducta nueva: es el dato que el
+    # reductor compara, y él no mira el interruptor. El interruptor decide
+    # cuándo se actúa, no qué tope se guarda.
+    patas = fila.conducta
+    if patas.tope_intentos is not None:
+        return f"{patas.tope_intentos} intentos"
+    if patas.tope_s is None:
+        return ""
+    base = (desde or abierta) if fila.desde == "primer_envio" else abierta
+    return _mas_segundos(base, patas.tope_s)
+
+
+def tope_intentos_de_hoy(clase: ClaseEspera) -> int:
+    """Los intentos que aguantaba la fila en f30430f, para los topes ya escritos."""
+    return int(ESPERAS[clase].hoy.tope_intentos or 0)
+
+
+def hora_canonica(texto: str) -> str:
+    """La hora en UTC canónico (`...Z`), que es como el barrido compara cadenas.
+
+    Acepta un desplazamiento (`+02:00`, `-07:00`) y devuelve el mismo instante en
+    UTC. Devuelve "" si no se lee como hora.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        instante = datetime.fromisoformat(str(texto).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return ""
+    if instante.tzinfo is None:
+        instante = instante.replace(tzinfo=timezone.utc)
+    return instante.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def es_hora_utc(texto: str) -> bool:
+    """La cadena es una hora que el barrido puede ordenar."""
+    return bool(hora_canonica(texto))
+
+
+def _mas_segundos(base: str, segundos: int) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        instante = datetime.fromisoformat(str(base).replace("Z", "+00:00"))
+        if instante.tzinfo is None:
+            instante = instante.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        instante = datetime.now(timezone.utc)
+    return (instante + timedelta(seconds=segundos)).astimezone(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )

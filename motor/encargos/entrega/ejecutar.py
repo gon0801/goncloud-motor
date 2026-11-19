@@ -107,7 +107,7 @@ def base_objetivo_del_pr(enc: Encargo, gh: GitHubPort | None = None) -> str:
 
 
 def esperar_sin_gh(registro: Registro, enc: Encargo, hora: str):
-    from ..ciclo import _anotar_instrumento, _con_espera, _reanuda_en, marcar_espera
+    from ..ciclo import _anotar_instrumento, _con_espera, marcar_espera
 
     causa = (
         "nivel de entrega " + enc.entrega.nivel
@@ -118,7 +118,10 @@ def esperar_sin_gh(registro: Registro, enc: Encargo, hora: str):
         "configurar el puerto GitHub del supervisor y reintentar",
         hora, "sin-puerto",
     )
-    marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+    marcar_espera(
+        registro, enc.id, "sin_puerto_github", causa, hora,
+        reloj="escritura",
+    )
     return _con_espera(registro.fold(enc.id) or enc)
 
 
