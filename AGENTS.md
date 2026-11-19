@@ -44,9 +44,10 @@ sigue y se anota por qué.
   sí lo esté. Nunca se espera a una persona. Solo bloquea por seguridad, datos, el comportamiento
   pedido roto o uno de los 4 casos sin su prueba, con el comando que lo reproduce o, si no se puede
   reproducir, la línea exacta y el riesgo. Lo demás va en notas.
-- Máximo 2 rondas con el mismo agente. Si lo que queda no es grave, se mergea y lo pendiente va en
-  notas. Si queda algo grave, la 3.ª ronda la hace otro modelo más fuerte; solo se detiene si ese
-  tampoco puede, y dice por qué.
+- Sin tope de rondas: se sigue mientras cada ronda traiga avance, y nadie pide permiso por una
+  ronda más. A la segunda vuelta seguida sin avance, el rol pasa a otro modelo autorizado; si ese
+  tampoco avanza, se entrega el PR con los pendientes abiertos, sin detenerse
+  (`docs/flujo-revisiones.md`).
 - Todo cambio que toca producción dice en el PR cómo regresarlo.
 - Nunca subas llaves ni contraseñas; no uses `--no-verify` sobre la revisión de secretos. Si marca
   algo que no es una llave, se agrega a `.gitleaksignore` con su razón y se sigue.
