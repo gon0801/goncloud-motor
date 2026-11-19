@@ -559,7 +559,7 @@ class MultifaseDeepSeek(unittest.TestCase):
             len([e for e in reg.eventos(enc_id) if e["kind"] == "espera"]), 1
         )
 
-    def test_al_vencer_a_se_omite_aunque_el_interruptor_este_apagado(self):
+    def test_con_el_interruptor_apagado_la_relectura_vencida_sigue_esperando(self):
         reg = Registro(Path(tempfile.mkdtemp()) / "base")
         self.addCleanup(reg.close)
         enc_id = _recibir(reg, "cierre-sin-interruptor")
@@ -568,16 +568,13 @@ class MultifaseDeepSeek(unittest.TestCase):
             resultado = ciclo._veredicto_antes_de_cerrar(
                 reg, enc_cerrando(), gh, "2026-11-18T10:30:00Z"
             )
-        self.assertIsNone(resultado)
-        self.assertTrue(
-            any(
-                "sin relectura de DeepSeek del PR #101" in e["data"]["texto"]
-                for e in reg.eventos(enc_id)
-                if e["kind"] == "nota_pr"
-            )
+        self.assertIsNotNone(resultado)
+        self.assertEqual(resultado.estado, "esperando_reintento")
+        self.assertFalse(
+            [e for e in reg.eventos(enc_id) if e["kind"] == "nota_pr"]
         )
         self.assertEqual(
-            len([e for e in reg.eventos(enc_id) if e["kind"] == "espera"]), 0
+            len([e for e in reg.eventos(enc_id) if e["kind"] == "espera"]), 1
         )
 
     def test_el_tope_sin_primer_envio_usa_el_registrado(self):
