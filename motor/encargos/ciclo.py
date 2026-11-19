@@ -1633,7 +1633,9 @@ def _barrer_encargos(
             registro.anotar(
                 encargo_id,
                 {"kind": "plazo", "data": {"hora": hora}},
-                f"plazo:{encargo_id}:{enc.reanuda_en}",
+                # La ventana va en la clave: un plazo ya consumido no
+                # puede tapar el de una ventana nueva con la misma hora.
+                f"plazo:{encargo_id}:{enc.reanuda_en}:{enc.espera_abierta}",
             )
             enc = registro.fold(encargo_id)
         if enc.estado in ("terminado", "cancelado"):
@@ -10121,6 +10123,20 @@ def marcar_espera(
         abierta = tabla_esperas.hora_canonica(abierta) or abierta
     reanuda_en = reanuda_en or tabla_esperas.reanuda_en(clase, hora, intentos)
     tope = tabla_esperas.tope_de(clase, abierta, desde)
+    # La clave histórica es la de antes de la 5.1: mismo motivo y misma
+    # reanudación. Repetir esa escritura después del despliegue tiene que caer
+    # en el cotejo de compatibilidad y dar `igual`, no insertar otro evento que
+    # devuelva a espera un encargo que ya había avanzado. Solo una apertura
+    # distinta, de una espera que ya trae la clase, estrena clave.
+    ukey = f"espera:{encargo_id}:{reanuda_en}:{motivo}"
+    previa = registro.por_ukey(ukey)
+    if previa is not None:
+        guardada = previa.get("data") or {}
+        if not guardada.get("clase"):
+            abierta = str(guardada.get("abierta") or guardada.get("hora") or abierta)
+            tope = str(guardada.get("tope") or tope)
+        elif str(guardada.get("abierta") or "") != abierta:
+            ukey = f"{ukey}:{abierta}"
     registro.anotar(
         encargo_id,
         {
@@ -10134,11 +10150,7 @@ def marcar_espera(
                 "tope": tope,
             },
         },
-        # La apertura va en la ukey: dos vueltas de la misma espera en la misma
-        # ventana son el mismo hecho y no escriben dos veces, y una espera que
-        # reabre su ventana tras continuar es un hecho nuevo en vez de un
-        # choque de clave.
-        f"espera:{encargo_id}:{reanuda_en}:{abierta}:{motivo}",
+        ukey,
     )
     return vista(registro.fold(encargo_id))
 

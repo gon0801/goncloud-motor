@@ -143,6 +143,28 @@ class EscritoresDeLaClase(unittest.TestCase):
         self.assertEqual(fresco.reanuda_en, "2026-11-18T10:02:00Z")
         self.assertEqual(fresco.espera_abierta, "2026-11-18T11:03:00Z")
 
+    def test_repetir_una_espera_historica_no_reabre_el_encargo(self):
+        # Escritura anterior a la 5.1: sin clase, sin apertura, con su clave.
+        self.reg.anotar(
+            self.enc,
+            {"kind": "espera", "data": {
+                "motivo": "GitHub caído", "reanuda_en": "2026-11-18T10:05:00Z",
+                "hora": H0,
+            }},
+            f"espera:{self.enc}:2026-11-18T10:05:00Z:GitHub caído",
+        )
+        self.reg.anotar(
+            self.enc, {"kind": "plazo", "data": {"hora": H1}}, f"plazo:{self.enc}:v1"
+        )
+        self.assertEqual(self.reg.fold(self.enc).estado, "recibido")
+        ciclo.marcar_espera(
+            self.reg, self.enc, "github_pasajero", "GitHub caído", H1,
+            reanuda_en="2026-11-18T10:05:00Z",
+        )
+        esperas = [e for e in self.reg.eventos(self.enc) if e["kind"] == "espera"]
+        self.assertEqual(len(esperas), 1)
+        self.assertEqual(self.reg.fold(self.enc).estado, "recibido")
+
     def test_un_espera_guardada_antes_coteja_igual_con_los_campos_nuevos(self):
         guardada = {"motivo": "GitHub caído", "reanuda_en": H1, "hora": H0}
         self.reg.anotar(
