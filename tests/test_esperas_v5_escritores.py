@@ -57,12 +57,26 @@ class EscritoresDeLaClase(unittest.TestCase):
 
     def test_apagado_el_intervalo_cuenta_desde_la_escritura(self):
         # `hora` es una sola para todos los encargos de la pasada: si el paso
-        # tarda, el intervalo tiene que contar desde el fallo, como `_reanuda_en`.
+        # tarda, `repo` tiene que contar desde el fallo, como `_reanuda_en`.
         with mock.patch.object(
             ciclo, "_reanuda_en", return_value="2026-11-18T10:06:00Z"
         ):
-            ciclo.marcar_espera(self.reg, self.enc, "repo", "GitHub caído", H0)
+            ciclo._fallo_de_repo(
+                self.reg, self.reg.fold(self.enc), "git fetch falló", H0, "repo-1"
+            )
         self.assertEqual(self._espera()["reanuda_en"], "2026-11-18T10:11:00Z")
+
+    def test_apagado_el_barrido_conserva_la_hora_de_la_pasada(self):
+        # Un sitio que en main usaba `_reanuda_desde(hora, ...)` no se mueve al
+        # reloj de escritura: checks_merge con pasada 10:00 vence a las 10:02
+        # aunque el paso lo evalúe a las 10:06.
+        with mock.patch.object(
+            ciclo, "_reanuda_en", return_value="2026-11-18T10:06:00Z"
+        ):
+            ciclo.marcar_espera(
+                self.reg, self.enc, "checks_merge", "checks en marcha", H0
+            )
+        self.assertEqual(self._espera()["reanuda_en"], "2026-11-18T10:02:00Z")
 
     def test_la_misma_clase_conserva_apertura_y_otra_la_estrena(self):
         ciclo.marcar_espera(self.reg, self.enc, "sesion_local", "falló", H0)
