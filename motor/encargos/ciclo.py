@@ -6699,8 +6699,14 @@ def _veredicto_antes_de_cerrar(
                     f.pr_sha,
                 )
             except Exception as exc:
-                if f.deepseek_huella == HUELLA_DEEPSEEK_SIN_REVISION:
-                    continue
+                if politica.ESPERAS_V5:
+                    if f.deepseek_huella == HUELLA_DEEPSEEK_SIN_REVISION:
+                        continue
+                elif fase.deepseek_huella == HUELLA_DEEPSEEK_SIN_REVISION:
+                    # Con el interruptor apagado manda la huella de la fase
+                    # activa, como en la base: si B ya se omitió, no se abre
+                    # una espera por una fase previa.
+                    return None
                 causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
                 _anotar_instrumento(
                     registro, enc, "github", causa,
