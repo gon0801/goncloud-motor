@@ -55,6 +55,20 @@ def _turno(reg: Registro, enc: str, i: int, hora: str) -> None:
     )
 
 
+def _turno_con_generacion(
+    reg: Registro, enc: str, i: int, hora: str, generacion: int
+) -> None:
+    reg.anotar(
+        enc,
+        {"kind": "reserva", "data": {
+            "hora": hora, "host": "h", "generacion": generacion,
+            "ajustes": 0,
+        }},
+        f"reserva:{enc}:{i}",
+    )
+    _turno(reg, enc, i, hora)
+
+
 class Banco(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -211,6 +225,29 @@ class RachaDeTurnos(Banco):
                     self.assertNotIn(enc.estado, ("deteniendo", "detenido"))
                     self.assertEqual(_eventos(self.reg, self.enc, "falta_de_avance"), [])
 
+    def test_tras_continuar_otra_racha_de_ocho_vuelve_a_detenerse(self):
+        for i in range(8):
+            _turno_con_generacion(self.reg, self.enc, i, H0, i + 1)
+        with self.con_v5():
+            ciclo.barrer(self.reg, H61, 1.0, None, gh=None, umbral_s=10**9)
+        self.assertEqual(len(_eventos(self.reg, self.enc, "falta_de_avance")), 1)
+        with self.con_v5():
+            ciclo.ordenar(self.reg, self.enc, "continuar", "sigo", H61)
+        self.assertEqual(self.reg.fold(self.enc).turnos_sin_avance, 0)
+        for i in range(8, 16):
+            _turno_con_generacion(
+                self.reg, self.enc, i, H61, i + 1
+            )
+        with self.con_v5():
+            ciclo.barrer(
+                self.reg, "2026-11-18T11:02:00Z", 2.0, None, gh=None,
+                umbral_s=10**9,
+            )
+        enc = self.reg.fold(self.enc)
+        self.assertIn(enc.estado, ("deteniendo", "detenido"))
+        self.assertEqual(len(_eventos(self.reg, self.enc, "falta_de_avance")), 2)
+        self.assertEqual(enc.falta_de_avance_de[0], "turnos")
+
     def test_sin_avance_el_aviso_trae_la_hora_del_primer_evento(self):
         for i in range(8):
             _turno(self.reg, self.enc, i, H0)
@@ -255,13 +292,17 @@ class RachaDeTurnos(Banco):
 
 class RachaDeEsperas(Banco):
     def test_la_racha_se_mira_antes_del_plazo_de_una_espera_por_hora(self):
+        from motor.encargos.tabla_esperas import ESPERAS
+
+        self.assertEqual(ESPERAS["base_movida"].tipo, "por_hora")
+        self.assertEqual(ESPERAS["base_movida"].conducta.al_tope, "detener")
         self._espera("empuje_transitorio", H0, H0, "2026-11-18T16:00:00Z")
         self.reg.anotar(
             self.enc, {"kind": "plazo", "data": {"hora": "2026-11-18T10:02:00Z"}},
             f"plazo:{self.enc}:previo",
         )
         self._espera(
-            "checks_merge", "2026-11-18T15:59:00Z", "2026-11-18T15:59:00Z",
+            "base_movida", "2026-11-18T15:59:00Z", "2026-11-18T15:59:00Z",
             "2026-11-18T16:59:00Z",
         )
         with self.con_v5():

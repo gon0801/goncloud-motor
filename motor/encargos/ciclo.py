@@ -1798,7 +1798,13 @@ def _anotar_falta_de_avance(
                     "hora": hora,
                 },
             },
-            f"falta-avance:{enc.id}:{regla}:{desde}:{turnos}",
+            # La generación del intento forma parte de la clave: tras `continuar`
+            # la cuenta vuelve a cero pero `desde` conserva la hora del último
+            # avance, y ocho turnos nuevos recrearían la clave y el payload del
+            # primer corte. Con la generación, la racha nueva estrena su hecho y
+            # se detiene; repetir la comprobación del mismo corte sigue siendo
+            # idempotente.
+            f"falta-avance:{enc.id}:{regla}:{desde}:{turnos}:{enc.generacion}",
         )
     except Rechazo:
         return enc
