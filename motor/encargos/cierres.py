@@ -127,9 +127,13 @@ def _revision_deepseek(ctx: Contexto) -> bool | None:
 
     Antes del tope hay una acción propia: el disparo del revisor a los dos
     minutos del primer envío. Se ejecuta aunque la lectura diga «todavía no», y
-    escribe su evento una sola vez.
+    escribe su evento una sola vez. Si el registro no tiene el primer envío (un
+    PR adoptado), la edad se mide desde la apertura de la espera de ese mismo
+    PR y SHA: sin eso, cada sondeo contaría cero minutos y el revisor no
+    tendría tiempo de responder antes de la omisión.
     """
     from .ciclo import _accion_deepseek_si_toca, _leer_deepseek
+
     from .lectura import Error as ErrorLectura, Pendiente as PendienteLectura
 
     enc, gh = ctx.enc, ctx.gh
@@ -137,9 +141,9 @@ def _revision_deepseek(ctx: Contexto) -> bool | None:
     if gh is None or fase is None or not fase.pr_sha:
         return None
     sha = str(fase.pr_sha)
-    primera = next(
-        (t for s, t in getattr(enc, "primer_envio_por_sha", ()) if s == sha),
-        ctx.hora,
+    numero = int(getattr(fase, "pr_numero", 0) or 0)
+    primera = _primera_de_la_lectura(
+        ctx, "revision_deepseek", numero, sha, str(getattr(fase, "id", "") or "")
     )
     lectura = _leer_deepseek(gh, enc.entrega.repo, fase.pr_numero, sha, primera)
     if isinstance(lectura, ErrorLectura):
@@ -156,50 +160,69 @@ def _revision_deepseek(ctx: Contexto) -> bool | None:
     return True if (comentarios or (_leidos and not comentarios)) else False
 
 
-def _identidad_de_lectura_fallida(registro, enc) -> tuple[int, str]:
-    """El PR y el SHA de la lectura que abrió la espera de lectura fallida.
+def _identidad_de_la_espera(
+    registro, enc, clase: str
+) -> tuple[int, str, str]:
+    """El PR, el SHA (o head) y la fase que abrieron la última espera de esa clase."""
+    from .ciclo import _espera_guardada
 
-    `_veredicto_antes_de_cerrar` puede abrirla al releer el PR de una fase
-    anterior mientras cierra la activa. El cierre tiene que volver a leer ese
-    PR, no el de la fase activa, o una lectura correcta de la activa cerraría
-    una espera que sigue fallando en la anterior.
-    """
+    datos = _espera_guardada(registro, getattr(enc, "id", ""), clase)
     try:
-        eventos = registro.eventos(enc.id)
-    except (OSError, KeyError, TypeError, ValueError):
-        return 0, ""
-    for evento in reversed(eventos):
-        datos = evento.get("data") or {}
-        if evento.get("kind") != "espera" or datos.get("clase") != "lectura_deepseek_fallida":
-            continue
-        try:
-            numero = int(datos.get("numero") or 0)
-        except (TypeError, ValueError):
-            numero = 0
-        sha = str(datos.get("sha") or "")
-        if numero and sha:
-            return numero, sha
-        break
-    return 0, ""
+        numero = int(datos.get("numero") or 0)
+    except (TypeError, ValueError):
+        numero = 0
+    return numero, str(datos.get("sha") or ""), str(datos.get("fase") or "")
+
+
+def _primera_de_la_lectura(
+    ctx: Contexto, clase: str, numero: int, sha: str, fase: str = ""
+) -> str:
+    """El primer envío del SHA o, si no está, la apertura de su espera.
+
+    La apertura solo vale para la espera de ese mismo PR y SHA: la de otra
+    lectura no acredita la edad de esta. Sin una ni otra, `ctx.hora` deja la
+    edad en cero, como hoy.
+    """
+    from .ciclo import _espera_guardada
+
+    primera = next(
+        (
+            t for s, t in getattr(ctx.enc, "primer_envio_por_sha", ())
+            if s == sha
+        ),
+        "",
+    )
+    if primera or not numero or not sha:
+        return primera or ctx.hora
+    return str(_espera_guardada(
+        ctx.registro, getattr(ctx.enc, "id", ""), clase, numero, sha, fase,
+    ).get("abierta") or "") or ctx.hora
 
 
 def _lectura_deepseek_fallida(ctx: Contexto) -> bool | None:
-    """Cierra cuando vuelve a salir la misma lectura de DeepSeek que falló."""
+    """Cierra cuando vuelve a salir la misma lectura de DeepSeek que falló.
+
+    `_veredicto_antes_de_cerrar` puede abrirla al releer el PR de una fase
+    anterior mientras cierra la activa: la espera guarda su PR, SHA y fase, y el
+    cierre vuelve a leer ese PR, no el de la fase activa.
+    """
     from .ciclo import _leer_deepseek
     from .lectura import Error as ErrorLectura
 
     enc, gh = ctx.enc, ctx.gh
-    numero, sha = _identidad_de_lectura_fallida(ctx.registro, enc)
+    numero, sha, fase_espera = _identidad_de_la_espera(
+        ctx.registro, enc, "lectura_deepseek_fallida"
+    )
     if not numero or not sha:
         fase = getattr(enc, "fase_actual", None)
         if fase is None or not fase.pr_sha:
             return None
         numero, sha = fase.pr_numero, str(fase.pr_sha)
+        fase_espera = str(getattr(fase, "id", "") or "")
     if gh is None:
         return None
-    primera = next(
-        (t for s, t in getattr(enc, "primer_envio_por_sha", ()) if s == sha),
-        ctx.hora,
+    primera = _primera_de_la_lectura(
+        ctx, "lectura_deepseek_fallida", numero, sha, fase_espera
     )
     lectura = _leer_deepseek(gh, enc.entrega.repo, numero, sha, primera)
     return None if isinstance(lectura, ErrorLectura) else True
@@ -337,7 +360,12 @@ def _sin_puerto_github(ctx: Contexto) -> bool | None:
 
 
 def _ultimo_head_registrado(registro, enc) -> str:
-    """El último head del PR que el paso anotó como desviado."""
+    """El último head del PR que el paso anotó como desviado.
+
+    Es solo el respaldo de una espera escrita antes de que guardara el head que
+    la abrió: el orden de las anotaciones no es el de las observaciones, así que
+    no sirve para decidir si el head volvió a cambiar.
+    """
     try:
         eventos = registro.eventos(getattr(enc, "id", ""))
     except (OSError, KeyError, TypeError, ValueError):
@@ -347,29 +375,41 @@ def _ultimo_head_registrado(registro, enc) -> str:
         if (
             evento.get("kind") == "entrega_externa"
             and datos.get("paso") == "head_vigente"
+            and str(datos.get("head") or "")
         ):
-            return str(datos.get("head") or "")
+            return str(datos["head"])
     return ""
 
 
 def _cabeza_desviada(ctx: Contexto) -> bool | None:
     """Cierra cuando la cabeza del PR vuelve al SHA o cambia a otro head.
 
-    Si el head sigue siendo el mismo registrado, la espera continúa. Si cambió
-    a una tercera cabeza, hay que despertar el paso para anotar el nuevo aviso;
-    si volvió al SHA aprobado, se cierra.
+    Se compara con el head que abrió esta espera, asociado a su PR y fase: un
+    head ya informado que vuelve (A aprobado, B, C y otra vez B) no despierta el
+    paso una y otra vez, y un cambio posterior a C sí. Un head vacío o ilegible
+    no confirma ni la conciliación ni una cabeza nueva.
     """
     enc, gh = ctx.enc, ctx.gh
-    if gh is None or not getattr(enc, "pr_numero", 0):
+    pr_numero = int(getattr(enc, "pr_numero", 0) or 0)
+    if gh is None or not pr_numero:
         return None
     try:
         vista = gh.ver(enc.entrega.repo, enc.pr_numero)
     except Exception:  # noqa: BLE001  una lectura ilegible no es una conciliación
         return None
-    observado = str(getattr(vista, "head", "") or "")
+    observado = str(getattr(vista, "head", "") or "").strip()
+    if not observado:
+        return None
     aprobado = str(getattr(enc, "pr_sha", "") or "")
     if observado == aprobado:
         return True
+    numero, head, fase = _identidad_de_la_espera(
+        ctx.registro, enc, "cabeza_desviada"
+    )
+    if numero == pr_numero and head and (
+        not fase or fase == str(getattr(enc, "fase_activa", "") or "")
+    ):
+        return observado != head
     ultimo = _ultimo_head_registrado(ctx.registro, enc)
     return bool(ultimo) and observado != ultimo
 

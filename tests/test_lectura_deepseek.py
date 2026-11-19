@@ -14,7 +14,7 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
-from motor.encargos import ciclo
+from motor.encargos import cierres, ciclo
 from motor.encargos.ciclo import ahora_iso
 from motor.encargos.dominio import bloqueantes_abiertos, prompt_responsable, vista
 from tests.test_entrega_misma_version import _barrido, _pasos
@@ -416,51 +416,79 @@ class RelecturaConGithubCaido(unittest.TestCase):
 
 
 class PasoRealSinPrimerEnvio(unittest.TestCase):
-    """Un PR adoptado no tiene `primer_envio`: el paso debe medir desde la espera."""
+    """Un PR adoptado no tiene `primer_envio`: la edad sale de su espera.
 
-    H0 = "2026-11-18T10:00:00Z"
-    H30 = "2026-11-18T10:30:00Z"
+    El recorrido es el real: el paso abre la espera de esa lectura, el barrido
+    consume la ventana y escribe su `plazo`, y el paso vuelve al vencer. La
+    espera de otra lectura no aporta edad: sin identidad, el paso cuenta cero
+    minutos, como hoy.
+    """
 
-    def _fold_sin_envio(self, r):
+    def _abrir(self, tmp, clave):
+        from tests.test_flujo_revisiones import _entrega_pr
+
+        vuelta, r = _entrega_pr(self, tmp, clave, _comentarios)
+        vuelta.gh.textos[None] = None
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            e = vuelta("uno")
+        return vuelta, r, e
+
+    def _adoptado(self, r):
+        """El plegado de un PR adoptado: sin primer envío registrado."""
         real = r.reg.fold
 
         def fold(encargo_id):
             actual = real(encargo_id)
             if actual is None:
                 return None
-            return replace(
-                actual, primer_envio_por_sha=(), espera_abierta=self.H0
-            )
+            return replace(actual, primer_envio_por_sha=())
 
         return fold
 
-    def _paso_al_vencer(self, r, vuelta, e):
-        r.reg.anotar(
-            r.enc, {"kind": "plazo", "data": {"hora": self.H30}},
-            f"plazo:{r.enc}:{self.H30}",
-        )
-        enc = replace(e, primer_envio_por_sha=(), espera_abierta=self.H0)
+    def _esperas(self, r, clase):
+        return [
+            ev for ev in r.reg.eventos(r.enc)
+            if ev["kind"] == "espera" and ev["data"].get("clase") == clase
+        ]
+
+    def _al_vencer(self, r, vuelta, e, clase):
+        (espera,) = self._esperas(r, clase)
+        abierta = espera["data"]["abierta"]
+        reanuda = e.reanuda_en
+        # La fila de DeepSeek omite a los 30 min desde la apertura.
+        vencida = ciclo._reanuda_desde(abierta, 31 * 60)
         with (
-            mock.patch.object(r.reg, "fold", side_effect=self._fold_sin_envio(r)),
+            mock.patch.object(r.reg, "fold", side_effect=self._adoptado(r)),
             mock.patch("motor.encargos.politica.ESPERAS_V5", True),
         ):
-            return ciclo._paso_entrega(r.reg, enc, vuelta.gh, self.H30)
+            enc = ciclo._cerrar_espera_por_hecho(
+                r.reg, r.reg.fold(r.enc), vuelta.gh,
+                ciclo._espacio(r.reg.base, r.enc),
+                ciclo._directorio(r.reg.base, r.enc),
+                "", vencida, ciclo._epoch_de_hora(vencida),
+            )
+            self.assertEqual(enc.estado, "recibido", "el barrido no consumió la ventana")
+            (plazo,) = [
+                ev for ev in r.reg.eventos(r.enc) if ev["kind"] == "plazo"
+            ]
+            self.assertEqual(plazo["data"]["ventana"], [clase, abierta, reanuda])
+            return ciclo._paso_entrega(
+                r.reg, replace(enc, primer_envio_por_sha=()), vuelta.gh, vencida
+            )
 
     def test_revision_deepseek_omite_al_vencer_sin_primer_envio(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(
-                self, tmp, "ds-adoptado-revision", _comentarios
-            )
-            vuelta.gh.textos[None] = None
-            e = vuelta("uno")
+            vuelta, r, e = self._abrir(tmp, "ds-adoptado-revision")
             self.assertEqual(e.espera_clase, "revision_deepseek")
-            self._paso_al_vencer(r, vuelta, e)
-            esperas = [
-                ev for ev in r.reg.eventos(r.enc)
-                if ev["kind"] == "espera"
-                and ev["data"].get("clase") == "revision_deepseek"
-            ]
-            self.assertEqual(len(esperas), 1, "el paso reabrió la espera")
+            self.assertTrue(
+                self._esperas(r, "revision_deepseek")[0]["data"].get("sha"),
+                "la espera no guardó la identidad de la lectura",
+            )
+            self._al_vencer(r, vuelta, e, "revision_deepseek")
+            self.assertEqual(
+                len(self._esperas(r, "revision_deepseek")), 1,
+                "el paso reabrió la espera",
+            )
             self.assertTrue(
                 [ev for ev in r.reg.eventos(r.enc) if ev["kind"] == "nota_pr"],
                 "el paso no registró la omisión",
@@ -468,23 +496,68 @@ class PasoRealSinPrimerEnvio(unittest.TestCase):
 
     def test_lectura_fallida_omite_al_vencer_sin_primer_envio(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(
-                self, tmp, "ds-adoptado-lectura", _comentarios
-            )
+            from tests.test_flujo_revisiones import _entrega_pr
+
+            vuelta, r = _entrega_pr(self, tmp, "ds-adoptado-lectura", _comentarios)
             vuelta.gh.fallos = 100
-            e = vuelta("uno")
+            with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+                e = vuelta("uno")
             self.assertEqual(e.espera_clase, "lectura_deepseek_fallida")
-            vuelta.gh.fallos = 100
-            self._paso_al_vencer(r, vuelta, e)
-            esperas = [
-                ev for ev in r.reg.eventos(r.enc)
-                if ev["kind"] == "espera"
-                and ev["data"].get("clase") == "lectura_deepseek_fallida"
-            ]
-            self.assertEqual(len(esperas), 1, "el paso reabrió la espera")
+            self._al_vencer(r, vuelta, e, "lectura_deepseek_fallida")
+            self.assertEqual(
+                len(self._esperas(r, "lectura_deepseek_fallida")), 1,
+                "el paso reabrió la espera",
+            )
             self.assertTrue(
                 [ev for ev in r.reg.eventos(r.enc) if ev["kind"] == "nota_pr"],
                 "el paso no registró la omisión",
+            )
+
+    def test_el_sondeo_usa_la_apertura_para_disparar_a_los_dos_minutos(self):
+        """Sin primer envío, el sondeo también mide desde la espera de esa lectura."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._abrir(tmp, "ds-adoptado-sondeo")
+            (espera,) = self._esperas(r, "revision_deepseek")
+            abierta = espera["data"]["abierta"]
+            ctx = cierres.Contexto(
+                registro=r.reg,
+                enc=replace(e, primer_envio_por_sha=()),
+                gh=vuelta.gh,
+                espacio=r.espacio,
+                hora=ciclo._reanuda_desde(abierta, 3 * 60),
+                epoch=ciclo._epoch_de_hora(abierta) + 180,
+                puede_actuar=True,
+            )
+            with (
+                mock.patch("motor.encargos.politica.ESPERAS_V5", True),
+                mock.patch.object(
+                    ciclo, "_accion_deepseek_si_toca", return_value=False
+                ) as accion,
+            ):
+                self.assertFalse(cierres._revision_deepseek(ctx))
+            accion.assert_called_once()
+            self.assertEqual(accion.call_args.args[5], abierta)
+
+    def test_la_espera_de_otro_sha_no_aporta_edad(self):
+        """Una ventana de otro SHA no se hereda: el paso no omite por ella."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._abrir(tmp, "ds-adoptado-otro-sha")
+            (espera,) = self._esperas(r, "revision_deepseek")
+            abierta = espera["data"]["abierta"]
+            self.assertEqual(
+                ciclo._espera_guardada(
+                    r.reg, r.enc, "revision_deepseek",
+                    e.pr_numero, "c" * 40, e.fase_activa,
+                ),
+                {},
+            )
+            self.assertEqual(
+                ciclo._espera_guardada(
+                    r.reg, r.enc, "revision_deepseek",
+                    e.pr_numero, e.pr_sha, e.fase_activa,
+                ).get("abierta"),
+                abierta,
+                "la espera de la lectura correcta no se encontró",
             )
 
 
