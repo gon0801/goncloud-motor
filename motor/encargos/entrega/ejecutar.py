@@ -118,7 +118,10 @@ def esperar_sin_gh(registro: Registro, enc: Encargo, hora: str):
         "configurar el puerto GitHub del supervisor y reintentar",
         hora, "sin-puerto",
     )
-    marcar_espera(registro, enc.id, "sin_puerto_github", causa, hora)
+    marcar_espera(
+        registro, enc.id, "sin_puerto_github", causa, hora,
+        reloj="escritura",
+    )
     return _con_espera(registro.fold(enc.id) or enc)
 
 
