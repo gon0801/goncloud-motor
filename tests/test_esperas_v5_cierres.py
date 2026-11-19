@@ -486,13 +486,13 @@ class MultifaseDeepSeek(unittest.TestCase):
         reg = Registro(Path(tempfile.mkdtemp()) / "base")
         self.addCleanup(reg.close)
         enc_id = _recibir(reg, "cierre-multifase")
-        a = replace(
-            Fase("A", "x"), estado="preparada", evidencia="ok", pr_numero=101,
+        a = Fase(
+            "A", "x", estado="preparada", evidencia="ok", pr_numero=101,
             pr_sha=self.SHA_A, deepseek_sha=self.SHA_A,
             ultimo_paso_entrega="deepseek_leido",
         )
-        b = replace(
-            Fase("B", "x"), pr_numero=202, pr_sha=self.SHA_B,
+        b = Fase(
+            "B", "x", pr_numero=202, pr_sha=self.SHA_B,
             deepseek_sha=self.SHA_B, ultimo_paso_entrega="deepseek_leido",
         )
 
