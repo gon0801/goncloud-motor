@@ -164,6 +164,7 @@ def topes_nuevos(registro: Registro, enc: Encargo, corte: int) -> tuple[dict, ..
             clase=str(datos.get("clase") or ""),
             tope=str(datos.get("tope") or ""),
             abierta=str(datos.get("abierta") or ""),
+            hora=str(datos.get("hora") or ""),
         )
         avisos.append(aviso)
     return tuple(avisos)
