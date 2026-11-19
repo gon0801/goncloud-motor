@@ -154,6 +154,33 @@ class LecturasPorClase(unittest.TestCase):
         )
         self.assertTrue(cierres._checks_merge(ctx))
 
+    def test_cabeza_desviada_despierta_si_el_head_cambia(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "head-cambio")
+        reg.anotar(
+            enc_id,
+            {"kind": "entrega_externa", "data": {
+                "paso": "head_vigente", "head": "b" * 40, "hora": H0,
+            }},
+            f"head-vigente:{enc_id}:b",
+        )
+        enc = SimpleNamespace(
+            id=enc_id, pr_numero=1, pr_sha="a" * 40,
+            entrega=SimpleNamespace(repo="r"),
+        )
+
+        def ctx(head):
+            return cierres.Contexto(
+                registro=reg, enc=enc,
+                gh=SimpleNamespace(ver=lambda *a: SimpleNamespace(head=head)),
+                hora=H0, epoch=1.0,
+            )
+
+        self.assertFalse(cierres._cabeza_desviada(ctx("b" * 40)))
+        self.assertTrue(cierres._cabeza_desviada(ctx("c" * 40)))
+        self.assertTrue(cierres._cabeza_desviada(ctx("a" * 40)))
+
     def test_checks_ilegibles_no_son_verde(self):
         ctx = SimpleNamespace(
             gh=SimpleNamespace(checks_requeridos=mock.Mock(side_effect=RuntimeError("502"))),
@@ -197,8 +224,15 @@ class LecturasPorClase(unittest.TestCase):
         enc = SimpleNamespace(
             pr_numero=1, pr_sha="a" * 40, entrega=SimpleNamespace(repo="r")
         )
-        igual = SimpleNamespace(gh=SimpleNamespace(ver=lambda *a: SimpleNamespace(head="a" * 40)), enc=enc)
-        distinta = SimpleNamespace(gh=SimpleNamespace(ver=lambda *a: SimpleNamespace(head="b" * 40)), enc=enc)
+        registro = SimpleNamespace(eventos=lambda *a: [])
+        igual = SimpleNamespace(
+            gh=SimpleNamespace(ver=lambda *a: SimpleNamespace(head="a" * 40)),
+            enc=enc, registro=registro,
+        )
+        distinta = SimpleNamespace(
+            gh=SimpleNamespace(ver=lambda *a: SimpleNamespace(head="b" * 40)),
+            enc=enc, registro=registro,
+        )
         self.assertTrue(cierres._cabeza_desviada(igual))
         self.assertFalse(cierres._cabeza_desviada(distinta))
 
