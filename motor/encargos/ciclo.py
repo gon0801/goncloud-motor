@@ -10120,6 +10120,7 @@ def marcar_espera(
         reanuda_en = tabla_esperas.hora_canonica(reanuda_en) if reanuda_en else ""
         abierta = tabla_esperas.hora_canonica(abierta) or abierta
     reanuda_en = reanuda_en or tabla_esperas.reanuda_en(clase, hora, intentos)
+    tope = tabla_esperas.tope_de(clase, abierta, desde)
     registro.anotar(
         encargo_id,
         {
@@ -10130,10 +10131,14 @@ def marcar_espera(
                 "hora": hora,
                 "clase": clase,
                 "abierta": abierta,
-                "tope": tabla_esperas.tope_de(clase, abierta, desde),
+                "tope": tope,
             },
         },
-        f"espera:{encargo_id}:{reanuda_en}:{motivo}",
+        # La apertura va en la ukey: dos vueltas de la misma espera en la misma
+        # ventana son el mismo hecho y no escriben dos veces, y una espera que
+        # reabre su ventana tras continuar es un hecho nuevo en vez de un
+        # choque de clave.
+        f"espera:{encargo_id}:{reanuda_en}:{abierta}:{motivo}",
     )
     return vista(registro.fold(encargo_id))
 

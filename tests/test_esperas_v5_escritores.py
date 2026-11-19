@@ -119,6 +119,30 @@ class EscritoresDeLaClase(unittest.TestCase):
                     self.enc, {"kind": "espera", "data": datos}, f"mano:{self.enc}"
                 )
 
+    def test_una_espera_que_reabre_ventana_tras_continuar_no_choca(self):
+        ciclo.marcar_espera(self.reg, self.enc, "checks_merge", "pendiente", H0)
+        self.reg.anotar(
+            self.enc,
+            {"kind": "tope_espera", "data": {
+                "clase": "checks_merge", "abierta": H0,
+                "tope": "2026-11-18T11:00:00Z", "hora": "2026-11-18T11:01:00Z",
+            }},
+            f"tope:{self.enc}",
+        )
+        self.assertEqual(self.reg.fold(self.enc).estado, "detenido")
+        ciclo.ordenar(self.reg, self.enc, "continuar", "sigo-1", "2026-11-18T11:02:00Z")
+        # La vuelta siguiente reabre la misma espera con la misma reanudacion y
+        # una apertura nueva. No es un choque de clave: es una ventana nueva y
+        # el plazo que la cierra sigue siendo el mismo.
+        ciclo.marcar_espera(
+            self.reg, self.enc, "checks_merge", "pendiente", "2026-11-18T11:03:00Z",
+            reanuda_en="2026-11-18T10:02:00Z",
+        )
+        fresco = self.reg.fold(self.enc)
+        self.assertEqual(fresco.estado, "esperando_reintento")
+        self.assertEqual(fresco.reanuda_en, "2026-11-18T10:02:00Z")
+        self.assertEqual(fresco.espera_abierta, "2026-11-18T11:03:00Z")
+
     def test_un_espera_guardada_antes_coteja_igual_con_los_campos_nuevos(self):
         guardada = {"motivo": "GitHub caído", "reanuda_en": H1, "hora": H0}
         self.reg.anotar(
