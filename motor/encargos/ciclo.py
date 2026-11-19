@@ -1732,11 +1732,25 @@ def _barrer_encargos(
                 and (fresco.espera_clase, fresco.espera_abierta, fresco.reanuda_en)
                 == ventana
             ):
-                registro.anotar(
-                    encargo_id,
-                    {"kind": "plazo", "data": {"hora": hora}},
-                    _clave_de_plazo(encargo_id, fresco.reanuda_en, fresco.espera_abierta),
-                )
+                try:
+                    registro.anotar(
+                        encargo_id,
+                        {"kind": "plazo", "data": {
+                            "hora": hora,
+                            "ventana": [
+                                fresco.espera_clase,
+                                fresco.espera_abierta,
+                                fresco.reanuda_en,
+                            ],
+                        }},
+                        _clave_de_plazo(
+                            encargo_id, fresco.reanuda_en, fresco.espera_abierta
+                        ),
+                    )
+                except Rechazo:
+                    # La orden entró dentro de la transacción: manda el plegado
+                    # y este vencimiento se abandona.
+                    pass
                 fresco = registro.fold(encargo_id) or fresco
             enc = fresco
         elif enc.estado not in ("terminado", "cancelado"):

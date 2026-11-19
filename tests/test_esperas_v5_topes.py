@@ -140,6 +140,16 @@ class Avisar(Banco):
         self.assertFalse([a for a, _ in trabajos if a.get("tipo") == "tope"])
         self.assertEqual(publicados, [])
         publicar.assert_not_called()
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", False):
+            pendientes = directores._canales_con_avisos_pendientes(
+                self.reg, encargos, vista,
+            )
+        self.assertNotIn("telegram", pendientes)
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            pendientes = directores._canales_con_avisos_pendientes(
+                self.reg, encargos, vista,
+            )
+        self.assertIn("telegram", pendientes)
 
     def test_un_aviso_guardado_de_una_espera_cerrada_se_descarta(self):
         from motor.integraciones import directores
@@ -484,3 +494,38 @@ class TopeDeDeteniendo(Banco):
         self.assertEqual(fresco.estado, "deteniendo")
         self.assertEqual(fresco.orden_parada, "parar")
         self.assertTrue(_eventos(self.reg, self.enc, "tope_espera"))
+
+
+class CarreraEnLaTransaccion(Banco):
+    """La orden entra después del último fold y antes del INSERT de `plazo`."""
+
+    def test_una_orden_que_entra_antes_del_insert_no_cierra_la_nueva(self):
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            self.espera("despliegue_en_curso", H0)
+        original = self.reg.anotar
+
+        def anotar(encargo, evento, ukey):
+            if evento.get("kind") == "plazo":
+                # La orden se guarda entre el fold del barrido y la transacción
+                # que inserta el plazo.
+                original(encargo, {"kind": "espera", "data": {
+                    "motivo": "hasta mañana",
+                    "reanuda_en": "2026-11-19T10:00:00Z",
+                    "hora": H_61, "clase": "orden_espera",
+                    "abierta": H_61, "tope": "1 intentos",
+                }}, f"orden-carrera:{encargo}")
+            return original(encargo, evento, ukey)
+
+        with (
+            mock.patch("motor.encargos.politica.ESPERAS_V5", True),
+            mock.patch.object(self.reg, "anotar", side_effect=anotar),
+        ):
+            ciclo._barrer_encargos(
+                self.reg, [self.enc], H_61,
+                ciclo._epoch_de_hora(H_61), None,
+            )
+        fresco = self.reg.fold(self.enc)
+        self.assertEqual(fresco.estado, "esperando_reintento")
+        self.assertEqual(fresco.espera_clase, "orden_espera")
+        self.assertEqual(fresco.reanuda_en, "2026-11-19T10:00:00Z")
+        self.assertEqual(_eventos(self.reg, self.enc, "plazo"), [])

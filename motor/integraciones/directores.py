@@ -1536,6 +1536,12 @@ def _bloquea_el_sondeo(
     """
     if doc.get("estado") not in _ESTADOS_PENDIENTES_DE_ENTREGA:
         return False
+    if doc.get("tipo") == "tope" and not politica.ESPERAS_V5:
+        # Apagado el interruptor no se reenvía, pero el aviso tampoco frena el
+        # sondeo del canal: si el canal se recuperó, la prueba de conciliación
+        # tiene que poder comprobarlo. Su estado guardado se conserva para
+        # cuando el interruptor vuelva.
+        return False
     encargo = str(doc.get("encargo") or "")
     if not encargo:
         return resumen_activo
