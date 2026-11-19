@@ -495,15 +495,16 @@ class MultifaseDeepSeek(unittest.TestCase):
         self.assertTrue(cierres._lectura_deepseek_fallida(ctx))
         self.assertEqual(llamadas[-1], (101, self.SHA_A))
 
-    def _cierre_multifase(self, reg, enc_id):
+    def _cierre_multifase(self, reg, enc_id, huella_a="", huella_b=""):
         a = Fase(
             "A", "x", estado="preparada", evidencia="ok", pr_numero=101,
             pr_sha=self.SHA_A, deepseek_sha=self.SHA_A,
-            ultimo_paso_entrega="deepseek_leido",
+            deepseek_huella=huella_a, ultimo_paso_entrega="deepseek_leido",
         )
         b = Fase(
             "B", "x", pr_numero=202, pr_sha=self.SHA_B,
-            deepseek_sha=self.SHA_B, ultimo_paso_entrega="deepseek_leido",
+            deepseek_sha=self.SHA_B, deepseek_huella=huella_b,
+            ultimo_paso_entrega="deepseek_leido",
         )
 
         def enc_cerrando():
@@ -576,6 +577,70 @@ class MultifaseDeepSeek(unittest.TestCase):
         self.assertEqual(
             len([e for e in reg.eventos(enc_id) if e["kind"] == "espera"]), 1
         )
+
+    def test_apagado_la_decision_es_la_de_la_fase_activa(self):
+        sin = ciclo.HUELLA_DEEPSEEK_SIN_REVISION
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "base-b-normal")
+        enc_cerrando, gh = self._cierre_multifase(
+            reg, enc_id, huella_a=sin, huella_b=""
+        )
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", False):
+            resultado = ciclo._veredicto_antes_de_cerrar(
+                reg, enc_cerrando(), gh, "2026-11-18T10:30:00Z"
+            )
+        self.assertIsNotNone(resultado)
+        self.assertEqual(resultado.estado, "esperando_reintento")
+        esperas = [e for e in reg.eventos(enc_id) if e["kind"] == "espera"]
+        self.assertEqual(esperas[-1]["data"]["numero"], 101)
+
+        reg2 = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg2.close)
+        enc_id2 = _recibir(reg2, "base-b-omitida")
+        enc_cerrando2, gh2 = self._cierre_multifase(
+            reg2, enc_id2, huella_a="", huella_b=sin
+        )
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", False):
+            resultado2 = ciclo._veredicto_antes_de_cerrar(
+                reg2, enc_cerrando2(), gh2, "2026-11-18T10:30:00Z"
+            )
+        self.assertIsNone(resultado2)
+        self.assertEqual(
+            [e for e in reg2.eventos(enc_id2) if e["kind"] == "espera"], []
+        )
+
+    def test_encendido_el_criterio_es_por_fase(self):
+        sin = ciclo.HUELLA_DEEPSEEK_SIN_REVISION
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "v5-b-normal")
+        enc_cerrando, gh = self._cierre_multifase(
+            reg, enc_id, huella_a=sin, huella_b=""
+        )
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            resultado = ciclo._veredicto_antes_de_cerrar(
+                reg, enc_cerrando(), gh, "2026-11-18T10:29:00Z"
+            )
+        self.assertIsNone(resultado)
+        self.assertEqual(
+            [e for e in reg.eventos(enc_id) if e["kind"] == "espera"], []
+        )
+
+        reg2 = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg2.close)
+        enc_id2 = _recibir(reg2, "v5-b-omitida")
+        enc_cerrando2, gh2 = self._cierre_multifase(
+            reg2, enc_id2, huella_a="", huella_b=sin
+        )
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            resultado2 = ciclo._veredicto_antes_de_cerrar(
+                reg2, enc_cerrando2(), gh2, "2026-11-18T10:29:00Z"
+            )
+        self.assertIsNotNone(resultado2)
+        self.assertEqual(resultado2.estado, "esperando_reintento")
+        esperas = [e for e in reg2.eventos(enc_id2) if e["kind"] == "espera"]
+        self.assertEqual(esperas[-1]["data"]["numero"], 101)
 
     def test_el_tope_sin_primer_envio_usa_el_registrado(self):
         reg = Registro(Path(tempfile.mkdtemp()) / "base")
