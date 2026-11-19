@@ -246,11 +246,31 @@ class Vencimiento(Banco):
             self.assertTrue(ciclo._vencio_la_reanudacion(enc, "2026-11-18T10:00:00Z"))
 
 
+class FueraDeEsperandoReintento(Banco):
+    def test_el_tope_de_un_conciliando_detiene(self):
+        self.reg.anotar(
+            self.enc,
+            {"kind": "efecto", "data": {
+                "id": "e1", "estado": "incierto", "hora": H0,
+            }},
+            f"efecto:e1:{self.enc}",
+        )
+        self.assertEqual(self.reg.fold(self.enc).estado, "conciliando")
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            antes = self.tope(H_59)
+            despues = self.tope(H_61)
+        self.assertEqual(antes.estado, "conciliando")
+        self.assertIsInstance(despues.situacion, Detenido)
+
+
 class Resumen(Banco):
     def test_un_detenido_sale_con_su_causa(self):
         self.espera("checks_merge")
         self.tope(H_61)
-        cuerpo = resumen.texto(self.reg)
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            cuerpo = resumen.texto(self.reg)
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", False):
+            self.assertNotIn("checks del merge", resumen.texto(self.reg))
         self.assertIn("Crea dato.txt con 42", cuerpo)
         self.assertIn("checks del merge", cuerpo)
         self.assertIn("llegó a su tope", cuerpo)
