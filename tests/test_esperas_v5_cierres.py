@@ -628,6 +628,46 @@ class MultifaseDeepSeek(unittest.TestCase):
         )
         self.assertEqual(reg.fold(enc_id).estado, "recibido")
 
+    def test_un_tope_legado_sin_identidad_no_se_hereda(self):
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "tope-legado")
+        reg.anotar(
+            enc_id,
+            {"kind": "espera", "data": {
+                "motivo": "no se pudo leer",
+                "reanuda_en": "2026-11-18T10:01:00Z",
+                "hora": H0,
+                "clase": "lectura_deepseek_fallida",
+                "abierta": H0,
+                "tope": "2026-11-18T10:30:00Z",
+            }},
+            f"espera:{enc_id}:2026-11-18T10:01:00Z:no se pudo leer",
+        )
+        reg.anotar(
+            enc_id,
+            {"kind": "plazo", "data": {"hora": "2026-11-18T10:01:00Z"}},
+            f"plazo:{enc_id}:legado",
+        )
+        enc = replace(reg.fold(enc_id), primer_envio_por_sha=())
+        self.assertFalse(ciclo._paso_el_tope_de_lectura(
+            reg, enc, 202, self.SHA_B, "2026-11-18T11:00:00Z"
+        ))
+        ciclo.marcar_espera(
+            reg, enc_id, "lectura_deepseek_fallida", "no se pudo leer",
+            "2026-11-18T11:00:00Z", desde="", numero=202, sha=self.SHA_B,
+            fase="B",
+        )
+        esperas = [e for e in reg.eventos(enc_id) if e["kind"] == "espera"]
+        self.assertEqual(esperas[-1]["data"]["numero"], 202)
+        self.assertEqual(esperas[-1]["data"]["abierta"], "2026-11-18T11:00:00Z")
+        self.assertFalse(ciclo._paso_el_tope_de_lectura(
+            reg, enc, 202, self.SHA_B, "2026-11-18T11:29:00Z"
+        ))
+        self.assertTrue(ciclo._paso_el_tope_de_lectura(
+            reg, enc, 202, self.SHA_B, "2026-11-18T11:30:00Z"
+        ))
+
     def test_otra_fase_con_el_mismo_motivo_estrena_su_identidad(self):
         reg = Registro(Path(tempfile.mkdtemp()) / "base")
         self.addCleanup(reg.close)
