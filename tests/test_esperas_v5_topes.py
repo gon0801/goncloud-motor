@@ -290,3 +290,92 @@ class Resumen(Banco):
             self.assertFalse(
                 resumen._espera_sostenida(enc, desde + 3 * 60 * 60, None)
             )
+
+
+class SinRecetaDeclarada(unittest.TestCase):
+    """Una fase válida sin declaración de despliegue cuenta intentos y llega al tope.
+
+    `requiere_despliegue=None` en una fase con `resultado` válido: el camino real
+    `_paso_despliegue_fase` la deja esperando cinco veces y a la quinta deja el
+    impedimento terminal y la conciliación `espera_agotada`. Apagado el
+    interruptor, no cuenta ni escribe.
+    """
+
+    HORAS = (
+        "2026-11-18T10:00:00Z",
+        "2026-11-18T10:01:00Z",
+        "2026-11-18T10:02:00Z",
+        "2026-11-18T10:03:00Z",
+        "2026-11-18T10:04:00Z",
+    )
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        raiz = Path(self._tmp.name)
+        self.espacio = raiz / "repo"
+        self.espacio.mkdir()
+        (self.espacio / ".interno").mkdir()
+        self.reg = Registro(raiz / "registro")
+        self.addCleanup(self.reg.close)
+        self.reg.anotar("e", {"kind": "entrega", "data": {
+            "id": "e", "clave": "e", "huella": "e",
+            "texto": "Ejecuta plans/producto.md",
+            "entrega_nivel": "desplegado", "repo": "owner/repo",
+        }}, "entrega")
+        self.reg.anotar("e", {"kind": "fases", "data": {"fases": [
+            {"id": "A", "resultado": "Documentación y SQL"},
+            {"id": "B", "resultado": "Receta disponible", "requiere": ["A"]},
+            {"id": "D", "resultado": "Servicio desplegado", "requiere": ["B"]},
+        ]}}, "fases")
+        # B queda integrada con su resultado válido y sin receta declarada.
+        self.reg.anotar("e", {"kind": "conciliacion_fase", "data": {
+            "fase": "B", "paso": "integrado", "sha": "b" * 40, "hora": H0,
+        }}, "integrado-B")
+
+    def _fase(self, enc):
+        return next(f for f in enc.fases if f.id == "B")
+
+    def _paso(self, hora, encendido=True):
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", encendido):
+            return ciclo._paso_despliegue_fase(
+                self.reg, self.reg.fold("e"), self._fase(self.reg.fold("e")),
+                self.espacio, hora,
+            )
+
+    def _pasos_de_b(self):
+        return [
+            e["data"]["paso"] for e in _eventos(self.reg, "e", "conciliacion_fase")
+            if e["data"].get("fase") == "B"
+        ]
+
+    def test_cinco_intentos_y_el_quinto_deja_el_impedimento_terminal(self):
+        for numero, hora in enumerate(self.HORAS, start=1):
+            enc = self._paso(hora)
+            fase = self._fase(enc)
+            if numero < 5:
+                self.assertFalse(fase.despliegue_espera_agotada, numero)
+                self.assertEqual(fase.despliegue_espera_intentos, numero)
+            else:
+                self.assertTrue(fase.despliegue_espera_agotada)
+                self.assertIn("la receta no arrancó 5 veces", fase.despliegue_impedido)
+        esperas = [
+            paso for paso in self._pasos_de_b()
+            if paso in ("espera", "espera_agotada")
+        ]
+        self.assertEqual(
+            esperas,
+            ["espera", "espera", "espera", "espera", "espera_agotada"],
+        )
+        impedimentos = [
+            e["data"]["clase"] for e in _eventos(self.reg, "e", "impedimento")
+            if e["data"].get("clase", "").startswith("despliegue:")
+        ]
+        self.assertTrue(impedimentos)
+
+    def test_apagado_no_cuenta_ni_escribe(self):
+        enc = self._paso(self.HORAS[0], encendido=False)
+        fase = self._fase(enc)
+        self.assertEqual(fase.despliegue_espera_intentos, 0)
+        self.assertFalse(fase.despliegue_espera_agotada)
+        self.assertNotIn("espera", self._pasos_de_b())
