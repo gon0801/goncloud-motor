@@ -89,7 +89,7 @@ class FalloInterno(unittest.TestCase):
         (fallo,) = self.b.eventos(self.b.malo, "fallo_interno")
         self.assertEqual(
             {k: v for k, v in fallo["data"].items() if k != "hora"},
-            {"rechazo": "ajena", "kind": "plazo", "ukey": "plazo:*", "campos": "@kind,nota,ventana"},
+            {"rechazo": "ajena", "kind": "plazo", "ukey": "plazo:*", "campos": "@kind,nota"},
         )
         self.assertEqual({i["encargo"] for i in informes}, {self.b.malo, self.b.bueno})
         self.assertEqual(self.b.reg.fold(self.b.bueno).estado, "recibido")

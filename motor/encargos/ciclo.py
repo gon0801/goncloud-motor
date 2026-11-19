@@ -1796,6 +1796,29 @@ def _clave_de_plazo(encargo_id: str, reanuda_en: str, abierta: str) -> str:
     return f"{base}:{abierta}" if abierta else base
 
 
+def _plazo_de_la_ventana(
+    registro: Registro, enc: Encargo, hora: str,
+) -> tuple[Encargo, bool]:
+    """Cierra el plazo de la ventana de `enc` con su comprobación atómica.
+
+    El `plazo` lleva la ventana y `validar_plazo` la comprueba en la misma
+    transacción del INSERT. Si otra orden reemplazó la espera, el evento se
+    rechaza y el vencimiento se abandona: manda el plegado.
+    """
+    try:
+        registro.anotar(
+            enc.id,
+            {"kind": "plazo", "data": {
+                "hora": hora,
+                "ventana": [enc.espera_clase, enc.espera_abierta, enc.reanuda_en],
+            }},
+            _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
+        )
+    except EventoIlegal:
+        return registro.fold(enc.id) or enc, False
+    return registro.fold(enc.id) or enc, True
+
+
 def _barrer_encargos(
     registro: Registro,
     ids: list[str],
@@ -1834,27 +1857,7 @@ def _barrer_encargos(
                     fresco.espera_clase, fresco.espera_abierta, fresco.reanuda_en
                 ) == ventana
             ):
-                try:
-                    registro.anotar(
-                        encargo_id,
-                        {"kind": "plazo", "data": {
-                            "hora": hora,
-                            "ventana": [
-                                fresco.espera_clase,
-                                fresco.espera_abierta,
-                                fresco.reanuda_en,
-                            ],
-                        }},
-                        _clave_de_plazo(
-                            encargo_id, fresco.reanuda_en, fresco.espera_abierta
-                        ),
-                    )
-                except EventoIlegal:
-                    # La orden entró dentro de la transacción: manda el plegado
-                    # y este vencimiento se abandona. Un `ClaveOcupada` de otro
-                    # hecho no se traga: ese sí es un fallo del paso.
-                    pass
-                fresco = registro.fold(encargo_id) or fresco
+                fresco, _ = _plazo_de_la_ventana(registro, fresco, hora)
             enc = fresco
         elif enc.estado not in ("terminado", "cancelado"):
             # Una espera que no vive en `esperando_reintento` (deteniendo,
@@ -10042,11 +10045,9 @@ def _despliegue_ocupado(
             # mismo SHA vuelve a correr y la causa se resuelve si despliega.
             despliegue.reabrir_ventana(registro, enc, ordenes)
             if enc.estado == "esperando_reintento":
-                registro.anotar(
-                    enc.id,
-                    {"kind": "plazo", "data": {"hora": hora}},
-                    _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
-                )
+                fresco, aplicado = _plazo_de_la_ventana(registro, enc, hora)
+                if not aplicado:
+                    return _con_espera(fresco)
             return None
         texto = (
             f"El despliegue estuvo ocupado {intentos} veces desde "
@@ -10083,11 +10084,9 @@ def _despliegue_ocupado(
         # usa el barrido para esta ventana (encargo, reanudación y apertura),
         # así el vencimiento es un solo evento y el recibo ocupado vuelve a ser
         # reintentable en este mismo paso.
-        registro.anotar(
-            enc.id,
-            {"kind": "plazo", "data": {"hora": hora}},
-            _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
-        )
+        fresco, aplicado = _plazo_de_la_ventana(registro, enc, hora)
+        if not aplicado:
+            return _con_espera(fresco)
     return None
 
 

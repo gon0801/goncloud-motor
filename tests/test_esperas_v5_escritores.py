@@ -212,6 +212,23 @@ class EscritoresDeLaClase(unittest.TestCase):
         self.assertEqual(len([e for e in self.reg.eventos(self.enc)
                               if e["kind"] == "espera"]), 1)
 
+    def test_un_plazo_guardado_sin_ventana_coteja_igual(self):
+        ukey = f"plazo:{self.enc}:R:A"
+        self.reg.anotar(
+            self.enc, {"kind": "plazo", "data": {"hora": H1}}, ukey
+        )
+        self.reg.anotar(
+            self.enc,
+            {"kind": "plazo", "data": {
+                "hora": H1,
+                "ventana": ["github_pasajero", H0, "R"],
+            }},
+            ukey,
+        )
+        self.assertEqual(
+            len([e for e in self.reg.eventos(self.enc) if e["kind"] == "plazo"]), 1
+        )
+
     def test_dos_escrituras_nuevas_con_clase_distinta_chocan(self):
         datos = {
             "motivo": "GitHub caído", "reanuda_en": H1, "hora": H0,
@@ -337,10 +354,13 @@ class PlazoDeLaVentana(unittest.TestCase):
             )
 
         self.assertEqual(self.reg.fold(self.enc).estado, "recibido")
-        self.assertIsNotNone(
-            self.reg.por_ukey(
-                ciclo._clave_de_plazo(self.enc, self.REANUDA, self.NUEVA)
-            )
+        plazo = self.reg.por_ukey(
+            ciclo._clave_de_plazo(self.enc, self.REANUDA, self.NUEVA)
+        )
+        self.assertIsNotNone(plazo)
+        self.assertEqual(
+            plazo["data"].get("ventana"),
+            ["destino_ocupado", self.NUEVA, self.REANUDA],
         )
 
 
