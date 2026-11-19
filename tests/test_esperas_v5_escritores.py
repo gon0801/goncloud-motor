@@ -43,9 +43,10 @@ class EscritoresDeLaClase(unittest.TestCase):
         return guardadas[id_evento]["data"]
 
     def test_cada_espera_guarda_su_clase_y_su_apertura(self):
-        ciclo.marcar_espera(
-            self.reg, self.enc, "sesion_local", "la sesión local falló", H1
-        )
+        with mock.patch.object(ciclo, "_reanuda_en", return_value=H1):
+            ciclo.marcar_espera(
+                self.reg, self.enc, "sesion_local", "la sesión local falló", H1
+            )
         enc = self.reg.fold(self.enc)
         data = self._espera()
         self.assertEqual(data["clase"], "sesion_local")
@@ -53,6 +54,29 @@ class EscritoresDeLaClase(unittest.TestCase):
         self.assertEqual(data["reanuda_en"], "2026-11-18T10:35:00Z")
         self.assertEqual(data["tope"], "2026-11-18T11:05:00Z")
         self.assertEqual(enc.espera_clase, "sesion_local")
+
+    def test_apagado_el_intervalo_cuenta_desde_la_escritura(self):
+        # `hora` es una sola para todos los encargos de la pasada: si el paso
+        # tarda, `repo` tiene que contar desde el fallo, como `_reanuda_en`.
+        with mock.patch.object(
+            ciclo, "_reanuda_en", return_value="2026-11-18T10:06:00Z"
+        ):
+            ciclo._fallo_de_repo(
+                self.reg, self.reg.fold(self.enc), "git fetch falló", H0, "repo-1"
+            )
+        self.assertEqual(self._espera()["reanuda_en"], "2026-11-18T10:11:00Z")
+
+    def test_apagado_el_barrido_conserva_la_hora_de_la_pasada(self):
+        # Un sitio que en main usaba `_reanuda_desde(hora, ...)` no se mueve al
+        # reloj de escritura: checks_merge con pasada 10:00 vence a las 10:02
+        # aunque el paso lo evalúe a las 10:06.
+        with mock.patch.object(
+            ciclo, "_reanuda_en", return_value="2026-11-18T10:06:00Z"
+        ):
+            ciclo.marcar_espera(
+                self.reg, self.enc, "checks_merge", "checks en marcha", H0
+            )
+        self.assertEqual(self._espera()["reanuda_en"], "2026-11-18T10:02:00Z")
 
     def test_la_misma_clase_conserva_apertura_y_otra_la_estrena(self):
         ciclo.marcar_espera(self.reg, self.enc, "sesion_local", "falló", H0)
@@ -311,6 +335,36 @@ class PlazoDeLaVentana(unittest.TestCase):
         )
 
 
+class TopeDeRevisionDesdeElPrimerEnvio(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.reg = Registro(Path(self._tmp.name) / "base")
+        self.addCleanup(self.reg.close)
+        self.enc = _recibir(self.reg)
+
+    def test_la_espera_de_revision_usa_el_primer_envio(self):
+        sha = "b" * 40
+        self.reg.anotar(
+            self.enc,
+            {"kind": "entrega_externa", "data": {
+                "fase": "", "intento": 1, "paso": "commit",
+                "sha": sha, "recibo": sha, "hora": H0,
+            }},
+            "commit-b",
+        )
+        enc = self.reg.fold(self.enc)
+        self.assertIn((sha, H0), enc.primer_envio_por_sha)
+        ciclo._esperar_revision_externa(
+            self.reg, enc, sha, "2026-11-18T10:25:00Z"
+        )
+        (espera,) = [
+            e["data"] for e in self.reg.eventos(self.enc)
+            if e["kind"] == "espera"
+        ]
+        self.assertEqual(espera["tope"], "2026-11-18T10:30:00Z")
+
+
 class OrdenEsperada(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -344,6 +398,20 @@ class OrdenEsperada(unittest.TestCase):
         self.assertEqual(codigo, 0)
         datos = json.loads(salida.getvalue())
         self.assertEqual(datos["estado"], "esperando_reintento")
+
+    def test_apagado_rechaza_una_fecha_vacia_explicita(self):
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            codigo = motor_cli.main([
+                "espera", self.enc, "--base", str(self.base),
+                "--motivo", "pausa", "--reanuda-en", "",
+            ])
+        self.assertNotEqual(codigo, 0)
+        self.assertEqual(
+            [e for e in self.reg.eventos(self.enc) if e["kind"] == "espera"], []
+        )
 
     def test_apagado_conserva_el_argumento_y_su_identidad(self):
         hora = "2026-11-18T02:30:00-07:00"
