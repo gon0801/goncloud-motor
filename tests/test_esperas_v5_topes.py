@@ -112,6 +112,26 @@ class Avisar(Banco):
         self.assertIn("pasó su tope", topes[0])
         self.assertNotIn("Terminó tu encargo", topes[0])
 
+    def test_un_aviso_guardado_de_una_espera_cerrada_se_descarta(self):
+        from motor.integraciones import directores
+
+        self.espera("despliegue_en_curso")
+        self.tope(H_61)
+        vista = directores.VistaAvisos(self.base)
+        # El aviso queda en el canal y el encargo sigue; luego la espera cierra.
+        guardado = [d for d in vista.docs.values() if d.get("tipo") == "tope"]
+        if not guardado:
+            aviso = avisos.topes_nuevos(self.reg, self.reg.fold(self.enc), 0)[0]
+            aviso["estado"] = "incierto"
+            vista.put(aviso)
+        self.reg.anotar(
+            self.enc, {"kind": "plazo", "data": {"hora": H_61}}, f"plazo:{self.enc}:x"
+        )
+        # Con la espera cerrada, el aviso guardado ya no vale.
+        enc = self.reg.fold(self.enc)
+        doc = next(iter(vista.docs.values()))
+        self.assertFalse(directores._el_tope_sigue_vigente(enc, doc))
+
     def test_si_la_espera_cerro_el_aviso_no_sale(self):
         self.espera("despliegue_en_curso")
         self.tope(H_61)
