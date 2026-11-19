@@ -50,10 +50,16 @@ class Banco:
                 self.reg, ident, "github_pasajero", "una espera con hora", HORA,
                 reanuda_en=REANUDA,
             )
+        # La clave que ocupa otro hecho es la misma que calcula el barrido para
+        # esta ventana. Se arma con el helper del escritor para que la prueba no
+        # se vuelva muda si la clave cambia de forma.
+        self.clave_plazo = ciclo._clave_de_plazo(
+            self.malo, REANUDA, self.reg.fold(self.malo).espera_abierta
+        )
         self.reg.anotar(
             self.malo,
             {"kind": "procedimiento", "data": {"nota": "dato privado", "hora": HORA}},
-            f"plazo:{self.malo}:{REANUDA}",
+            self.clave_plazo,
         )
 
     def vuelta(self) -> list[dict]:
@@ -117,7 +123,7 @@ class FalloInterno(unittest.TestCase):
 
         def limpiar(registro, enc, hora):
             if enc.id == self.b.malo:
-                rechazo(enc.id, {"kind": "plazo", "data": {"hora": hora}}, f"plazo:{enc.id}:{REANUDA}")
+                rechazo(enc.id, {"kind": "plazo", "data": {"hora": hora}}, self.b.clave_plazo)
             return original(registro, enc, hora)
 
         with mock.patch.object(ciclo, "_limpiar_encargo_cerrado", side_effect=limpiar):
