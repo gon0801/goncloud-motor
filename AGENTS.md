@@ -30,32 +30,47 @@ falla si los dos archivos difieren.
 
 Iguales en todos los repos de David. Si otro documento de este repo dice otra cosa sobre calidad,
 candados, evidencia, rondas o pruebas, manda esto, salvo un plan que David aprobó para ese trabajo:
-ahí manda el plan. Ninguna regla debe dejar un trabajo parado: si una no se puede cumplir, se
-sigue y se anota por qué.
+ahí manda el plan. Si una regla no se puede cumplir, el trabajo sigue y se anota por qué en el PR.
+Solo se detiene ese paso, hasta resolverlo, por secretos, por seguridad o por algo que el plan no
+autoriza (borrar datos, gastar, escribir en producción, hablar con terceros en nombre de David),
+que espera su aprobación. Lo demás no espera a nadie.
+
+Sin excepción:
 
 - Todo cambio entra por PR; nadie sube directo a la rama principal.
-- Pruebas obligatorias solo en 4 casos: dinero (precios, pujas, presupuestos, cobros), escribir
-  datos de producción, instalar o borrar en las máquinas, y una falla que ya pasó en producción
-  (una prueba, no una batería). Fuera de esos casos, una prueba solo si es la forma más barata de
-  comprobar que funciona; nunca baterías, pruebas de texto ni mutantes, y el revisor no las pide.
+- Las llaves y contraseñas quedan fuera del repo, y la revisión de secretos corre siempre (sin
+  `--no-verify`). Si marca algo que no es una llave, se agrega a `.gitleaksignore` con su razón y
+  se sigue.
+
+Con criterio:
+
+- Pruebas obligatorias en 4 casos: dinero (precios, pujas, presupuestos, cobros), escribir datos de
+  producción, instalar o borrar en las máquinas, y una falla que ya pasó en producción (una prueba,
+  no una batería). Fuera de esos casos, una prueba solo si es la forma más barata de comprobar que
+  funciona. Por defecto no se hacen baterías, pruebas de texto ni mutantes; sí cuando son la forma
+  más barata de demostrar un riesgo de dinero o de datos (por ejemplo, el texto exacto con el que
+  alguien decide). Fuera de eso, el revisor no las pide.
 - Las pruebas que ya existen deben pasar antes de mergear. Si una ya falla igual en la rama
   principal, no frena: se anota en el PR.
 - El revisor normal es un modelo distinto del que escribió; si no está disponible, el siguiente que
-  sí lo esté. Nunca se espera a una persona. Solo bloquea por seguridad, datos, el comportamiento
-  pedido roto o uno de los 4 casos sin su prueba, con el comando que lo reproduce o, si no se puede
-  reproducir, la línea exacta y el riesgo. Lo demás va en notas.
-- Sin tope de rondas: se sigue mientras cada ronda traiga avance, y nadie pide permiso por una
-  ronda más. A la segunda vuelta seguida sin avance, el rol pasa a otro modelo autorizado; si ese
-  tampoco avanza, se entrega el PR con los pendientes abiertos, sin detenerse
-  (`docs/flujo-revisiones.md`).
+  sí lo esté. La revisión no espera a una persona. Solo bloquea por seguridad, datos, el
+  comportamiento pedido roto o uno de los 4 casos sin su prueba, con el comando que lo reproduce o,
+  si no se puede reproducir, la línea exacta y el riesgo. Lo demás va en notas.
+- Sin tope de rondas mientras cada una traiga avance. Si queda un bloqueo concreto, el implementador
+  lo corrige y el revisor comprueba la corrección; cuando solo quedan notas, se integra el PR. Si el
+  mismo bloqueo vuelve 3 rondas seguidas sin avance, lo revisa otro modelo; si ese tampoco lo
+  resuelve, se escala a David con el bloqueo y su evidencia.
 - Todo cambio que toca producción dice en el PR cómo regresarlo.
-- Nunca subas llaves ni contraseñas; no uses `--no-verify` sobre la revisión de secretos. Si marca
-  algo que no es una llave, se agrega a `.gitleaksignore` con su razón y se sigue.
-- No agregues compuertas (tamaño, lint, tipos, checklists, baterías, CI obligatorio) ni revisiones
-  cruzadas, es decir, revisores extra además del normal, sin que David lo pida.
+- Compuertas (tamaño, lint, tipos, checklists, baterías, CI obligatorio) y revisores extra además
+  del normal se agregan solo si David lo pide.
 
 ### Solo en este repo
 
+- En el ciclo del motor, las vueltas sin avance siguen su tabla de decisiones (arriba, de
+  `motor/encargos/politica.py`) y `docs/flujo-revisiones.md`, no la regla general de 3 rondas.
+  Dentro de lo que el encargo autoriza ningún paso espera a un humano salvo el merge, y las esperas
+  técnicas siguen los topes de esa tabla; lo que el encargo no autoriza espera a David, como dice
+  el párrafo inicial.
 - Antes de mergear un cambio que altere cómo se lee el registro (reductor o validación), corre
   `ops/compuerta-plegado.sh --sha <cabeza>`. Solo lee y tarda un minuto. Si una máquina no contesta,
   vale lo que digan las demás; a esa máquina se le corre cuando vuelva, antes de desplegarle.
