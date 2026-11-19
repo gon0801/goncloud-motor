@@ -6517,12 +6517,51 @@ def _cierre_sin_aplicar(
     return registro.fold(enc.id)
 
 
-def _paso_el_tope_de_lectura(enc: Encargo, sha: str, hora: str) -> bool:
-    """La relectura de ese SHA ya lleva el tope de DeepSeek desde su primer envío."""
+def _tope_registrado_de_lectura(
+    registro: Registro, enc: Encargo, numero: int, sha: str
+) -> str:
+    """El tope que guardó la espera de lectura fallida para ese PR y SHA."""
+    try:
+        eventos = registro.eventos(enc.id)
+    except (OSError, KeyError, TypeError, ValueError):
+        return ""
+    for evento in reversed(eventos):
+        datos = evento.get("data") or {}
+        if evento.get("kind") != "espera" or datos.get("clase") != "lectura_deepseek_fallida":
+            continue
+        try:
+            numero_evento = int(datos.get("numero") or 0)
+        except (TypeError, ValueError):
+            numero_evento = 0
+        sha_evento = str(datos.get("sha") or "")
+        if (numero and numero_evento and numero_evento != numero) or (
+            sha and sha_evento and sha_evento != sha
+        ):
+            continue
+        if str(datos.get("tope") or ""):
+            return str(datos["tope"])
+    return ""
+
+
+def _paso_el_tope_de_lectura(
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+) -> bool:
+    """La relectura de ese PR y SHA ya cumplió su tope.
+
+    Si el registro no guarda el primer envío del SHA, manda el vencimiento que
+    el escritor guardó en la espera para ese mismo PR y SHA. Sin él, no se
+    puede afirmar que venció.
+    """
     from .politica import TOPE_DEEPSEEK_MIN
+    from .tabla_esperas import hora_canonica
 
     primera = _desde_del_primer_envio(enc, sha)
-    return bool(primera) and _minutos_desde(primera, hora) >= TOPE_DEEPSEEK_MIN
+    if primera:
+        return _minutos_desde(primera, hora) >= TOPE_DEEPSEEK_MIN
+    tope = _tope_registrado_de_lectura(registro, enc, numero, sha)
+    ahora = hora_canonica(hora)
+    vencimiento = hora_canonica(tope)
+    return bool(ahora) and bool(vencimiento) and ahora >= vencimiento
 
 
 def _anotar_omision_de_lectura(
@@ -6592,7 +6631,9 @@ def _veredicto_antes_de_cerrar(
             "reintentar la lectura de DeepSeek antes de cerrar",
             hora, f"deepseek-cerrar-{sha[:12]}",
         )
-        if _paso_el_tope_de_lectura(enc, sha, hora):
+        if politica.ESPERAS_V5 and _paso_el_tope_de_lectura(
+            registro, enc, enc.pr_numero, sha, hora
+        ):
             _anotar_omision_de_lectura(
                 registro, enc, enc.pr_numero, enc.fase_activa, sha, causa, hora
             )
@@ -6634,7 +6675,9 @@ def _veredicto_antes_de_cerrar(
                     "reintentar la lectura de DeepSeek antes de cerrar",
                     hora, f"deepseek-cerrar-{f.pr_sha[:12]}",
                 )
-                if _paso_el_tope_de_lectura(enc, f.pr_sha, hora):
+                if politica.ESPERAS_V5 and _paso_el_tope_de_lectura(
+                    registro, enc, f.pr_numero, f.pr_sha, hora
+                ):
                     _anotar_omision_de_lectura(
                         registro, enc, f.pr_numero, f.id, f.pr_sha, causa, hora
                     )
