@@ -6815,7 +6815,7 @@ def _veredicto_antes_de_cerrar(
             "reintentar la lectura de DeepSeek antes de cerrar",
             hora, f"deepseek-cerrar-{sha[:12]}",
         )
-        if _paso_el_tope_de_lectura(
+        if politica.ESPERAS_V5 and _paso_el_tope_de_lectura(
             registro, enc, enc.pr_numero, sha, hora
         ):
             _anotar_omision_de_lectura(
@@ -6859,7 +6859,7 @@ def _veredicto_antes_de_cerrar(
                     "reintentar la lectura de DeepSeek antes de cerrar",
                     hora, f"deepseek-cerrar-{f.pr_sha[:12]}",
                 )
-                if _paso_el_tope_de_lectura(
+                if politica.ESPERAS_V5 and _paso_el_tope_de_lectura(
                     registro, enc, f.pr_numero, f.pr_sha, hora
                 ):
                     _anotar_omision_de_lectura(
