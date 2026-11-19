@@ -206,12 +206,22 @@ def _lectura_deepseek_fallida(ctx: Contexto) -> bool | None:
 
 
 def _checks_merge(ctx: Contexto) -> bool | None:
-    """Cierra cuando los checks requeridos dejan de estar en marcha."""
+    """Cierra cuando los checks requeridos dejan de estar en marcha.
+
+    Una `PoliticaBloquea` no es una lectura rota: el PR cambió su decisión de
+    revisión y el paso de entrega sabe manejarlo (devuelve el trabajo o fija el
+    impedimento). Se cierra la espera para despertarlo. Un error de transporte
+    sigue siendo `None`.
+    """
+    from motor.github import PoliticaBloquea
+
     enc, gh = ctx.enc, ctx.gh
     if gh is None or not getattr(enc, "pr_numero", 0) or not getattr(enc, "pr_sha", ""):
         return None
     try:
         checks = gh.checks_requeridos(enc.entrega.repo, enc.pr_numero, enc.pr_sha)
+    except PoliticaBloquea:
+        return True
     except Exception:  # noqa: BLE001  una lectura ilegible no es un verde
         return None
     return not bool(getattr(checks, "en_marcha", ()))
