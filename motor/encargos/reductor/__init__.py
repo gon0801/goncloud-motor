@@ -149,7 +149,7 @@ TABLA: dict[str, Fila] = {
     'nota_pr': Fila(revision.nota_pr, alcance="fase"),
     'observacion_supervisor': Fila(revision.observacion_supervisor),
     'pendiente_entrega': Fila(esperas.pendiente_entrega),
-    'plazo': Fila(esperas.plazo, corta_series=False),
+    'plazo': Fila(esperas.plazo, corta_series=False, validar=validacion_esperas.validar_plazo),
     'politica_despliegue': Fila(fase.politica_despliegue, alcance="fase", validar=validacion_fase.validar_politica_despliegue),
     'pregunta': Fila(necesidades.pregunta),
     'producto_listo': Fila(fase.producto_listo, alcance="fase", validar=validacion_fase.validar_producto_listo),

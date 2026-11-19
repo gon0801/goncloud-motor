@@ -1569,9 +1569,17 @@ def barrer(
             if aparcado_por_barrido(previo):
                 informes.append(vista_o_minima(previo))
                 continue
+            # El tope se cobra en el recorrido común: `conducir_pr` puede dar la
+            # pasada por atendida y, si la receta sigue sin declararse, el
+            # sondeo reescribiría la espera sin llegar nunca a su tope.
+            previo = _tope_de_la_espera(registro, previo, hora)
             atendido = False
-            if (gh is not None and leer_parada_local(registro.base) is None
-                and previo.via != "directa"):
+            if (
+                previo.estado not in ("detenido", "deteniendo")
+                and gh is not None
+                and leer_parada_local(registro.base) is None
+                and previo.via != "directa"
+            ):
                 fase = fase_final_pendiente(registro, previo, epoch) if presupuesto_pr else ""
                 if fase:
                     presupuesto_pr -= 1
@@ -1751,10 +1759,13 @@ def _cerrar_espera_por_hecho(
     try:
         registro.anotar(
             enc.id,
-            {"kind": "plazo", "data": {"hora": hora}},
+            {"kind": "plazo", "data": {
+                "hora": hora,
+                "ventana": [enc.espera_clase, enc.espera_abierta, enc.reanuda_en],
+            }},
             _clave_de_plazo(enc.id, enc.reanuda_en, enc.espera_abierta),
         )
-    except Rechazo:
+    except EventoIlegal:
         return enc
     return registro.fold(enc.id) or enc
 
@@ -1811,14 +1822,40 @@ def _barrer_encargos(
             not (politica.ESPERAS_V5 and _espera_por_hecho(enc))
             and _vencio_la_reanudacion(enc, hora)
         ):
+            ventana = (enc.espera_clase, enc.espera_abierta, enc.reanuda_en)
             enc = _tope_de_la_espera(registro, enc, hora)
-            if enc.estado == "esperando_reintento":
-                registro.anotar(
-                    encargo_id,
-                    {"kind": "plazo", "data": {"hora": hora}},
-                    _clave_de_plazo(encargo_id, enc.reanuda_en, enc.espera_abierta),
-                )
-                enc = registro.fold(encargo_id)
+            # Una orden pudo abrir otra espera entre la lectura y el tope. El
+            # `plazo` solo cierra la ventana que se leyó: si el plegado ya no
+            # es esa misma espera, se abandona este vencimiento.
+            fresco = registro.fold(encargo_id) or enc
+            if (
+                fresco.estado == "esperando_reintento"
+                and (
+                    fresco.espera_clase, fresco.espera_abierta, fresco.reanuda_en
+                ) == ventana
+            ):
+                try:
+                    registro.anotar(
+                        encargo_id,
+                        {"kind": "plazo", "data": {
+                            "hora": hora,
+                            "ventana": [
+                                fresco.espera_clase,
+                                fresco.espera_abierta,
+                                fresco.reanuda_en,
+                            ],
+                        }},
+                        _clave_de_plazo(
+                            encargo_id, fresco.reanuda_en, fresco.espera_abierta
+                        ),
+                    )
+                except EventoIlegal:
+                    # La orden entró dentro de la transacción: manda el plegado
+                    # y este vencimiento se abandona. Un `ClaveOcupada` de otro
+                    # hecho no se traga: ese sí es un fallo del paso.
+                    pass
+                fresco = registro.fold(encargo_id) or fresco
+            enc = fresco
         elif enc.estado not in ("terminado", "cancelado"):
             # Una espera que no vive en `esperando_reintento` (deteniendo,
             # conciliando, un impedimento del trabajo o la autoridad caída)
