@@ -30,10 +30,11 @@ falla si los dos archivos difieren.
 
 Iguales en todos los repos de David. Si otro documento de este repo dice otra cosa sobre calidad,
 candados, evidencia, rondas o pruebas, manda esto, salvo un plan que David aprobó para ese trabajo:
-ahí manda el plan. Si una regla no se puede cumplir, el trabajo sigue y se anota por qué en el PR.
-Solo se detiene ese paso, hasta resolverlo, por secretos, por seguridad o por algo que el plan no
-autoriza (borrar datos, gastar, escribir en producción, hablar con terceros en nombre de David),
-que espera su aprobación. Lo demás no espera a nadie.
+ahí manda el plan, salvo en las dos reglas sin excepción. Si una regla con criterio no se puede
+cumplir, el trabajo sigue y se anota por qué en el PR. Un paso solo se detiene por secretos, por seguridad, por
+algo que el plan no autoriza (borrar datos, gastar, escribir en producción, hablar con terceros en
+nombre de David) o por un bloqueo de revisión que quedó sin resolver; eso espera a David. Lo demás
+no espera a nadie.
 
 Sin excepción:
 
@@ -59,15 +60,17 @@ Con criterio:
 - Sin tope de rondas mientras cada una traiga avance. Si queda un bloqueo concreto, el implementador
   lo corrige y el revisor comprueba la corrección; cuando solo quedan notas, se integra el PR. Si el
   mismo bloqueo vuelve 3 rondas seguidas sin avance, lo revisa otro modelo; si ese tampoco lo
-  resuelve, se escala a David con el bloqueo y su evidencia.
+  resuelve, ese PR queda sin integrar y se avisa a David con el bloqueo y su evidencia. El resto del
+  trabajo sigue.
 - Todo cambio que toca producción dice en el PR cómo regresarlo.
 - Compuertas (tamaño, lint, tipos, checklists, baterías, CI obligatorio) y revisores extra además
   del normal se agregan solo si David lo pide.
 
 ### Solo en este repo
 
-- En el ciclo del motor, las vueltas sin avance siguen su tabla de decisiones (arriba, de
-  `motor/encargos/politica.py`) y `docs/flujo-revisiones.md`, no la regla general de 3 rondas.
+- En el ciclo del motor, las vueltas sin avance y los bloqueos de revisión sin resolver siguen su
+  tabla de decisiones (arriba, de `motor/encargos/politica.py`) y `docs/flujo-revisiones.md`, no la
+  regla general de 3 rondas ni su espera a David.
   Dentro de lo que el encargo autoriza ningún paso espera a un humano salvo el merge, y las esperas
   técnicas siguen los topes de esa tabla; lo que el encargo no autoriza espera a David, como dice
   el párrafo inicial.
