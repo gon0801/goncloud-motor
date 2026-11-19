@@ -27,7 +27,6 @@ ESTADOS_ACTIVOS = (
     "esperando_reintento",
     "conciliando",
     "deteniendo",
-    "detenido",
 )
 TOPE_MENSAJE = 4096
 ALERTA_RECIBIDO_S = 15 * 60
@@ -220,7 +219,9 @@ def _espera_en_palabras(motivo: str) -> str:
 
 
 def _paso(enc: Encargo) -> str:
-    if enc.estado == "detenido":
+    from .politica import ESPERAS_V5
+
+    if ESPERAS_V5 and enc.estado == "detenido":
         from .reporte import _detencion
 
         return _frase(_detencion(enc), 200)
@@ -486,7 +487,10 @@ def construir(registro: Registro, ahora: float | None = None, host: str = "") ->
     vistos: set[tuple[str, str]] = set()
     for ident in registro.ids():
         enc = plegar_aislado(registro, ident)
-        if enc is None or enc.estado not in ESTADOS_ACTIVOS:
+        from .politica import ESPERAS_V5
+
+        activos = ESTADOS_ACTIVOS + (("detenido",) if ESPERAS_V5 else ())
+        if enc is None or enc.estado not in activos:
             continue
         eventos = registro.eventos(ident)
         entradas.append(_entrada(enc, eventos, momento))
