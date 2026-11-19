@@ -104,13 +104,42 @@ class Avisar(Banco):
         self.espera("despliegue_en_curso")
         self.tope(H_61)
         vista = directores.VistaAvisos(self.base)
-        trabajos = directores._trabajos_de_encargo(
-            self.reg, self.enc, self.reg.fold(self.enc), 0, 0, 0, vista
-        )
+        with mock.patch("motor.encargos.politica.ESPERAS_V5", True):
+            trabajos = directores._trabajos_de_encargo(
+                self.reg, self.enc, self.reg.fold(self.enc), 0, 0, 0, vista
+            )
         topes = [cuerpo for aviso, cuerpo in trabajos if aviso.get("tipo") == "tope"]
         self.assertEqual(len(topes), 1, trabajos)
         self.assertIn("pasó su tope", topes[0])
         self.assertNotIn("Terminó tu encargo", topes[0])
+
+    def test_apagado_no_emite_ni_reenvia_el_aviso_de_tope(self):
+        from motor.integraciones import directores
+
+        self.espera("despliegue_en_curso")
+        self.tope(H_61)
+        vista = directores.VistaAvisos(self.base)
+        # Un aviso de tope guardado como incierto antes de apagar el interruptor.
+        aviso = dict(avisos.topes_nuevos(self.reg, self.reg.fold(self.enc), 0)[0])
+        aviso.update(estado="incierto", canal="telegram")
+        vista.put(aviso)
+        cuerpo = self.base / "canal" / "telegram" / aviso["id"]
+        cuerpo.parent.mkdir(parents=True)
+        cuerpo.write_text("sigo esperando", encoding="utf-8")
+        encargos = {self.enc: self.reg.fold(self.enc)}
+        with (
+            mock.patch("motor.encargos.politica.ESPERAS_V5", False),
+            mock.patch.object(directores, "_publicar_aviso") as publicar,
+        ):
+            trabajos = directores._trabajos_de_encargo(
+                self.reg, self.enc, self.reg.fold(self.enc), 0, 0, 0, vista
+            )
+            publicados = directores._reintentar_avisos_sueltos(
+                self.reg, directores.Vuelta(1.0), set(), "", encargos, vista,
+            )
+        self.assertFalse([a for a, _ in trabajos if a.get("tipo") == "tope"])
+        self.assertEqual(publicados, [])
+        publicar.assert_not_called()
 
     def test_un_aviso_guardado_de_una_espera_cerrada_se_descarta(self):
         from motor.integraciones import directores
@@ -412,3 +441,46 @@ class CarreraDelVencimiento(Banco):
         self.assertEqual(fresco.espera_clase, "orden_espera")
         self.assertEqual(fresco.reanuda_en, "2026-11-19T10:00:00Z")
         self.assertEqual(_eventos(self.reg, self.enc, "plazo"), [])
+
+
+class TopeAntesDelSondeo(Banco):
+    """El tope se cobra en el recorrido común antes de que el sondeo atienda."""
+
+    def test_una_receta_sin_declarar_llega_al_tope_aunque_el_sondeo_atienda(self):
+        with (
+            mock.patch("motor.encargos.politica.ESPERAS_V5", True),
+            mock.patch("motor.encargos.politica.ENTREGA_V4", False),
+        ):
+            self.espera("despliegue_sin_receta", H0)
+            with mock.patch.object(
+                ciclo, "conducir_pr",
+                side_effect=lambda registro, enc, *a, **k: (enc, True),
+            ) as conducir:
+                ciclo.barrer(
+                    self.reg, H_61, ciclo._epoch_de_hora(H_61), None,
+                    gh=object(),
+                )
+        self.assertEqual(self.reg.fold(self.enc).estado, "detenido")
+        self.assertTrue(_eventos(self.reg, self.enc, "tope_espera"))
+        conducir.assert_not_called()
+
+
+class TopeDeDeteniendo(Banco):
+    """La espera de `deteniendo` avisa a su tope sin soltar la parada."""
+
+    def test_un_proceso_que_no_muere_avisa_y_sigue_deteniendo(self):
+        ciclo.ordenar(self.reg, self.enc, "parar", "paro", H0)
+        self.assertEqual(self.reg.fold(self.enc).estado, "deteniendo")
+        with (
+            mock.patch("motor.encargos.politica.ESPERAS_V5", True),
+            mock.patch("motor.encargos.politica.ENTREGA_V4", False),
+            mock.patch.object(ciclo, "observar", return_value="vivo"),
+            mock.patch.object(ciclo, "cerrar"),
+        ):
+            ciclo.barrer(
+                self.reg, H_61, ciclo._epoch_de_hora(H_61), None,
+            )
+        fresco = self.reg.fold(self.enc)
+        self.assertEqual(fresco.estado, "deteniendo")
+        self.assertEqual(fresco.orden_parada, "parar")
+        self.assertTrue(_eventos(self.reg, self.enc, "tope_espera"))

@@ -1568,9 +1568,17 @@ def barrer(
             if aparcado_por_barrido(previo):
                 informes.append(vista_o_minima(previo))
                 continue
+            # El tope se cobra en el recorrido común: `conducir_pr` puede dar la
+            # pasada por atendida y, si la receta sigue sin declararse, el
+            # sondeo reescribiría la espera sin llegar nunca a su tope.
+            previo = _tope_de_la_espera(registro, previo, hora)
             atendido = False
-            if (gh is not None and leer_parada_local(registro.base) is None
-                and previo.via != "directa"):
+            if (
+                previo.estado not in ("detenido", "deteniendo")
+                and gh is not None
+                and leer_parada_local(registro.base) is None
+                and previo.via != "directa"
+            ):
                 fase = fase_final_pendiente(registro, previo, epoch) if presupuesto_pr else ""
                 if fase:
                     presupuesto_pr -= 1

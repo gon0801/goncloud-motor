@@ -1645,6 +1645,10 @@ def _reintentar_avisos_sueltos(
         enc = encargos.get(str(doc.get("encargo") or ""))
         if enc is None or enc.estado in _ESTADOS_SIN_AVANCE:
             continue
+        if doc.get("tipo") == "tope" and not politica.ESPERAS_V5:
+            # Con el interruptor apagado no se reenvía un aviso de tope que
+            # quedó incierto antes de apagarlo.
+            continue
         if doc.get("tipo") == "tope" and not _el_tope_sigue_vigente(enc, doc):
             # La espera que abrió este aviso ya cerró: no se reenvía un
             # «sigo esperando» de algo que terminó mientras el canal caía.
@@ -2004,15 +2008,16 @@ def _trabajos_de_encargo(
             if ruta.is_file():
                 cuerpo = leer_texto(ruta)
         trabajos.append((aviso, cuerpo))
-    for aviso in topes_nuevos(registro, enc, corte_palabras):
-        titulo = _titulo_del_pedido(enc.texto, enc.clave)
-        clase = _espera_legible(aviso.get("clase"))
-        falta = _llano(enc.motivo)[0] if enc.motivo else "la misma espera"
-        trabajos.append((
-            aviso,
-            f"Tu encargo «{titulo}»: la espera «{clase}» pasó su tope "
-            f"({aviso.get('tope')}) y sigo esperando: {falta}",
-        ))
+    if politica.ESPERAS_V5:
+        for aviso in topes_nuevos(registro, enc, corte_palabras):
+            titulo = _titulo_del_pedido(enc.texto, enc.clave)
+            clase = _espera_legible(aviso.get("clase"))
+            falta = _llano(enc.motivo)[0] if enc.motivo else "la misma espera"
+            trabajos.append((
+                aviso,
+                f"Tu encargo «{titulo}»: la espera «{clase}» pasó su tope "
+                f"({aviso.get('tope')}) y sigo esperando: {falta}",
+            ))
     apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
     for hecho in hechos_de_avance(enc, apariciones):
         aviso = _aviso_de_hecho(enc, hecho)
