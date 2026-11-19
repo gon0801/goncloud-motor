@@ -9541,8 +9541,20 @@ def _paso_entrega_paso(
     )
     if enc.deepseek_sha != sha or por_releer:
         primera = next(
-            (t for s, t in enc.primer_envio_por_sha if s == sha), hora,
+            (t for s, t in enc.primer_envio_por_sha if s == sha), "",
         )
+        if (
+            not primera
+            and politica.ESPERAS_V5
+            and enc.espera_clase in (
+                "revision_deepseek", "lectura_deepseek_fallida"
+            )
+        ):
+            # Un PR adoptado puede no tener el primer envío. El tope que ya
+            # guardó la espera se mide desde su apertura; sin esta base, el
+            # paso contaría cero minutos y reabriría la espera para siempre.
+            primera = enc.espera_abierta or hora
+        primera = primera or hora
         minutos = _minutos_desde(primera, hora)
         lectura_ds = _leer_deepseek(
             gh, enc.entrega.repo, numero, sha, primera

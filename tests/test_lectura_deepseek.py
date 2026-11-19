@@ -11,6 +11,7 @@ import json
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from unittest import mock
 
 from motor.encargos import ciclo
@@ -412,6 +413,79 @@ class RelecturaConGithubCaido(unittest.TestCase):
                 if ev["kind"] == "lectura_fallida" and ev["data"]["causa"]
             ]
             self.assertEqual(len(avisos), 2)
+
+
+class PasoRealSinPrimerEnvio(unittest.TestCase):
+    """Un PR adoptado no tiene `primer_envio`: el paso debe medir desde la espera."""
+
+    H0 = "2026-11-18T10:00:00Z"
+    H30 = "2026-11-18T10:30:00Z"
+
+    def _fold_sin_envio(self, r):
+        real = r.reg.fold
+
+        def fold(encargo_id):
+            actual = real(encargo_id)
+            if actual is None:
+                return None
+            return replace(
+                actual, primer_envio_por_sha=(), espera_abierta=self.H0
+            )
+
+        return fold
+
+    def _paso_al_vencer(self, r, vuelta, e):
+        r.reg.anotar(
+            r.enc, {"kind": "plazo", "data": {"hora": self.H30}},
+            f"plazo:{r.enc}:{self.H30}",
+        )
+        enc = replace(e, primer_envio_por_sha=(), espera_abierta=self.H0)
+        with (
+            mock.patch.object(r.reg, "fold", side_effect=self._fold_sin_envio(r)),
+            mock.patch("motor.encargos.politica.ESPERAS_V5", True),
+        ):
+            return ciclo._paso_entrega(r.reg, enc, vuelta.gh, self.H30)
+
+    def test_revision_deepseek_omite_al_vencer_sin_primer_envio(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-adoptado-revision", _comentarios
+            )
+            vuelta.gh.textos[None] = None
+            e = vuelta("uno")
+            self.assertEqual(e.espera_clase, "revision_deepseek")
+            self._paso_al_vencer(r, vuelta, e)
+            esperas = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "espera"
+                and ev["data"].get("clase") == "revision_deepseek"
+            ]
+            self.assertEqual(len(esperas), 1, "el paso reabrió la espera")
+            self.assertTrue(
+                [ev for ev in r.reg.eventos(r.enc) if ev["kind"] == "nota_pr"],
+                "el paso no registró la omisión",
+            )
+
+    def test_lectura_fallida_omite_al_vencer_sin_primer_envio(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-adoptado-lectura", _comentarios
+            )
+            vuelta.gh.fallos = 100
+            e = vuelta("uno")
+            self.assertEqual(e.espera_clase, "lectura_deepseek_fallida")
+            vuelta.gh.fallos = 100
+            self._paso_al_vencer(r, vuelta, e)
+            esperas = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "espera"
+                and ev["data"].get("clase") == "lectura_deepseek_fallida"
+            ]
+            self.assertEqual(len(esperas), 1, "el paso reabrió la espera")
+            self.assertTrue(
+                [ev for ev in r.reg.eventos(r.enc) if ev["kind"] == "nota_pr"],
+                "el paso no registró la omisión",
+            )
 
 
 if __name__ == "__main__":

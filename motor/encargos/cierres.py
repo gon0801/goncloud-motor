@@ -336,8 +336,29 @@ def _sin_puerto_github(ctx: Contexto) -> bool | None:
     return ctx.gh is not None
 
 
+def _ultimo_head_registrado(registro, enc) -> str:
+    """El último head del PR que el paso anotó como desviado."""
+    try:
+        eventos = registro.eventos(getattr(enc, "id", ""))
+    except (OSError, KeyError, TypeError, ValueError):
+        return ""
+    for evento in reversed(eventos):
+        datos = evento.get("data") or {}
+        if (
+            evento.get("kind") == "entrega_externa"
+            and datos.get("paso") == "head_vigente"
+        ):
+            return str(datos.get("head") or "")
+    return ""
+
+
 def _cabeza_desviada(ctx: Contexto) -> bool | None:
-    """Cierra cuando la cabeza del PR vuelve a ser el SHA entregado."""
+    """Cierra cuando la cabeza del PR vuelve al SHA o cambia a otro head.
+
+    Si el head sigue siendo el mismo registrado, la espera continúa. Si cambió
+    a una tercera cabeza, hay que despertar el paso para anotar el nuevo aviso;
+    si volvió al SHA aprobado, se cierra.
+    """
     enc, gh = ctx.enc, ctx.gh
     if gh is None or not getattr(enc, "pr_numero", 0):
         return None
@@ -345,7 +366,12 @@ def _cabeza_desviada(ctx: Contexto) -> bool | None:
         vista = gh.ver(enc.entrega.repo, enc.pr_numero)
     except Exception:  # noqa: BLE001  una lectura ilegible no es una conciliación
         return None
-    return str(getattr(vista, "head", "") or "") == str(getattr(enc, "pr_sha", "") or "")
+    observado = str(getattr(vista, "head", "") or "")
+    aprobado = str(getattr(enc, "pr_sha", "") or "")
+    if observado == aprobado:
+        return True
+    ultimo = _ultimo_head_registrado(ctx.registro, enc)
+    return bool(ultimo) and observado != ultimo
 
 
 CIERRES: dict[ClaseEspera, LecturaCierre] = {
