@@ -158,6 +158,43 @@ class LecturasPorClase(unittest.TestCase):
         reg = Registro(Path(tempfile.mkdtemp()) / "base")
         self.addCleanup(reg.close)
         enc_id = _recibir(reg, "head-cambio")
+        # A aprobado: se informó B, después C, y el PR volvió a B. La anotación
+        # de B no se repite —se deduplica por head—, así que la última es C.
+        for head in ("b" * 40, "c" * 40):
+            reg.anotar(
+                enc_id,
+                {"kind": "entrega_externa", "data": {
+                    "paso": "head_vigente", "head": head, "hora": H0,
+                }},
+                f"head-vigente:{enc_id}:{head[:1]}",
+            )
+        ciclo.marcar_espera(
+            reg, enc_id, "cabeza_desviada", "head desviado", H0,
+            numero=1, sha="b" * 40, fase="A",
+        )
+        enc = SimpleNamespace(
+            id=enc_id, pr_numero=1, pr_sha="a" * 40, fase_activa="A",
+            entrega=SimpleNamespace(repo="r"),
+        )
+
+        def ctx(head):
+            return cierres.Contexto(
+                registro=reg, enc=enc,
+                gh=SimpleNamespace(ver=lambda *a: SimpleNamespace(head=head)),
+                hora=H0, epoch=1.0,
+            )
+
+        # La espera la abrió B: volver a verlo no la despierta otra vez.
+        self.assertFalse(cierres._cabeza_desviada(ctx("b" * 40)))
+        self.assertTrue(cierres._cabeza_desviada(ctx("c" * 40)))
+        self.assertTrue(cierres._cabeza_desviada(ctx("a" * 40)))
+        self.assertIsNone(cierres._cabeza_desviada(ctx("")))
+
+    def test_cabeza_desviada_sin_identidad_usa_la_ultima_anotacion(self):
+        """Una espera anterior a la identidad se corrige sola al reabrirse."""
+        reg = Registro(Path(tempfile.mkdtemp()) / "base")
+        self.addCleanup(reg.close)
+        enc_id = _recibir(reg, "head-legado")
         reg.anotar(
             enc_id,
             {"kind": "entrega_externa", "data": {
@@ -165,8 +202,11 @@ class LecturasPorClase(unittest.TestCase):
             }},
             f"head-vigente:{enc_id}:b",
         )
+        ciclo.marcar_espera(
+            reg, enc_id, "cabeza_desviada", "head desviado", H0
+        )
         enc = SimpleNamespace(
-            id=enc_id, pr_numero=1, pr_sha="a" * 40,
+            id=enc_id, pr_numero=1, pr_sha="a" * 40, fase_activa="A",
             entrega=SimpleNamespace(repo="r"),
         )
 
@@ -179,7 +219,7 @@ class LecturasPorClase(unittest.TestCase):
 
         self.assertFalse(cierres._cabeza_desviada(ctx("b" * 40)))
         self.assertTrue(cierres._cabeza_desviada(ctx("c" * 40)))
-        self.assertTrue(cierres._cabeza_desviada(ctx("a" * 40)))
+        self.assertIsNone(cierres._cabeza_desviada(ctx("")))
 
     def test_checks_ilegibles_no_son_verde(self):
         ctx = SimpleNamespace(

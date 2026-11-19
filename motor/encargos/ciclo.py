@@ -6703,28 +6703,9 @@ def _tope_registrado_de_lectura(
     registro: Registro, enc: Encargo, numero: int, sha: str
 ) -> str:
     """El tope que guardó la espera de lectura fallida para ese PR y SHA."""
-    try:
-        eventos = registro.eventos(enc.id)
-    except (OSError, KeyError, TypeError, ValueError):
-        return ""
-    for evento in reversed(eventos):
-        datos = evento.get("data") or {}
-        if evento.get("kind") != "espera" or datos.get("clase") != "lectura_deepseek_fallida":
-            continue
-        try:
-            numero_evento = int(datos.get("numero") or 0)
-        except (TypeError, ValueError):
-            numero_evento = 0
-        sha_evento = str(datos.get("sha") or "")
-        if not numero_evento or not sha_evento:
-            # Un tope legado sin identidad no acredita a qué PR y SHA pertenece:
-            # no se hereda a una lectura nueva.
-            continue
-        if numero_evento != numero or sha_evento != sha:
-            continue
-        if str(datos.get("tope") or ""):
-            return str(datos["tope"])
-    return ""
+    return str(_espera_guardada(
+        registro, enc.id, "lectura_deepseek_fallida", numero, sha
+    ).get("tope") or "")
 
 
 def _paso_el_tope_de_lectura(
@@ -8029,6 +8010,7 @@ def _head_desviado(
             "cabeza_desviada",
             causa_head + "; el paso se reanuda cuando el head del PR concilie",
             hora,
+            **_identidad_si_v5(enc, numero, head_vigente),
         )
     else:
         _devolver(
@@ -9702,10 +9684,13 @@ def _paso_entrega_paso(
                 "revision_deepseek", "lectura_deepseek_fallida"
             )
         ):
-            # Un PR adoptado puede no tener el primer envío. El tope que ya
-            # guardó la espera se mide desde su apertura; sin esta base, el
-            # paso contaría cero minutos y reabriría la espera para siempre.
-            primera = enc.espera_abierta or hora
+            # Un PR adoptado puede no tener el primer envío. Solo la ventana de
+            # esta misma lectura aporta la edad: la de otra fase o de otro SHA
+            # no se hereda, o se omitiría a DeepSeek antes de tiempo.
+            primera = str(_espera_guardada(
+                registro, enc.id, enc.espera_clase, numero, sha,
+                enc.fase_activa,
+            ).get("abierta") or "")
         primera = primera or hora
         minutos = _minutos_desde(primera, hora)
         lectura_ds = _leer_deepseek(
@@ -9772,6 +9757,7 @@ def _paso_entrega_paso(
                 f"esperando revisión de DeepSeek para el SHA {sha}",
                 hora,
                 desde=primera,
+                **_identidad_si_v5(enc, numero, sha),
             )
             return _con_espera(registro.fold(enc.id) or enc)
         relectura_ds = enc.deepseek_sha == sha
@@ -10736,24 +10722,66 @@ def _desde_del_primer_envio(enc: Encargo, sha: str) -> str:
     return next((t for s, t in enc.primer_envio_por_sha if s == sha), "")
 
 
-def _identidad_guardada_de_espera(
-    registro: Registro, encargo_id: str, clase: str
-) -> tuple[int, str]:
-    """El PR y el SHA de la última espera guardada de esa clase, si los trae."""
+def _espera_guardada(
+    registro: Registro,
+    encargo_id: str,
+    clase: str,
+    numero: int = 0,
+    sha: str = "",
+    fase: str = "",
+) -> dict:
+    """Los datos de la última espera guardada de esa clase.
+
+    Con `numero` y `sha` solo cuenta la espera de esa lectura, y con `fase`
+    también la de esa fase: la identidad es lo que permite atribuir su ventana a
+    ese PR y SHA. Una espera sin identidad, o de otra lectura, no se hereda.
+    """
+    if (numero or sha) and not (numero and sha):
+        return {}
     try:
         eventos = registro.eventos(encargo_id)
     except (OSError, KeyError, TypeError, ValueError):
-        return 0, ""
+        return {}
     for evento in reversed(eventos):
         datos = evento.get("data") or {}
         if evento.get("kind") != "espera" or datos.get("clase") != clase:
             continue
-        try:
-            numero = int(datos.get("numero") or 0)
-        except (TypeError, ValueError):
-            numero = 0
-        return numero, str(datos.get("sha") or "")
-    return 0, ""
+        if numero or sha:
+            try:
+                numero_evento = int(datos.get("numero") or 0)
+            except (TypeError, ValueError):
+                numero_evento = 0
+            if not numero_evento or numero_evento != int(numero):
+                continue
+            if str(datos.get("sha") or "") != str(sha):
+                continue
+            if fase and str(datos.get("fase") or "") != fase:
+                continue
+        return datos
+    return {}
+
+
+def _identidad_guardada_de_espera(
+    registro: Registro, encargo_id: str, clase: str
+) -> tuple[int, str]:
+    """El PR y el SHA de la última espera guardada de esa clase, si los trae."""
+    datos = _espera_guardada(registro, encargo_id, clase)
+    try:
+        numero = int(datos.get("numero") or 0)
+    except (TypeError, ValueError):
+        numero = 0
+    return numero, str(datos.get("sha") or "")
+
+
+def _identidad_si_v5(enc: Encargo, numero: int, sha: str) -> dict:
+    """La identidad de la lectura para la espera, solo con `ESPERAS_V5`.
+
+    Apagado, la espera se escribe como en la base (sin identidad) y su clave
+    histórica no cambia; encendido, la ventana queda atada a ese PR y SHA.
+    """
+    if not politica.ESPERAS_V5:
+        return {}
+    return {"numero": numero, "sha": sha, "fase": enc.fase_activa}
 
 
 def _esperar_revision_externa(
@@ -10767,6 +10795,7 @@ def _esperar_revision_externa(
         hora,
         desde=_desde_del_primer_envio(enc, commit_entregado),
         reloj="escritura",
+        **_identidad_si_v5(enc, enc.pr_numero, commit_entregado),
     )
 
 
@@ -10803,7 +10832,9 @@ def marcar_espera(
 
     `numero`, `sha` y `fase` identifican la lectura que falló cuando la espera
     es `lectura_deepseek_fallida` de una fase previa: el cierre vuelve a leer
-    ese PR, no el de la fase activa. Solo se guardan cuando se pasan.
+    ese PR, no el de la fase activa. Con `ESPERAS_V5` también identifican la
+    espera de `revision_deepseek` y el head que abrió una `cabeza_desviada`.
+    Solo se guardan cuando se pasan.
     """
     enc = registro.fold(encargo_id)
     identidad_previa = _identidad_guardada_de_espera(registro, encargo_id, clase)
@@ -10811,6 +10842,9 @@ def marcar_espera(
     misma_lectura = (not numero and not sha) or (
         identidad_previa != (0, "") and identidad_previa == identidad
     )
+    # La apertura se conserva mientras la espera siga siendo la misma: es lo
+    # que hace finito su tope. Un `plazo` cierra la ventana pero no la estrena;
+    # una espera nueva con la misma clase y otra lectura empieza en `hora`.
     abierta = (
         enc.espera_abierta
         if enc is not None and enc.espera_clase == clase and enc.espera_abierta
