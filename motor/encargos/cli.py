@@ -310,6 +310,8 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
         return _json(
             marcar_espera(
                 reg, args.encargo, "orden_espera", args.motivo, hora,
+                # El CLI siempre pasa la fecha (puede venir vacía): una cadena
+                # vacía es explícita y `validar_espera` la rechaza como antes.
                 reanuda_en=reanuda or args.reanuda_en,
             )
         )

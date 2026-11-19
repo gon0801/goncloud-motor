@@ -3561,13 +3561,7 @@ def _incorporar_responsable(
             # vuelta sin novedad del supervisor no es una vuelta sin avance, y el
             # bloqueante abierto puede ser uno que su fuente ya cerró. No cuenta;
             # se espera, sin lanzar otro turno que devolvería lo mismo.
-            marcar_espera(
-                registro, enc.id,
-                "revision_deepseek",
-                f"esperando la revisión externa del commit {commit_entregado[:12]} "
-                "(DeepSeek) antes de contar otra vuelta",
-                hora,
-            )
+            _esperar_revision_externa(registro, enc, commit_entregado, hora)
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
         if abierto:
@@ -6245,6 +6239,7 @@ def _veredicto_antes_de_cerrar(
         return None
     fase = enc.fase_actual
     sha = enc.pr_sha
+    sha_leido = sha
     try:
         comentarios = _deepseek_con_contenido(
             gh.comentarios_deepseek(enc.entrega.repo, enc.pr_numero, sha), sha
@@ -6259,6 +6254,7 @@ def _veredicto_antes_de_cerrar(
                     or not f.pr_sha
                 ):
                     continue
+                sha_leido = f.pr_sha
                 previas.append(
                     (
                         f,
@@ -6278,7 +6274,16 @@ def _veredicto_antes_de_cerrar(
                 "reintentar la lectura de DeepSeek antes de cerrar",
                 hora, f"deepseek-cerrar-{sha[:12]}",
             )
-            marcar_espera(registro, enc.id, "lectura_deepseek_fallida", causa, hora)
+            # La fila cuenta desde el primer envío del SHA cuya lectura falló,
+            # que en el bucle de fases previas puede ser el de otra fase. Sin
+            # esa entrada, `tope_de` cae en la apertura de la espera.
+            primera = next(
+                (t for s, t in enc.primer_envio_por_sha if s == sha_leido), ""
+            )
+            marcar_espera(
+                registro, enc.id, "lectura_deepseek_fallida", causa, hora,
+                desde=primera,
+            )
             return registro.fold(enc.id)
         # La fase siguió sin revisión: una relectura fallida no
         # vuelve a frenar el cierre. Si llega un comentario, el siguiente
@@ -10106,13 +10111,36 @@ def _lanzar_uno_en_turno(
                 pass
 
 
+def _desde_del_primer_envio(enc: Encargo, sha: str) -> str:
+    """La hora del primer envío registrado de ese SHA, o "" si no está.
+
+    Las filas `revision_deepseek` y `lectura_deepseek_fallida` cuentan su tope
+    desde el primer envío, no desde la apertura de la espera. Sin entrada en el
+    registro, `tope_de` cae en la apertura.
+    """
+    return next((t for s, t in enc.primer_envio_por_sha if s == sha), "")
+
+
+def _esperar_revision_externa(
+    registro: Registro, enc: Encargo, commit_entregado: str, hora: str
+) -> None:
+    """Espera el veredicto de DeepSeek del commit antes de contar otra vuelta."""
+    marcar_espera(
+        registro, enc.id, "revision_deepseek",
+        f"esperando la revisión externa del commit {commit_entregado[:12]} "
+        "(DeepSeek) antes de contar otra vuelta",
+        hora,
+        desde=_desde_del_primer_envio(enc, commit_entregado),
+    )
+
+
 def marcar_espera(
     registro: Registro,
     encargo_id: str,
     clase: str,
     motivo: str,
     hora: str,
-    reanuda_en: str = "",
+    reanuda_en: str | None = None,
     intentos: int = 1,
     desde: str = "",
 ) -> dict:
@@ -10121,8 +10149,10 @@ def marcar_espera(
     El intervalo y el tope salen de `tabla_esperas`: la clase decide cuánto se
     espera y cuánto aguanta. `reanuda_en` se pasa solo cuando lo decide el paso
     (la orden del propietario, la ruta de agentes o el libro del destino
-    ocupado). Una espera de la misma clase conserva su apertura; un avance o
-    otra clase la estrenan.
+    ocupado); `None`, el defecto, pide el intervalo de la clase. Una cadena
+    vacía es una fecha explícita: no se reemplaza por el intervalo, y
+    `validar_espera` la rechaza como antes. Una espera de la misma clase
+    conserva su apertura; un avance o otra clase la estrenan.
     """
     enc = registro.fold(encargo_id)
     abierta = (
@@ -10134,9 +10164,16 @@ def marcar_espera(
         # El barrido ordena las horas como texto. Con el interruptor encendido
         # toda espera guarda la apertura y la reanudación en UTC canónico, venga
         # el desplazamiento que venga; apagado, se guarda lo de hoy.
-        reanuda_en = tabla_esperas.hora_canonica(reanuda_en) if reanuda_en else ""
+        reanuda_en = (
+            tabla_esperas.hora_canonica(reanuda_en) if reanuda_en else reanuda_en
+        )
         abierta = tabla_esperas.hora_canonica(abierta) or abierta
-    reanuda_en = reanuda_en or tabla_esperas.reanuda_en(clase, hora, intentos)
+    if reanuda_en is None:
+        # Apagado, el intervalo cuenta desde el fallo, no desde el inicio del
+        # barrido: `hora` es una sola para todos los encargos de la pasada y un
+        # paso que tarda minutos dejaría el plazo vencido al nacer.
+        base = hora if politica.ESPERAS_V5 else _reanuda_en(0)
+        reanuda_en = tabla_esperas.reanuda_en(clase, base, intentos)
     tope = tabla_esperas.tope_de(clase, abierta, desde)
     # La clave histórica es la de antes de la 5.1: mismo motivo y misma
     # reanudación. Repetir esa escritura después del despliegue tiene que caer
