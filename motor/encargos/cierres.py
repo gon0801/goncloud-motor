@@ -156,21 +156,52 @@ def _revision_deepseek(ctx: Contexto) -> bool | None:
     return True if (comentarios or (_leidos and not comentarios)) else False
 
 
+def _identidad_de_lectura_fallida(registro, enc) -> tuple[int, str]:
+    """El PR y el SHA de la lectura que abrió la espera de lectura fallida.
+
+    `_veredicto_antes_de_cerrar` puede abrirla al releer el PR de una fase
+    anterior mientras cierra la activa. El cierre tiene que volver a leer ese
+    PR, no el de la fase activa, o una lectura correcta de la activa cerraría
+    una espera que sigue fallando en la anterior.
+    """
+    try:
+        eventos = registro.eventos(enc.id)
+    except (OSError, KeyError, TypeError, ValueError):
+        return 0, ""
+    for evento in reversed(eventos):
+        datos = evento.get("data") or {}
+        if evento.get("kind") != "espera" or datos.get("clase") != "lectura_deepseek_fallida":
+            continue
+        try:
+            numero = int(datos.get("numero") or 0)
+        except (TypeError, ValueError):
+            numero = 0
+        sha = str(datos.get("sha") or "")
+        if numero and sha:
+            return numero, sha
+        break
+    return 0, ""
+
+
 def _lectura_deepseek_fallida(ctx: Contexto) -> bool | None:
-    """Cierra cuando la lectura de DeepSeek vuelve a salir, aunque sea vacía."""
+    """Cierra cuando vuelve a salir la misma lectura de DeepSeek que falló."""
     from .ciclo import _leer_deepseek
     from .lectura import Error as ErrorLectura
 
     enc, gh = ctx.enc, ctx.gh
-    fase = getattr(enc, "fase_actual", None)
-    if gh is None or fase is None or not fase.pr_sha:
+    numero, sha = _identidad_de_lectura_fallida(ctx.registro, enc)
+    if not numero or not sha:
+        fase = getattr(enc, "fase_actual", None)
+        if fase is None or not fase.pr_sha:
+            return None
+        numero, sha = fase.pr_numero, str(fase.pr_sha)
+    if gh is None:
         return None
-    sha = str(fase.pr_sha)
     primera = next(
         (t for s, t in getattr(enc, "primer_envio_por_sha", ()) if s == sha),
         ctx.hora,
     )
-    lectura = _leer_deepseek(gh, enc.entrega.repo, fase.pr_numero, sha, primera)
+    lectura = _leer_deepseek(gh, enc.entrega.repo, numero, sha, primera)
     return None if isinstance(lectura, ErrorLectura) else True
 
 
