@@ -1747,9 +1747,10 @@ def _barrer_encargos(
                             encargo_id, fresco.reanuda_en, fresco.espera_abierta
                         ),
                     )
-                except Rechazo:
+                except EventoIlegal:
                     # La orden entró dentro de la transacción: manda el plegado
-                    # y este vencimiento se abandona.
+                    # y este vencimiento se abandona. Un `ClaveOcupada` de otro
+                    # hecho no se traga: ese sí es un fallo del paso.
                     pass
                 fresco = registro.fold(encargo_id) or fresco
             enc = fresco
