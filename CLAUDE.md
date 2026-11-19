@@ -68,8 +68,9 @@ Con criterio:
 
 - En el ciclo del motor, las vueltas sin avance siguen su tabla de decisiones (arriba, de
   `motor/encargos/politica.py`) y `docs/flujo-revisiones.md`, no la regla general de 3 rondas.
-  Dentro de lo que el encargo autoriza no se espera a nadie salvo el merge; lo que el encargo no
-  autoriza espera a David, como dice el párrafo inicial.
+  Dentro de lo que el encargo autoriza ningún paso espera a un humano salvo el merge, y las esperas
+  técnicas siguen los topes de esa tabla; lo que el encargo no autoriza espera a David, como dice
+  el párrafo inicial.
 - Antes de mergear un cambio que altere cómo se lee el registro (reductor o validación), corre
   `ops/compuerta-plegado.sh --sha <cabeza>`. Solo lee y tarda un minuto. Si una máquina no contesta,
   vale lo que digan las demás; a esa máquina se le corre cuando vuelva, antes de desplegarle.
