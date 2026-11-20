@@ -3,7 +3,7 @@
 Devin, este documento es tu contrato para implementar el paso 5 de
 `docs/modelo-centro-encargos.md`, la tabla de esperas. Nadie va a contestar preguntas mientras
 trabajas. Si algo no está escrito aquí, decide con las reglas de este documento y deja la decisión
-en `## Tradeoffs` del PR. La forma de trabajar es la de "Reglas de trabajo" en `AGENTS.md`; las
+en `## Tradeoffs` del PR. La forma de trabajar es la de «Cómo trabajar con David» en `AGENTS.md`; las
 reglas de los pasos 3 y 4 ya no aplican. Este documento solo dice qué construir.
 
 ## Para qué
@@ -51,7 +51,7 @@ No cambian:
 - el plegado de las claves que ya existen en un registro guardado;
 - que plegar nunca falla.
 
-**Dos reglas de `AGENTS.md` y cómo encaja este paso:**
+**Dos decisiones de este plan sobre las esperas:**
 - "Sin tope de rondas: el freno no escala por contar vueltas." Las rondas que traen avance siguen
   sin tope. Este paso solo cuenta turnos sin ningún hecho de avance, como ya hace la escalera de
   `sin_progreso` con las rondas que no cierran un bloqueo.
@@ -78,7 +78,7 @@ No cambian:
    `gh pr edit <n> --base main`.
 3. Empieza por la 5.0.
 
-Forma de trabajo: la de "Reglas de trabajo" en `AGENTS.md`. En corto:
+Forma de trabajo: la de «Cómo trabajar con David» en `AGENTS.md`. En corto:
 - la evidencia son las pruebas en verde; no pegues corpus, mutaciones ni comandos de calidad;
 - en cada ronda corriges solo lo que dice el comentario del revisor;
 - sin tope de rondas por PR mientras cada ronda traiga avance; nadie pide permiso por una ronda más;
@@ -460,8 +460,8 @@ Aplica con el interruptor encendido. Entra en la 5.2, y el aviso de falta de ava
 
 La evidencia de cada unidad son sus pruebas en verde. Las de abajo son las mínimas: una por regla,
 no una por fila ni por combinación.
-Caen en el caso "escribir datos de producción" de las Reglas de trabajo de `AGENTS.md`: el reductor y el registro
-leen y escriben los registros reales de las tres máquinas.
+Estas pruebas son parte del plan porque el reductor y el registro trabajan con los datos reales
+de las tres máquinas.
 
 **5.0 El reductor y la tabla, sin escritores.** Todo lo de "Tipos y campos nuevos":
 - `tabla_esperas.py` con sus 27 filas;
