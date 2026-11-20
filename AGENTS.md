@@ -38,12 +38,10 @@ Si falta algo que solo yo pueda aportar, o hace falta una decisión fuera del en
 
 ### Solo en este repo
 
-- En el ciclo del motor, las vueltas sin avance y los bloqueos de revisión sin resolver siguen su
-  tabla de decisiones (arriba, de `motor/encargos/politica.py`) y `docs/flujo-revisiones.md`, no la
-  regla general de 3 rondas ni su espera a David.
-  Dentro de lo que el encargo autoriza ningún paso espera a un humano salvo el merge, y las esperas
-  técnicas siguen los topes de esa tabla; lo que el encargo no autoriza espera a David, como dice
-  el párrafo inicial.
+- En el ciclo del motor, las vueltas sin avance y los bloqueos de revisión siguen la tabla
+  de decisiones de `motor/encargos/politica.py` y el flujo de `docs/flujo-revisiones.md`.
+  El merge y las esperas técnicas siguen las decisiones de esa tabla. Si hace falta una
+  acción fuera del encargo, David decide si amplía el alcance.
 - Antes de mergear un cambio que altere cómo se lee el registro (reductor o validación), corre
   `ops/compuerta-plegado.sh --sha <cabeza>`. Solo lee y tarda un minuto. Si una máquina no contesta,
   vale lo que digan las demás; a esa máquina se le corre cuando vuelva, antes de desplegarle.
